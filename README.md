@@ -178,6 +178,7 @@ Keep the default settings first, and tune these:
    This writes `market_adapter_whitelist.json` in the profiles directory. New AMA bots get AMA
    live writes and range scaling. Use `dexbot white --dynamic-weight` for
    newly generated dynamic-weight entries; existing entries are preserved.
+   To overwrite an existing bot: `dexbot white --dynamic-weight --bot <botKey>`.
 
 6. **Start DEXBot2** with `dexbot start`.
 
@@ -259,6 +260,7 @@ dexbot enable {all|<bot>}  # Enable bot in config
 dexbot stat                # Runtime status (unlock or PM2)
 dexbot order [<bot>]       # Analyze order grids
 dexbot order --export      # Export as HTML to analysis/charts/
+dexbot credit [<bot>]      # Live summed MPA + borrowed-credit positions per asset per bot
 
 dexbot update              # Update DEXBot2
 dexbot clear               # Clear log files

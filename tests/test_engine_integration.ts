@@ -71,11 +71,15 @@ async function setupManager() {
 
     mgr.fetchAccountTotals = async () => mgr.accountTotals;
 
-    // Setup initial grid
+    // Use slot-N ids in-rail (genesis-frozen determinism)
+    mgr._gapSlots = 2;
+    mgr.boundaryIdx = 5;
+    // Setup initial grid: buy rail 0-5, sell rail 8-13
     for (let i = 0; i < 6; i++) {
         const price = 1.0 + (i * 0.05);
-        mgr.orders.set(`sell-${i}`, {
-            id: `sell-${i}`,
+        const id = `slot-${8 + i}`;
+        mgr.orders.set(id, {
+            id,
             type: ORDER_TYPES.SELL,
             price: price,
             size: 10,
@@ -85,8 +89,9 @@ async function setupManager() {
 
     for (let i = 0; i < 6; i++) {
         const price = 1.0 - (i * 0.05);
-        mgr.orders.set(`buy-${i}`, {
-            id: `buy-${i}`,
+        const id = `slot-${i}`;
+        mgr.orders.set(id, {
+            id,
             type: ORDER_TYPES.BUY,
             price: price,
             size: 10,
@@ -122,17 +127,17 @@ async function testFillToRebalanceCycle() {
 
     const mgr = await setupManager();
 
-    // Initial state: all VIRTUAL orders
-    assert(mgr.orders.get('sell-0').state === ORDER_STATES.VIRTUAL);
-    assert(mgr.orders.get('buy-0').state === ORDER_STATES.VIRTUAL);
+    // Initial state: all VIRTUAL orders (slot-N ids)
+    assert(mgr.orders.get('slot-8').state === ORDER_STATES.VIRTUAL);
+    assert(mgr.orders.get('slot-5').state === ORDER_STATES.VIRTUAL);
 
     // Step 1: Activate a SELL order on chain
-    const sellOrder = mgr.orders.get('sell-0');
+    const sellOrder = mgr.orders.get('slot-8');
     const activeSell = { ...sellOrder, state: ORDER_STATES.ACTIVE, orderId: 'chain-sell-1' };
     await mgr._updateOrder(activeSell);
 
-    assert(mgr.orders.get('sell-0').state === ORDER_STATES.ACTIVE);
-    assert(mgr.orders.get('sell-0').orderId === 'chain-sell-1');
+    assert(mgr.orders.get('slot-8').state === ORDER_STATES.ACTIVE);
+    assert(mgr.orders.get('slot-8').orderId === 'chain-sell-1');
 
     console.log('  ✓ Step 1: Sync activated SELL order');
 
@@ -140,8 +145,8 @@ async function testFillToRebalanceCycle() {
     const partialSell = { ...activeSell, size: 5, state: ORDER_STATES.PARTIAL };
     await mgr._updateOrder(partialSell);
 
-    assert(mgr.orders.get('sell-0').state === ORDER_STATES.PARTIAL);
-    assert(mgr.orders.get('sell-0').size === 5);
+    assert(mgr.orders.get('slot-8').state === ORDER_STATES.PARTIAL);
+    assert(mgr.orders.get('slot-8').size === 5);
     console.log('  ✓ Step 2: Sync detected partial fill (size 5)');
 
     // Step 3: Process fills and rebalance
@@ -156,7 +161,7 @@ async function testFillToRebalanceCycle() {
     // Step 4: Verify fund calculations are consistent
     await mgr.recalculateFunds();
 
-    const partialOrderSize = mgr.orders.get('sell-0').size;
+    const partialOrderSize = mgr.orders.get('slot-8').size;
     const committedSell = mgr.funds.committed.grid.sell;
     assert(committedSell >= partialOrderSize - 0.1, 'Committed funds should include partial order size');
     console.log(`  ✓ Step 4: Accountant tracked order state (partial size: ${partialOrderSize})`);
@@ -174,9 +179,9 @@ async function testConsolidationSyncRebalanceCycle() {
 
     const mgr = await setupManager();
 
-    // Create two partial orders
-    const partial1 = { ...mgr.orders.get('sell-1'), size: 5, state: ORDER_STATES.PARTIAL, orderId: 'chain-s1' };
-    const partial2 = { ...mgr.orders.get('sell-3'), size: 7, state: ORDER_STATES.PARTIAL, orderId: 'chain-s2' };
+    // Create two partial orders (slot-9 and slot-11 map to former sell-1/sell-3)
+    const partial1 = { ...mgr.orders.get('slot-9'), size: 5, state: ORDER_STATES.PARTIAL, orderId: 'chain-s1' };
+    const partial2 = { ...mgr.orders.get('slot-11'), size: 7, state: ORDER_STATES.PARTIAL, orderId: 'chain-s2' };
 
     await mgr._updateOrder(partial1);
     await mgr._updateOrder(partial2);

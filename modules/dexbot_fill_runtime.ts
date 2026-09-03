@@ -8,8 +8,11 @@ import { PROCESSED_FILL_PERSISTENCE_MODES } from './order/processed_fill_store.j
 import { NATIVE_CLIENT, FILL_PROCESSING, TIMING, MAINTENANCE, ORDER_TYPES } from './constants.js';
 import { getErrorMessage } from './utils/errors.js';
 import { isOrderDoesNotExistError } from './dexbot_maintenance_runtime.js';
+import { slotIndexForPrice, isSlotInRail } from './order/utils/math.js';
+import { ORDER_STATES } from './constants.js';
 function buildFillKey(...args: any) { return require('./order/utils/order').buildFillKey(...args); }
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
+function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
 function retryPersistenceIfNeeded(...args: any) { return require('./order/utils/system').retryPersistenceIfNeeded(...args); }
 const { readOpenOrdersGuarded } = chainOrders;
 
@@ -21,12 +24,87 @@ interface SweepOrphanFillOptions {
 }
 
 /**
+ * Whether an unknown fill's order plausibly belongs to THIS bot's grid and
+ * should be adopted before its proceeds are credited. The by-id chain read
+ * confirms the order is still live; the asset and price checks (inside the
+ * grid's slot price extremes expanded by a 1.25 factor) filter out foreign
+ * orders on shared accounts or other markets, which keep the legacy
+ * credit-as-orphan path.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {any} fillOp - Fill operation ({order_id, ...})
+ * @returns {Promise<boolean>} True when the order is live and in-grid-range
+ */
+async function isUnknownFillOrderAdoptable(bot: any, fillOp: any): Promise<boolean> {
+    try {
+        const orderId = fillOp?.order_id != null ? String(fillOp.order_id) : null;
+        if (!orderId) return false;
+        const chainMap = await chainOrders.batchReadOrders([orderId]);
+        const liveOrder = chainMap ? chainMap.get(orderId) : undefined;
+        if (!liveOrder) return false;
+
+        // Asset gate: only orders in THIS bot's market can be ours. Shared
+        // accounts hold other bots'/markets' orders — never adopt those.
+        const assetAId = bot.manager?.assets?.assetA?.id;
+        const assetBId = bot.manager?.assets?.assetB?.id;
+        const sellPrice = liveOrder?.sell_price;
+        const baseId = sellPrice?.base?.asset_id;
+        const quoteId = sellPrice?.quote?.asset_id;
+        if (!baseId || !quoteId) return false;
+        const assetsMatch = (baseId === assetAId && quoteId === assetBId) || (baseId === assetBId && quoteId === assetAId);
+        if (!assetsMatch) return false;
+
+        const parsed = parseChainOrder(liveOrder, bot.manager.assets);
+        const price = Number(parsed?.price);
+        if (!Number.isFinite(price) || price <= 0) return false;
+
+        // Genesis-frozen: price gate via nearest-slot determinism. If genesis exists, check if nearest slot is available and in-rail.
+        const genesis = (bot.manager as any)?._genesis;
+        if (genesis && Array.isArray(genesis.priceLevels) && genesis.priceLevels.length > 0) {
+            try {
+                const idx = slotIndexForPrice(price, genesis);
+                const slotId = `slot-${idx}`;
+                const slot = bot.manager.orders.get(slotId);
+                if (!slot) return false;
+                const boundaryIdx = (bot.manager as any).boundaryIdx;
+                const gapSlots = genesis.gapSlots ?? (bot.manager as any)._gapSlots ?? 0;
+                if (boundaryIdx != null && !isSlotInRail(boundaryIdx, gapSlots, parsed.type, { id: slotId } as any)) return false;
+                return slot.state === ORDER_STATES.VIRTUAL || !slot.orderId;
+            } catch { return false; }
+        }
+        let minPrice = Infinity;
+        let maxPrice = 0;
+        for (const o of (bot.manager?.orders?.values?.() ?? []) as any[]) {
+            const p = Number(o?.price);
+            if (!Number.isFinite(p) || p <= 0) continue;
+            if (p < minPrice) minPrice = p;
+            if (p > maxPrice) maxPrice = p;
+        }
+        if (!Number.isFinite(minPrice) || maxPrice <= 0) return false;
+        const rangeFactor = 1.25;
+        return price >= minPrice / rangeFactor && price <= maxPrice * rangeFactor;
+    } catch {
+        // Read failure → not adoptable here; caller falls back to crediting.
+        return false;
+    }
+}
+
+/**
  * Handle a sweep fill whose grid order could not be resolved (orphan): derive a
  * replay-safe key (with degraded fallback), skip already-processed fills, credit
  * the fill's proceeds via replay-safe orphan accounting, and report whether the
  * fill was missing a history key (which should trigger an open-orders sync).
  * Shared by the bootstrap/post-reset/orphan-fill sweep loops.
- * @returns true when the fill was missing a replay-safe history identifier.
+ *
+ * Adoption-before-credit (Fix E): when the unknown order is still LIVE on-chain
+ * and priced inside this bot's grid range, its proceeds are NOT credited
+ * outside slot accounting — the function returns true so the caller triggers
+ * the open-orders sync whose pass-2 adoption brings the order into the grid
+ * (fills credited unaccounted because the order was never adopted). Only
+ * confirmed-gone (fully filled) or read-failure/foreign orders take the
+ * legacy credit path.
+ *
+ * @returns true when the fill was missing a replay-safe history identifier OR
+ *   the fill was deferred to the adoption sync (order still live on-chain).
  */
 async function processSweepOrphanFill(bot: any, fill: any, fillOp: any, processedFillKeys: Set<any>, opts: SweepOrphanFillOptions): Promise<boolean> {
     let orphanFillKey = buildFillKey(fill);
@@ -35,6 +113,20 @@ async function processSweepOrphanFill(bot: any, fill: any, fillOp: any, processe
     }
     if (orphanFillKey && !bot._isNewFillKey(orphanFillKey, processedFillKeys, opts.label, fillOp.order_id)) {
         return false;
+    }
+
+    if (await isUnknownFillOrderAdoptable(bot, fillOp)) {
+        (opts.logger ?? bot.manager.logger).log(
+            `[${opts.label}] Unknown order ${fillOp.order_id} is LIVE on-chain inside grid range — deferring proceeds credit to adoption sync`,
+            'warn'
+        );
+        // Release the dedupe key consumed by _isNewFillKey so the fill can be
+        // re-processed against the adopted slot after the sync runs.
+        if (orphanFillKey) {
+            processedFillKeys.delete(orphanFillKey);
+            bot._recentlyQueuedFills?.delete?.(orphanFillKey);
+        }
+        return true;
     }
 
     (opts.logger ?? bot.manager.logger).log(
@@ -433,6 +525,10 @@ function scheduleFillConsumerRestart(bot: any, chainOrders: any) {
  * @returns {Promise<void>}
  */
 async function processFillsWithBootstrapMode(bot: any, chainOrders: any) {
+    if (bot._shuttingDown) {
+        bot._warn('Fill processing skipped: shutdown in progress');
+        return;
+    }
     if (bot._incomingFillQueue.length === 0) return;
 
     const startTime = Date.now();
@@ -508,6 +604,11 @@ async function processFillsWithBootstrapMode(bot: any, chainOrders: any) {
     await bot._flushProcessedFillPersistence('bootstrap-batch');
 
     if (validFills.length === 0) return;
+
+    if (bot._shuttingDown) {
+        bot._warn(`[BOOTSTRAP] Fill processing skipped: shutdown in progress (${validFills.length} fill(s) discarded)`);
+        return;
+    }
 
     try {
         bot._log(`[BOOTSTRAP] Processing ${validFills.length} fill(s) through standard pipeline`, 'info');

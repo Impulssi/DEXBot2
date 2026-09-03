@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { fileURLToPath } from 'node:url';
+import { CLI_COLORS } from './modules/cli_colors.js';
 import { dirname as _esmDirname } from 'node:path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = _esmDirname(__filename);
@@ -77,6 +78,8 @@ const __dirname = _esmDirname(__filename);
  *   dexbot order [<bot>]          - Analyze only the specified bot's order grid
  *   dexbot order --export         - Export order analysis as standalone HTML report
  *   dexbot order [<bot>] --export - Export only the specified bot's analysis
+ *   dexbot credit               - Show live summed MPA + borrowed-credit positions per asset per bot
+ *   dexbot credit [<bot>]       - Show only the specified bot's positions
  *   dexbot help                   - Show this help message
  *
  * NPM SCRIPTS (alternative invocation):
@@ -150,7 +153,7 @@ const {
     saveSettingsFile,
 } = require('./modules/bot_settings');
 const { buildRuntimeScriptArgs } = require('./modules/launcher/runtime_entry');
-const { PATHS, HOME_PROFILES_DIR, getRecalculateTriggerFile } = require('./modules/paths');
+const { PATHS, getHomeProfilesDir, getRecalculateTriggerFile } = require('./modules/paths');
 const credentialPolicy = require('./modules/credential_policy');
 const { Config } = require('./modules/config');
 const { getErrorMessage } = require('./modules/utils/errors');
@@ -173,7 +176,7 @@ if (typeof credentialPolicy.checkPolicyFileSecurity === 'function') credentialPo
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
 
-const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'help'];
+const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'help'];
 const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'unlock', defaults: 'default', stp: 'stop', stopall: 'stop', restartall: 'restart' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
@@ -190,14 +193,15 @@ const CLI_EXAMPLES = [
     { title: 'Update DEXBot2', command: 'dexbot update', notes: 'Fetches latest code, updates dependencies, and restarts PM2.' },
     { title: 'Export bot trades for QTradeX', command: 'dexbot export <bot>', notes: 'Exports trading history and settings to CSV/JSON for backtesting.' },
     { title: 'Analyze persisted order grids', command: 'dexbot order', notes: 'Runs the order analyzer across the orders directory (<profiles>/orders) and prints spread/increment/funds/distribution metrics. Add a bot key to render only that bot, and --export for an HTML report.' },
+    { title: 'Show live credit/MPA positions', command: 'dexbot credit', notes: 'Queries get_margin_positions + get_credit_deals_by_borrower per preferredAccount and prints debt/collateral sums per asset per bot. Add a bot key to render only that bot.' },
     { title: 'Clear all bot log files', command: 'dexbot clear', notes: 'Runs scripts/clear-logs.sh to remove log files from the logs directory (<profiles>/logs).' },
     { title: 'Reset settings to defaults', command: 'dexbot default', notes: 'Runs scripts/reset-settings.sh to delete general.settings.json, market_profiles.json, and market_adapter_settings.json.' }
 ];
 
 const STARTUP_COLORS = {
-    reset: '\x1b[0m',
-    ok: '\x1b[1;92m',
-    error: '\x1b[1;31m',
+    reset: CLI_COLORS.reset,
+    ok: CLI_COLORS.brightGreen,
+    error: CLI_COLORS.boldRed,
 };
 
 function colorStartupOutput(text: string, color: string, stream: any = process.stdout): string {
@@ -241,13 +245,14 @@ function printCLIUsage() {
     console.log('  pm2               Start all active bots with PM2 (authenticate + generate config + start).');
     console.log('  update            Update DEXBot2 from the repository and restart active bots.');
     console.log('  order             Analyze persisted order grids in <profiles>/orders/ (spread, increment, funds). Use --export for HTML.');
+    console.log('  credit [<bot>]    Show live summed MPA + borrowed-credit positions per asset per bot.');
     console.log('  order [<bot>]     Analyze only the specified bot.');
     console.log('  status, stat, stats  Show bot runtime status (unlock monolithic/isolated or PM2).');
     console.log('  unlock            Legacy alias for start (repo-root: `./unlock`).');
     console.log('  stop              Stop the monolithic runtime.');
     console.log('  restart           Restart the monolithic runtime.');
     console.log('  delete            Stop/delete all runtime processes.');
-    console.log('  whitelist, white  Generate market adapter whitelist from AMA bot configs. Flags (--dynamic-weight, --no-asymmetric-bounds, --prune) are forwarded.');
+    console.log('  whitelist, white  Generate market adapter whitelist from AMA bot configs. Flags (--dynamic-weight, --no-asymmetric-bounds, --prune, --bot <key>) are forwarded. --bot implies overwrite for that key.');
     console.log('  clear             Remove all log files from <profiles>/logs/ (runs scripts/clear-logs.sh).');
     console.log('  clear-orders      Remove all persisted order files from <profiles>/orders/.');
     console.log('  clear-market-adapter  Remove market adapter data, state, and logs.');
@@ -401,6 +406,63 @@ function printStartLauncherSuccess({ botName = null, dryRun = false } = {}) {
 function printMasterPasswordFailure(err: any) {
     console.error();
     console.error(startupError(`❌ ${getErrorMessage(err)}`));
+}
+
+const BOT_START_RESTART = Object.freeze({ MAX_ATTEMPTS: 3, RETRY_DELAY_MS: 30000 });
+const botStartRetryState = new Map<string, { attempts: number; timer: any }>();
+
+function botRetryKey(entry: any): string {
+    return String(entry?.name || entry?.botKey || 'unnamed');
+}
+
+function clearBotStartRetry(botName: string): void {
+    const state = botStartRetryState.get(botName);
+    if (state && state.timer) {
+        clearTimeout(state.timer);
+    }
+    botStartRetryState.delete(botName);
+}
+
+function scheduleBotStartRetry(entry: any, { forceDryRun = false, reason = '' }: { forceDryRun?: boolean; reason?: string } = {}): void {
+    const botName = botRetryKey(entry);
+    if (botName === 'unnamed') return;
+    const state = botStartRetryState.get(botName) || { attempts: 0, timer: null };
+    botStartRetryState.set(botName, state);
+    if (state.attempts >= BOT_START_RESTART.MAX_ATTEMPTS) {
+        botStartRetryState.delete(botName);
+        console.error(startupError(
+            `Bot '${botName}' failed to start ${BOT_START_RESTART.MAX_ATTEMPTS + 1} time(s); giving up — ` +
+            `manual restart required ('dexbot restart ${botName}'). Last error: ${reason}`
+        ));
+        return;
+    }
+    state.attempts += 1;
+    console.warn(
+        `Bot '${botName}' failed to start; scheduling restart in ${BOT_START_RESTART.RETRY_DELAY_MS / 1000}s ` +
+        `(attempt ${state.attempts}/${BOT_START_RESTART.MAX_ATTEMPTS}): ${reason}`
+    );
+    state.timer = setTimeout(async () => {
+        state.timer = null;
+        try {
+            const { config } = loadSettingsFile(PROFILES_BOTS_FILE);
+            const entries = resolveRawBotEntries(config);
+            const match = entries.find((b: any) => b.name === botName);
+            if (!match || match.active === false) {
+                console.log(`Auto-restart: bot '${botName}' is no longer active in ${path.basename(PROFILES_BOTS_FILE)}; giving up.`);
+                clearBotStartRetry(botName);
+                return;
+            }
+            const entryCopy = JSON.parse(JSON.stringify(match));
+            entryCopy.active = true;
+            if (forceDryRun) entryCopy.dryRun = true;
+            await runBotInstances([entryCopy], {
+                forceDryRun,
+                sourceName: `auto-restart (attempt ${state.attempts}/${BOT_START_RESTART.MAX_ATTEMPTS})`,
+            });
+        } catch (err: any) {
+            scheduleBotStartRetry(entry, { forceDryRun, reason: getErrorMessage(err) });
+        }
+    }, BOT_START_RESTART.RETRY_DELAY_MS);
 }
 
 /**
@@ -594,6 +656,7 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
                 botCleanupHandler = () => bot.shutdown();
                 registerCleanup(botCleanupName, botCleanupHandler);
                 await bot.start(masterPassword);
+                clearBotStartRetry(botRetryKey(entry));
                 instances.push(bot);
             } catch (err: any) {
                 // The bot's _runStartupSequence already invoked shutdown() once on
@@ -624,6 +687,7 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
                     console.info(` - Alternatively, set a numeric \`startPrice\` directly in ${PROFILES_BOTS_FILE} for this bot to avoid auto-derive.`);
                     console.info(' - You can also set LIVE_BOT_NAME or BOT_NAME to select a different bot from the profiles settings.');
                 }
+                scheduleBotStartRetry(entry, { forceDryRun, reason: getErrorMessage(err) });
             }
         }
 
@@ -695,7 +759,8 @@ async function setBotActiveState(botName: string | null | undefined, active: boo
     if (!botName) {
         let updated = false;
         entries.forEach((entry: any) => {
-            if (entry.active !== active) {
+            const effectiveActive = entry.active !== false;
+            if (effectiveActive !== active) {
                 entry.active = active;
                 updated = true;
             }
@@ -713,7 +778,7 @@ async function setBotActiveState(botName: string | null | undefined, active: boo
         console.error(startupError(`Could not find any bot named '${botName}' to ${action}.`));
         process.exit(1);
     }
-    if (match.active === active) {
+    if ((match.active !== false) === active) {
         console.log(`Bot '${botName}' is already ${inWord}.`);
         return;
     }
@@ -822,7 +887,7 @@ async function exportBotTrades(botName: string | undefined) {
 
 /**
  * Parse and execute CLI commands.
- * Supported commands: test, drystart, reset, default, disable, enable, key, bot, pm2, update, export, order, clear, status, whitelist, unlock, help
+  * Supported commands: test, drystart, reset, default, disable, enable, key, bot, pm2, update, export, order, credit, clear, status, whitelist, unlock, help
  * @returns {Promise<boolean>} True if a command was handled, false otherwise
  */
 async function handleCLICommands() {
@@ -969,6 +1034,24 @@ async function handleCLICommands() {
             });
             if (result.error) {
                 console.error(`order: ${result.error.message}`);
+                process.exit(1);
+            }
+            process.exit(result.status ?? 0);
+            return true;
+        }
+        case 'credit': {
+            const { spawnSync } = require('child_process') as any as any;
+            const scriptArgs = buildRuntimeScriptArgs({
+                codeRoot: __dirname,
+                scriptSegments: ['scripts', 'analyze-credit'],
+                scriptArgs: cliArgs.slice(1),
+            });
+            const result = spawnSync(Config.EXEC_PATH, scriptArgs, {
+                cwd: PATHS.PROJECT_ROOT,
+                stdio: 'inherit',
+            });
+            if (result.error) {
+                console.error(`credit: ${result.error.message}`);
                 process.exit(1);
             }
             process.exit(result.status ?? 0);
@@ -1232,7 +1315,7 @@ async function bootstrap() {
     } catch (err: any) {
         if (err && (err.code === 'EACCES' || err.code === 'EPERM' || err.code === 'EROFS')) {
             const { spawnSync: respawn } = require('child_process') as any as any;
-            const fallbackDir = HOME_PROFILES_DIR;
+            const fallbackDir = getHomeProfilesDir();
             console.log(`Config directory not writable at: ${PROFILES_DIR}`);
             console.log(`Auto-using ${fallbackDir} instead. Set DEXBOT_PROFILE_ROOT to override.\n`);
             const newEnv = { ...process.env, DEXBOT_PROFILE_ROOT: fallbackDir };
@@ -1272,7 +1355,7 @@ async function bootstrap() {
             MARKET_ADAPTER, DEFAULT_CONFIG, FILL_PROCESSING,
             PIPELINE_TIMING, CREDENTIAL_PROMPTS, MAINTENANCE,
             COW_PERFORMANCE, INCREMENT_BOUNDS, FEE_PARAMETERS,
-            API_LIMITS, LOGGING_CONFIG, NATIVE_CLIENT, LAUNCHER,
+            API_LIMITS, LOGGING_CONFIG, NATIVE_CLIENT, LAUNCHER, ANCHOR,
         } = require('./modules/constants');
 const { writeJSON } = storage;
 
@@ -1312,6 +1395,7 @@ const { writeJSON } = storage;
             LOGGING_CONFIG: { ...LOGGING_CONFIG },
             NATIVE_CLIENT: { ...NATIVE_CLIENT },
             LAUNCHER: { ...LAUNCHER },
+            ANCHOR: { ...ANCHOR },
         };
         writeJSON(SETTINGS_FILE, defaultSettings);
         console.log(startupSuccess('✓ Created default general.settings.json'));

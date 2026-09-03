@@ -246,7 +246,7 @@ class StrategyEngine {
         // Use the stored gapSlots from grid creation (always consistent with
         // the grid geometry) instead of recomputing from live config which may
         // have drifted if targetSpreadPercent or gridLimits changed.
-        const gapSlots = this.manager._gapSlots ?? calculateGapSlots(config.incrementPercent, config.targetSpreadPercent, config.gridLimits);
+        const gapSlots = (this.manager as any)._genesis?.gapSlots ?? this.manager._gapSlots ?? calculateGapSlots(config.incrementPercent, config.targetSpreadPercent, config.gridLimits);
         const crossChunkBudget = (this.manager as any)._boundaryShiftBudget;
         const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget);
         if (crossChunkBudget != null) {
@@ -294,17 +294,38 @@ class StrategyEngine {
         if (buyDelayActive) {
             this.manager.logger.log(`[STRATEGY] Buy delay active: ${((BUY_DELAY_MS - (Date.now() - lastBuyTime))/1000 |0)}s remaining, keeping buys virtual`, 'info');
         }
-        // Farthest (lowest price) buys — static low ladder, no crawl to ceiling
-        const buySlotsRaw = allBuySlots
+        // Sort Farthest-First for BUY windowing, then collapse duplicate price
+        // levels before slicing so the active window keeps as many
+        // unique-priced slots as the target count allows. Same robustness
+        // guard as upstream's snapRail (duplicate levels after rotation
+        // re-typing), but anchored at the RAIL BOTTOM so the ladder never
+        // crawls to the boundary. SELL keeps upstream closest-first.
+        const buyCandidates = allBuySlots
             .filter(inBuyRail)
-            .sort((a: any, b: any) => a.price - b.price)
-            .slice(0, targetCountBuy);
-        const buySlots = buyDelayActive ? [] : buySlotsRaw;
-        
-        const sellSlots = allSellSlots
+            .sort((a: any, b: any) => a.price - b.price);
+        const sellCandidates = allSellSlots
             .filter(inSellRail)
-            .sort((a: any, b: any) => a.price - b.price)
-            .slice(0, targetCountSell);
+            .sort((a: any, b: any) => a.price - b.price);
+
+        const snapRail = (slots: any[], dir: number) => {
+            const kept: any[] = [];
+            for (const s of slots) {
+                if (!kept.some((k: any) => k.id === s.id)) kept.push(s);
+                else if (!isOrderPlaced(kept.find((k: any) => k.id === s.id)) && isOrderPlaced(s)) {
+                    const idx = kept.findIndex((k: any) => k.id === s.id);
+                    kept[idx] = s;
+                }
+            }
+            kept.sort((a: any, b: any) => dir > 0 ? Number(a.price) - Number(b.price) : Number(b.price) - Number(a.price));
+            return kept;
+        };
+
+        // dir +1 for BUY = farthest-first (rail bottom); upstream used -1
+        // (closest-first). buySlotsRaw is the static low ladder; the 15 min
+        // deadline delay empties it while armed (sell side unaffected).
+        const buySlotsRaw = snapRail(buyCandidates, +1).slice(0, targetCountBuy);
+        const buySlots = buyDelayActive ? [] : buySlotsRaw;
+        const sellSlots = snapRail(sellCandidates, +1).slice(0, targetCountSell);
         
         // IMPORTANT:
         // Size distribution must be computed on the FULL side topology, not only

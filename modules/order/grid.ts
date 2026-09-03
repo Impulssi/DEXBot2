@@ -134,7 +134,7 @@ import {
     calculateSpreadFromOrders,
     allocateFundsByWeights,
     calculateGapSlots as _mathGapSlots,
-    findPriceCollision,
+    priceSlotEqual,
     getBtsSide,
     getSellStartIdx,
     resolveGapBand,
@@ -142,6 +142,9 @@ import {
     validatePersistedBoundary,
     adjustBudgetForBtsFees,
     clamp,
+    buildGenesisFromPriceLevels,
+    assertSlotPriceInvariant,
+    hashPriceLevels,
 } from './utils/math.js';
 import {
     filterOrdersByType,
@@ -454,6 +457,18 @@ export function createOrderGrid(config: any): any {
 
         // Sort all levels from lowest to highest (Master Rail order)
         priceLevels.sort((a: any, b: any) => a - b);
+        // Dedupe geometric levels that collide at float precision (tiny increments);
+        // keeps slot-N ↔ index mapping stable vs migration dedupe (grid.ts:652)
+        {
+            const seen = new Set<string>();
+            const deduped: number[] = [];
+            for (const p of priceLevels) {
+                const key = Number(p).toFixed(12);
+                if (!seen.has(key)) { seen.add(key); deduped.push(p); }
+            }
+            priceLevels.length = 0;
+            priceLevels.push(...deduped);
+        }
 
         if (priceLevels.length === 0) {
             throw new Error(
@@ -510,7 +525,9 @@ export function createOrderGrid(config: any): any {
             sell: gapSlots - Math.floor(gapSlots / 2)
         };
 
-        return { orders: updatedOrders, boundaryIdx, initialSpreadCount, gapSlots };
+        const genesis = buildGenesisFromPriceLevels(startPrice, incrementPercent, gapSlots, priceLevels);
+
+        return { orders: updatedOrders, boundaryIdx, initialSpreadCount, gapSlots, priceLevels, genesis };
     }
 
     /**
@@ -553,9 +570,133 @@ function _clearOrderCachesLogic(manager: any): void {
      * @param {number|null} [boundaryIdx=null] - The master boundary index.
      * @returns {Promise<void>}
      */
-export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null): Promise<any> {
+export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null, genesisInput: any = null): Promise<any> {
         if (!Array.isArray(grid)) return;
         return await manager._gridLock.acquire(async () => {
+            // Genesis determinism: if snapshot provided genesis, validate slots
+            // against it; if legacy snapshot has no genesis, migrate by building
+            // genesis from live config and re-sorting to canonical price order.
+            let genesis: any = genesisInput || manager._genesis || null;
+            // Validate genesis hash if present (wired for stale-pair detection #3)
+            // On mismatch we only warn — genesis is still used for validation (log mode) / virtualization (enforce mode);
+            // a stale persisted snapshot vs fresh manager._genesis scenario is covered by the log/enforce gate above
+            if (genesis && Array.isArray(genesis.priceLevels) && typeof genesis.priceLevelsHash === 'string') {
+                try {
+                    const recomputed = hashPriceLevels(genesis.priceLevels);
+                    if (recomputed !== genesis.priceLevelsHash) {
+                        manager.logger?.log?.(`[GENESIS] hash mismatch persisted=${genesis.priceLevelsHash} recomputed=${recomputed} — persisted genesis hash does not match recomputed hash; continuing with persisted genesis`, 'warn');
+                    }
+                } catch {}
+            }
+            const validationMode = (() => {
+                try {
+                    const raw = (typeof process !== 'undefined' && (process as any).env?.GRID_PRICE_SLOT_VALIDATION) || 'log';
+                    return String(raw).toLowerCase() === 'enforce' ? 'enforce' : 'log';
+                } catch { return 'log'; }
+            })();
+            if (genesis && Array.isArray(genesis.priceLevels)) {
+                // Validate each slot's price against genesis; virtualize only in enforce mode (plan §13)
+                const newGrid: any[] = [];
+                for (const slot of grid) {
+                    try {
+                        assertSlotPriceInvariant(slot, genesis);
+                        newGrid.push(slot);
+                    } catch (e: any) {
+                        const msg = `[GENESIS] Slot ${slot?.id} price mismatch vs genesis → ${validationMode === 'enforce' ? 'virtualize' : 'log-only'}: ${getErrorMessage(e)}`;
+                        manager.logger?.log?.(msg, 'warn');
+                        if (validationMode === 'enforce') {
+                            newGrid.push({ ...slot, state: ORDER_STATES.VIRTUAL, size: 0, orderId: '' });
+                        } else {
+                            newGrid.push(slot);
+                        }
+                    }
+                }
+                grid = newGrid;
+                // Ensure canonical price-sorted order matches slot-N order
+                // Quirk fix: previously `isPriceSorted && parsed!==i` gated re-sort, so a shuffled
+                // array with misaligned ids but unsorted prices incorrectly skipped re-sort.
+                // Now: re-sort if any parseable id != index (price order is authoritative via slot-N).
+                const idxOrderMatchesPriceOrder = (() => {
+                    for (let i = 0; i < grid.length; i++) {
+                        const parsed = parseSlotIndex(grid[i]?.id);
+                        if (parsed === null) return false;
+                        if (parsed !== i) return false;
+                    }
+                    return true;
+                })();
+                if (!idxOrderMatchesPriceOrder) {
+                    const sorted = [...grid].sort((a: any, b: any) => {
+                        const pa = parseSlotIndex(a?.id);
+                        const pb = parseSlotIndex(b?.id);
+                        if (pa !== null && pb !== null) return pa - pb;
+                        return Number(a.price) - Number(b.price);
+                    });
+                    // Detect if re-sort actually changes order
+                    let changed = false;
+                    for (let i = 0; i < grid.length; i++) if (grid[i].id !== sorted[i].id) { changed = true; break; }
+                    if (changed) {
+                        manager.logger?.log?.(`[GENESIS] Re-sorted persisted grid to canonical slot-N order`, 'warn');
+                        grid = sorted;
+                    }
+                }
+                // Guard: explicit persistedGenesis should not blindly overwrite a fresher in-memory _genesis
+                // from an in-process rebuild (currently unreachable but latent hazard if flows change)
+                if ((manager as any)._genesis && (manager as any)._genesis.priceLevelsHash && genesis.priceLevelsHash && (manager as any)._genesis.priceLevelsHash !== genesis.priceLevelsHash) {
+                    manager.logger?.log?.(`[GENESIS] persisted genesis hash ${genesis.priceLevelsHash} differs from in-memory ${ (manager as any)._genesis.priceLevelsHash} — keeping in-memory genesis`, 'warn');
+                } else {
+                    manager._genesis = genesis;
+                }
+            } else if (grid.length > 0) {
+                // Migration: build genesis from live geometric rail (plan §4.1/§10)
+                // Do NOT derive priceLevels from persisted slot prices — a truncated
+                // persisted array would permanently shrink genesis. Recompute from
+                // startPrice/min/max/increment per createOrderGrid §2.1.
+                const startPrice = Number(manager.config?.startPrice);
+                const minPrice = Number(manager.config?.minPrice);
+                const maxPrice = Number(manager.config?.maxPrice);
+                const incPct = Number(manager.config?.incrementPercent);
+                if (Number.isFinite(startPrice) && Number.isFinite(minPrice) && Number.isFinite(maxPrice) && Number.isFinite(incPct)) {
+                    try {
+                        const stepUp = 1 + (incPct / 100);
+                        const stepDown = 1 - (incPct / 100);
+                        const priceLevels: number[] = [];
+                        let upPrice = startPrice * Math.sqrt(stepUp);
+                        while (upPrice <= maxPrice) { priceLevels.push(upPrice); upPrice *= stepUp; }
+                        let downPrice = startPrice * Math.sqrt(stepDown);
+                        while (downPrice >= minPrice) { priceLevels.push(downPrice); downPrice *= stepDown; }
+                        priceLevels.sort((a: any, b: any) => a - b);
+                        // Dedupe (floatToBlockchainInt equality via fixed 12-decimals)
+                        const uniq: number[] = [];
+                        const seen = new Set<string>();
+                        for (const p of priceLevels) {
+                            const key = Number(p).toFixed(12);
+                            if (!seen.has(key)) { seen.add(key); uniq.push(p); }
+                        }
+                        const gapSlotsForGenesis = calculateGapSlots(incPct, manager.config?.targetSpreadPercent, manager.config?.gridLimits);
+                        const built = buildGenesisFromPriceLevels(startPrice, incPct, gapSlotsForGenesis, uniq);
+                        // Cross-check: if user edited startPrice/min/max/increment across restarts on a legacy snapshot,
+                        // the new-config rail will mismatch most persisted slot prices → noisy log / mass-virtualize
+                        // in enforce mode and the mismatched genesis would be persisted. Count failures first.
+                        let mismatchCount = 0;
+                        for (const slot of grid) {
+                            try { assertSlotPriceInvariant(slot, built); } catch { mismatchCount++; }
+                        }
+                        const mismatchRatio = grid.length > 0 ? mismatchCount / grid.length : 0;
+                        if (mismatchRatio > 0.5) {
+                            manager.logger?.log?.(`[GENESIS] Migration: ${mismatchCount}/${grid.length} slots mismatch new-config rail (ratio ${mismatchRatio.toFixed(2)}) — config may have changed since snapshot; NOT adopting migration genesis (validation would ${validationMode === 'enforce' ? 'mass-virtualize' : 'be noisy'}). Persisted grid will be kept as-is until a clean rebuild`, 'warn');
+                        } else {
+                            if (mismatchCount > 0) {
+                                manager.logger?.log?.(`[GENESIS] Migration: ${mismatchCount}/${grid.length} slots mismatch new-config rail — will be logged${validationMode === 'enforce' ? '/virtualized' : ''} on next load`, 'warn');
+                            }
+                            manager._genesis = built;
+                            genesis = built;
+                            manager.logger?.log?.(`[GENESIS] Migrated legacy grid: built genesis with ${uniq.length} levels (hash ${built.priceLevelsHash})`, 'info');
+                        }
+                    } catch (e: any) {
+                        manager.logger?.log?.(`[GENESIS] Migration failed: ${getErrorMessage(e)}`, 'warn');
+                    }
+                }
+            }
             try {
                 await withBlockchainRetry(
                     () => manager._initializeAssets(),
@@ -652,11 +793,10 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
             }
 
             // Reassign slot types based on current boundary.
-            // Every slot's type must match its position in the price-sorted rail
-            // relative to the boundary + gapSlots.  Stale persisted types cause
-            // split spread zones and ILLEGAL_SPREAD_STATE errors.  The subsequent
-            // sync will detect type mismatches with chain orders (e.g. a BUY-zone
-            // slot holding a SELL chain order) and auto-cancel + recreate them.
+            // Every slot's type must match its price-slot index (parseSlotIndex)
+            // relative to the boundary + gapSlots, not array position.  After
+            // genesis freeze the persisted array may have been re-sorted, but
+            // slot-N is the canonical identity.
             if (restoredBoundary !== null) {
                 const gapSlots = loadGapSlots;
                 manager._gapSlots = gapSlots;
@@ -664,9 +804,22 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                 const sellStartIdx = getSellStartIdx(restoredBoundary, gapSlots);
                 let reassignCount = 0;
                 grid = grid.map((slot: any, i: any) => {
-                    const correctType = (i <= buyEndIdx)
+                    const parsedIdx = parseSlotIndex(slot?.id);
+                    // Plan §4.3: unparseable ids are invalid per decision #3 — enforce virtualizes,
+                    // log mode keeps index fallback (legacy grids with ids like 'b1'/'planned' need type via position)
+                    if (parsedIdx === null) {
+                        if (validationMode === 'enforce') {
+                            manager.logger?.log?.(`[GENESIS] unparseable slot id ${slot?.id} at index ${i} → virtualize (SPREAD)`, 'warn');
+                            reassignCount++;
+                            return { ...slot, state: ORDER_STATES.VIRTUAL, size: 0, orderId: '', type: ORDER_TYPES.SPREAD };
+                        }
+                        manager.logger?.log?.(`[GENESIS] unparseable slot id ${slot?.id} at index ${i} → log-only, using index fallback ${i} for type`, 'warn');
+                        // fall through with idx = i so legacy sized VIRTUAL rail slots (e.g. 'planned') keep their size/type
+                    }
+                    const idx = parsedIdx !== null ? parsedIdx : i;
+                    const correctType = (idx <= buyEndIdx)
                         ? ORDER_TYPES.BUY
-                        : (i >= sellStartIdx)
+                        : (idx >= sellStartIdx)
                             ? ORDER_TYPES.SELL
                             : ORDER_TYPES.SPREAD;
 
@@ -706,7 +859,7 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                         // comparison false and wrongly resolves below-center
                         // slots to SELL.
                         if (newType === ORDER_TYPES.SPREAD && isOrderOnChain(slot)) {
-                            newType = resolveOnChainRetypeType(slot, i, buyEndIdx, ORDER_TYPES);
+                            newType = resolveOnChainRetypeType(slot, idx, buyEndIdx, ORDER_TYPES);
                         }
                         reassignCount++;
                         return { ...slot, type: newType };
@@ -757,6 +910,7 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
 
             manager.pauseRecalcLogging();
             manager.pauseFundRecalc();
+            let sanitizedSizedVirtual: string[] = [];
             try {
                 // RC-2: Use applyOrderUpdate (PRIVATE/UNLOCKED)
                 for (const order of grid) {
@@ -765,7 +919,35 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null)
                         manager.logger?.log?.(`Sanitizing corrupted order ${order.id}: ACTIVE/PARTIAL without orderId -> VIRTUAL`, 'warn');
                         currentOrder = { ...order, state: ORDER_STATES.VIRTUAL };
                     }
+                    // Sized VIRTUAL slot with no on-chain id AND durable orphan
+                    // evidence (createUncertain: set only where a CREATE
+                    // broadcast result was lost — COW uncertain-restore and
+                    // startup uncertain-create handlers). Unflagged sized
+                    // VIRTUAL slots are the NORMAL planned-but-unplaced grid
+                    // state (budgeted sizes cover the whole rail and persist
+                    // by design), so their sizes must survive reload; only
+                    // flagged orphans get zeroed so re-derivation or spread
+                    // correction re-places them next cycle. One aggregate
+                    // warn instead of per-slot spam.
+                    if (
+                        currentOrder.state === ORDER_STATES.VIRTUAL
+                        && !hasOnChainId(currentOrder)
+                        && Number(currentOrder.size || 0) > 0
+                        && currentOrder.createUncertain === true
+                    ) {
+                        sanitizedSizedVirtual.push(currentOrder.id);
+                        currentOrder = { ...currentOrder, size: 0, createUncertain: false };
+                    }
                     await manager._applyOrderUpdate(currentOrder, 'grid-load', { skipAccounting: true });
+                }
+                if (sanitizedSizedVirtual.length > 0) {
+                    const preview = sanitizedSizedVirtual.slice(0, 10).join(', ');
+                    manager.logger?.log?.(
+                        `Sanitized ${sanitizedSizedVirtual.length} creation-uncertain sized slot(s) on load ` +
+                        `(VIRTUAL with size but no orderId -> size dropped): ${preview}` +
+                        (sanitizedSizedVirtual.length > 10 ? ' …' : ''),
+                        'warn'
+                    );
                 }
                  // Gap-band occupancy for the spread metric.  Empty slots are
                  // normalized to SPREAD (side-neutral) above, so a raw
@@ -1083,13 +1265,14 @@ export async function initializeGrid(manager: any): Promise<void> {
             throw new Error(`Cannot initialize grid without account totals: ${getErrorMessage(e)}`);
         }
 
-        const { orders, boundaryIdx, initialSpreadCount, gapSlots } = createOrderGrid({
+        const { orders, boundaryIdx, initialSpreadCount, gapSlots, genesis } = createOrderGrid({
             ...manager.config,
             startPrice: gridStartPrice,
             minPrice: resolvedMinP,
             maxPrice: resolvedMaxP,
         });
         manager._gapSlots = gapSlots;
+        if (genesis) manager._genesis = genesis;
 
         // RC-8: Update boundary with notification to dependent systems
         // Persist master boundary for StrategyEngine
@@ -1279,6 +1462,17 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
                 } catch (err: any) {
                     manager.logger?.log?.(`Error during startup order reconciliation: ${getErrorMessage(err)}`, 'error');
                     throw new Error(`Grid recalculation failed during order reconciliation: ${getErrorMessage(err)}`);
+                }
+                // Fix #5 (Mode D): the P3 boundary-evidence gate above may have
+                // re-derived the boundary via manager._restoreBoundary. recalculateGrid's
+                // earlier persistGrid (before initializeGrid) captured the stale value, so
+                // without this flush the corrected boundary never reaches disk and the
+                // [BOUNDARY-EVIDENCE] contradiction re-fires on every resync. Persist the
+                // reconciled grid (corrected boundary included) now.
+                try {
+                    await manager.persistGrid(undefined);
+                } catch (persistErr: any) {
+                    manager.logger?.log?.(`Error persisting boundary-corrected grid after reconcile: ${getErrorMessage(persistErr)}`, 'warn');
                 }
                 if (_resyncAborted) return;
 
@@ -2174,19 +2368,16 @@ export async function checkWindowDust(manager: any): Promise<any> {
             .filter((o: any) => o.type === ORDER_TYPES.SELL && isLiveOrder(o))
             .sort((a: any, b: any) => a.price - b.price)[0];
 
-        // Check if an order has a duplicate price level — an active sibling at the
-        // same price within tolerance. If so, cancelling won't create a grid gap.
-        // Only checks ACTIVE siblings. If two PARTIALs share a price with no active
-        // sibling, neither qualifies and the gap is left to the rebalancer.
-        // Uses the LARGER size of the two orders for tolerance calculation to prevent
-        // a tiny dust order from inflating the tolerance window.
-        const hasDuplicatePriceLevel = (order: any, assets: any): boolean =>
-            findPriceCollision(
-                allOrders,
-                order.id,
-                order.price, order.size, order.type, assets,
-                (o: any) => o.type === order.type && o.state === ORDER_STATES.ACTIVE && !!o.orderId && o.price != null
-            ) != null;
+        // Check if an order has a duplicate slot — an active sibling with same price via integer round-trip.
+        const hasDuplicatePriceLevel = (order: any, assets: any): boolean => {
+            const precision = order.type === ORDER_TYPES.SELL ? assets.assetA.precision : assets.assetB.precision;
+            for (const o of allOrders) {
+                if (o.id === order.id) continue;
+                if (o.type !== order.type || o.state !== ORDER_STATES.ACTIVE || !o.orderId || o.price == null) continue;
+                try { if (priceSlotEqual(o.price, order.price, precision)) return true; } catch { if (o.price === order.price) return true; }
+            }
+            return false;
+        };
 
         const assets = manager.assets;
         const allPartials = allOrders.filter((o: any) => isLiveOrder(o) && o.state === ORDER_STATES.PARTIAL);
@@ -2588,9 +2779,10 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
             .slice(0, missingSlots);
 
         // Secondary candidates: orphaned virtual slots that have lost their
-        // order (e.g. stale-cleaned after a race condition during a crash).
-        // These sit inside the active window and are invisible to the
-        // gap-band SPREAD filter above.
+        // order (e.g. stale-cleaned after a race condition during a crash, or a
+        // lowest-sell slot dust-cancelled and then left unplaced after a
+        // boundary shift). These sit inside the active window and are invisible
+        // to the gap-band SPREAD filter above.
         //
         // Empty slots are stored SPREAD (side-neutral) after normalization, so
         // the stored type can be railType OR SPREAD — what matters is that the
@@ -2599,12 +2791,23 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         // whose boundary position has moved into the spread or opposite zone are
         // NOT re-activated on the stale side — doing so would compound inventory
         // at prices where the bot already traded.
+        //
+        // NOTE: we deliberately accept BOTH zero-size and sized virtual slots
+        // here. A sized sell/buy slot that lost its orderId (the classic
+        // boundary-oscillation orphan) has size > 0 but no on-chain order — the
+        // old `size === 0` guard excluded it, so spread correction silently
+        // planned 0 orders and the gap never closed. Dropping the guard is safe:
+        // create targets are rebuilt from `current: 0` + the fresh ideal from
+        // allocateFundsByWeights (grid.ts:2790-2800, 2861-2870), so a sized
+        // orphan's stale stored size never leaks into a placement; getMinOrderSize
+        // is only a collision-tolerance fallback (grid.ts:2712), not the primary
+        // sizer. Orphans are excluded from the sideSlots sizing denominator too,
+        // so this also removes the prior dilution of every other order.
         const orphanedVirtualCandidates = allOrders
             .filter((o: any) =>
                 (o.type === railType || o.type === ORDER_TYPES.SPREAD)
                 && o.state === ORDER_STATES.VIRTUAL
                 && !o.orderId
-                && Number(o.size || 0) === 0
                 && getSlotCorrectType(o) === railType
             )
             .sort((a: any, b: any) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price)
@@ -2699,15 +2902,13 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
             const preFilter = spreadCandidates.length;
             spreadCandidates = spreadCandidates.filter((c: any) => {
                 if (c.price == null) return false;
-                // Resolve candidate size: if zero/missing, use minimum so tolerance
-                // doesn't collapse to zero (calculatePriceTolerance returns null for size <= 0).
-                const cs = (c.size && c.size > 0) ? c.size : getMinOrderSize(railType, manager.assets);
-                return !findPriceCollision(
-                    allOrders,
-                    c.id,
-                    c.price, cs, railType, manager.assets,
-                    (o: any) => isOrderPlaced(o) && o.price != null
-                );
+                const precision = railType === ORDER_TYPES.SELL ? manager.assets.assetA.precision : manager.assets.assetB.precision;
+                for (const o of allOrders) {
+                    if (!isOrderPlaced(o) || o.price == null) continue;
+                    if (o.id === c.id) continue;
+                    try { if (priceSlotEqual(o.price, c.price, precision)) return false; } catch { if (o.price === c.price) return false; }
+                }
+                return true;
             });
             const filteredCount = preFilter - spreadCandidates.length;
             if (filteredCount > 0) {
@@ -2724,7 +2925,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
 
         if (!edgePartial && spreadCandidates.length === 0) {
             manager.logger?.log?.(`[SPREAD-CORRECTION] No suitable partials, orphaned virtual slots, or spread slots found. Skipping.`, 'warn');
-            return { ordersToPlace: [], ordersToUpdate: [] };
+            return { ordersToPlace: [], ordersToUpdate: [], origin: 'spread-correction' };
         }
 
         const orphanedIds = new Set(orphanedVirtualCandidates.map((o: any) => o.id));
@@ -2738,7 +2939,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
 
         const ctx = await _getSizingContext(manager, sideName);
         if (!ctx || ctx.budget <= 0 || syntheticSideSlots.length === 0) {
-            return { ordersToPlace: [], ordersToUpdate: [] };
+            return { ordersToPlace: [], ordersToUpdate: [], origin: 'spread-correction' };
         }
         const precisionEpsilon = getPrecisionSlack(ctx.precision, 1);
 
@@ -2793,7 +2994,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         }
 
         if (prioritizedTargets.length === 0) {
-            return { ordersToPlace: [], ordersToUpdate: [] };
+            return { ordersToPlace: [], ordersToUpdate: [], origin: 'spread-correction' };
         }
 
         const totalNeeded = prioritizedTargets.reduce((sum: any, t: any) => sum + Math.max(0, Number(t.needed || 0)), 0);
@@ -2951,5 +3152,5 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
             );
         }
 
-        return { ordersToPlace, ordersToUpdate: combinedUpdates, ...(boundaryIdx === undefined ? {} : { boundaryIdx }) };
+        return { ordersToPlace, ordersToUpdate: combinedUpdates, ...(boundaryIdx === undefined ? {} : { boundaryIdx }), origin: 'spread-correction' };
     }

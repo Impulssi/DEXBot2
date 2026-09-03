@@ -196,6 +196,16 @@ let DEFAULT_CONFIG = {
     min_BTS_value: null,          // Minimum BTS balance to maintain (null = auto from activeOrders × fees × multiplier)
 };
 
+// Range quality zones for price bounds (minPrice/maxPrice multipliers).
+// Used for pre-entry legend in the bot editor (mountain-style).
+// Thresholds per user spec: green >=2x, yellow >=1.55x, orange 1.45x–1.55x, red <1.45x.
+let RANGE_QUALITY = {
+    GREEN_MIN: 2.0,   // >=2.0x → green (wide)
+    YELLOW_MIN: 1.55, // >=1.55x → yellow (effeciant)
+    ORANGE_MIN: 1.45, // >=1.45x → orange (tight)
+    RED_MAX: 1.45,    // <1.45x → red (suizidal) — exclusive upper bound for red
+};
+
 // Timing constants used by OrderManager and helpers
 let TIMING = {
     SYNC_DELAY_MS: 500,
@@ -232,6 +242,22 @@ let TIMING = {
     // Sync lock acquisition timeout - prevents indefinite lock hangs
     // Uses Promise.race() to enforce timeout on lock acquisition attempts
     SYNC_LOCK_TIMEOUT_MS: 20000,  // 20 seconds - prevents deadlocks while allowing slow operations
+
+    // Suspect-empty-read guard (Fix C): an empty open-orders read while the
+    // grid still holds placed orders is usually a lagging/partial node, not a
+    // genuinely emptied account. Reconciliation is refused for this many
+    // consecutive empty reads; only after the limit is confirmed does the
+    // sync accept the empty account (virtualize everything). Any non-empty
+    // read resets the counter.
+    SYNC_SUSPECT_EMPTY_READ_LIMIT: 3,
+
+    // Delay before the confirming re-read when a grid resync observes an EMPTY
+    // open-order read. A trigger reset that wipes a live grid on a single
+    // 0-order read is the phantom-reset failure mode; the resync demands one
+    // confirming re-read (after this delay) before treating the account as
+    // genuinely empty. A contradicted re-read (non-empty) aborts acceptance
+    // and feeds the fresh snapshot to the resync instead.
+    SYNC_EMPTY_READ_CONFIRM_DELAY_MS: 2000,
 
     // Connection and initialization timeouts
     CONNECTION_TIMEOUT_MS: 30000,  // 30 seconds - BitShares client connection establishment timeout
@@ -274,6 +300,14 @@ let TIMING = {
     // in accounting.ts et al. Prevents repeated identical log messages from
     // flooding the log during sustained error conditions.
     LOG_THROTTLE_INTERVAL_MS: 30000,
+
+    // BOTS_CONFIG_POLL_INTERVAL_MS: How often to poll bots.json for changes
+    // (fingerprint check via sha1). Guarantees that new/updated active bot
+    // entries are detected within this window. Decoupled from the heavy
+    // BLOCKCHAIN_FETCH_INTERVAL_MIN (240min) so config changes are visible
+    // quickly even on single-bot accounts. 5min = satisfies max-5min
+    // recognition SLA while keeping FS + hash cost negligible.
+    BOTS_CONFIG_POLL_INTERVAL_MS: 5 * 60 * 1000,
 
     // CREDENTIAL_BROADCAST_TIMEOUT_MS: Outer timeout for a credential-daemon broadcast
     // request, enforced by the bot socket client (modules/dexbot_credential_client.ts).
@@ -456,6 +490,12 @@ let GRID_LIMITS = {
     // Ensures the cap is non-zero even for extremely cheap assets.
     PRICE_TOLERANCE_MIN_ABSOLUTE: 0.0001,
 
+    // ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER: Legacy fallback multiplier for calculatePriceTolerance
+    // (sync_engine pass-2 before genesis). With genesis-frozen nearest-slot (slotIndexForPrice)
+    // this multiplier is deprecated — deterministic slotId equality replaces widening. Kept for
+    // migration fallback when genesis missing; otherwise unused.
+    ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER: 4,
+
     // GRID_REGENERATION_PERCENTAGE: Trigger threshold for automatic grid size recalculation.
     // Formula: IF (availableFunds / allocatedCapital) × 100 ≥ threshold → regenerate
     // Rationale: After fills, free balance rises relative to allocated grid capital.
@@ -533,10 +573,9 @@ let GRID_LIMITS = {
     // Note: Final blockchain update filtering still happens with integer precision checks.
     RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT: 0.1,
 
-    // PRICE_DRIFT_TOLERANCE_MULTIPLIER: Tolerance multiplier for matching
-    // chain-order price drift against planned grid slots in sync_engine.ts.
-    // Drift beyond strict tolerance but within multiplier × tolerance is
-    // tagged as "price-drift-orphan" instead of rejected outright.
+    // PRICE_DRIFT_TOLERANCE_MULTIPLIER: Legacy for price-drift-orphan tagging when genesis missing.
+    // With genesis-frozen nearest-slot, drift is deterministic no-available-nearest-slot (gap/occupied)
+    // not a tolerance band. Kept for diagnostics fallback only.
     PRICE_DRIFT_TOLERANCE_MULTIPLIER: 4,
 
 };
@@ -1405,7 +1444,27 @@ let COW_PERFORMANCE = {
     // fill cap is a weak proxy for broadcast size. Batches larger than this
     // cap are split into sequential broadcasts of at most this many ops each,
     // bounding per-transaction stress on the chain.
-    MAX_OPS_PER_BROADCAST: 4
+    MAX_OPS_PER_BROADCAST: 4,
+
+    // MAX_CANCELS_PER_BROADCAST: Maximum number of limit_order_cancel ops in a
+    // single batched orphan/surplus cancellation transaction
+    // (correctAllPriceMismatches). Cancels are zero-fee and carry no balance
+    // state, so they can be far denser than MAX_OPS_PER_BROADCAST creates.
+    // This replaces the old serial path (one cancel tx + sleep per orphan,
+    // ~1 order per 3s block) that let a 50-orphan duplicate backlog starve
+    // CREATES for minutes.
+    MAX_CANCELS_PER_BROADCAST: 20,
+
+    // ADOPTION_READ_MAX_ATTEMPTS: Total by-id read attempts (initial + retries)
+    // when adopting freshly broadcast CREATEs after a refused/uncertain commit.
+    // A fresh create id absent from the first read is a lagging node, not a
+    // missing order; retrying closes that window instead of deferring to a
+    // structural resync (the open fix #6 in the orphan root-cause doc).
+    ADOPTION_READ_MAX_ATTEMPTS: 3,
+
+    // ADOPTION_READ_BACKOFF_MS: Base backoff between by-id adoption read
+    // retries (doubled per retry: 2s, 4s for the default 3 attempts).
+    ADOPTION_READ_BACKOFF_MS: 2000
 };
 
 // Native BitShares Client Configuration
@@ -1795,5 +1854,5 @@ Object.freeze(MARKET_ADAPTER.AMAS);
 Object.freeze(MARKET_ADAPTER);
 Object.freeze(CREDENTIAL_PROMPTS);
 
-export { ORDER_TYPES, ORDER_STATES, REBALANCE_STATES, COW_ACTIONS, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, CR_ZONES, DEFAULT_TARGET_CR, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, PIPELINE_TIMING, UPDATER, LAUNCHER, COW_PERFORMANCE, NATIVE_CLIENT, MARKET_ADAPTER, BUILD_DIR, BTS_PRECISION, DAEMON_ERRORS, DAEMON_CODES, CREDENTIAL_PROMPTS }
+export { ORDER_TYPES, ORDER_STATES, REBALANCE_STATES, COW_ACTIONS, DEFAULT_CONFIG, TIMING, RANGE_QUALITY, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, CR_ZONES, DEFAULT_TARGET_CR, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, PIPELINE_TIMING, UPDATER, LAUNCHER, COW_PERFORMANCE, NATIVE_CLIENT, MARKET_ADAPTER, BUILD_DIR, BTS_PRECISION, DAEMON_ERRORS, DAEMON_CODES, CREDENTIAL_PROMPTS }
 

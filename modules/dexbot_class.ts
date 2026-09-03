@@ -134,6 +134,8 @@ class DEXBot {
     _shutdownPromise: Promise<void> | null;
     _blockchainFetchInterval: any;
     _blockchainFetchInFlight: number;
+    _botsConfigPollInterval: any;
+    _botsConfigPollInFlight: boolean;
     _fillsUnsubscribe: any;
     _triggerWatcher: any;
     _triggerDebounceTimer: any;
@@ -237,6 +239,8 @@ class DEXBot {
         // Runtime handles for graceful lifecycle management
         this._blockchainFetchInterval = null;
         this._blockchainFetchInFlight = 0;
+        this._botsConfigPollInterval = null;
+        this._botsConfigPollInFlight = false;
         this._fillsUnsubscribe = null;
         this._triggerWatcher = null;
         this._triggerDebounceTimer = null;
@@ -1090,20 +1094,18 @@ class DEXBot {
             'info'
         );
 
+        // Track last filled prices for BUY-above-last-buy guard (re-introduced after anchor revert)
+        try { (this.manager as any)?.recordLastFilledPrices?.(fills); } catch {}
+
         if (typeof this.manager?.pauseFundRecalc === 'function') {
             this.manager.pauseFundRecalc();
         }
         try {
-            // Set cross-chunk boundary shift budget to prevent cumulative
-            // overreaction from burst fills. Inside try so finally cleans up
-            // even if pauseFundRecalc is not used or future code is added.
             const activeSell = this.manager?.config?.activeOrders?.sell ?? 1;
             const activeBuy = this.manager?.config?.activeOrders?.buy ?? 1;
-            const shiftBudget = Math.max(Math.floor(activeSell / 2), Math.floor(activeBuy / 2), 1);
+            const legacyCap = Math.max(Math.floor(activeSell / 2), Math.floor(activeBuy / 2), 1);
+            const shiftBudget = legacyCap;
             (this.manager as any)._boundaryShiftBudget = shiftBudget;
-            // Keep the batch-start budget so the COW re-plan path can restore it:
-            // a plan abandoned as stale consumed budget but never shipped, so the
-            // re-plan must re-derive from the FULL batch budget, not the leftover.
             (this.manager as any)._boundaryShiftBudgetBase = shiftBudget;
             let i = 0;
             while (i < totalFills) {
@@ -1584,6 +1586,23 @@ class DEXBot {
         return DexbotMaintenanceRuntime.stopBlockchainFetchInterval(this);
     }
 
+    /**
+     * Set up periodic bots.json fingerprint poll interval (max 5min SLA).
+     * Decoupled from blockchain fetch so config changes are visible quickly.
+     * @private
+     */
+    _setupBotsConfigPollInterval() {
+        return DexbotMaintenanceRuntime.setupBotsConfigPollInterval(this);
+    }
+
+    /**
+     * Stop the periodic bots.json poll interval.
+     * @private
+     */
+    _stopBotsConfigPollInterval() {
+        return DexbotMaintenanceRuntime.stopBotsConfigPollInterval(this);
+    }
+
     async _releaseMarketAdapterRuntime(context: any = 'shutdown') {
         return DexbotMaintenanceRuntime.releaseMarketAdapterRuntime(this, this.config?.botKey || this.config?.name, context);
     }
@@ -1699,6 +1718,29 @@ class DEXBot {
 
     _wireStructuralGridResyncRequest() {
         return DexbotMaintenanceRuntime.wireStructuralGridResyncRequest(this);
+    }
+
+    /**
+     * Wire the manager's broadcast-region-end hook to drain the deferred fill
+     * queue. The fill consumer defers while a broadcasting region is held and
+     * never reschedules itself, so without this hook fills enqueued during a
+     * long region (e.g. the structural resync's Phase-2 placement) would
+     * starve indefinitely — which also keeps the maintenance idle gate shut
+     * forever (the queue-length check returns the full settle delay).
+     */
+    _wireBroadcastRegionEndDrain() {
+        const manager: any = this.manager;
+        if (!manager || manager._onBroadcastRegionEnd) return;
+        manager._onBroadcastRegionEnd = () => {
+            if (this._shuttingDown) return;
+            // A recovery sync wrapping the region keeps the consumer gated;
+            // requestGridReset's finally drains once the counter clears.
+            if ((this as any)._recoverySyncInFlight) return;
+            if ((this as any)._batchInFlight) return;
+            if (!this._incomingFillQueue || this._incomingFillQueue.length === 0) return;
+            this._log(`[FILL-QUEUE] Broadcasting region ended; draining ${this._incomingFillQueue.length} deferred fill(s).`, 'info');
+            this._scheduleFillConsumerRestart(chainOrders);
+        };
     }
 
     /**
@@ -1829,9 +1871,18 @@ class DEXBot {
     async _shutdownImpl() {
         this._log('Initiating graceful shutdown...');
         this._processedFillStore.setShuttingDown(true);
+        if (this.manager && typeof this.manager.setShuttingDown === 'function') {
+            this.manager.setShuttingDown(true);
+        }
 
         // Stop accepting new work
         this._stopBlockchainFetchInterval();
+        if (typeof this._stopBotsConfigPollInterval === 'function') {
+            this._stopBotsConfigPollInterval();
+        } else if (this._botsConfigPollInterval) {
+            try { clearInterval(this._botsConfigPollInterval); } catch (_) {}
+            this._botsConfigPollInterval = null;
+        }
 
         if (this._triggerDebounceTimer) {
             clearTimeout(this._triggerDebounceTimer);
@@ -1994,12 +2045,6 @@ class DEXBot {
         this._log(`Shutdown complete. Final metrics: fills=${metrics.fillsProcessed}, batches=${metrics.batchesExecuted}, ` +
             `avgProcessingTime=${metrics.fillsProcessed > 0 ? Format.formatMetric2(metrics.fillProcessingTimeMs / metrics.fillsProcessed) : 0}ms, ` +
             `lockContentions=${metrics.lockContentionEvents}, maxQueueDepth=${metrics.maxQueueDepth}`);
-
-        // Drop botHmacSecret reference from the signing token (V8 string cannot
-        // be zeroed in place, but dropping the reference allows GC to reclaim it).
-        if (this.privateKey && getKeyStore().isDaemonSigningKey(this.privateKey)) {
-            this.privateKey.botHmacSecret = null;
-        }
 
         await this.manager?.logger?.flush();
     }

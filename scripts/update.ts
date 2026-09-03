@@ -48,13 +48,14 @@ import { Config } from '../modules/config.js';
 import { getStorage } from '../modules/storage/index.js';
 const { readJSON } = getStorage();
 import { getErrorMessage } from '../modules/utils/errors.js';
+import { CLI_COLORS } from '../modules/cli_colors.js';
 
 
 const UPDATE_COLORS = {
-    reset: '\x1b[0m',
-    ok: '\x1b[1;92m',
-    warn: '\x1b[1;33m',
-    error: '\x1b[1;31m',
+    reset: CLI_COLORS.reset,
+    ok: CLI_COLORS.brightGreen,
+    warn: CLI_COLORS.yellowBold,
+    error: CLI_COLORS.boldRed,
 };
 
 function colorUpdateOutput(text: string, color: string, stream: NodeJS.WriteStream = process.stdout) {

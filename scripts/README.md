@@ -107,6 +107,10 @@ dexbot white --dynamic-weight
 # Add missing AMA bots with asymmetricBounds disabled for newly generated entries
 dexbot white --no-asymmetric-bounds
 
+# Overwrite existing entry for a specific bot (implies overwrite for that key only; other bots unchanged)
+dexbot white --dynamic-weight --bot <botKey>
+dexbot white --no-asymmetric-bounds --bot <botKey>
+
 # Remove whitelist entries for bots no longer in profiles/bots.json
 dexbot white --prune
 

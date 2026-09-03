@@ -70,14 +70,15 @@
  */
 
 
-import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT } from '../../constants.js';
+import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT, COW_PERFORMANCE } from '../../constants.js';
 import * as Format from '../format.js';
 import * as MathUtils from './math.js';
 import Logger from '../../order/logger.js';
 import { sleep } from './system.js';
 import { getErrorMessage } from '../../utils/errors.js';
+import { parseSlotIndex as parseSlotIndexShared } from './slot.js';
 const { isValidNumber, toFiniteNumber } = Format;
-const { blockchainToFloat, floatToBlockchainInt, quantizeFloat, calculatePriceTolerance } = MathUtils;
+const { blockchainToFloat, floatToBlockchainInt, quantizeFloat, priceSlotEqual } = MathUtils;
 const orderLogger = new Logger('Order');
 
 const ORDER_GONE_ERROR_FRAGMENT = 'not found';
@@ -463,6 +464,36 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
     }
 
     let shouldRemove = false;
+
+    // CROSSING-PLACEMENT GUARD: re-pricing the chain order to its slot's
+    // committed price must not cross an opposite-side live order (only
+    // reachable when the grid geometry itself is broken). Drop the entry —
+    // the next sync's price-mismatch detection re-queues the correction
+    // once the crossed order is resolved (same lifecycle as a 'skipped'
+    // update below).
+    const crossed = MathUtils.findCrossedOrder(
+        manager.orders.values(),
+        expectedPrice,
+        type,
+        manager.assets,
+        (o: any) => o && o.orderId && o.orderId !== chainOrderId
+    );
+    if (crossed) {
+        manager.logger?.log?.(
+            `[CROSS-GUARD] Skipping price correction for ${chainOrderId} -> ${type} @${expectedPrice}: ` +
+            `crosses live ${crossed.type} ${crossed.id} (${crossed.orderId}) @${crossed.price}; ` +
+            `retried after the crossed order resolves.`,
+            'warn'
+        );
+        // The guard returns before the try/finally below, so drop the entry
+        // from the correction queue here — otherwise it would linger forever
+        // and re-attempt on every sync cycle.
+        manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(
+            (c: any) => c.chainOrderId !== chainOrderId
+        );
+        return { success: false, skipped: true, error: 'crossed-placement-guard' };
+    }
+
     try {
         const updateResult = await accountOrders.updateOrder(accountName, privateKey, chainOrderId, { amountToSell, minToReceive });
         if (updateResult === null) {
@@ -498,8 +529,159 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
 }
 
 /**
+ * Finalize bookkeeping for a correction whose chain order is confirmed gone
+ * (batch-cancelled or discovered absent). Mirrors the per-entry cleanup in
+ * correctOrderPriceOnChain: duplicate-orphan detection reset, unmatched-list
+ * filter, queue removal, and (for surplus entries) grid-slot virtualization.
+ */
+async function _resolveCancelledCorrection(manager: any, entry: any): Promise<void> {
+    const chainOrderId = entry.chainOrderId;
+    if (entry.cancelOnly) {
+        clearDuplicateOrphanDetection(chainOrderId);
+    }
+    if (!entry.cancelOnly && entry.isSurplus && entry.gridOrder && manager._applyOrderUpdate) {
+        const spreadOrder = convertToSpreadPlaceholder(entry.gridOrder);
+        await manager._applyOrderUpdate(spreadOrder, 'surplus-type-mismatch-cancel', {
+            skipAccounting: false,
+            fee: 0
+        });
+    }
+    _filterUnmatchedChainOrders(manager, chainOrderId);
+    manager.ordersNeedingPriceCorrection = (manager.ordersNeedingPriceCorrection || [])
+        .filter((c: any) => c.chainOrderId !== chainOrderId);
+}
+
+/**
+ * Broadcast all cancel-type corrections (cancelOnly duplicate orphans +
+ * surplus cancellations) together in chunked multi-op transactions.
+ *
+ * Rationale: the serial path issued one cancelOrder tx per orphan with a sleep
+ * between each, draining at ~1 order per block (~3s). A large duplicate-orphan
+ * backlog blocked CREATES for minutes while the queue drained
+ * one-by-one. Cancels are zero-fee and reference no balance state, so they are
+ * safe to pack densely (MAX_CANCELS_PER_BROADCAST).
+ *
+ * Safety:
+ *  - Pre-broadcast existence read: a cancel op for an already-dead order makes
+ *    the chain reject the ENTIRE transaction, so gone ids are resolved first
+ *    and excluded from the batch.
+ *  - Chunks are independent (cancels never interact), so a failed chunk does
+ *    not abort the others. Failed-chunk ids are re-read post-broadcast: ids
+ *    confirmed gone (uncertain broadcast that landed) are resolved; ids still
+ *    live are returned UNRESOLVED so the caller retries them through the
+ *    single-entry path (which keeps its own verified-after-failure logic).
+ *
+ * @returns {Promise<{corrected: number, failed: number, unresolved: Array}>}
+ */
+async function _batchCancelCorrections(manager: any, entries: any[], accountName: any, privateKey: any, accountOrders: any) {
+    const logger = manager?.logger;
+    const unresolved: any[] = [];
+    let corrected = 0;
+    let failed = 0;
+
+    const byId = new Map<string, any>();
+    for (const e of entries) {
+        if (e?.chainOrderId && !byId.has(e.chainOrderId)) byId.set(e.chainOrderId, e);
+    }
+    const ids = [...byId.keys()];
+
+    let presentIds = ids;
+    const preRead = typeof accountOrders?.batchReadOrders === 'function';
+    if (preRead) {
+        try {
+            const orderMap = await accountOrders.batchReadOrders(ids);
+            const goneIds: string[] = [];
+            presentIds = [];
+            for (const id of ids) {
+                if (orderMap.get(id)) presentIds.push(id); else goneIds.push(id);
+            }
+            for (const id of goneIds) {
+                await _resolveCancelledCorrection(manager, byId.get(id));
+                corrected++;
+            }
+        } catch (err: any) {
+            logger?.log?.(
+                `[CORRECTION] Batch pre-read of ${ids.length} cancel candidate(s) failed; proceeding with broadcast: ${getErrorMessage(err)}`,
+                'warn'
+            );
+            presentIds = ids;
+        }
+    }
+    if (presentIds.length === 0) return { corrected, failed, unresolved };
+
+    let ops: { id: string; op: any; }[] = [];
+    try {
+        for (const id of presentIds) {
+            const op = await accountOrders.buildCancelOrderOp(accountName, id);
+            ops.push({ id, op });
+        }
+    } catch (err: any) {
+        // Op construction failed (e.g. account resolution): fall back entirely.
+        logger?.log?.(
+            `[CORRECTION] Batch cancel build failed (${presentIds.length} order(s)): ${getErrorMessage(err)}; falling back to serial cancels`,
+            'warn'
+        );
+        return { corrected, failed, unresolved: entries.filter((e: any) => presentIds.includes(e.chainOrderId)) };
+    }
+
+    const configuredMax = Number(COW_PERFORMANCE?.MAX_CANCELS_PER_BROADCAST);
+    const maxCancels = Number.isFinite(configuredMax) && configuredMax >= 1 ? Math.floor(configuredMax) : 1;
+    const chunks: typeof ops[] = [];
+    for (let i = 0; i < ops.length; i += maxCancels) {
+        chunks.push(ops.slice(i, i + maxCancels));
+    }
+    logger?.log?.(
+        `[CORRECTION] Batch-cancelling ${ops.length} duplicate/surplus order(s) in ${chunks.length} transaction(s) (max ${maxCancels} cancels/broadcast)`,
+        'info'
+    );
+
+    const failedChunks: typeof ops[] = [];
+    for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        try {
+            await accountOrders.executeBatch(accountName, privateKey, chunk.map((o: any) => o.op));
+            for (const { id } of chunk) {
+                await _resolveCancelledCorrection(manager, byId.get(id));
+                corrected++;
+            }
+            logger?.log?.(`[CORRECTION] Batch chunk ${i + 1}/${chunks.length} cancelled ${chunk.length} order(s)`, 'info');
+        } catch (err: any) {
+            logger?.log?.(
+                `[CORRECTION] Batch chunk ${i + 1}/${chunks.length} failed (${chunk.length} order(s)): ${getErrorMessage(err)}; verifying per order`,
+                'warn'
+            );
+            failedChunks.push(chunk);
+        }
+    }
+
+    for (const chunk of failedChunks) {
+        let verifyMap: Map<string, any> | null = null;
+        if (preRead) {
+            try {
+                verifyMap = await accountOrders.batchReadOrders(chunk.map((o: any) => o.id));
+            } catch (_: any) {
+                verifyMap = null;
+            }
+        }
+        for (const { id } of chunk) {
+            const stillLive = verifyMap ? verifyMap.get(id) : true;
+            if (!stillLive && verifyMap) {
+                // Uncertain broadcast that actually landed — order is gone.
+                await _resolveCancelledCorrection(manager, byId.get(id));
+                corrected++;
+            } else {
+                unresolved.push(byId.get(id));
+            }
+        }
+    }
+
+    return { corrected, failed, unresolved };
+}
+
+/**
  * Correct all pending price mismatches atomically.
- * Processes corrections sequentially with sync delays between operations.
+ * Cancel-type corrections (duplicate orphans, surplus) are batched into
+ * chunked multi-op transactions; price updates run sequentially.
  * 
  * @param {Object} manager - OrderManager instance
  * @param {string} accountName - Account name for blockchain transactions
@@ -520,7 +702,24 @@ async function correctAllPriceMismatches(manager: any, accountName: any, private
             return true;
         });
 
-        for (const correctionInfo of ordersToCorrect) {
+        const canBatch = ordersToCorrect.length > 1
+            && typeof accountOrders?.buildCancelOrderOp === 'function'
+            && typeof accountOrders?.executeBatch === 'function';
+        let serialEntries = ordersToCorrect;
+        if (canBatch) {
+            const cancelEntries = ordersToCorrect.filter((c: any) => c.cancelOnly === true || c.isSurplus === true);
+            const updateEntries = ordersToCorrect.filter((c: any) => !(c.cancelOnly === true || c.isSurplus === true));
+            if (cancelEntries.length > 1) {
+                const batchOutcome = await _batchCancelCorrections(
+                    manager, cancelEntries, accountName, privateKey, accountOrders
+                );
+                corrected += batchOutcome.corrected;
+                failed += batchOutcome.failed;
+                serialEntries = [...batchOutcome.unresolved, ...updateEntries];
+            }
+        }
+
+        for (const correctionInfo of serialEntries) {
             const result = await correctOrderPriceOnChain(manager, correctionInfo, accountName, privateKey, accountOrders);
             results.push({ ...correctionInfo, result });
             if (result && result.success) corrected++; else failed++;
@@ -671,7 +870,10 @@ function resolveConfiguredPriceBound(value: any, fallback: any, startPrice: any,
  */
 function virtualizeOrder(order: any) {
     if (!order) return order;
-    const { btsFeeState, ...rest } = order;
+    // Drop btsFeeState and the createUncertain orphan marker: an explicit
+    // virtualize is a known-clean hole transition, so durable "possibly
+    // landed CREATE" evidence no longer applies to the resulting object.
+    const { btsFeeState, createUncertain, ...rest } = order;
     return { ...rest, state: ORDER_STATES.VIRTUAL, orderId: null, rawOnChain: null };
 }
 
@@ -702,21 +904,13 @@ function resolveSpreadOrderSide(price: any, startPrice: any): string {
 }
 
 /**
- * Parse a grid slot id ("slot-123") to its rail index. Slot ids are assigned
- * in ascending price order at grid generation (grid.ts), so the index is
- * strictly price-monotonic and can be compared exactly where float prices
- * would risk rounding ambiguity (adjacent levels can round to the same
- * price). Returns null when the id is not a grid slot id (e.g. orphan fills
- * with chain-derived ids) so callers can fall back to price comparison.
+ * Parse a grid slot id ("slot-123") to its rail index. Delegates to
+ * shared slot.ts single source (GRID_PRICE_SLOT_DETERMINISM_PLAN §2.1).
  * @param {any} id - grid slot id string
  * @returns {number|null}
  */
 function parseSlotIndex(id: any): number | null {
-    if (typeof id !== 'string') return null;
-    const match = /^slot-(\d+)$/.exec(id);
-    if (!match) return null;
-    const idx = parseInt(match[1], 10);
-    return Number.isFinite(idx) ? idx : null;
+    return parseSlotIndexShared(id);
 }
 /**
  * Whether a parsed chain order matches a grid slot within tolerance:
@@ -731,8 +925,11 @@ function parseSlotIndex(id: any): number | null {
 function chainOrderMatchesSlot(parsed: any, slot: any, assets: any): boolean {
     if (!parsed || !slot || !assets) return false;
     if (parsed.type !== slot.type && slot.type !== ORDER_TYPES.SPREAD) return false;
-    const priceTolerance = calculatePriceTolerance(slot.price, slot.size, parsed.type, assets) || 0;
-    if (Math.abs(parsed.price - slot.price) > priceTolerance) return false;
+    // Genesis-frozen: price equality via integer round-trip (single epsilon); slot id is handled by caller via slotIndexForPrice
+    {
+        const precision = parsed.type === ORDER_TYPES.SELL ? assets.assetA.precision : assets.assetB.precision;
+        if (!priceSlotEqual(parsed.price, slot.price, precision)) return false;
+    }
     const precision = parsed.type === ORDER_TYPES.SELL ? assets.assetA.precision : assets.assetB.precision;
     const sizeTolerance = Math.max(2, Math.floor(floatToBlockchainInt(slot.size, precision) * 0.01));
     if (Math.abs(floatToBlockchainInt(parsed.size, precision) - floatToBlockchainInt(slot.size, precision)) > sizeTolerance) return false;
@@ -1379,15 +1576,16 @@ function buildDelta(masterGrid: any, workingGrid: any, options: any = {}) {
 // ================================================================================
 
 /**
- * Determine new boundary based on fills and current state.
+ * Check whether a fill is eligible to drive boundary shift / rotation.
+ * Partials only count when they are delayed-rotation triggers.
  *
- * @param {Array} fills - Recent fill events
- * @param {number|null} currentBoundaryIdx - Current boundary index
- * @param {Array} allSlots - All grid slots sorted by price
- * @param {Object} config - Bot configuration
- * @param {number} gapSlots - Number of spread gap slots
- * @returns {number} New boundary index
+ * @param {Object} fill - Fill event
+ * @returns {boolean} True when the fill may shift the boundary
  */
+function isShiftEligibleFill(fill: any): boolean {
+    return fill?.isPartial !== true || fill?.isDelayedRotationTrigger === true;
+}
+
 function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any, config: any, gapSlots: any, crossChunkBudget?: number | null): { boundaryIdx: number; remainingBudget: number } {
     let newBoundaryIdx = currentBoundaryIdx;
 
@@ -1400,11 +1598,7 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
     // Apply shift from fills with rate-limiting
     let netShift = 0;
     for (const fill of fills) {
-        const isShiftEligible =
-            fill?.isPartial !== true ||
-            fill?.isDelayedRotationTrigger === true;
-
-        if (!isShiftEligible) continue;
+        if (!isShiftEligibleFill(fill)) continue;
         if (fill.type === ORDER_TYPES.SELL) netShift++;
         else if (fill.type === ORDER_TYPES.BUY) netShift--;
     }
@@ -1533,5 +1727,6 @@ function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: 
     );
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo }
+// ================================================================================
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isShiftEligibleFill, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo }
 

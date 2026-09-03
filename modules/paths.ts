@@ -7,6 +7,7 @@ import { Config } from './config.js';
 import { isDistRuntime } from './utils/build_dir.js';
 import { fileURLToPath } from 'node:url';
 import { dirname as _esmDirname } from 'node:path';
+import { hasProcess } from './env.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = _esmDirname(__filename);
 const MODULE_DIR = path.dirname(__dirname);
@@ -62,19 +63,34 @@ function dirHasState(dir: string): boolean {
 }
 
 /**
- * User-level config home: XDG_CONFIG_HOME when set (snapshot via Config),
- * else ~/.config. All user state roots derive from this single constant so
+ * User-level config home: XDG_CONFIG_HOME when set (live env via Config/process.env),
+ * else ~/.config. All user state roots derive from this single location so
  * npm installs, source checkouts, and overrides agree on one location.
+ *
+ * NOTE: Previously a snapshot const; now a live function so env changes are
+ * reflected without module reload (ESM cache does not invalidate via require.cache).
  */
-const HOME_CONFIG_DIR = path.join(
-    Config.XDG_CONFIG_HOME && Config.XDG_CONFIG_HOME.trim()
-        ? path.resolve(Config.XDG_CONFIG_HOME)
-        : path.join(homedir(), '.config'),
-    'dexbot2'
-);
-
-/** Default profiles dir under the user config home (~/.config/dexbot2/profiles). */
-const HOME_PROFILES_DIR = path.join(HOME_CONFIG_DIR, 'profiles');
+function getEnvLive(key: string): string | undefined {
+    if (hasProcess() && process.env[key] !== undefined) return process.env[key];
+    return (Config as any)[key];
+}
+function getEnvDirect(key: string): string | undefined {
+    return hasProcess() && process.env[key] !== undefined ? process.env[key] : undefined;
+}
+function getHomeConfigDir(): string {
+    const xdg = getEnvDirect('XDG_CONFIG_HOME') ?? (Config as any).XDG_CONFIG_HOME;
+    if (xdg && xdg.trim()) return path.join(path.resolve(xdg), 'dexbot2');
+    return path.join(homedir(), '.config', 'dexbot2');
+}
+function getHomeProfilesDir(): string {
+    return path.join(getHomeConfigDir(), 'profiles');
+}
+// Snapshot constants — prefer getHomeConfigDir()/getHomeProfilesDir() for live values.
+// ESM named imports capture the snapshot; CJS require() interop is patched below via
+// Object.defineProperty to return live values (see bottom of file). Future ESM code
+// should call getHome*() directly; HOME_* remains for backward compat only.
+const HOME_CONFIG_DIR = getHomeConfigDir();
+const HOME_PROFILES_DIR = getHomeProfilesDir();
 
 /**
  * Resolve the profiles (user state) directory.
@@ -93,14 +109,21 @@ const HOME_PROFILES_DIR = path.join(HOME_CONFIG_DIR, 'profiles');
  * npm packages — their dir must never hold user state.
  */
 function resolveProfilesDir(projectRoot = PROJECT_ROOT): string {
-    if (Config.DEXBOT_PROFILE_ROOT) {
-        return Config.DEXBOT_PROFILE_ROOT;
+    const profileRoot = getEnvDirect('DEXBOT_PROFILE_ROOT');
+    if (profileRoot) {
+        return profileRoot;
     }
-    if (Config.DEXBOT2_ROOT) {
-        return path.join(Config.DEXBOT2_ROOT, 'profiles');
+    const dexbot2Root = getEnvDirect('DEXBOT2_ROOT');
+    if (dexbot2Root) {
+        return path.join(dexbot2Root, 'profiles');
     }
+    // Fallback to Config only for legacy direct Config mutation (not env)
+    const cfgProfile = (Config as any).DEXBOT_PROFILE_ROOT;
+    if (cfgProfile) return cfgProfile;
+    const cfgRoot = (Config as any).DEXBOT2_ROOT;
+    if (cfgRoot) return path.join(cfgRoot, 'profiles');
 
-    const homeDir = HOME_PROFILES_DIR;
+    const homeDir = getHomeProfilesDir();
     const repoDir = path.join(projectRoot, 'profiles');
     const cwdDir = path.join(process.cwd(), 'profiles');
 
@@ -144,13 +167,15 @@ const PROFILES_DIR = resolveProfilesDir();
 function resolveMarketAdapterDirs(profilesDir = PROFILES_DIR, projectRoot = PROJECT_ROOT) {
     const sourceDir = path.join(projectRoot, 'market_adapter');
     const useSourceLayout = profilesDir === path.join(projectRoot, 'profiles') && fs.existsSync(sourceDir);
-    const dataRoot = Config.DEXBOT_MARKET_ADAPTER_DATA_DIR
-        ? path.resolve(Config.DEXBOT_MARKET_ADAPTER_DATA_DIR)
+    const dataEnv = getEnvLive('DEXBOT_MARKET_ADAPTER_DATA_DIR');
+    const stateEnv = getEnvLive('DEXBOT_MARKET_ADAPTER_STATE_DIR');
+    const dataRoot = dataEnv
+        ? path.resolve(dataEnv)
         : useSourceLayout
             ? path.join(sourceDir, 'data')
             : path.join(profilesDir, 'market_adapter', 'data');
-    const stateRoot = Config.DEXBOT_MARKET_ADAPTER_STATE_DIR
-        ? path.resolve(Config.DEXBOT_MARKET_ADAPTER_STATE_DIR)
+    const stateRoot = stateEnv
+        ? path.resolve(stateEnv)
         : useSourceLayout
             ? path.join(sourceDir, 'state')
             : path.join(profilesDir, 'market_adapter', 'state');
@@ -179,8 +204,9 @@ const MARKET_ADAPTER = resolveMarketAdapterDirs(PROFILES_DIR, PROJECT_ROOT);
 function resolveClawDirs(profilesDir = PROFILES_DIR, projectRoot = PROJECT_ROOT) {
     const sourceDir = path.join(projectRoot, 'claw');
     const useSourceLayout = profilesDir === path.join(projectRoot, 'profiles');
-    const dataRoot = Config.DEXBOT_CLAW_DATA_DIR
-        ? path.resolve(Config.DEXBOT_CLAW_DATA_DIR)
+    const clawEnv = getEnvLive('DEXBOT_CLAW_DATA_DIR');
+    const dataRoot = clawEnv
+        ? path.resolve(clawEnv)
         : useSourceLayout
             ? path.join(sourceDir, 'data')
             : path.join(profilesDir, 'claw', 'data');
@@ -208,8 +234,9 @@ const CLAW = resolveClawDirs(PROFILES_DIR, PROJECT_ROOT);
 function resolveAnalysisDirs(profilesDir = PROFILES_DIR, projectRoot = PROJECT_ROOT) {
     const sourceDir = path.join(projectRoot, 'analysis');
     const useSourceLayout = profilesDir === path.join(projectRoot, 'profiles') && fs.existsSync(sourceDir);
-    const outRoot = Config.DEXBOT_ANALYSIS_DIR
-        ? path.resolve(Config.DEXBOT_ANALYSIS_DIR)
+    const analysisEnv = getEnvLive('DEXBOT_ANALYSIS_DIR');
+    const outRoot = analysisEnv
+        ? path.resolve(analysisEnv)
         : useSourceLayout
             ? sourceDir
             : path.join(profilesDir, 'analysis');
@@ -242,13 +269,13 @@ function computeRelocationNotices(profilesDir: string, projectRoot: string): str
     const maSourceDir = path.join(projectRoot, 'market_adapter');
     const maRelocated = !(profilesDir === repoProfiles && fs.existsSync(maSourceDir));
     if (maRelocated
-        && !Config.DEXBOT_MARKET_ADAPTER_DATA_DIR && !Config.DEXBOT_MARKET_ADAPTER_STATE_DIR
+        && !getEnvLive('DEXBOT_MARKET_ADAPTER_DATA_DIR') && !getEnvLive('DEXBOT_MARKET_ADAPTER_STATE_DIR')
         && (dirHasState(path.join(maSourceDir, 'data')) || dirHasState(path.join(maSourceDir, 'state')))) {
         notices.push(`[paths] Market adapter state exists at ${maSourceDir} but now resolves to ${path.join(profilesDir, 'market_adapter')}; move the data or set DEXBOT_MARKET_ADAPTER_DATA_DIR / DEXBOT_MARKET_ADAPTER_STATE_DIR to migrate`);
     }
     const clawSourceData = path.join(projectRoot, 'claw', 'data');
     if (profilesDir !== repoProfiles
-        && !Config.DEXBOT_CLAW_DATA_DIR
+        && !getEnvLive('DEXBOT_CLAW_DATA_DIR')
         && dirHasState(clawSourceData)) {
         notices.push(`[paths] Claw state exists at ${clawSourceData} but now resolves to ${path.join(profilesDir, 'claw', 'data')}; move the data or set DEXBOT_CLAW_DATA_DIR to migrate`);
     }
@@ -257,7 +284,7 @@ function computeRelocationNotices(profilesDir: string, projectRoot: string): str
     // silently orphaned now that the runtime dir resolves under the profiles
     // dir once. Check the resolver-based and repo-based variants and warn if
     // they hold state but the new location does not match.
-    if (!Config.DEXBOT_CRED_RUNTIME_DIR) {
+    if (!getEnvLive('DEXBOT_CRED_RUNTIME_DIR')) {
         const newCrDir = path.join(profilesDir, 'credit_runtime');
         const orphanCandidates = [
             path.join(profilesDir, 'profiles', 'credit_runtime'),
@@ -314,6 +341,8 @@ const PATHS = {
   ANALYSIS,
 };
 
+
+
 function getNodeBlacklistFile(stateDir?: string): string {
   return stateDir
     ? path.join(stateDir, 'node_blacklist.json')
@@ -330,5 +359,24 @@ function getRecalculateTriggerFile(botKey: string): string {
   return path.join(PATHS.PROFILES_DIR, `recalculate.${botKey}.trigger`);
 }
 
-export { PATHS, HOME_PROFILES_DIR, resolveProfilesDir, resolveMarketAdapterDirs, resolveClawDirs, resolveAnalysisDirs, isGlobalNpmPackageDir, getNodeBlacklistFile, getNodeHealthCacheFile, getRecalculateTriggerFile, computeRelocationNotices }
+export { PATHS, HOME_PROFILES_DIR, HOME_CONFIG_DIR, getHomeConfigDir, getHomeProfilesDir, resolveProfilesDir, resolveMarketAdapterDirs, resolveClawDirs, resolveAnalysisDirs, isGlobalNpmPackageDir, getNodeBlacklistFile, getNodeHealthCacheFile, getRecalculateTriggerFile, computeRelocationNotices }
+
+// Live getters for CJS require() interop (ESM cache not invalidated via require.cache)
+try {
+    // @ts-ignore - patch CJS wrapper if present
+    const g: any = globalThis as any;
+    if (g.module && g.module.exports) {
+        Object.defineProperty(g.module.exports, 'HOME_PROFILES_DIR', { get: getHomeProfilesDir, enumerable: true, configurable: true });
+        Object.defineProperty(g.module.exports, 'HOME_CONFIG_DIR', { get: getHomeConfigDir, enumerable: true, configurable: true });
+    }
+} catch {}
+// Also patch this module's own exports object when loaded via require() interop (Node experimental require(esm))
+try {
+    // @ts-ignore
+    const exp: any = typeof exports !== 'undefined' ? exports : undefined;
+    if (exp) {
+        Object.defineProperty(exp, 'HOME_PROFILES_DIR', { get: getHomeProfilesDir, enumerable: true, configurable: true });
+        Object.defineProperty(exp, 'HOME_CONFIG_DIR', { get: getHomeConfigDir, enumerable: true, configurable: true });
+    }
+} catch {}
 

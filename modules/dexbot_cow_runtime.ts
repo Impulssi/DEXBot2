@@ -10,7 +10,7 @@
 
 import * as chainOrdersModule from './chain_orders.js';
 const chainOrders = chainOrdersModule as any;
-const { readOpenOrdersWithMetaSafe, readOpenOrdersGuarded } = chainOrdersModule as any;
+const { readOpenOrdersWithMetaSafe } = chainOrdersModule as any;
 import { BroadcastUncertainError as BroadcastUncertainErrorBinding } from './dexbot_credential_client.js';
 const BroadcastUncertainError = BroadcastUncertainErrorBinding as any;
 import * as orderUtils from './order/utils/order.js';
@@ -27,7 +27,17 @@ const {
 import * as validate from './order/utils/validate.js';
 const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions } = validate as any;
 import * as math from './order/utils/math.js';
-const { validateOrderSize, findPriceCollision } = math as any;
+const { validateOrderSize, findCrossedOrder, priceSlotEqual } = math as any;
+function hasSlotPriceCollision(items: any[], targetPrice: number, precision: number, excludeId: string | null, predicate?: (it:any)=>boolean) {
+    for (const it of items) {
+        if (predicate && !predicate(it)) continue;
+        if (excludeId && (it.id === excludeId || it.orderId === excludeId)) continue;
+        const p = it.order ? it.order.price : it.price;
+        if (p == null) continue;
+        try { if (priceSlotEqual(p, targetPrice, precision)) return it; } catch { if (p === targetPrice) return it; }
+    }
+    return null;
+}
 // Lazy accessor so test mocks on the math module export take effect at call time.
 function getAssetFeesSafe(...args: any) { return require('./order/utils/math').getAssetFeesSafe(...args); }
 import * as constantsModule from './constants.js';
@@ -138,103 +148,6 @@ function findMissingCreateResultContexts(operationResults: any, opContexts: any)
 }
 
 /**
- * Run an immediate chain sync after a successful CREATE broadcast returned incomplete ids.
- * @param {import('./dexbot_class.js').DEXBot} bot
- * @param {string} [reason]
- * @returns {Promise<void>}
- */
-async function recoverAfterMissingCreateResults(bot: any, reason: any = 'missing create operation results') {
-    try {
-        const accountRef = bot.accountId || bot.account?.id || bot.account;
-        if (!accountRef || !bot.manager || !chainOrders?.readOpenOrders) {
-            bot.manager?.logger?.log?.(`[COW] Recovery sync unavailable after ${reason}`, 'warn');
-            return;
-        }
-        const preRecoveryMissingCreateBlockers = Array.isArray(bot.manager._lastUnmatchedChainOrders)
-            ? bot.manager._lastUnmatchedChainOrders
-                .filter((order: any) => order?.reason === 'missing-create-result')
-                .map((order: any) => ({ ...order }))
-            : [];
-        // Truncated-read guard: the freshest CREATEs sort last and are exactly
-        // the orders a partial get_full_accounts window omits — syncing would
-        // virtualize them (phantom cleanup). Defer; blockers stay registered
-        // so the COW guard retries the recovery on a clean read.
-        const openOrders = await readOpenOrdersGuarded(chainOrders, accountRef, {
-            log: (message: string, level: any) => bot.manager?.logger?.log?.(message, level),
-            label: 'COW',
-            detail: `recovery sync after ${reason}`,
-        });
-        if (openOrders === null) {
-            bot.manager?.logger?.log?.(
-                `[COW] Deferring recovery sync after ${reason}: open-order read ambiguous (truncated); blockers retained for retry.`,
-                'warn'
-            );
-            return;
-        }
-        const recoveryResult = await bot.manager.syncFromOpenOrders(openOrders, {
-            skipAccounting: false,
-        });
-        preserveMissingCreateBlockersAfterRecovery(bot, preRecoveryMissingCreateBlockers, recoveryResult);
-        if (typeof bot.manager.persistGrid === 'function') {
-            await bot.manager.persistGrid();
-        }
-    } catch (err: any) {
-        bot.manager?.logger?.log?.(`[COW] CRITICAL: Recovery sync failed after ${reason}: ${getErrorMessage(err)}`, 'error');
-        if (typeof bot.manager?.requestStructuralGridResync === 'function') {
-            try {
-                await bot.manager.requestStructuralGridResync(`recovery sync failed after ${reason}`, {
-                    error: getErrorMessage(err)
-                });
-            } catch (scheduleErr: any) {
-                bot.manager?.logger?.log?.(
-                    `[COW] CRITICAL: Failed to schedule structural resync after recovery failure: ${getErrorMessage(scheduleErr)}`,
-                    'error'
-                );
-            }
-        }
-    }
-}
-
-/**
- * Restore unresolved missing-create blockers after recovery if sync did not adopt them.
- * @param {import('./dexbot_class.js').DEXBot} bot
- * @param {Array} blockers
- * @param {Object} recoveryResult
- */
-function preserveMissingCreateBlockersAfterRecovery(bot: any, blockers: any, recoveryResult: any) {
-    if (!Array.isArray(blockers) || blockers.length === 0 || !bot.manager) return;
-
-    const adoptedSlotIds = new Set(
-        (Array.isArray(recoveryResult?.updatedOrders) ? recoveryResult.updatedOrders : [])
-            .filter((order: any) => order?.id && order?.orderId)
-            .map((order: any) => order.id)
-    );
-    const unresolvedBlockers = blockers.filter((blocker: any) => !blocker.slotId || !adoptedSlotIds.has(blocker.slotId));
-    if (unresolvedBlockers.length === 0) return;
-
-    const currentUnmatched = Array.isArray(bot.manager._lastUnmatchedChainOrders)
-        ? bot.manager._lastUnmatchedChainOrders
-        : [];
-    const currentKeys = new Set(currentUnmatched.map((order: any) => `${order.reason || ''}:${order.slotId || ''}:${order.operationIndex ?? ''}`));
-    const restored = [...currentUnmatched];
-
-    for (const blocker of unresolvedBlockers) {
-        const key = `${blocker.reason || ''}:${blocker.slotId || ''}:${blocker.operationIndex ?? ''}`;
-        if (!currentKeys.has(key)) restored.push({ ...blocker });
-    }
-
-    if (restored.length !== currentUnmatched.length) {
-        bot.manager._lastUnmatchedChainOrders = restored;
-        bot.manager._lastUnmatchedChainOrdersAt = Date.now();
-        bot.manager.logger?.log?.(
-            `[COW] Preserving ${restored.length - currentUnmatched.length} missing-create blocker(s) after recovery sync; ` +
-            `chain snapshot did not account for the affected slot(s).`,
-            'warn'
-        );
-    }
-}
-
-/**
  * Merge missing CREATE result contexts into manager._lastUnmatchedChainOrders.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Array<{index:number, ctx:Object}>} missingCreateResults
@@ -338,6 +251,51 @@ function clearPendingBroadcasts(pendingBroadcasts: any) {
 }
 
 /**
+ * Human-readable label for an order returned by findCrossedOrder.
+ * Master orders carry id/orderId; unmatched chain orders carry
+ * chainOrderId; pending-broadcast entries carry slotId and order.
+ * @param {Object} crossed
+ * @returns {string}
+ */
+function crossedOrderLabel(crossed: any): string {
+    if (!crossed) return 'unknown';
+    const id = crossed.id || crossed.chainOrderId || crossed.slotId || 'unknown';
+    const orderId = crossed.orderId || crossed.chainOrderId || 'n/a';
+    const type = crossed.type || crossed.order?.type || 'unknown';
+    const price = crossed.price ?? crossed.order?.price;
+    return `${type} ${id} (${orderId}) @${price != null ? Format.formatPrice6(price) : 'n/a'}`;
+}
+
+/**
+ * Build the candidate set for crossing-placement checks: master orders
+ * plus chain-side orders that may exist on chain but are not (yet)
+ * adopted into the master grid — pending broadcasts from earlier
+ * uncertain batches and unmatched chain orders (orphans). Without these,
+ * an UPDATE-only rotation batch can re-price across an un-adopted chain
+ * order that master-grid-only checks cannot see (the pending/unmatched
+ * batch guards fire only for CREATE batches).
+ * @param {Object} bot
+ * @returns {any[]}
+ */
+function buildCrossingCandidates(bot: any): any[] {
+    const mgr = bot?.manager;
+    if (!mgr) return [];
+    const candidates: any[] = mgr.orders instanceof Map ? [...mgr.orders.values()] : [];
+    if (mgr._pendingBroadcasts instanceof Map) {
+        for (const entry of mgr._pendingBroadcasts.values()) {
+            const o = entry?.order;
+            if (o && o.type != null && o.price != null) candidates.push(o);
+        }
+    }
+    if (Array.isArray(mgr._lastUnmatchedChainOrders)) {
+        for (const o of mgr._lastUnmatchedChainOrders) {
+            if (o && o.type != null && o.price != null) candidates.push(o);
+        }
+    }
+    return candidates;
+}
+
+/**
  * Drop only the pending-broadcast entries for the given CREATE slots.
  *
  * Used by the re-plan path: the original plan's ops are abandoned with its
@@ -397,11 +355,27 @@ function popPushedWorkingGrid(bot: any, cowResult: any) {
  */
 async function deferUncertainBroadcastRead(bot: any, detail: string, suffix: string, resyncReason: string, resyncOptions: any = {}) {
     bot.manager.logger.log(
-        `[COW][UNCERTAIN] ${detail}; keeping pending-broadcast protection and requesting structural resync ${suffix}`,
+        `[COW][UNCERTAIN] ${detail}; keeping pending-broadcast protection ${suffix}`,
         'warn'
     );
-    if (typeof bot.manager.requestStructuralGridResync === 'function') {
+    // Fix #6 (docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §2): an ambiguous/truncated chain read is
+    // node lag, not a missing order — the broadcast already succeeded. Previously every
+    // such read requested a structural resync, piling pending broadcasts (up to 14) and
+    // forcing a resync mid-broadcast (the T-BTS 06:43Z thrash). The pending-broadcast
+    // protection already prevents double-creates on the next cycle, so we keep it and
+    // only escalate to a structural resync once per cooldown window. The next clean
+    // read adopts any landed orders without the churn.
+    const cooldownMs = (bot.config?.maintenance?.uncertainReadResyncCooldownMs as number) || 30_000;
+    const lastAt = (bot as any)._lastUncertainResyncAt || 0;
+    if (Date.now() - lastAt >= cooldownMs && typeof bot.manager.requestStructuralGridResync === 'function') {
+        (bot as any)._lastUncertainResyncAt = Date.now();
         await bot.manager.requestStructuralGridResync(resyncReason, resyncOptions);
+    } else {
+        bot.manager.logger.log(
+            `[COW][UNCERTAIN] Structural resync escalation suppressed (cooldown ${cooldownMs}ms) — ` +
+            `pending-broadcast protection retained; next clean read adopts landed orders.`,
+            'debug'
+        );
     }
     return { executed: false, hadRotation: false, uncertain: true, ambiguousRead: true };
 }
@@ -817,6 +791,11 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
                                 size: entry.order.size,
                                 price: entry.order.price,
                                 state: ORDER_STATES.VIRTUAL,
+                                // Durable orphan evidence: this sized VIRTUAL slot
+                                // is the product of a lost CREATE broadcast result,
+                                // not a normal planned slot. The loadGrid sanitizer
+                                // only drops the size for flagged slots.
+                                createUncertain: true,
                                 // Clear any stale order identity: the broadcast
                                 // MAY have landed, but the slot must look like a
                                 // clean adoption target (no orderId/rawOnChain)
@@ -1640,6 +1619,39 @@ function validateOrderSizeForExecution(bot: any, size: any, type: any, orderLike
 }
 
 /**
+ * LAST-FILL-GUARD helper — pivot ± halfIncrement (replaces price-tolerance).
+ *  last fill @x with increment i: BUY < x*(1 - i/2/100), SELL > x*(1 + i/2/100)
+ *  e.g. x=1000, i=0.5% => BUY < 997.5, SELL > 1002.5
+ * Cold (pivot null or lastType null) => disabled. Spread correction bypasses via cowResult.origin === 'spread-correction'.
+ * @param {number} price - Target order price
+ * @param {number} size - Order size (unused, kept for compat)
+ * @param {string} type - ORDER_TYPES.BUY/SELL
+ * @param {number|null} lastPrice - Most recent fill price
+ * @param {string|null} lastType - Most recent fill side (BUY/SELL)
+ * @param {number|any} incrementPercent - Grid increment percent (e.g. 0.5). If assets object passed, falls back to default.
+ * @returns {{blocked: boolean, pivot: number|null, halfInc: number, threshold: number|null}}
+ */
+function isLastFillGuardBlocked(price: any, _size: any, type: any, lastPrice: any, lastType: any, incrementPercent: any): { blocked: boolean; pivot: number|null; halfInc?: number; threshold?: number|null } {
+    const numPrice = Number(price);
+    if (!Number.isFinite(numPrice)) return { blocked: false, pivot: null };
+    if (lastPrice == null || !Number.isFinite(Number(lastPrice)) || lastType == null) return { blocked: false, pivot: null };
+    const pivot = Number(lastPrice);
+    // Resolve increment: fallback to default 0.5 (also covers legacy assets-object 6th arg)
+    let inc = Number(incrementPercent);
+    if (!Number.isFinite(inc) || inc <= 0) {
+        inc = Number((constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
+    }
+    if (!Number.isFinite(inc) || inc <= 0) return { blocked: false, pivot: null };
+    const halfInc = inc / 2;
+    const halfPct = halfInc / 100;
+    const buyThreshold = pivot * (1 - halfPct);
+    const sellThreshold = pivot * (1 + halfPct);
+    if (type === ORDER_TYPES.BUY && numPrice > buyThreshold) return { blocked: true, pivot, halfInc, threshold: buyThreshold };
+    if (type === ORDER_TYPES.SELL && numPrice < sellThreshold) return { blocked: true, pivot, halfInc, threshold: sellThreshold };
+    return { blocked: false, pivot: null, halfInc, threshold: null };
+}
+
+/**
  * Build COW actions array from a simple plan object.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object|Array} plan
@@ -1810,7 +1822,8 @@ function buildCowResultFromPlan(bot: any, plan: any) {
         workingGrid,
         workingIndexes: workingGrid.getIndexes(),
         workingBoundary,
-        actions
+        actions,
+        origin: (plan as any)?.origin
     };
 }
 
@@ -2090,9 +2103,13 @@ async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, p
             (bot.manager as any)._boundaryShiftBudget = (bot.manager as any)._boundaryShiftBudgetBase;
         }
         if (typeof bot.manager.performSafeRebalance === 'function') {
+            // skipBroadcastWait: this frame is itself inside the executor's
+            // startBroadcasting() region — waiting on the flag we hold would
+            // stall the re-plan for the full _awaitBroadcastIdle timeout.
             replanned = await bot.manager.performSafeRebalance(
                 cowResult.fills,
-                cowResult.excludeIds || new Set()
+                cowResult.excludeIds || new Set(),
+                { skipBroadcastWait: true }
             );
         }
     } catch (replanErr: any) {
@@ -2169,11 +2186,17 @@ async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, p
  * synchronously (before the next await) once this resolves so the
  * check-and-set stays atomic and two planning batches cannot both win the
  * broadcast slot.
+ *
+ * Returns true when the caller must abort the batch (shutdown began before or
+ * during the wait — proceeding would broadcast with post-shutdown state),
+ * false when the caller may proceed to claim the broadcast slot.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} label - Stage label for the deferral log (e.g. 'entry', 'pre-broadcast')
+ * @returns {Promise<boolean>}
  */
-async function waitForCowBroadcastSingleFlight(bot: any, label: string) {
-    if (!bot._cowBroadcastInFlight) return;
+async function waitForCowBroadcastSingleFlight(bot: any, label: string): Promise<boolean> {
+    if (bot._shuttingDown) return true;
+    if (!bot._cowBroadcastInFlight) return false;
     bot.manager.logger.log(
         `[COW] ${label}: a COW broadcast is already in flight; deferring this batch until it settles (prevents overlapping-broadcast commit collision).`,
         'warn'
@@ -2183,12 +2206,20 @@ async function waitForCowBroadcastSingleFlight(bot: any, label: string) {
         if (bot._shuttingDown || Date.now() > waitDeadline) break;
         await sleep(250);
     }
+    if (bot._shuttingDown) {
+        bot.manager.logger.log(
+            `[COW] ${label}: shutdown began while waiting for the in-flight broadcast; aborting this batch.`,
+            'warn'
+        );
+        return true;
+    }
     if (bot._cowBroadcastInFlight) {
         bot.manager.logger.log(
             `[COW] ${label}: waited for in-flight broadcast but it did not settle within the cap; proceeding (commit guard + chain adoption will close divergence).`,
             'warn'
         );
     }
+    return false;
 }
 
 /**
@@ -2268,6 +2299,51 @@ function detectCrossedBookPlan(manager: any, actions: any[]): string | null {
     }
 }
 
+/**
+ * Derive an update action's planned target size (shared by the rotation and
+ * plain size-update op builders).
+ * @param {Object} action - COW action
+ * @returns {number}
+ */
+function plannedUpdateSize(action: any) {
+    return Number.isFinite(Number(action.newSize))
+        ? Number(action.newSize)
+        : Number(action.order?.size || 0);
+}
+
+/**
+ * Post-fill size invariant for COW UPDATE ops: a partially-filled order
+ * (slot state PARTIAL — the fill is already booked into slot.size) must
+ * never be GROWN in place by a plan update. Growing it would restore the
+ * pre-fill size on chain while the fill accounting stays on the booked
+ * remaining size — chain and books diverge and the fill effectively
+ * vanishes from the bot's ledger. Clamp the target to the booked remaining
+ * size and keep the plan's price intent; a deliberate full-size top-up must
+ * go through a cancel+create cycle, not a silent in-place grow.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {Object} masterOrder - Live master-grid slot for the action
+ * @param {number} newSize - Plan's target size for the update op
+ * @param {Object} action - The COW action being built
+ * @returns {number} The (possibly clamped) target size
+ */
+function clampPostFillUpdateSize(bot: any, masterOrder: any, newSize: any, action: any) {
+    const target = Number(newSize);
+    if (!masterOrder || masterOrder.state !== ORDER_STATES.PARTIAL) return target;
+    const booked = Number(masterOrder.size);
+    if (!Number.isFinite(target) || !Number.isFinite(booked) || booked <= 0) return target;
+    if (target > booked) {
+        bot.manager.logger.log(
+            `[COW] Post-fill size clamp for ${action?.id || masterOrder?.id}: slot is PARTIAL with ` +
+            `booked remaining ${Format.formatAmount(booked)} but the plan targets ` +
+            `${Format.formatAmount(target)} — clamping to booked remaining. ` +
+            `A partially-filled order must not be grown in place by a COW update (fill accounting divergence).`,
+            'warn'
+        );
+        return booked;
+    }
+    return target;
+}
+
 async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: any = {}) {
     const replanDepth = Number.isFinite(Number(options?.replanDepth)) ? Number(options.replanDepth) : 0;
     bot._currentCycleId = (Number.isFinite(Number(bot._currentCycleId)) ? Number(bot._currentCycleId) : 0) + 1;
@@ -2291,7 +2367,45 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     // -> snapshot reload that can drop the adopted order and produce an
     // orphan fill. This entry wait is an optimization; the authoritative
     // atomic check-and-set happens right before the broadcast below.
-    await waitForCowBroadcastSingleFlight(bot, 'entry');
+    if (await waitForCowBroadcastSingleFlight(bot, 'entry')) {
+        popPushedWorkingGrid(bot, cowResult);
+        return { executed: false, aborted: true, reason: 'SHUTDOWN_IN_PROGRESS', hadRotation: false };
+    }
+
+    // DRAIN PENDING CORRECTIONS before the batch is planned/broadcast.
+    // Cancel-only corrections (duplicate-price orphans) queued by an earlier
+    // sync must not sit while batches run back-to-back (startup create
+    // groups, fill bursts) — with the open-orders sync loop disabled they
+    // would otherwise linger indefinitely, keep blocking same-level CREATEs,
+    // and risk cancelling the wrong side of a duplicate later. Draining here
+    // also keeps this batch's collision checks (chain_orphan_collision)
+    // honest: orphaned chain orders already queued for cancellation are
+    // resolved before the plan validates its CREATE targets against them.
+    const pendingCorrectionCount = Array.isArray(bot.manager?.ordersNeedingPriceCorrection)
+        ? bot.manager.ordersNeedingPriceCorrection.length
+        : 0;
+    if (pendingCorrectionCount > 0 && !bot._shuttingDown) {
+        try {
+            bot.manager.logger.log(
+                `[COW] Draining ${pendingCorrectionCount} pending correction(s) before batch`,
+                'info'
+            );
+            const drainResult = await (orderUtils as any).correctAllPriceMismatches(
+                bot.manager, bot.account, bot.privateKey, chainOrders
+            );
+            if (drainResult?.failed > 0) {
+                bot.manager.logger.log(
+                    `[COW] ${drainResult.failed} correction(s) failed pre-batch; remaining entries retry on next sync/maintenance tick`,
+                    'warn'
+                );
+            }
+        } catch (drainErr: any) {
+            bot.manager.logger.log(
+                `[COW] Pre-batch correction drain failed: ${getErrorMessage(drainErr)}`,
+                'warn'
+            );
+        }
+    }
 
     const chainOrderCandidates = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
         ? bot.manager._lastUnmatchedChainOrders
@@ -2531,6 +2645,12 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         };
     }
 
+    // Crossing-check candidate set (master + pending-broadcast + unmatched
+    // chain orders). Built after the batch-level pending/unmatched guards so
+    // it reflects any sync they triggered.
+    const crossingCandidates = buildCrossingCandidates(bot);
+    const intraBatchCandidates: any[] = [];
+
     const { assetA, assetB } = bot.manager.assets;
 
     // CROSSED-BOOK GATE: refuse to broadcast any batch whose simulated result
@@ -2554,6 +2674,17 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     const opContexts: any[] = [];
     const skippedUpdateSlotIds = new Set();
     let skippedUpdateCount = 0;
+    // Slots whose size-update op was broadcast with a post-fill-clamped
+    // target: the working grid still holds the planned (larger) size, so the
+    // slots are re-synced from master before commit to keep the committed
+    // books equal to the broadcast chain amounts.
+    const clampedUpdateSlotIds = new Set();
+    // orderId -> operations index of its cancel op. A crossing re-pricing
+    // update is only safe when the crossed order's cancel was already queued
+    // at an earlier position: ops broadcast in MAX_OPS_PER_BROADCAST chunks,
+    // so an earlier index means the cancel confirms on chain (same or earlier
+    // chunk, applied sequentially) before the crossing order lands.
+    const cancelOpIndexByOrderId = new Map<string, number>();
 
     const idsToLock = new Set();
     for (const action of actions) {
@@ -2590,6 +2721,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 try {
                     const op = await chainOrders.buildCancelOrderOp(bot.account, action.orderId);
                     operations.push(op);
+                    if (action.orderId) cancelOpIndexByOrderId.set(action.orderId, operations.length - 1);
                     const order = bot.manager.orders.get(action.id) || { id: action.id, orderId: action.orderId };
                     opContexts.push({ kind: 'cancel', order });
                 } catch (err: any) {
@@ -2639,14 +2771,9 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     }
 
                     const createPrice = effectiveOrder.price;
-                    const createSize = effectiveOrder.size;
 
-                    const batchCollision = findPriceCollision(
-                        opContexts,
-                        order.id,
-                        createPrice, createSize, order.type, bot.manager.assets,
-                        (ctx: any) => ctx.kind === 'create'
-                    );
+                    const precision = order.type === ORDER_TYPES.SELL ? bot.manager.assets.assetA.precision : bot.manager.assets.assetB.precision;
+                    const batchCollision = hasSlotPriceCollision(opContexts as any, createPrice, precision, order.id, (ctx:any)=> ctx.kind==='create' && ctx.order?.price != null);
                     if (batchCollision) {
                         bot.manager.logger.log(
                             `[COW] Skipping CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: ` +
@@ -2657,6 +2784,61 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         );
                         continue;
                     }
+
+                    // CROSSING-PLACEMENT GUARD (create variant): the batch-level
+                    // validators (validateCreateTargetSlots, detectCrossedBookPlan)
+                    // simulated the PLANNED price, but the pre-broadcast price
+                    // freshness rebuild above can move the op's price. Re-check
+                    // crossing on the FINAL price against live and chain-side
+                    // orders not already cancelled at an earlier op position —
+                    // an opposite-side order cancelled in a later chunk would
+                    // otherwise coexist with this create mid-broadcast and
+                    // self-trade (production incident class).
+                    const createCrossed = findCrossedOrder(
+                        crossingCandidates,
+                        createPrice,
+                        order.type,
+                        bot.manager.assets,
+                        (o: any) => {
+                            const oid = o?.orderId || o?.chainOrderId;
+                            return o && oid && !cancelOpIndexByOrderId.has(oid);
+                        }
+                    );
+                    const intraBatchCrossed = createCrossed ? null : findCrossedOrder(
+                        intraBatchCandidates,
+                        createPrice,
+                        order.type,
+                        bot.manager.assets
+                    );
+                    const effectiveCrossed = createCrossed || intraBatchCrossed;
+                    if (effectiveCrossed) {
+                        bot.manager.logger.log(
+                            `[COW-CROSS-GUARD] Skipping CREATE for ${order.id} at ` +
+                            `${Format.formatPrice6(createPrice)}: crosses live ` +
+                            `${crossedOrderLabel(effectiveCrossed)}; re-planned after its cancel confirms.`,
+                            'warn'
+                        );
+                        continue;
+                    }
+
+                    // LAST-FILL PRICE GUARD: pivot ± halfIncrement (BUY < pivot*(1-half), SELL > pivot*(1+half)).
+                    // Spread correction bypasses so gap repair can close. Cold (null) => disabled.
+                    try {
+                        if ((cowResult as any)?.origin !== 'spread-correction') {
+                            const lastPrice = (bot.manager as any)?._lastFilledPrice;
+                            const lastType = (bot.manager as any)?._lastFilledType;
+                            const inc = Number(bot.manager?.config?.incrementPercent ?? (bot as any)?.config?.incrementPercent ?? (constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
+                            const check = isLastFillGuardBlocked(createPrice, order.size, order.type, lastPrice, lastType, inc);
+                            if (check.blocked) {
+                                const dir = order.type === ORDER_TYPES.BUY ? 'above' : 'below';
+                                bot.manager.logger.log(
+                                    `[LAST-FILL-GUARD] Skipping ${order.type} CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} (halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)}); re-planned after market moves`,
+                                    'warn'
+                                );
+                                continue;
+                            }
+                        }
+                    } catch (_e: any) { /* guard is best-effort */ }
 
                     const args = buildCreateOrderArgs(effectiveOrder, assetA, assetB);
                     const buildResult = await chainOrders.buildCreateOrderOp(
@@ -2676,6 +2858,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     }
                     operations.push(buildResult.op);
                     opContexts.push({ kind: 'create', id: order.id, order: effectiveOrder, args, finalInts: buildResult.finalInts });
+                    intraBatchCandidates.push(effectiveOrder);
                     recordPendingBroadcast(bot, {
                         opIndex: operations.length - 1,
                         ctxIndex: opContexts.length - 1,
@@ -2693,11 +2876,34 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         const newPrice = Number.isFinite(Number(action.newPrice))
                             ? Number(action.newPrice)
                             : Number(action.order?.price);
-                        const newSize = Number.isFinite(Number(action.newSize))
-                            ? Number(action.newSize)
-                            : Number(action.order?.size || 0);
+                        const newSize = plannedUpdateSize(action);
 
                         if (!masterOrder || !action.orderId || !orderType || !Number.isFinite(newPrice) || newSize <= 0) {
+                            continue;
+                        }
+
+                        // POST-FILL GROWTH GUARD (rotation): a rotation must
+                        // not GROW a partially-filled order back above its
+                        // booked remaining size — the fill is already booked
+                        // into slot.size, and growing in place diverges the
+                        // fill accounting (chain restores the pre-fill size
+                        // while the books keep the post-fill remainder). Skip
+                        // like the guards above: the working grid restores the
+                        // slot from master and the next plan re-evaluates.
+                        if (masterOrder.state === ORDER_STATES.PARTIAL
+                            && Number.isFinite(Number(masterOrder.size))
+                            && Number(masterOrder.size) > 0
+                            && newSize > Number(masterOrder.size)) {
+                            skippedUpdateCount++;
+                            if (action.id) skippedUpdateSlotIds.add(action.id);
+                            if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
+                            bot.manager.logger.log(
+                                `[COW] Skipping rotation update ${action.id} -> ${action.newGridId}: ` +
+                                `slot is PARTIAL with booked remaining ${Format.formatAmount(Number(masterOrder.size))} ` +
+                                `but the plan targets ${Format.formatAmount(newSize)} — a partially-filled order ` +
+                                `must not be grown in place (fill accounting divergence).`,
+                                'warn'
+                            );
                             continue;
                         }
 
@@ -2715,6 +2921,65 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             );
                             continue;
                         }
+
+                        // CROSSING-PLACEMENT GUARD: re-pricing an order must
+                        // never cross an opposite-side live order whose cancel
+                        // is not already queued at an earlier op position.
+                        // Re-pricing a buy upward across our own live sell
+                        // ladder self-trades during the chunked broadcast
+                        // window (production incident: a startup buy was
+                        // re-priced upward and filled against our own live
+                        // opposite-side sells that this same plan was still
+                        // cancelling in later chunks — dozens of self-fills,
+                        // fatal fund assert). Skipping is safe: the slot keeps its
+                        // old commitment and the next plan re-evaluates once
+                        // the crossed order's cancel confirms.
+                        const crossedOrder = findCrossedOrder(
+                            [...crossingCandidates, ...intraBatchCandidates],
+                            newPrice,
+                            orderType,
+                            bot.manager.assets,
+                            (o: any) => {
+                                const oid = o?.orderId || o?.chainOrderId;
+                                return o
+                                    && oid
+                                    && oid !== action.orderId
+                                    && !cancelOpIndexByOrderId.has(oid);
+                            }
+                        );
+                        if (crossedOrder) {
+                            skippedUpdateCount++;
+                            if (action.id) skippedUpdateSlotIds.add(action.id);
+                            if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
+                            bot.manager.logger.log(
+                                `[COW-CROSS-GUARD] Skipping rotation update ${action.id} -> ${action.newGridId}: ` +
+                                `new ${orderType} @${Format.formatPrice6(newPrice)} crosses live ` +
+                                `${crossedOrderLabel(crossedOrder)}; re-planned after its cancel confirms.`,
+                                'warn'
+                            );
+                            continue;
+                        }
+
+                        // LAST-FILL PRICE GUARD (UPDATE rotation): pivot ± halfIncrement — same as CREATE.
+                        try {
+                            if ((cowResult as any)?.origin !== 'spread-correction') {
+                                const lastPrice = (bot.manager as any)?._lastFilledPrice;
+                                const lastType = (bot.manager as any)?._lastFilledType;
+                                const inc = Number(bot.manager?.config?.incrementPercent ?? (bot as any)?.config?.incrementPercent ?? (constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
+                                const check = isLastFillGuardBlocked(newPrice, newSize, orderType, lastPrice, lastType, inc);
+                                if (check.blocked) {
+                                    skippedUpdateCount++;
+                                    if (action.id) skippedUpdateSlotIds.add(action.id);
+                                    if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
+                                    const dir = orderType === ORDER_TYPES.BUY ? 'above' : 'below';
+                                    bot.manager.logger.log(
+                                        `[LAST-FILL-GUARD] Skipping ${orderType} UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} (halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)})`,
+                                        'warn'
+                                    );
+                                    continue;
+                                }
+                            }
+                        } catch (_e: any) { /* best-effort */ }
 
                         const { amountToSell, minToReceive } = buildCreateOrderArgs(
                             { type: orderType, size: newSize, price: newPrice },
@@ -2751,14 +3016,16 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             },
                             finalInts: buildResult.finalInts
                         });
+                        intraBatchCandidates.push({ type: orderType, price: newPrice, orderId: action.orderId, id: action.newGridId || action.id });
                         continue;
                     }
 
-                    const newSize = Number.isFinite(Number(action.newSize))
-                        ? Number(action.newSize)
-                        : Number(action.order?.size || 0);
-
                     const masterOrder = bot.manager.orders.get(action.id);
+                    const plannedNewSize = plannedUpdateSize(action);
+                    const newSize = clampPostFillUpdateSize(bot, masterOrder, plannedNewSize, action);
+                    if (newSize !== plannedNewSize) {
+                        clampedUpdateSlotIds.add(action.id);
+                    }
                     const orderType = action.order?.type || masterOrder?.type;
                     const cachedRawOnChain = masterOrder?.rawOnChain || action.order?.rawOnChain || null;
 
@@ -2779,6 +3046,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         continue;
                     }
                     operations.push(op.op);
+                    if (masterOrder?.price != null) intraBatchCandidates.push({ type: orderType, price: masterOrder.price, orderId: action.orderId, id: action.id });
                     const partialOrder = masterOrder || {
                         id: action.id,
                         orderId: action.orderId,
@@ -2814,12 +3082,8 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                     'warn'
                                 );
                             } else if (fbType && fbSize > 0 && fbPrice > 0) {
-                                const fbCollision = findPriceCollision(
-                                    bot.manager.orders.values(),
-                                    targetSlotId,
-                                    fbPrice, fbSize, fbType, bot.manager.assets,
-                                    isOrderPlaced
-                                );
+                                const fbPrecision = fbType === ORDER_TYPES.SELL ? bot.manager.assets.assetA.precision : bot.manager.assets.assetB.precision;
+                                const fbCollision = hasSlotPriceCollision([...bot.manager.orders.values()], fbPrice, fbPrecision, targetSlotId, isOrderPlaced);
                                 if (fbCollision) {
                                     bot.manager.logger.log(
                                         `[COW] Skipping CREATE fallback for ${targetSlotId} at ${Format.formatPrice6(fbPrice)}: ` +
@@ -2829,17 +3093,38 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                     );
                                     continue;
                                 }
-                                const fbBatchCollision = findPriceCollision(
-                                    opContexts,
-                                    targetSlotId,
-                                    fbPrice, fbSize, fbType, bot.manager.assets,
-                                    (ctx: any) => ctx.kind === 'create'
-                                );
+                                const fbBatchCollision = hasSlotPriceCollision(opContexts as any, fbPrice, fbPrecision, targetSlotId, (ctx:any)=> ctx.kind==='create');
                                 if (fbBatchCollision) {
                                     bot.manager.logger.log(
                                         `[COW] Skipping CREATE fallback for ${targetSlotId} at ${Format.formatPrice6(fbPrice)}: ` +
                                         `same-batch CREATE ${fbBatchCollision.id} already at ` +
                                         `price ${Format.formatPrice6(fbBatchCollision.order.price)}.`,
+                                        'warn'
+                                    );
+                                    continue;
+                                }
+                                // CROSSING-PLACEMENT GUARD (fallback variant):
+                                // the not-found conversion re-prices to the
+                                // rotation's target price, so it must obey the
+                                // same crossing rule as the rotation UPDATE it
+                                // replaces — no crossing of an opposite-side
+                                // live order whose cancel is not already
+                                // queued at an earlier op position.
+                                const fbCrossed = findCrossedOrder(
+                                    crossingCandidates,
+                                    fbPrice,
+                                    fbType,
+                                    bot.manager.assets,
+                                    (o: any) => {
+                                        const oid = o?.orderId || o?.chainOrderId;
+                                        return o && oid && !cancelOpIndexByOrderId.has(oid);
+                                    }
+                                );
+                                if (fbCrossed) {
+                                    bot.manager.logger.log(
+                                        `[COW-CROSS-GUARD] Skipping CREATE fallback for ${targetSlotId} at ` +
+                                        `${Format.formatPrice6(fbPrice)}: new ${fbType} crosses live ` +
+                                        `${crossedOrderLabel(fbCrossed)}; re-planned after its cancel confirms.`,
                                         'warn'
                                     );
                                     continue;
@@ -2894,6 +3179,19 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
             restoreSkippedUpdateSlotsInWorkingGrid(bot, workingGrid, skippedUpdateSlotIds, skippedUpdateCount);
         }
 
+        if (clampedUpdateSlotIds.size > 0) {
+            const masterVersion = Number.isFinite(Number(bot.manager?._gridVersion))
+                ? Number(bot.manager._gridVersion)
+                : undefined;
+            for (const slotId of clampedUpdateSlotIds) {
+                workingGrid.syncFromMaster(bot.manager.orders, slotId, masterVersion);
+            }
+            bot.manager.logger.log(
+                `[COW] Re-synced ${clampedUpdateSlotIds.size} post-fill-clamped slot(s) from master before commit`,
+                'debug'
+            );
+        }
+
         if (operations.length === 0) {
             // Pop the working grid: in the re-plan recursion the fresh plan's
             // grid was pushed by performSafeRebalance, and nothing downstream
@@ -2940,7 +3238,10 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         // for it to settle, then claim the slot synchronously (no await
         // between the check inside waitForCowBroadcastSingleFlight and the
         // assignment below), so two batches can never broadcast together.
-        await waitForCowBroadcastSingleFlight(bot, 'pre-broadcast');
+        if (await waitForCowBroadcastSingleFlight(bot, 'pre-broadcast')) {
+            popPushedWorkingGrid(bot, cowResult);
+            return { executed: false, aborted: true, reason: 'SHUTDOWN_IN_PROGRESS', hadRotation: false };
+        }
         bot._cowBroadcastInFlight = true;
         heldBroadcastSlot = true;
         await bot._ensureCredentialDaemonWritable('COW batch broadcast');
@@ -2963,21 +3264,82 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         .map((item: any) => item.ctx?.order?.id || item.ctx?.id || `op-${item.index}`)
                         .join(', ');
                     bot.manager.logger.log(
-                        `[COW] Refusing to commit working grid: ${missingCreateResults.length} CREATE op(s) ` +
-                        `returned no chainOrderId (${missingSlots}). Discarding working grid and syncing from chain.`,
-                        'error'
+                        `[COW] ${missingCreateResults.length} CREATE op(s) returned no chainOrderId ` +
+                        `(${missingSlots}). Resolving from chain before commit (normalize, don't reject).`,
+                        'warn'
                     );
-                    popPushedWorkingGrid(bot, cowResult);
-                    markMissingCreateResultsAsStructuralBlocker(bot, missingCreateResults);
-                    await recoverAfterMissingCreateResults(bot, 'missing create operation results');
-                    return {
-                        executed: false,
-                        hadRotation: false,
-                        missingCreateResults: missingCreateResults.map((item: any) => ({
-                            index: item.index,
-                            slotId: item.ctx?.order?.id || item.ctx?.id || null
-                        }))
-                    };
+                    // Layer 2 (normalize, don't reject + uncertain-broadcast routing):
+                    // the batch otherwise succeeded, so a missing id is the
+                    // "broadcast succeeded but attach lost" ambiguous case. Poll the
+                    // chain to separate REAL on-chain orders (adopt their id into the
+                    // working grid so they commit normally) from PHANTOMS (normalize the
+                    // slot in place to a clean empty). Either way the REST of the batch
+                    // commits — we never discard a whole batch over one missing id.
+                    const confirmation = await pollChainForConfirmation(
+                        bot,
+                        missingCreateResults.map((m: any) => m.ctx)
+                    );
+                    const accountRef = bot.accountId || bot.account?.id || bot.account;
+                    let chainSnap: any = null;
+                    try {
+                        const cr = await readOpenOrdersWithMetaSafe(chainOrders, accountRef);
+                        if (cr && !cr.truncated) chainSnap = cr.orders;
+                    } catch { /* best-effort; confirmed set already known from poll */ }
+
+                    let adoptedCount = 0;
+                    let normalizedCount = 0;
+                    for (const item of missingCreateResults) {
+                        const slotId = item.ctx?.order?.id || item.ctx?.id;
+                        const slot = workingGrid.get(slotId);
+                        if (!slot) continue;
+                        const isConfirmed = confirmation.confirmed.some(
+                            (c: any) => (c?.order?.id || c?.id) === slotId
+                        );
+                        if (isConfirmed && chainSnap) {
+                            const match = findChainOrderForSlot(bot, chainSnap, slotId, {
+                                sell: item.ctx?.finalInts?.sell,
+                                receive: item.ctx?.finalInts?.receive,
+                                orderType: item.ctx?.order?.type,
+                                fingerprint: buildCreateOpFingerprint({
+                                    side: item.ctx?.order?.type,
+                                    assetA: bot.manager?.assets?.assetA?.id,
+                                    assetB: bot.manager?.assets?.assetB?.id,
+                                    sellInt: item.ctx?.finalInts?.sell,
+                                    receiveInt: item.ctx?.finalInts?.receive,
+                                    slotId
+                                })
+                            });
+                            if (match?.id) {
+                                workingGrid.set(slotId, { ...slot, orderId: match.id });
+                                adoptedCount++;
+                                continue;
+                            }
+                        }
+                        // Normalize: drop the size so the slot cannot persist as a
+                        // phantom placed order (VIRTUAL + size>0 + no orderId) — the
+                        // exact corrupt shape that recurs as a sized orphan. It commits
+                        // as a clean empty and is re-placed by the next cycle / spread
+                        // correction.
+                        workingGrid.set(slotId, {
+                            ...slot,
+                            size: 0,
+                            orderId: null,
+                            state: ORDER_STATES.VIRTUAL
+                        });
+                        normalizedCount++;
+                    }
+                    bot.manager.logger.log(
+                        `[COW] Missing CREATEs resolved: ${adoptedCount} adopted from chain, ` +
+                        `${normalizedCount} normalized in place; committing remainder of batch.`,
+                        'warn'
+                    );
+                    // NOTE: we intentionally do NOT mark these as structural blockers.
+                    // Normalizing the slot to a clean empty lets the next cycle re-create
+                    // it, and the regular open-orders sync adopts any order that really
+                    // did land on chain — so a permanent block (which would reject every
+                    // subsequent CREATE batch) is avoided.
+                    // DO NOT pop/discard the working grid — fall through to commit the
+                    // rest of the batch below.
                 }
 
                 // Pre-apply rotation state transitions to the working grid so the
@@ -3008,7 +3370,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         '[COW] Commit refused after broadcast; adopting placed orders from chain to keep master in sync',
                         'warn'
                     );
-                    const adopted = await adoptPlacedBatchFromChain(bot, chainOrders, '[COW]');
+                    const adopted = await adoptPlacedBatchFromChain(bot, chainOrders, '[COW]', { placedResults: result, placedContexts: executedContexts });
                     if (!adopted) {
                         // Chain state unknown (empty/lagging read or sync failure):
                         // keep the pending-broadcast protection so a later plan
@@ -3028,6 +3390,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     // Deduct create fees for the placed orders (mirrors
                     // processBatchResults, which the refused path bypasses).
                     await applyAdoptionFeeAccounting(bot, executedContexts);
+                    await restoreBoundaryAfterAdoption(bot, workingBoundary);
                     await persistGridAndClearPendingBroadcasts(bot, '[COW]');
                     return { executed: false, hadRotation: false, commitRefused: true };
                 }
@@ -3158,6 +3521,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             return { executed: false, hadRotation: false, commitRefused: true, chainAdoptionPending: true };
                         }
                         await applyAdoptionFeeAccounting(bot, opContexts);
+                        await restoreBoundaryAfterAdoption(bot, workingBoundary);
                         await persistGridAndClearPendingBroadcasts(bot, '[COW][UNCERTAIN]');
                         return { executed: false, hadRotation: false, commitRefused: true, uncertainResolved: true };
                     }
@@ -3187,6 +3551,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     // result to extract); deduct create fees so the optimistic
                     // balance reflects the on-chain cost.
                     await applyAdoptionFeeAccounting(bot, opContexts);
+                    await restoreBoundaryAfterAdoption(bot, workingBoundary);
                     await persistGridAndClearPendingBroadcasts(bot, '[COW][UNCERTAIN]');
                     return { executed: true, hadRotation: false, uncertainResolved: true };
                 }
@@ -3271,16 +3636,205 @@ async function requestStructuralResync(bot: any, reason: string, details: any = 
  * @param {string} logPrefix - Log prefix for sync failure messages
  * @returns {Promise<boolean>}
  */
-async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: string): Promise<boolean> {
+/**
+ * Collect every on-chain order id master currently needs to converge against,
+ * so adoption can re-read them by id (immune to the get_full_accounts window
+ * truncation) instead of relying on a partial window read.
+ *
+ * Sources:
+ *  - master's own tracked order ids (existing on-chain orders);
+ *  - the batch's fresh CREATE ids extracted from the broadcast result
+ *    (operation_results[i][1] aligns positionally with placedContexts[i]).
+ *
+ * @param {any} mgr - bot.manager
+ * @param {any} placedResults - broadcast result (has operation_results); null when unavailable
+ * @param {any[]} placedContexts - opContexts (aligned with operation_results); null when unavailable
+ * @returns {string[]} Unique, well-formed 1.7.x order ids
+ */
+function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContexts: any): { masterIds: string[]; createIds: string[]; all: string[] } {
+    const masterIds = new Set<string>();
+    const grid = mgr && mgr.grid;
+    if (Array.isArray(grid)) {
+        for (const slot of grid) {
+            if (slot && slot.orderId && /^1\.7\.\d+$/.test(String(slot.orderId))) {
+                masterIds.add(String(slot.orderId));
+            }
+        }
+    }
+    const createIds = new Set<string>();
+    if (placedResults && Array.isArray(placedContexts)) {
+        const opResults = extractBatchOperationResults(placedResults);
+        if (Array.isArray(opResults)) {
+            for (let i = 0; i < placedContexts.length; i++) {
+                const ctx = placedContexts[i];
+                if (!ctx || ctx.kind !== 'create') continue;
+                const opResult = opResults[i] && opResults[i][1];
+                if (opResult && /^1\.7\.\d+$/.test(String(opResult))) {
+                    createIds.add(String(opResult));
+                }
+            }
+        }
+    }
+    const all = new Set<string>([...masterIds, ...createIds]);
+    return { masterIds: [...masterIds], createIds: [...createIds], all: [...all] };
+}
+
+/**
+ * Converge master with the chain after a COW commit was refused (master moved
+ * during broadcast) or an uncertain broadcast was poll-confirmed.
+ *
+ * Preferred path (when the broadcast result is available): re-read the exact
+ * on-chain orders BY ID — every id master already tracks plus the batch's
+ * fresh CREATE ids. get_objects returns the complete, authoritative set
+ * regardless of account size, so syncFromOpenOrders converges master instead
+ * of dropping the freshest creates (which previously left permanent orphans
+ * and tripped the fund invariant). This is fully immune to the
+ * get_full_accounts window truncation that broke the old window-read path.
+ *
+ * Fallback (no broadcast result, e.g. uncertain paths, or by-id read
+ * unavailable): window read. A truncated read is ambiguous — only the
+ * freshest orders are dropped — so it MUST NOT drive adoption; we return false
+ * and let the caller keep pending-broadcast protection + structural resync.
+ *
+ * @param {any} bot
+ * @param {any} chainOrders - chain_orders module (has readOpenOrdersWithMetaSafe + batchReadOrders)
+ * @param {string} logPrefix
+ * @param {Object} [opts]
+ * @param {any} [opts.placedResults] - broadcast result carrying operation_results
+ * @param {any[]} [opts.placedContexts] - opContexts aligned with operation_results
+ * @returns {Promise<boolean>} true if master was adopted from the chain
+ */
+/**
+ * P1-atomic: after a refused/uncertain COW commit is recovered by adopting the
+ * placed orders from the chain, re-apply the rotational boundary this batch had
+ * already computed (workingBoundary) to master. The refused commit discarded
+ * the working grid, so without this the next rebalance would re-derive the
+ * boundary from a master that still reflects the pre-fill layout and could
+ * re-stamp the just-filled slot x. Applying workingBoundary commits the
+ * post-fill rotation immediately (no re-broadcast), so the next placement lands
+ * at the shifted slot, never at x.
+ *
+ * @param {any} bot
+ * @param {number} workingBoundary - boundary index the refused batch targeted
+ */
+async function restoreBoundaryAfterAdoption(bot: any, workingBoundary: any): Promise<void> {
     try {
+        if (workingBoundary === undefined || workingBoundary === null) return;
+        if (typeof bot.manager._restoreBoundary === 'function') {
+            bot.manager._restoreBoundary(workingBoundary);
+        } else {
+            bot.manager.boundaryIdx = workingBoundary;
+        }
+        bot.manager.logger.log(
+            `[COW] Restored rotational boundary ${workingBoundary} after refused/uncertain commit + chain adoption (atomic re-plan)`,
+            'info'
+        );
+    } catch (e: any) {
+        bot.manager.logger.log(`[COW] Post-adoption boundary restore failed: ${getErrorMessage(e)}`, 'warn');
+    }
+}
+
+async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: string, opts: any = {}): Promise<boolean> {
+    const { placedResults = null, placedContexts = null } = opts || {};
+    try {
+        const mgr = bot.manager;
         const accountRef = bot.accountId || bot.account?.id || bot.account;
+
+        // PREFERRED: re-read the exact placed/existing orders by id. Only when we
+        // have the broadcast result (so the set includes the freshest CREATE ids);
+        // without it the by-id set would be incomplete and would wrongly sync
+        // master against a partial picture.
+        const { all: knownIds, createIds } = placedResults
+            ? collectKnownOnChainOrderIds(mgr, placedResults, placedContexts)
+            : { all: [], createIds: [] as string[] };
+        if (knownIds.length > 0 && typeof chainOrders.batchReadOrders === 'function') {
+            // Retry/backoff (fix #6): a fresh CREATE absent from the first read
+            // is a lagging node, not a missing order; a read error is equally
+            // transient. Retry with backoff before deferring to the structural
+            // resync path — deferral blocks CREATEs for minutes.
+            const maxAttempts = Math.max(1, Number(COW_PERFORMANCE.ADOPTION_READ_MAX_ATTEMPTS) || 3);
+            const baseBackoff = Math.max(250, Number(COW_PERFORMANCE.ADOPTION_READ_BACKOFF_MS) || 2000);
+            let chainMap: Map<string, any> | null = null;
+            let laggingCreateIds: string[] = [];
+            let lastReadError: string | null = null;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                chainMap = null;
+                laggingCreateIds = [];
+                lastReadError = null;
+                try {
+                    chainMap = await chainOrders.batchReadOrders(knownIds);
+                } catch (byIdErr: any) {
+                    // A by-id read failure must NOT fall through to the window read
+                    // (which would also miss the freshest creates and virtualize them).
+                    lastReadError = getErrorMessage(byIdErr);
+                }
+                if (chainMap) {
+                    // Lagging-node guard (phantom-virtualization risk): a FRESHLY
+                    // BROADCAST create id returning null here almost certainly means the
+                    // queried node has not yet indexed the order (it was just placed), not
+                    // that it is gone. If we synced a partial set, syncFromOpenOrders'
+                    // phantom-cleanup would virtualize that live order and count it as a
+                    // fill, re-creating a duplicate on the next cycle — the exact orphan
+                    // class this path exists to prevent.
+                    for (const id of createIds) {
+                        if (chainMap.get(id) == null) laggingCreateIds.push(id);
+                    }
+                }
+                if (chainMap && laggingCreateIds.length === 0) break;
+                if (attempt < maxAttempts) {
+                    const wait = baseBackoff * Math.pow(2, attempt - 1);
+                    bot.manager.logger.log(
+                        `${logPrefix} By-id adoption read retry ${attempt}/${maxAttempts - 1} in ${wait}ms ` +
+                        `(${chainMap ? `fresh CREATE(s) absent: ${laggingCreateIds.join(', ')}` : `read failed: ${lastReadError}`})`,
+                        'warn'
+                    );
+                    await sleep(wait);
+                }
+            }
+            if (!chainMap) {
+                bot.manager.logger.log(
+                    `${logPrefix} By-id adoption read failed after ${maxAttempts} attempt(s): ${lastReadError}; deferring (pending-broadcast protection kept)`,
+                    'warn'
+                );
+                return false;
+            }
+            if (laggingCreateIds.length > 0) {
+                bot.manager.logger.log(
+                    `${logPrefix} By-id adoption deferred: fresh CREATE(s) ${laggingCreateIds.join(', ')} absent from ` +
+                    `${maxAttempts} chain read(s) (likely lagging node). ` +
+                    'Keeping pending-broadcast protection pending a caught-up read.',
+                    'error'
+                );
+                return false;
+            }
+
+            const fullChain: any[] = [];
+            if (chainMap && typeof chainMap.forEach === 'function') {
+                chainMap.forEach((order: any) => { if (order) fullChain.push(order); });
+            } else if (Array.isArray(chainMap)) {
+                for (const o of chainMap) if (o) fullChain.push(o);
+            }
+            // Informational: any other known id (master's pre-existing orders)
+            // absent is expected — those were cancelled/filled in this batch.
+            if (fullChain.length < knownIds.length) {
+                bot.manager.logger.log(
+                    `${logPrefix} By-id adoption: ${knownIds.length - fullChain.length}/${knownIds.length} known id(s) absent ` +
+                    '(expected cancels/fills); adopting the rest',
+                    'debug'
+                );
+            }
+            if (fullChain.length > 0 && typeof mgr.syncFromOpenOrders === 'function') {
+                await mgr.syncFromOpenOrders(fullChain, { skipAccounting: false });
+                bot.manager.logger.log(
+                    `${logPrefix} Adopted ${fullChain.length} on-chain order(s) by id after refused/uncertain commit (truncation-immune)`,
+                    'info'
+                );
+                return true;
+            }
+        }
+
+        // FALLBACK: window read (ambiguous when truncated).
         const freshRead = await readOpenOrdersWithMetaSafe(chainOrders, accountRef);
-        // A truncated read (get_full_accounts caps the limit_orders window and
-        // fresh creates sort last) omits the very orders this batch just
-        // broadcast — the adoption sync could not register them, and clearing
-        // the pending-broadcast protection would let the next cycle re-create
-        // them as duplicates on chain. Treat truncated like an unreadable
-        // chain state: keep the protection and defer to a structural resync.
         if (freshRead.truncated) {
             bot.manager.logger.log(
                 `${logPrefix} Chain read TRUNCATED after batch broadcast; adoption deferred (pending-broadcast protection kept)`,
@@ -3630,7 +4184,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
         updateOperationCount
     };
 }
-export { buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, recoverAfterMissingCreateResults, preserveMissingCreateBlockersAfterRecovery, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults };
+export { isLastFillGuardBlocked, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain };
 
 
 export default {
@@ -3638,8 +4192,6 @@ export default {
     buildOutsideInPairGroupsForCreateEntries,
     extractOperationResults,
     findMissingCreateResultContexts,
-    recoverAfterMissingCreateResults,
-    preserveMissingCreateBlockersAfterRecovery,
     markMissingCreateResultsAsStructuralBlocker,
     formatUnmatchedChainOrderForLog,
     recordPendingBroadcast,

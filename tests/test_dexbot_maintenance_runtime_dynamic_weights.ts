@@ -86,7 +86,12 @@ const NAMES = {
         'resolveGapSlots', 'resolveRelativePrice', 'roundTo',
         'roundToDecimals', 'toDecimal', 'validateBoundaryCommit',
         'validateOrderAmountsWithinLimits', 'validatePersistedBoundary',
-        'cloneWeightDistribution',
+        'cloneWeightDistribution', 'priceLevelsForGenesis', 'priceForSlot',
+        'slotIndexForPrice', 'slotIdForPrice', 'assertSlotPriceInvariant',
+        'priceSlotEqual', 'buildGenesisFromPriceLevels', 'hashPriceLevels',
+        'quantumForPrecision', 'quantizeFloat',
+        'validateOrderSize', 'getDustThresholdFactor', 'calculateSwapInAmount',
+        'findCrossedOrder', 'getPrecision',
     ],
     processedFillStore: ['ProcessedFillStore', 'PROCESSED_FILL_PERSISTENCE_MODES', 'resolveProcessedFillPersistenceMode'],
     startupReconcile: ['attemptResumePersistedGridByPriceMatch', 'decideStartupGridAction', 'reconcileGridOrders'],
@@ -554,6 +559,7 @@ async function testManualTriggerResetRefreshesCenterPrice() {
         },
         assertUpdated: async (updated, logs) => {
             assert.strictEqual(updated.centerPrice, 123.45, 'manual reset should refresh centerPrice from amaCenterPrice');
+            assert.strictEqual(updated.gridCenterPrice, 123.45, 'manual reset should refresh gridCenterPrice from amaCenterPrice');
             assert.strictEqual(updated.gridPriceOffsetPct, 0.8, 'manual reset should preserve the AMA spread offset for the rebuild');
             assert.strictEqual(updated.lastGridResetSource, 'manual_grid_resync', 'manual reset should record manual reset provenance');
             assert.ok(
@@ -779,11 +785,11 @@ async function testRmsDivergenceRunsFullGridResync() {
     await executeMaintenanceLogic(self, 'unit-test-rms');
 
     assert.deepStrictEqual(resyncOptions, {
-        refreshCenterPrice: true,
+        refreshCenterPrice: false,
         centerRefreshContext: 'RMS structural grid resync',
         centerRefreshLabel: 'RMS structural grid resync',
         resetSource: 'rms_structural_grid_resync',
-    }, 'RMS divergence should run full grid resync from the latest AMA center snapshot');
+    }, 'RMS divergence should run full grid resync as state repair WITHOUT re-anchoring (docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §2 fix #1: re-anchoring orphaned live orders)');
     assert.strictEqual(correctionCalled, false, 'RMS divergence should not use correction-only path');
     assert.strictEqual(spreadChecked, false, 'maintenance should stop after full RMS resync');
     assert.ok(

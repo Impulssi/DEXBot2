@@ -8,6 +8,7 @@ import { LOGGING_CONFIG, ORDER_STATES, TIMING } from '../constants.js';
 import { Config } from '../config.js';
 import { getErrorMessage } from '../utils/errors.js';
 import { withTimeout } from './utils/timeout.js';
+import { CLI_COLORS } from '../cli_colors.js';
 
 const storage = getStorage();
 
@@ -82,10 +83,10 @@ class Logger {
         }
 
         this.colors = useColors ? {
-            reset: '\x1b[0m',
-            buy: '\x1b[92m', sell: '\x1b[91m', spread: '\x1b[93m',
-            debug: '\x1b[38;5;87m', info: '\x1b[97m', warn: '\x1b[93m', error: '\x1b[91m', critical: '\x1b[38;5;196m',
-            virtual: '\x1b[90m', active: '\x1b[92m', partial: '\x1b[94m'
+            reset: CLI_COLORS.reset,
+            buy: CLI_COLORS.buy, sell: CLI_COLORS.sell, spread: CLI_COLORS.spread,
+            debug: CLI_COLORS.cyan, info: CLI_COLORS.white, warn: CLI_COLORS.spread, error: CLI_COLORS.sell, critical: CLI_COLORS.redStrong,
+            virtual: CLI_COLORS.brightBlack, active: CLI_COLORS.buy, partial: CLI_COLORS.lightBlue
         } : {
             reset: '', buy: '', sell: '', spread: '',
             debug: '', info: '', warn: '', error: '', critical: '',

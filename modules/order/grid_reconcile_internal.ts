@@ -9,20 +9,58 @@
 
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
-import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findPriceCollision, resolveGapBand, isSlotInRail } from './utils/math.js';
+import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findCrossedOrder, resolveGapBand, isSlotInRail, priceSlotEqual } from './utils/math.js';
 import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection } from './utils/order.js';
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
 
 function computePlacementPriceCollision(manager: any, gridOrder: any): any {
-    const createPrice = gridOrder.price;
-    const createSize = gridOrder.size;
-    return createPrice != null && findPriceCollision(
-        manager.orders.values(),
-        gridOrder.id,
-        createPrice, createSize, gridOrder.type, manager.assets,
-        isOrderPlaced
+    const precision = gridOrder.type === ORDER_TYPES.SELL ? manager.assets.assetA.precision : manager.assets.assetB.precision;
+    for (const o of manager.orders.values()) {
+        if (!isOrderPlaced(o) || o.id === gridOrder.id) continue;
+        if (priceSlotEqual(o.price, gridOrder.price, precision)) return o;
+    }
+    return null;
+}
+
+/**
+ * Crossing-placement guard for startup reconcile placements (relocations
+ * and creates): a placement at gridOrder.price must not cross an
+ * opposite-side live order — either a master order or a still-unmatched
+ * chain order (orphan). Phase-2's cancels-first ordering removes most
+ * straddlers, but a FAILED cancel stays live on the chain AND in
+ * manager.orders, so this check refuses to re-price or create across it
+ * (incident class: a re-priced order self-traded against a live
+ * opposite-side order during the broadcast window).
+ *
+ * @param {Object} manager - OrderManager instance (orders Map, assets).
+ * @param {Object} gridOrder - Target grid slot (price, type).
+ * @param {string|null} excludeChainOrderId - Chain order id to exempt (the
+ *   order being relocated itself; matched both as a master orderId and as
+ *   an unmatched-chain-order chainOrderId).
+ * @returns {Object|null} The first crossed live order, or null.
+ */
+function computePlacementCrossing(manager: any, gridOrder: any, excludeChainOrderId: any = null): any {
+    const price = gridOrder?.price;
+    const type = gridOrder?.type;
+    if (price == null || type == null) return null;
+    const candidates: any[] = manager.orders instanceof Map ? [...manager.orders.values()] : [];
+    if (Array.isArray(manager._lastUnmatchedChainOrders)) {
+        for (const o of manager._lastUnmatchedChainOrders) {
+            if (o && o.type != null && o.price != null) candidates.push(o);
+        }
+    }
+    return findCrossedOrder(
+        candidates,
+        price,
+        type,
+        manager.assets,
+        (o: any) => {
+            const oid = o?.orderId || o?.chainOrderId;
+            return o && oid && o.price != null
+                && (!excludeChainOrderId || oid !== excludeChainOrderId);
+        }
     );
 }
 
@@ -425,8 +463,25 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
         return null;
     }
 
-    // Price collision guard: reject if another placed order already exists at this price level.
     const createPrice = gridOrder.price;
+
+    // CROSSING-PLACEMENT GUARD: a create must not cross an opposite-side
+    // live order (master or unmatched orphan) — see computePlacementCrossing.
+    // Checked BEFORE the same-price collision guard so a near-equal
+    // opposite-side order is reported as a crossing, not a collision.
+    const crossed = computePlacementCrossing(manager, gridOrder, null);
+    if (crossed) {
+        manager.logger?.log?.(
+            `[_createOrderFromGrid] SKIP (STARTUP-CROSS-GUARD): Create for ${gridOrder.id} at ` +
+            `${Format.formatPrice6(createPrice)} crosses live ${crossed.type} ` +
+            `${crossed.id || crossed.chainOrderId || 'chain'} (${crossed.orderId || crossed.chainOrderId}) ` +
+            `@${Format.formatPrice6(crossed.price)}`,
+            'warn'
+        );
+        return null;
+    }
+
+    // Price collision guard: reject if another placed order already exists at this price level.
     const priceCollision = computePlacementPriceCollision(manager, gridOrder);
     if (priceCollision) {
         manager.logger?.log?.(
@@ -716,6 +771,26 @@ function _prepareStartupUpdatePlan(plan: any, manager: any, logger: any): any {
         manager.assets.assetA,
         manager.assets.assetB
     );
+
+    // CROSSING-PLACEMENT GUARD: a relocation re-prices the chain order onto
+    // the target slot's rail price. It must not cross an opposite-side live
+    // order — Phase-2's cancels-first ordering removes most straddlers, but
+    // a FAILED cancel stays live on the chain and in manager.orders, and
+    // re-pricing across it would self-trade during the broadcast window.
+    // Skipping is safe: the order keeps its old commitment and the next
+    // reconcile cycle re-aligns once the crossed order is resolved.
+    const crossed = computePlacementCrossing(manager, gridOrder, chainOrderId);
+    if (crossed) {
+        logger?.log?.(
+            `[STARTUP-CROSS-GUARD] Skipping relocation update ${chainOrderId} -> ${gridOrder.id}: ` +
+            `new ${gridOrder.type} @${Format.formatPrice6(gridOrder.price)} crosses live ` +
+            `${crossed.type} ${crossed.id || crossed.chainOrderId || 'chain'} ` +
+            `(${crossed.orderId || crossed.chainOrderId}) @${Format.formatPrice6(crossed.price)}; ` +
+            `re-align on the next reconcile cycle.`,
+            'warn'
+        );
+        return null;
+    }
 
     return {
         plan,
@@ -1041,6 +1116,31 @@ async function _adoptPossiblyLandedCreate({
     }
 }
 
+/**
+ * Flag slots whose CREATE broadcast result was lost (uncertain): the order may
+ * be live on chain while the master slot still reads VIRTUAL with a planned
+ * size. This durable marker is the ONLY evidence that distinguishes a true
+ * sized-VIRTUAL orphan from a normal planned slot, so the persisted grid's
+ * loadGrid sanitizer drops sizes only for flagged slots (see grid.ts and
+ * docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §3 lineage).
+ */
+async function _markSlotsCreateUncertain(manager: any, slotIds: any[], logger?: any): Promise<void> {
+    if (!manager?.orders || typeof manager.applyGridUpdateBatch !== 'function') return;
+    const updates: any[] = [];
+    for (const id of slotIds || []) {
+        if (!id) continue;
+        const slot = manager.orders.get(id);
+        if (!slot || slot.orderId || slot.state !== ORDER_STATES.VIRTUAL || slot.createUncertain === true) continue;
+        updates.push({ ...slot, createUncertain: true });
+    }
+    if (updates.length === 0) return;
+    try {
+        await manager.applyGridUpdateBatch(updates, 'startup-create-uncertain-marker');
+    } catch (err: any) {
+        logger?.log?.(`Startup: Failed to mark create-uncertain slots: ${getErrorMessage(err)}`, 'warn');
+    }
+}
+
 async function _createStartupOrderWithHandling({
     chainOrders,
     account,
@@ -1120,6 +1220,10 @@ async function _createStartupOrderWithHandling({
             `Startup: Create failed for ${orderLabel} after ${maxAttempts} attempt(s); slot kept for next startup reconcile cycle`,
             'warn'
         );
+        // Possibly-landed create with no adoptable evidence: mark the slot so
+        // a reload's sanitizer treats its size as an orphan candidate instead
+        // of a normal planned size (see grid.ts loadGrid).
+        await _markSlotsCreateUncertain(manager, [gridOrder?.id], manager?.logger);
     }
     return null;
 }
@@ -1186,6 +1290,20 @@ async function _executeStartupCreateGroupBatch({
                 `Startup: Skip create ${plan.orderLabel} - price ${Format.formatPrice6(createPrice)} ` +
                 `collides with placed order ${priceCollision.id} (${priceCollision.orderId}) ` +
                 `at ${Format.formatPrice6(priceCollision.price)}`,
+                'warn'
+            );
+            continue;
+        }
+
+        // CROSSING-PLACEMENT GUARD: a create must not cross an opposite-side
+        // live order (master or unmatched orphan) — see computePlacementCrossing.
+        const crossed = computePlacementCrossing(manager, gridOrder, null);
+        if (crossed) {
+            logger?.log?.(
+                `Startup: Skip create ${plan.orderLabel} (STARTUP-CROSS-GUARD) - price ` +
+                `${Format.formatPrice6(createPrice)} crosses live ${crossed.type} ` +
+                `${crossed.id || crossed.chainOrderId || 'chain'} (${crossed.orderId || crossed.chainOrderId}) ` +
+                `@${Format.formatPrice6(crossed.price)}`,
                 'warn'
             );
             continue;
@@ -1266,6 +1384,14 @@ async function _executeStartupCreateGroupBatch({
         }
 
         if (missingChainOrderId) {
+            // Broadcast landed but some create results were missing their chain
+            // ids: those slots are possibly-landed without an adoptable id —
+            // mark them as durable orphan evidence for the next load.
+            await _markSlotsCreateUncertain(
+                manager,
+                batchResults.filter((b: any) => !b.chainOrderId).map((b: any) => b.plan?.gridOrder?.id),
+                logger
+            );
             await _recoverStartupSyncFailure({
                 chainOrders,
                 manager,
@@ -1316,6 +1442,14 @@ async function _executeStartupCreateGroupBatch({
                     }
                 );
                 if (freshChainOrders === null) {
+                    // Verification impossible: every group member is a
+                    // possibly-landed create. Mark all slots, then let the
+                    // guarded recovery sync adopt anything that actually landed.
+                    await _markSlotsCreateUncertain(
+                        manager,
+                        prepared.map((p: any) => p?.plan?.gridOrder?.id),
+                        logger
+                    );
                     await _recoverStartupSyncFailure({
                         chainOrders,
                         manager,
@@ -1362,11 +1496,26 @@ async function _executeStartupCreateGroupBatch({
                             );
                         }
                     }
+                    // Plans whose slot still has no orderId after the adoption
+                    // pass are possibly-landed creates: mark durable orphan
+                    // evidence for the next loadGrid sanitizer.
+                    await _markSlotsCreateUncertain(
+                        manager,
+                        prepared
+                            .filter((p: any) => !manager.orders.get(p?.plan?.gridOrder?.id)?.orderId)
+                            .map((p: any) => p?.plan?.gridOrder?.id),
+                        logger
+                    );
                 }
             } catch (verifyErr: any) {
                 logger?.log?.(
                     `Startup: Uncertain group verification failed: ${getErrorMessage(verifyErr)}; falling back to recovery sync`,
                     'error'
+                );
+                await _markSlotsCreateUncertain(
+                    manager,
+                    prepared.map((p: any) => p?.plan?.gridOrder?.id),
+                    logger
                 );
                 await _recoverStartupSyncFailure({
                     chainOrders,
@@ -1504,6 +1653,7 @@ async function _reconcileStartupSide({
     const sideUpper = orderType === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
     const balanceKey = orderType === ORDER_TYPES.SELL ? 'sellFree' : 'buyFree';
     const balanceSymbol = orderType === ORDER_TYPES.SELL ? manager.assets.assetA.symbol : manager.assets.assetB.symbol;
+
     const {
         sortUpdateComparator,
         sortExcessCancelComparator,
@@ -1704,10 +1854,12 @@ async function _reconcileStartupSide({
         }
     }
 
+
+
     return {
         chainCount,
     };
 }
 
-export { _countActiveOnGrid, _pickVirtualSlotsToActivate, _createOrderFromGrid, _cancelChainOrder, _recoverStartupSyncFailure, _refreshStartupUpdatePlans, _executeStartupUpdateBatch, _executeStartupSequentialUpdateFallback, _executeStartupCreateGroupBatch, _createStartupOrderWithHandling, _executePlannedStartupCreates, _reconcileStartupSide }
+export { _countActiveOnGrid, _pickVirtualSlotsToActivate, _createOrderFromGrid, _prepareStartupUpdatePlan, _markSlotsCreateUncertain, _cancelChainOrder, _recoverStartupSyncFailure, _refreshStartupUpdatePlans, _executeStartupUpdateBatch, _executeStartupSequentialUpdateFallback, _executeStartupCreateGroupBatch, _createStartupOrderWithHandling, _executePlannedStartupCreates, _reconcileStartupSide }
 

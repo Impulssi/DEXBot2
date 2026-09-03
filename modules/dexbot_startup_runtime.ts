@@ -83,8 +83,17 @@ async function initializeStartupState(bot: any) {
         bot.manager.accountOrders = bot.accountOrders;
     }
     bot._wireStructuralGridResyncRequest();
+    bot._wireBroadcastRegionEndDrain();
     bot._wireProcessedFillTracking();
-    bot.manager.startBootstrap();
+    // No startBootstrap() here: the OrderManager constructor already enters
+    // bootstrap mode (_bootstrapping = 1), and this extra level permanently
+    // unbalanced the trigger-reset startup path. The normal grid-init flow
+    // unwinds two levels (interior finish + finally) and happened to absorb
+    // it, but the trigger-reset path has only ONE finishBootstrap — so after
+    // a pending-trigger reset the refcount stayed at 1 forever: every fill
+    // was routed through the bootstrap consumer (which skips dust detection
+    // and post-fill grid maintenance) and checkGridHealth no-op'd on the
+    // same stuck flag, leaving dust remnants uncancellable.
 
     try {
         if (bot.accountId && bot.config.assetA && bot.config.assetB) {
@@ -127,6 +136,7 @@ async function initializeStartupState(bot: any) {
     const persistedBoundaryIdx = bot.accountOrders.loadBoundaryIdx();
     const persistedBtsBalance = bot.accountOrders.loadBtsBalance();
     const persistedRecentFillKeys = bot.accountOrders.loadRecentFillKeys();
+    const persistedGenesis = bot.accountOrders.loadGenesis?.() ?? null;
 
     return {
         persistedGrid: repairedGrid,
@@ -134,6 +144,7 @@ async function initializeStartupState(bot: any) {
         persistedBoundaryIdx,
         persistedBtsBalance,
         persistedRecentFillKeys,
+        persistedGenesis,
     };
 }
 
@@ -149,6 +160,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
         persistedBoundaryIdx,
         persistedBtsBalance,
         persistedRecentFillKeys,
+        persistedGenesis,
     } = startupState;
 
     try {
@@ -186,7 +198,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                             if (syncResult?.filledOrders?.length > 0) {
                                 bot._refreshDynamicWeightDistribution('post-reconnect sync fill');
                                 bot._log(`Post-reconnect sync: ${syncResult.filledOrders.length} grid order(s) found filled.`, 'info');
-                                await bot._processFillsWithBatching(syncResult.filledOrders, new Set(), 'post-reconnect sync fill');
+                                await bot._processFillsWithBatching(syncResult.filledOrders, new Set(), 'post-reconnect sync fill', { isReplay: true });
                                 if (bot._shuttingDown) return;
                             }
                             bot.manager._recentFillKeysSnapshot = bot._getRecentFillKeysSnapshot();
@@ -295,7 +307,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                             if (accountingResult.status !== 'applied') {
                                 continue;
                             }
-                            const result = await bot._processFillsWithBatching([gridOrder], new Set(), `[POST-RESET] fill ${gridOrder.id}`);
+                            const result = await bot._processFillsWithBatching([gridOrder], new Set(), `[POST-RESET] fill ${gridOrder.id}`, { isReplay: true });
                             if (result.aborted) {
                                 bot._warn('[POST-RESET] Aborted batch due to illegal state; skipping grid persistence this cycle');
                                 continue;
@@ -319,7 +331,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                         if (postResetChainOpenOrders !== null) {
                             const syncResult = await bot.manager.syncFromOpenOrders(postResetChainOpenOrders);
                             if (syncResult.filledOrders?.length > 0) {
-                                await bot._processFillsWithBatching(syncResult.filledOrders, new Set(), '[POST-RESET] open-orders fallback');
+                                await bot._processFillsWithBatching(syncResult.filledOrders, new Set(), '[POST-RESET] open-orders fallback', { isReplay: true });
                             }
                         }
                     }
@@ -370,6 +382,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
             await bot._refreshAndSyncCreditRuntime();
             await bot._runCreditRuntimeMaintenance('startup');
             bot._setupBlockchainFetchInterval();
+            if (typeof bot._setupBotsConfigPollInterval === 'function') bot._setupBotsConfigPollInterval();
             bot._setupCreditWatchdogInterval();
             bot._setupCredentialDaemonWatchdogInterval();
             bot._setupDustHealthCheckInterval();
@@ -421,6 +434,11 @@ async function finishStartupSequence(bot: any, startupState: any) {
         // resume/regenerate on ambiguous data), so it gets the empty list.
         const chainReadTruncated = guardedChainOrders === null;
         const chainOpenOrders = guardedChainOrders === null ? [] : guardedChainOrders;
+        // Seed LAST-FILL-GUARD from the live book so it survives restarts
+        // (closes the in-memory-only window until the first fill arrives).
+        if (!chainReadTruncated && Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
+            try { bot.manager?.seedLastFilledPricesFromBook?.(chainOpenOrders); } catch {}
+        }
 
         const reconcileMod = botReconcileModule(bot);
         let shouldRegenerate = false;
@@ -438,6 +456,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                     await bot.manager.persistGrid(orders);
                 },
                 boundaryIdx: persistedBoundaryIdx,
+                genesis: persistedGenesis,
                 attemptResumeFn: reconcileMod.attemptResumePersistedGridByPriceMatch,
             });
             shouldRegenerate = decision.shouldRegenerate;
@@ -475,11 +494,22 @@ async function finishStartupSequence(bot: any, startupState: any) {
                 bot._refreshDynamicWeightDistribution('startup');
                 if (shouldRegenerate) {
                     await bot.manager._initializeAssets();
-
+                }
+                if (shouldRegenerate) {
                     if (!chainReadTruncated && Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
                         bot._log('Generating new grid and syncing with existing on-chain orders...');
                         await botGridModule(bot).initializeGrid(bot.manager);
                         await bot.manager.syncFromOpenOrders(chainOpenOrders, { skipAccounting: true });
+                        // Drain queued fills BEFORE re-placement (P3 ordering): fills
+                        // replayed from history reference the PRE-restart order ids.
+                        // Processing them now (freshly synced grid) keeps their slot
+                        // provenance; processing them after reconcile re-placement
+                        // finds no grid order and falls back to orphan proceeds
+                        // credits, which drift the fund bookkeeping.
+                        if (bot._incomingFillQueue.length > 0) {
+                            bot._log(`[STARTUP] Processing ${bot._incomingFillQueue.length} queued fill(s) before re-placement (order provenance intact)`, 'info');
+                            await bot._processFillsWithBootstrapMode(chainOrders);
+                        }
                         const rebalanceResult = await reconcileMod.reconcileGridOrders({
                             manager: bot.manager,
                             config: bot.config,
@@ -503,7 +533,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                     await bot._persistAndRecoverIfNeeded();
                 } else {
                     bot._log('Found active session. Loading and syncing existing grid.');
-                    await botGridModule(bot).loadGrid(bot.manager, persistedGrid, persistedBoundaryIdx);
+                    await botGridModule(bot).loadGrid(bot.manager, persistedGrid, persistedBoundaryIdx, persistedGenesis);
                     let startupChainOpenOrders = chainOpenOrders;
                     if (chainReadTruncated) {
                         // Sync on a partial window would virtualize live ACTIVE
@@ -523,7 +553,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                             bot._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
                             const batchResult = await bot._processFillsWithBatching(
                                 syncResult.filledOrders, new Set(), 'startup sync fill rebalance',
-                                { skipAccountTotalsUpdate: true }
+                                { skipAccountTotalsUpdate: true, isReplay: true }
                             );
 
                             if (!batchResult?.aborted) {
@@ -535,9 +565,21 @@ async function finishStartupSequence(bot: any, startupState: any) {
                                 if (reReadOrders !== null) {
                                     startupChainOpenOrders = reReadOrders;
                                     await bot.manager.synchronizeWithChain(startupChainOpenOrders, 'readOpenOrders');
+                                    try { bot.manager?.seedLastFilledPricesFromBook?.(startupChainOpenOrders); } catch {}
                                 }
                             }
                         }
+                    }
+
+                    // P3 ordering: drain queued (and shutdown-surviving replayed)
+                    // fills against the LOADED grid before reconcile re-placement
+                    // changes it. The loaded grid still maps the pre-restart order
+                    // ids to their slots, so proceeds/fill accounting attach to the
+                    // right slots instead of degrading to orphan "unknown order"
+                    // proceeds credits that drift the fund bookkeeping.
+                    if (bot._incomingFillQueue.length > 0) {
+                        bot._log(`[STARTUP] Processing ${bot._incomingFillQueue.length} queued fill(s) before reconcile (order provenance intact)`, 'info');
+                        await bot._processFillsWithBootstrapMode(chainOrders);
                     }
 
                     if (chainReadTruncated) {
@@ -607,6 +649,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
         await bot._refreshAndSyncCreditRuntime();
         await bot._runCreditRuntimeMaintenance('startup');
         bot._setupBlockchainFetchInterval();
+        if (typeof bot._setupBotsConfigPollInterval === 'function') bot._setupBotsConfigPollInterval();
         bot._setupCreditWatchdogInterval();
         bot._setupCredentialDaemonWatchdogInterval();
 
@@ -639,6 +682,7 @@ async function placeInitialOrdersImpl(bot: any) {
         bot.manager.accountOrders = bot.accountOrders;
     }
     bot._wireStructuralGridResyncRequest();
+    bot._wireBroadcastRegionEndDrain();
     bot.manager.startBootstrap();
     try {
         try {

@@ -53,6 +53,9 @@ function calculateSwapInAmount(...args: any) { return require('./order/utils/mat
 function floatToBlockchainInt(...args: any) { return require('./order/utils/math').floatToBlockchainInt(...args); }
 function blockchainToFloat(...args: any) { return require('./order/utils/math').blockchainToFloat(...args); }
 function updateDynamicGridSnapshotSync(...args: any) { return require('../market_adapter/utils/dynamic_grid_snapshot').updateDynamicGridSnapshotSync(...args); }
+// Lazy require: dexbot_fill_runtime imports this module, so a static import
+// would be circular; at call time both modules are fully loaded.
+function scheduleFillConsumerRestartFn(...args: any) { return require('./dexbot_fill_runtime').scheduleFillConsumerRestart(...args); }
 function reconcileGridOrders(...args: any) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
 function formatUnmatchedChainOrder(...args: any) { return require('./order/utils/order').formatUnmatchedChainOrder(...args); }
 function getSideBudget(...args: any) { return require('./order/utils/order').getSideBudget(...args); }
@@ -97,7 +100,7 @@ const GRID_RESYNC_REASONS = Object.freeze({
     ...MARKET_ADAPTER_TRIGGER_RESETS,
     manual_grid_resync: MANUAL_TRIGGER_METADATA,
     rms_structural_grid_resync: {
-        shouldRefreshCenterPrice: true,
+        shouldRefreshCenterPrice: false,
         centerRefreshContext: 'RMS structural grid resync',
         centerRefreshLabel: 'RMS structural grid resync',
     },
@@ -879,13 +882,40 @@ function performGridResync(bot: any, options: {
             // of virtualizing live ACTIVE slots; the trigger file is retained
             // so the resync retries on a clean read.
             let resyncReadAmbiguous = false;
+            const readOpenOrdersForResync = (label: string) => readOpenOrdersGuarded(chainOrders, self.accountId, {
+                log: (message: string, level: any) => self._log(message, level),
+                label,
+                detail: 'trigger-file resync',
+            });
+            // Empty-read confirm guard: an EMPTY read during a trigger reset is
+            // only accepted after one confirming re-read. A single 0-order
+            // snapshot from a lagging/partial node must never wipe a live grid
+            // and rebuild over existing orders (phantom reset — duplicated
+            // price levels and mis-tracked orders). A contradicted re-read
+            // (non-empty) feeds the fresh snapshot to the resync so the rebuild
+            // reconciles against the real chain state instead of overwriting it.
             const readFn = async () => {
-                const orders = await readOpenOrdersGuarded(chainOrders, self.accountId, {
-                    log: (message: string, level: any) => self._log(message, level),
-                    label: 'GRID-RESYNC',
-                    detail: 'trigger-file resync',
-                });
-                if (orders === null) resyncReadAmbiguous = true;
+                const orders = await readOpenOrdersForResync('GRID-RESYNC');
+                if (orders === null) {
+                    resyncReadAmbiguous = true;
+                    return orders;
+                }
+                if (orders.length > 0) return orders;
+                await sleep(TIMING.SYNC_EMPTY_READ_CONFIRM_DELAY_MS);
+                const confirmed = await readOpenOrdersForResync('GRID-RESYNC-CONFIRM');
+                if (confirmed === null) {
+                    resyncReadAmbiguous = true;
+                    return orders;
+                }
+                if (confirmed.length > 0) {
+                    self._log(
+                        `[GRID-RESYNC] Empty open-order read contradicted by confirm re-read ` +
+                        `(${confirmed.length} order(s) present) — using fresh non-empty snapshot`,
+                        'warn'
+                    );
+                    return confirmed;
+                }
+                self._log('[GRID-RESYNC] Empty open-order read confirmed by re-read — accepting empty account', 'info');
                 return orders;
             };
             await recalculateGrid(self.manager, {
@@ -965,8 +995,11 @@ async function handlePendingTriggerReset(bot: any) {
     const triggerInfo = readTriggerMetadata(bot.triggerFile);
 
     let resetSucceeded = false;
+    // skipIdle: a pending trigger is an explicit reset command that must run
+    // before the startup sequence. The idle gate can block it indefinitely
+    // when the fill queue never drains, which would silently drop the reset.
     await bot.manager._fillProcessingLock.acquire(async () => {
-        resetSucceeded = await performGridResync(bot, buildGridResyncOptions(triggerInfo));
+        resetSucceeded = await performGridResync(bot, { ...buildGridResyncOptions(triggerInfo), skipIdle: true });
     });
 
     if (!resetSucceeded) {
@@ -1013,7 +1046,13 @@ async function setupTriggerFileDetection(bot: any) {
                             const triggerInfo = readTriggerMetadata(bot.triggerFile);
                             bot.manager._fillProcessingLock.acquire(async () => {
                                 if (bot._shuttingDown) return;
-                                const ok = await performGridResync(bot, buildGridResyncOptions(triggerInfo));
+                                // skipIdle: a trigger file is an explicit reset command.
+                                // Deferring it behind the idle cooldown can loop forever
+                                // when grid activity is continuous (fills arriving during
+                                // placement batches refresh the settle window); the fill
+                                // lock below already serializes the reset with in-flight
+                                // batches.
+                                const ok = await performGridResync(bot, { ...buildGridResyncOptions(triggerInfo), skipIdle: true });
                                 if (!ok) {
                                     bot._warn('Runtime trigger reset failed; retaining existing grid state.');
                                 }
@@ -1114,7 +1153,7 @@ function startOpenOrdersSyncLoop(bot: any) {
                                     bot._log(`Open-orders sync loop: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
                                     bot._markGridActivity?.('open-orders sync fill');
                                     const batchResult = await bot._processFillsWithBatching(
-                                        syncResult.filledOrders, new Set(), 'open-orders sync fill rebalance'
+                                        syncResult.filledOrders, new Set(), 'open-orders sync fill rebalance', { isReplay: true }
                                     );
                                     if (!batchResult?.aborted) {
                                         await bot.manager.persistGrid();
@@ -1254,7 +1293,7 @@ function setupBlockchainFetchInterval(bot: any) {
                                     bot._log(`Periodic sync: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
                                     bot._markGridActivity?.('periodic sync fill rebalance');
                                     const batchResult = await bot._processFillsWithBatching(
-                                        syncResult.filledOrders, new Set(), 'periodic sync fill rebalance'
+                                        syncResult.filledOrders, new Set(), 'periodic sync fill rebalance', { isReplay: true }
                                     );
                                     if (!batchResult?.aborted) {
                                         await bot.manager.persistGrid();
@@ -1303,6 +1342,73 @@ function stopBlockchainFetchInterval(bot: any) {
         clearInterval(bot._blockchainFetchInterval);
         bot._blockchainFetchInterval = null;
         bot._log('Stopped periodic blockchain fetch interval');
+    }
+}
+
+/**
+ * Set up the periodic bots.json fingerprint poll interval.
+ * Decoupled from the heavy blockchain fetch interval (default 240min) so
+ * config changes are visible within BOTS_CONFIG_POLL_INTERVAL_MS (default 5min).
+ * Uses the shared fingerprint via syncMarketAdapterOnPeriodicConfigCheck so
+ * the market adapter start/stop logic stays in one place.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ */
+function setupBotsConfigPollInterval(bot: any) {
+    // Allow per-bot timing override (e.g. tests or per-bot tuning)
+    let intervalMs = bot.config?.timing?.BOTS_CONFIG_POLL_INTERVAL_MS;
+    if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+        intervalMs = Number(TIMING.BOTS_CONFIG_POLL_INTERVAL_MS);
+    }
+    if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+        bot._log(`Bots-config poll interval disabled (value: ${intervalMs}). Fingerprint changes will only be seen on blockchain fetch ticks.`);
+        return;
+    }
+
+    // Ensure the fingerprint exists before the first interval fires.
+    // setupBlockchainFetchInterval already fires syncMarketAdapterOnPeriodicConfigCheck
+    // at startup, so this is a fallback for bots that never run the blockchain interval
+    // (e.g. dryRun or accountId missing).
+    if (!bot._marketAdapterWatchdogFingerprint) {
+        syncMarketAdapterOnPeriodicConfigCheck(bot, 'startup bots-config poll setup').catch((err: any) => {
+            bot._warn(`Bots-config poll setup failed: ${getErrorMessage(err)}`);
+        });
+    }
+
+    if (bot._botsConfigPollInterval !== null && bot._botsConfigPollInterval !== undefined) {
+        stopBotsConfigPollInterval(bot);
+    }
+
+    bot._botsConfigPollInterval = setInterval(async () => {
+        if (bot._shuttingDown) return;
+        // Coalesce with the blockchain-fetch tick: if its tick is already
+        // driving the watchdog, skip to avoid double PM2 queries.
+        if (bot._marketAdapterWatchdogInFlight) return;
+        if (bot._botsConfigPollInFlight) return;
+        bot._botsConfigPollInFlight = true;
+        try {
+            await syncMarketAdapterOnPeriodicConfigCheck(bot, 'bots-config poll');
+        } catch (err: any) {
+            bot._warn(`Bots-config poll failed: ${getErrorMessage(err)}`);
+        } finally {
+            bot._botsConfigPollInFlight = false;
+        }
+    }, intervalMs);
+    if (typeof bot._botsConfigPollInterval.unref === 'function') {
+        bot._botsConfigPollInterval.unref();
+    }
+
+    bot._log(`Started bots-config poll interval: every ${Math.round(intervalMs / 1000)}s (fingerprint check)`);
+}
+
+/**
+ * Stop the periodic bots.json fingerprint poll interval.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ */
+function stopBotsConfigPollInterval(bot: any) {
+    if (bot._botsConfigPollInterval !== null && bot._botsConfigPollInterval !== undefined) {
+        clearInterval(bot._botsConfigPollInterval);
+        bot._botsConfigPollInterval = null;
+        bot._log('Stopped bots-config poll interval');
     }
 }
 
@@ -1580,7 +1686,15 @@ async function executeMaintenanceLogic(bot: any, context: any) {
             bot.manager, bot.account, bot.privateKey, chainOrders
         );
         if (correctionResult.failed > 0) {
-            bot._warn(`[MAINT] ${correctionResult.failed}/${pendingCorrections} price correction(s) failed`);
+            const failedDetails = (correctionResult.results || [])
+                .filter((r: any) => !(r.result && r.result.success))
+                .slice(0, 3)
+                .map((r: any) => `${r.chainOrderId ?? '?'}: ${r.result?.error ?? 'unknown'}`)
+                .join(' | ');
+            bot._warn(
+                `[MAINT] ${correctionResult.failed}/${pendingCorrections} price correction(s) failed` +
+                (failedDetails ? ` — ${failedDetails}` : '')
+            );
         }
     }
 
@@ -1833,7 +1947,7 @@ async function cancelDustOrders(bot: any, { buy: buyDust = [], sell: sellDust = 
 
     if (syntheticFills.length === 0) return { cancelledCount: 0, batchResult: null };
     const result = await bot._processFillsWithBatching(
-        syntheticFills, new Set(), `dust cancel [${syntheticFills.map((o: any) => o.id).join(', ')}]`
+        syntheticFills, new Set(), `dust cancel [${syntheticFills.map((o: any) => o.id).join(', ')}]`, { skipAnchorUpdate: true }
     );
     if (!result.aborted) {
         await bot.manager.persistGrid();
@@ -2101,6 +2215,27 @@ function setupDustHealthCheckInterval(bot: any) {
 }
 
 /**
+ * Retrigger the fill consumer once the recovery/pipeline window has fully
+ * cleared. The consumer's defer branch (batchInFlight / recoverySyncInFlight /
+ * broadcasting) returns WITHOUT rescheduling, so fills enqueued during a long
+ * window would otherwise sit in the queue forever — which also keeps the
+ * maintenance idle gate shut (queue-length check returns the full settle
+ * delay) and blocks deferred grid resyncs and periodic maintenance.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ */
+function drainFillQueueAfterPipelineClear(bot: any) {
+    try {
+        if (!bot || bot._shuttingDown) return;
+        if ((bot._recoverySyncInFlight || 0) > 0) return;
+        if ((bot._batchInFlight || 0) > 0) return;
+        if (bot.manager?.isBroadcastingActive?.()) return;
+        if (!bot._incomingFillQueue || bot._incomingFillQueue.length === 0) return;
+        bot._log(`[FILL-QUEUE] Pipeline cleared; draining ${bot._incomingFillQueue.length} deferred fill(s).`, 'info');
+        scheduleFillConsumerRestartFn(bot, chainOrders);
+    } catch {}
+}
+
+/**
  * Request a full grid reset from fresh on-chain state.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} [reason='structural change']
@@ -2135,6 +2270,7 @@ async function requestGridReset(bot: any, reason: any = 'structural change', opt
             return await performGridResync(bot, resetOptions);
         } finally {
             bot._recoverySyncInFlight = Math.max(0, (bot._recoverySyncInFlight || 0) - 1);
+            if ((bot._recoverySyncInFlight || 0) === 0) drainFillQueueAfterPipelineClear(bot);
         }
     }
 
@@ -2150,16 +2286,23 @@ function wireStructuralGridResyncRequest(bot: any) {
 
     bot.manager.requestStructuralGridResync = async (reason: any = 'structural recovery', details: { unmatchedChainOrders?: any[]; [key: string]: any } = {}) => {
         if (bot._shuttingDown) {
+            bot._warn(`[RECOVERY] Structural resync skip (shutting down): ${reason}`);
             return { skipped: true, reason: 'shutting down' };
         }
 
         if (bot._structuralGridResyncRunning || bot._structuralGridResyncTimer) {
-            return { skipped: true, reason: 'structural grid resync already scheduled' };
+            const why = bot._structuralGridResyncRunning ? 'already running' : 'already scheduled';
+            bot._warn(`[RECOVERY] Structural resync skip (${why}): ${reason}`);
+            return { skipped: true, reason: `structural grid resync ${why}` };
         }
 
         const unmatchedCount = Array.isArray(details?.unmatchedChainOrders)
             ? details.unmatchedChainOrders.length
             : 0;
+        // P5 max-defer: cap batchInFlight re-arm so a fill storm cannot starve
+        // the resync forever (a fill-storm defer loop once kept the flag armed
+        // indefinitely). After the cap, the resync forces instead of re-arming.
+        const STRUCTURAL_RESYNC_MAX_DEFER_MS = 30000;
         const runStructuralResync = async () => {
             bot._structuralGridResyncTimer = null;
             if (bot._shuttingDown) return;
@@ -2171,8 +2314,40 @@ function wireStructuralGridResyncRequest(bot: any) {
             // completes; the fill consumer is already gated on _batchInFlight,
             // so this only blocks the recovery itself, never new fills.
             if (bot._batchInFlight > 0) {
-                bot._structuralGridResyncTimer = setTimeout(runStructuralResync, TIMING.LOCK_REFRESH_MIN_MS);
-                return;
+                const now = Date.now();
+                if (!bot._structuralGridResyncDeferStartedAt) {
+                    bot._structuralGridResyncDeferStartedAt = now;
+                    bot._structuralGridResyncDeferCount = 0;
+                }
+                bot._structuralGridResyncDeferCount = (bot._structuralGridResyncDeferCount || 0) + 1;
+                const deferredMs = now - bot._structuralGridResyncDeferStartedAt;
+                if (deferredMs >= STRUCTURAL_RESYNC_MAX_DEFER_MS) {
+                    bot._warn(
+                        `[RECOVERY] Structural resync max-defer reached (${deferredMs}ms, cap ${STRUCTURAL_RESYNC_MAX_DEFER_MS}ms, deferred ${bot._structuralGridResyncDeferCount}x) — forcing despite _batchInFlight=${bot._batchInFlight}: ${reason}`
+                    );
+                    bot._structuralGridResyncDeferStartedAt = null;
+                    bot._structuralGridResyncDeferCount = 0;
+                } else {
+                    // Fix #7 (docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §2): throttle the defer log to the
+                    // first occurrence per cap window (a fill storm can emit hundreds of
+                    // defer lines in seconds); count the rest and surface them only in
+                    // the final forced message.
+                    if (bot._structuralGridResyncDeferCount === 1) {
+                        bot._warn(
+                            `[RECOVERY] Structural resync defer (batchInFlight=${bot._batchInFlight}, deferred ${deferredMs}ms/${STRUCTURAL_RESYNC_MAX_DEFER_MS}ms): ${reason}`
+                        );
+                    } else {
+                        bot.manager?.logger?.log?.(
+                            `[RECOVERY] Structural resync defer (suppressed; count=${bot._structuralGridResyncDeferCount}, deferred ${deferredMs}ms/${STRUCTURAL_RESYNC_MAX_DEFER_MS}ms): ${reason}`,
+                            'debug'
+                        );
+                    }
+                    bot._structuralGridResyncTimer = setTimeout(runStructuralResync, TIMING.LOCK_REFRESH_MIN_MS);
+                    return;
+                }
+            } else {
+                bot._structuralGridResyncDeferStartedAt = null;
+                bot._structuralGridResyncDeferCount = 0;
             }
 
             bot._structuralGridResyncRunning++;
@@ -2199,14 +2374,28 @@ function wireStructuralGridResyncRequest(bot: any) {
 
                 const suffix = unmatchedCount > 0 ? ` (${unmatchedCount} unmatched chain order(s))` : '';
                     bot._warn(`[RECOVERY] Running structural full grid resync for ${reason}${suffix}`);
-                    const resetResult = await bot.requestGridReset('rms_structural_grid_resync', {
-                        refreshCenterPrice: true,
-                        // Structural resync is a chain-read/rebuild; do not let a
-                        // fill storm starve it behind the idle cooldown or the
-                        // fill-processing lock.
-                        skipIdle: true,
-                        skipFillLock: true,
-                    });
+                    // Same protection as the persisted-grid reload above: the
+                    // reset's reconcile Phase-2 placement runs for minutes; a
+                    // fill arriving mid-reset must not start a COW batch whose
+                    // broadcast overlaps it (commit refusal + duplicate
+                    // generation orphans). _recoverFromPersistedGrid already
+                    // incremented and released the counter; increment again
+                    // for the full-resync branch.
+                    bot._recoverySyncInFlight = (bot._recoverySyncInFlight || 0) + 1;
+                    let resetResult: any;
+                    try {
+                        resetResult = await bot.requestGridReset('rms_structural_grid_resync', {
+                            refreshCenterPrice: false,
+                            // Structural resync is a chain-read/rebuild; do not let a
+                            // fill storm starve it behind the idle cooldown or the
+                            // fill-processing lock.
+                            skipIdle: true,
+                            skipFillLock: true,
+                        });
+                    } finally {
+                        bot._recoverySyncInFlight = Math.max(0, (bot._recoverySyncInFlight || 0) - 1);
+                        if ((bot._recoverySyncInFlight || 0) === 0) drainFillQueueAfterPipelineClear(bot);
+                    }
                 if (resetResult && bot.manager?._recoveryState) {
                     bot.manager._recoveryState = { ...bot.manager._recoveryState, attemptCount: 0, lastAttemptAt: 0, lastFailureAt: 0 };
                 }
@@ -2323,7 +2512,8 @@ async function syncOpenOrdersAndProcessFillsImpl(bot: any, tag: any) {
             const batchResult = await bot._processFillsWithBatching(
                 syncResult.filledOrders,
                 new Set(),
-                `${tag} sync-fill`
+                `${tag} sync-fill`,
+                { isReplay: true }
             );
             if (!batchResult?.aborted) {
                 // Reassign the returned snapshot to the post-fill re-read: the
@@ -2349,7 +2539,7 @@ async function syncOpenOrdersAndProcessFillsImpl(bot: any, tag: any) {
         return { syncResult: null, aborted: true, hasUnmatched: -1, openOrders: null };
     }
 }
-export { loadBotsConfigSnapshot, refreshDynamicWeightDistribution, performGridResync, updateBotGridResetMetadata, handlePendingTriggerReset, setupTriggerFileDetection, performPeriodicGridChecks, isOpenOrdersSyncLoopEnabled, startOpenOrdersSyncLoop, stopOpenOrdersSyncLoop, setupBlockchainFetchInterval, stopBlockchainFetchInterval, executeMaintenanceLogic, cancelDustOrders, isOrderDoesNotExistError, runGridMaintenance, stopMarketAdapterPm2, releaseMarketAdapterRuntime, syncMarketAdapterOnPeriodicConfigCheck, findSnapshotBotForRuntimeConfig, runtimeConfigNeedsMarketAdapter, usesAmaGridPrice, checkBtsBalanceAndAcquire, acquireBts, runDustHealthCheck, setupDustHealthCheckInterval, requestGridReset, wireStructuralGridResyncRequest, getPipelineSignals, markGridActivity, getMetrics, syncOpenOrdersAndProcessFills };
+export { loadBotsConfigSnapshot, refreshDynamicWeightDistribution, performGridResync, updateBotGridResetMetadata, handlePendingTriggerReset, setupTriggerFileDetection, performPeriodicGridChecks, isOpenOrdersSyncLoopEnabled, startOpenOrdersSyncLoop, stopOpenOrdersSyncLoop, setupBlockchainFetchInterval, stopBlockchainFetchInterval, setupBotsConfigPollInterval, stopBotsConfigPollInterval, executeMaintenanceLogic, cancelDustOrders, isOrderDoesNotExistError, runGridMaintenance, stopMarketAdapterPm2, releaseMarketAdapterRuntime, syncMarketAdapterOnPeriodicConfigCheck, findSnapshotBotForRuntimeConfig, runtimeConfigNeedsMarketAdapter, usesAmaGridPrice, checkBtsBalanceAndAcquire, acquireBts, runDustHealthCheck, setupDustHealthCheckInterval, requestGridReset, wireStructuralGridResyncRequest, getPipelineSignals, markGridActivity, getMetrics, syncOpenOrdersAndProcessFills };
 
 
 export default {
@@ -2365,6 +2555,8 @@ export default {
     stopOpenOrdersSyncLoop,
     setupBlockchainFetchInterval,
     stopBlockchainFetchInterval,
+    setupBotsConfigPollInterval,
+    stopBotsConfigPollInterval,
     executeMaintenanceLogic,
     cancelDustOrders,
     isOrderDoesNotExistError,

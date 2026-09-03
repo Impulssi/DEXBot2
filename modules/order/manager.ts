@@ -48,8 +48,7 @@ import {
     isExplicitZeroAllocation,
     floatToBlockchainInt,
     validateBoundaryCommit,
-    resolveGapSlots,
-    resolveGapBand
+    resolveGapSlots
 } from './utils/math.js';
 import {
     validateOrder,
@@ -64,7 +63,7 @@ import {
     buildSuccessResult,
     evaluateCommit
 } from './utils/validate.js';
-import { resolveSpreadOrderSide, parseSlotIndex } from './utils/order.js';
+import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder } from './utils/order.js';
 import { getErrorMessage } from '../utils/errors.js';
 const { toFiniteNumber } = Format;
 
@@ -317,6 +316,25 @@ class COWRebalanceEngine {
             'info'
         );
 
+        // Per-action plan detail. UPDATE/ROTATE ops are the dangerous ones —
+        // their target size/price must be visible in production logs without
+        // on-chain archaeology (a mis-sized update op is only diagnosable from
+        // the chain afterwards otherwise).
+        for (const a of optimizedActions) {
+            if (!a || !a.type || !a.id) continue;
+            const size = Number.isFinite(Number(a.newSize))
+                ? Number(a.newSize)
+                : Number(a.order?.size);
+            const price = Number.isFinite(Number(a.newPrice))
+                ? Number(a.newPrice)
+                : Number(a.order?.price);
+            const rotationSuffix = (a.newGridId && a.newGridId !== a.id) ? ` -> ${a.newGridId}` : '';
+            const line = `[COW] Plan action: ${a.type} ${a.id}${rotationSuffix} ` +
+                `(orderId=${a.orderId || 'none'}, size=${Number.isFinite(size) ? Format.formatAmount(size) : 'n/a'}, ` +
+                `price=${Number.isFinite(price) ? Format.formatPrice6(price) : 'n/a'})`;
+            this.logger?.log(line, a.type === COW_ACTIONS.UPDATE ? 'info' : 'debug');
+        }
+
         return buildSuccessResult({
             actions: optimizedActions,
             stateUpdates,
@@ -346,6 +364,7 @@ class OrderManager {
     _endOfBootstrapValidationDone: boolean;
     _broadcastingFlag: number;
     _broadcastingStartedAt: number;
+    _shuttingDown: boolean;
     _illegalStateSignal: any;
     _accountingFailureSignal: any;
     _recoveryStateValue: { phase: string; attemptCount: number; lastAttemptAt: number; inFlight: boolean; lastFailureAt: number; structuralResyncRequested?: boolean };
@@ -454,6 +473,13 @@ class OrderManager {
     _orphanFillsCreditedAt: number | null;
     _pendingRecovery: Promise<void> | null;
     _recentFillKeysSnapshot: Record<string, number> | null;
+    _lastFilledBuyPrice: number | null;
+    _lastFilledSellPrice: number | null;
+    _lastFilledPrice: number | null;
+    _lastFilledType: string | null;
+    // anchor fields removed
+    // Note: dedupe lives inside the anchor object (`_seenKeys`), not here.
+    // Kept for backwards compat if external code checks existence; not used.
 
     _metrics: any;
     private _currentWorkingGridStack: any[];
@@ -488,6 +514,7 @@ class OrderManager {
         this._endOfBootstrapValidationDone = false;
         this._broadcastingFlag = 0;
         this._broadcastingStartedAt = 0;
+        this._shuttingDown = false;
         this._illegalStateSignal = null;
         this._accountingFailureSignal = null;
         this._recoveryStateValue = {
@@ -567,6 +594,10 @@ class OrderManager {
         this._pendingRecovery = null;
         this._recentFillKeysSnapshot = null;
         this._lastStaleTotalsWarnAt = {};
+        this._lastFilledBuyPrice = null;
+        this._lastFilledSellPrice = null;
+        this._lastFilledPrice = null;
+        this._lastFilledType = null;
 
         this._metrics = {
             fundRecalcCount: 0,
@@ -690,6 +721,25 @@ class OrderManager {
     }
 
     /**
+     * Whether the owning bot has begun shutting down. Mirrors the
+     * bot-level `_shuttingDown` flag (set via setShuttingDown() from
+     * DEXBot._shutdownImpl) so manager-level wait loops can bail out
+     * instead of proceeding with broadcasts after shutdown completed.
+     * @returns {boolean}
+     */
+    isShuttingDown() {
+        return this._shuttingDown === true;
+    }
+
+    /**
+     * @param {boolean} value
+     * @returns {void}
+     */
+    setShuttingDown(value: any) {
+        this._shuttingDown = value === true;
+    }
+
+    /**
      * Auto-clears a stale broadcast flag after 120s so a hung
      * broadcast cannot permanently block rebalancing.
      * Separated from isBroadcastingActive() so the side-effect only
@@ -767,9 +817,14 @@ class OrderManager {
      * @returns {void}
      */
     startBroadcasting() {
-        if (this._broadcastingFlag === 0) {
-            this._broadcastingStartedAt = Date.now();
-        }
+        // Refresh the stale-watchdog timestamp on EVERY increment, not just
+        // the 0→1 transition: with refcounted holders (e.g. structural
+        // Phase-2 reconcile + an inner COW batch) measuring only from the
+        // first holder's start lets the 120s watchdog hard-reset while a
+        // later holder is still legitimately active. Each new holder
+        // restarts the window; the commit-refusal backstop bounds any
+        // pathological stream of short holders.
+        this._broadcastingStartedAt = Date.now();
         this._broadcastingFlag++;
         this.logger?.log?.('[BROADCAST] Flag incremented — fill processing will be deferred until stopBroadcasting()', 'debug');
     }
@@ -783,6 +838,11 @@ class OrderManager {
         }
         if (this._broadcastingFlag === 0) {
             this._broadcastingStartedAt = 0;
+            // Runtime hook (wired by the bot): the fill consumer defers while
+            // this flag is held and its defer branch returns without
+            // rescheduling, so fills enqueued during a long region would
+            // starve indefinitely. Fire once when the last region ends.
+            (this as any)._onBroadcastRegionEnd?.();
         }
     }
 
@@ -1615,6 +1675,7 @@ class OrderManager {
             );
         }
         this.boundaryIdx = newIdx;
+        this._logBoundaryDebug('set', newIdx);
     }
 
     /**
@@ -1622,71 +1683,116 @@ class OrderManager {
      * disk-load).  This is the same write as _setBoundary but without the
      * lock-hold warning — loadGrid / initializeGrid are single-threaded at
      * startup and the boundary is being restored from a known-good snapshot,
-     * not committed alongside order mutations.
+     * not committed alongside order mutations. Accepts null to clear the
+     * boundary after a rejected persisted snapshot (P4) so re-derivation
+     * (P3) starts from a clean state.
      */
-    _restoreBoundary(newIdx: number): void {
+    _restoreBoundary(newIdx: number | null): void {
         this.boundaryIdx = newIdx;
+        this._logBoundaryDebug('restore', newIdx);
     }
 
     /**
-     * DEFENSE-IN-DEPTH (runs after every COW commit): verify the committed
-     * state still has an intact gap band — implied geometry inside the slot
-     * array, and no placed order strictly inside the implied spread.
-     *
-     * This is a DETECTOR, not a guard: the grid is already committed when it
-     * runs.  Violations are logged loudly and flagged via _recoveryState
-     * (structuralResyncRequested) so the maintenance loop reconciles against
-     * the chain.  Purpose is any-writer detection — if a path other than the
-     * promotion clamp commits a boundary that invades the opposite rail or
-     * strands placed orders inside the spread, this fires.
+     * Observability (fix #4, docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §2): emit the live
+     * boundary whenever roles are (re)assigned, so a silent boundary crawl that
+     * re-rolls slots into the wrong rail is diagnosable in real time. Debug-level
+     * only; no behavioral effect.
      */
-    _assertGapBandIntactPostCommit(): void {
+    _logBoundaryDebug(source: string, newIdx: number | null): void {
         try {
-            const resolved = resolveGapBand(this);
-            if (resolved.boundaryIdx === null || resolved.sellStartIdx === null) return;
-            const { boundaryIdx, sellStartIdx } = resolved;
-
-            const sorted = Array.from(this.orders.values() as Iterable<any>)
-                .filter((o: any) => o && o.price != null && Number.isFinite(Number(o.price)))
-                .sort((a: any, b: any) => Number(a.price) - Number(b.price));
-            const maxIdx = sorted.length - 1;
-
-            const problems: string[] = [];
-            if (maxIdx < 0 || boundaryIdx < 0 || boundaryIdx > maxIdx) {
-                problems.push(`boundary ${boundaryIdx} outside slot range [0, ${maxIdx}]`);
-            }
-            if (sellStartIdx > maxIdx + 1) {
-                problems.push(`implied sellStart ${sellStartIdx} beyond slot range (${maxIdx})`);
-            }
-            for (let idx = 0; idx < sorted.length; idx++) {
-                const o = sorted[idx];
-                if (!o.orderId) continue;
-                if (idx > boundaryIdx && idx < sellStartIdx) {
-                    problems.push(
-                        `placed ${o.type || 'order'} ${o.id} @ ${o.price} sits inside gap band ` +
-                        `(${boundaryIdx + 1}..${sellStartIdx - 1})`
-                    );
+            const self: any = this;
+            const boundary = newIdx == null ? self.boundaryIdx : newIdx;
+            if (boundary == null) return;
+            const gapSlots = typeof self._gapSlots === 'number' ? self._gapSlots : 0;
+            const sellStart = boundary + 1 + gapSlots;
+            const countActive = (type: any) => {
+                let n = 0;
+                for (const o of (self.orders?.values?.() || [])) {
+                    if (o && o.type === type && o.orderId) n++;
                 }
-            }
-
-            if (problems.length > 0) {
-                this.logger.log(
-                    `[COW] GAP-BAND INVARIANT VIOLATION after commit: ${problems.slice(0, 5).join('; ')}` +
-                    `${problems.length > 5 ? ` (+${problems.length - 5} more)` : ''}. Requesting structural resync.`,
-                    'error'
-                );
-                if (this._recoveryState) {
-                    this._recoveryState = {
-                        ...this._recoveryState,
-                        lastFailureAt: Date.now(),
-                        structuralResyncRequested: true
-                    };
-                }
-            }
-        } catch (err: any) {
-            // Detector must never break the commit path.
-            this.logger.log(`[COW] Gap-band post-commit check failed: ${getErrorMessage(err)}`, 'warn');
+                return n;
+            };
+            this.logger?.log?.(
+                `[BOUNDARY] ${source} boundary=${boundary} sellStart=${sellStart} gapSlots=${gapSlots} ` +
+                `spreadCount=${self.currentSpreadCount ?? self.initialSpreadCount ?? '?'} ` +
+                `activeBuy=${countActive(ORDER_TYPES.BUY)} activeSell=${countActive(ORDER_TYPES.SELL)}`,
+                'debug'
+            );
+        } catch {
+            /* observability only — never throw from logging */
         }
+    }
+
+    /**
+     * Record last filled price for side-gated guard: only the side of the most recent fill is gated
+     * (BUY after BUY must be lower, SELL after SELL must be higher). Spread-correction bypasses.
+     * Cold start (null) => disabled. Per-type fields kept for observability/back-compat.
+     * @param {Array} fills
+     */
+    recordLastFilledPrices(fills: any): void {
+        if (!Array.isArray(fills) || fills.length === 0) return;
+        for (const f of fills) {
+            if (!f || (f.type !== ORDER_TYPES.BUY && f.type !== ORDER_TYPES.SELL)) continue;
+            let price: number | null = Number(f.price ?? f.order?.price);
+            if (!Number.isFinite(price) || (price as number) <= 0) {
+                try {
+                    const slot = f.id ? (this.orders as any)?.get?.(f.id) : null;
+                    price = slot ? Number((slot as any).price) : null;
+                } catch { price = null; }
+            }
+            if (!Number.isFinite(price as number) || (price as number) <= 0) continue;
+            this._lastFilledPrice = price as number;
+            this._lastFilledType = f.type;
+            if (f.type === ORDER_TYPES.BUY) this._lastFilledBuyPrice = price as number;
+            else if (f.type === ORDER_TYPES.SELL) this._lastFilledSellPrice = price as number;
+        }
+    }
+
+    /**
+     * Seed last-filled guard from the live book at startup. Book-derived
+     * (survives restart), analogous to the deleted MarketAnchor book-seed.
+     * Closes the in-memory-only window where LAST-FILL-GUARD would be
+     * disabled until the first fill arrives.
+     * @param {Array} chainOpenOrders - raw chain open orders (from readOpenOrdersGuarded)
+     */
+    seedLastFilledPricesFromBook(chainOpenOrders: any): void {
+        if (!Array.isArray(chainOpenOrders) || chainOpenOrders.length === 0) return;
+        if (this._lastFilledPrice != null) return;
+        if (this._lastFilledType != null) return;
+        // Only seed when cold (no fills yet) — don't overwrite a live value.
+        if (this._lastFilledBuyPrice != null && this._lastFilledSellPrice != null) return;
+        try {
+            let maxBuy: number | null = null;
+            let minSell: number | null = null;
+            for (const o of chainOpenOrders) {
+                const parsed = parseChainOrder(o, this.assets);
+                if (!parsed) continue;
+                const price = Number(parsed.price);
+                if (!Number.isFinite(price) || price <= 0) continue;
+                if (parsed.type === ORDER_TYPES.BUY) {
+                    if (maxBuy == null || price > maxBuy) maxBuy = price;
+                } else if (parsed.type === ORDER_TYPES.SELL) {
+                    if (minSell == null || price < minSell) minSell = price;
+                }
+            }
+            if (maxBuy != null && this._lastFilledBuyPrice == null) this._lastFilledBuyPrice = maxBuy;
+            if (minSell != null && this._lastFilledSellPrice == null) this._lastFilledSellPrice = minSell;
+            if (this._lastFilledPrice == null) {
+                if (maxBuy != null && minSell != null) this._lastFilledPrice = (maxBuy + minSell) / 2;
+                else if (maxBuy != null) this._lastFilledPrice = maxBuy;
+                else if (minSell != null) this._lastFilledPrice = minSell;
+            }
+            if (this._lastFilledType == null) {
+                if (maxBuy != null && minSell != null) {
+                    // Seed is ambiguous (no real fill yet) — leave type null so guard stays disabled until first fill
+                    this._lastFilledType = null;
+                } else if (maxBuy != null) this._lastFilledType = ORDER_TYPES.BUY;
+                else if (minSell != null) this._lastFilledType = ORDER_TYPES.SELL;
+            }
+            if (maxBuy != null || minSell != null) {
+                try { this.logger?.log?.(`[LAST-FILL-GUARD] Seeded from book: lastBuy=${maxBuy} lastSell=${minSell} lastPrice=${this._lastFilledPrice} lastType=${this._lastFilledType}`, 'info'); } catch {}
+            }
+        } catch {}
     }
 
     /**
@@ -1819,12 +1925,74 @@ class OrderManager {
     }
 
     /**
+     * Wait (bounded) until any non-COW broadcast/placement activity — the
+     * refcounted _broadcastingFlag — has released. Startup/structural
+     * reconcile Phase-2 placement now holds this flag across its create/update
+     * groups; launching a fill-driven COW rebalance on top of it mutates the
+     * master mid-broadcast, forcing a commit refusal and leaving a
+     * previous-generation order set on chain as duplicate-price orphans
+     * that block placements until drained.
+     *
+     * The wait is capped: after the timeout the rebalance proceeds anyway —
+     * the existing commit-refusal + chain-adoption machinery remains the
+     * backstop, so the worst case equals the pre-guard behavior.
+     *
+     * @param {number} [timeoutMs]
+     * @returns {Promise<{waitedMs: number, timedOut: boolean}>}
+     */
+    async _awaitBroadcastIdle(timeoutMs: number = 30000): Promise<{ waitedMs: number; timedOut: boolean; shutdown: boolean }> {
+        if (this._shuttingDown) {
+            return { waitedMs: 0, timedOut: false, shutdown: true };
+        }
+        if (!this.isBroadcastingActive()) return { waitedMs: 0, timedOut: false, shutdown: false };
+        const startedAt = Date.now();
+        let logged = false;
+        while (this.isBroadcastingActive()) {
+            if (this._shuttingDown) {
+                this.logger?.log?.(
+                    `[SAFE-REBALANCE] Broadcast wait aborted: shutdown in progress after ${Date.now() - startedAt}ms`,
+                    'warn'
+                );
+                return { waitedMs: Date.now() - startedAt, timedOut: false, shutdown: true };
+            }
+            const waited = Date.now() - startedAt;
+            if (waited >= timeoutMs) {
+                this.logger?.log?.(
+                    `[SAFE-REBALANCE] Broadcast still active after ${waited}ms; proceeding (commit-refusal + chain adoption remains the backstop)`,
+                    'warn'
+                );
+                return { waitedMs: waited, timedOut: true, shutdown: false };
+            }
+            if (!logged) {
+                this.logger?.log?.(
+                    '[SAFE-REBALANCE] Deferring: broadcast/placement activity active (startup/structural reconcile or another batch)',
+                    'info'
+                );
+                logged = true;
+            }
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        return { waitedMs: Date.now() - startedAt, timedOut: false, shutdown: false };
+    }
+
+    /**
      * @param {Array} [fills] - Fill events triggering rebalance
      * @param {Set<string>} [excludeIds] - Order IDs to exclude
+     * @param {Object} [options]
+     * @param {boolean} [options.skipBroadcastWait] - Set by the COW re-plan path,
+     *   which runs INSIDE its own startBroadcasting() region and must not wait
+     *   on the flag it holds itself.
      * @returns {Promise<any>}
      */
-    async performSafeRebalance(fills: any = [], excludeIds: any = new Set()) {
+    async performSafeRebalance(fills: any = [], excludeIds: any = new Set(), options: any = {}) {
         this.logger.log("[SAFE-REBALANCE] Starting with COW...", "info");
+        if (!options?.skipBroadcastWait) {
+            const idle = await this._awaitBroadcastIdle();
+            if (idle.shutdown || this._shuttingDown) {
+                this.logger.log('[SAFE-REBALANCE] Aborting rebalance: shutdown in progress', 'warn');
+                return buildAbortedResult('Shutdown in progress — safe rebalance aborted');
+            }
+        }
         return await this._gridLock.acquire(async () => {
             return await this._applySafeRebalanceCOW(fills, excludeIds);
         });
@@ -2011,8 +2179,6 @@ class OrderManager {
                 releaseStackEntry();
                 return false;
             }
-
-            this._assertGapBandIntactPostCommit();
 
             try {
                 if (!skipRecalc) {

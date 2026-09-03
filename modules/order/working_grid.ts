@@ -74,6 +74,7 @@
 
 
 import { buildDelta, buildIndexes } from './utils/order.js';
+import { parseSlotIndex } from './utils/slot.js';
 import { COW_PERFORMANCE } from '../constants.js';
 class WorkingGrid {
     grid: Map<string, any>;
@@ -193,6 +194,24 @@ class WorkingGrid {
             this._indexes = buildIndexes(this.grid);
         }
         return this._indexes;
+    }
+
+    /**
+     * Return slots sorted by slot-N (parseSlotIndex), price as tie-break.
+     * Mandated for strategy/validate deterministic ordering per determinism plan.
+     */
+    getOrderedSlots(): any[] {
+        const slots = Array.from(this.grid.values());
+        return slots.sort((a: any, b: any) => {
+            const pa = parseSlotIndex(a?.id);
+            const pb = parseSlotIndex(b?.id);
+            const aOk = pa !== null && Number.isFinite(pa);
+            const bOk = pb !== null && Number.isFinite(pb);
+            if (aOk && bOk) return (pa as number) - (pb as number);
+            if (aOk) return -1;
+            if (bOk) return 1;
+            return Number(a?.price) - Number(b?.price);
+        });
     }
 
     /**

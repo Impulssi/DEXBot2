@@ -801,6 +801,7 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
         const fillKeys = recentFillKeys || manager._recentFillKeysSnapshot || undefined;
         const btsFeesOwed = fundSnapshot?.btsFeesOwed ?? manager.funds.btsFeesOwed;
         const accountTotals = (fundSnapshot?.accountTotals ?? manager.accountTotals) || null;
+        const genesis = (manager as any)._genesis || null;
         await accountOrders.storeMasterGrid(
             orders,
             btsFeesOwed,
@@ -812,7 +813,8 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
                 accountTotals,
                 btsBalance
             },
-            fillKeys
+            fillKeys,
+            genesis
         );
         return true;
     } catch (e: any) {
@@ -933,7 +935,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         const workingBoundaryIdx = (pendingBoundaryIdx !== null && pendingBoundaryIdx !== undefined && Number.isFinite(Number(pendingBoundaryIdx)))
             ? Number(pendingBoundaryIdx)
             : manager.boundaryIdx;
-        const gapSlots = manager._gapSlots ?? MathUtils.calculateGapSlots(
+        const gapSlots = (manager as any)._genesis?.gapSlots ?? manager._gapSlots ?? MathUtils.calculateGapSlots(
             manager.config?.incrementPercent,
             manager.config?.targetSpreadPercent,
             manager.config?.gridLimits

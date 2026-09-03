@@ -53,6 +53,8 @@
  * - price: Price level
  * - size: Order size in base asset
  * - orderId: Blockchain order ID (null for VIRTUAL)
+ * - createUncertain: (optional, only when true) slot keeps its size because a
+ *   CREATE broadcast result was lost; consumed by the loadGrid orphan sanitizer
  *
  * ===============================================================================
  */
@@ -156,6 +158,7 @@ function emptyData() {
     debugInputs: null,
     processedFills: {},
     recentFillKeys: {},
+    genesis: null,
     createdAt: timestamp,
     lastUpdated: timestamp
   };
@@ -184,7 +187,7 @@ class AccountOrders {
   /**
    * Create an AccountOrders instance.
    * @param {Object} options - Configuration options
-   * @param {string} options.botKey - Bot identifier (e.g., 'xrp-bts-0', 'h-bts-1')
+   * @param {string} options.botKey - Bot identifier (e.g., 'asset1-asset2-0', 'market-a-1')
    * @param {string} [options.ordersDir] - Optional override for the per-bot storage directory
    * @param {string} [options.profilesPath] - Optional override for the per-bot storage file path
    */
@@ -330,8 +333,9 @@ class AccountOrders {
    * @param {Object|null} assets - Optional asset metadata { assetA, assetB }
    * @param {Object|null} debugInputs - Optional debug-only input snapshot
    * @param {Object|null} recentFillKeys - Optional fill key dedup snapshot for crash recovery
+   * @param {Object|null} genesis - Optional frozen genesis (priceLevels etc)
    */
-  async storeMasterGrid(orders: any[] = [], btsFeesOwed: any = null, boundaryIdx: any = null, assets: any = null, debugInputs: any = null, recentFillKeys: any = null) {
+  async storeMasterGrid(orders: any[] = [], btsFeesOwed: any = null, boundaryIdx: any = null, assets: any = null, debugInputs: any = null, recentFillKeys: any = null, genesis: any = null) {
     // Use AsyncLock to serialize read-modify-write operations
     await this._persistenceLock.acquire(async () => {
       // Reload from disk before writing to prevent race conditions
@@ -375,6 +379,10 @@ class AccountOrders {
         this.data.recentFillKeys = {};
       }
 
+      if (genesis && typeof genesis === 'object' && Array.isArray(genesis.priceLevels)) {
+        this.data.genesis = genesis;
+      }
+
       const timestamp = nowIso();
       this.data.lastUpdated = timestamp;
       if (this.data.meta) this.data.meta.updatedAt = timestamp;
@@ -392,6 +400,16 @@ class AccountOrders {
       this.data = this._loadData() || emptyData();
     }
     return (this.data && Array.isArray(this.data.grid)) ? this.data.grid : null;
+  }
+
+  loadGenesis(forceReload: boolean = false) {
+    if (forceReload) {
+      this.data = this._loadData() || emptyData();
+    }
+    if (this.data && this.data.genesis && Array.isArray(this.data.genesis.priceLevels)) {
+      return this.data.genesis;
+    }
+    return null;
   }
 
   /**
@@ -486,6 +504,7 @@ class AccountOrders {
       this.data = this._loadData() || emptyData();
       this.data.grid = [];
       this.data.btsFeesOwed = 0;
+      this.data.boundaryIdx = null;
       this.data.lastUpdated = nowIso();
       this._persist();
       return true;
@@ -637,7 +656,7 @@ class AccountOrders {
         orderId = '';
     }
 
-    const serialized = {
+    const serialized: Record<string, any> = {
       id: order.id || null,
       type: order.type || null,
       state: state,
@@ -645,6 +664,14 @@ class AccountOrders {
       size: Number.isFinite(sizeValue) ? sizeValue : 0,
       orderId
     };
+
+    // Durable marker: a CREATE whose broadcast result was lost (uncertain)
+    // leaves the slot VIRTUAL with its planned size. Only that flagged state
+    // is a true sized-orphan candidate at load (grid.ts sanitizer) — plain
+    // sized VIRTUAL slots are the normal planned-but-unplaced grid state.
+    if (order.createUncertain === true) {
+      serialized.createUncertain = true;
+    }
 
     return serialized;
   }

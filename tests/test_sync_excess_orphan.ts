@@ -17,6 +17,7 @@ function makeMgr(opts = {}) {
     return {
         orders,
         assets,
+        config: (opts as any).config,
         logger: {
             log: (msg, level) => { logEntries.push({ msg, level }); }
         },
@@ -80,8 +81,8 @@ async function testOutOfToleranceOrphanIsMarkedExcess() {
     console.log('\u2713 SYNC-EXCESS-001 passed');
 }
 
-async function testSmallDriftOrphanIsTagged() {
-    console.log(' - Small-drift orphan (within 4x tolerance) is tagged price-drift-orphan with diagnostic fields...');
+async function testSmallDriftOrphanIsAdopted() {
+    console.log(' - Small-drift orphan (within adoption tolerance) is adopted into the empty slot (fix #2)...');
     const tolerance = calculatePriceTolerance(100, 10, ORDER_TYPES.SELL, {
         assetA: { id: '1.3.0', precision: 8, symbol: 'BTS' },
         assetB: { id: '1.3.121', precision: 5, symbol: 'USD' }
@@ -97,14 +98,41 @@ async function testSmallDriftOrphanIsTagged() {
     const chainOrder = makeChainOrder('1.7.572311650', ORDER_TYPES.SELL, driftPrice, 10);
     const result = await engine.syncFromOpenOrders([chainOrder], { skipAccounting: true });
 
-    assert.strictEqual(result.unmatchedChainOrders.length, 1, 'Small-drift orphan should be unmatched');
+    assert.strictEqual(result.unmatchedChainOrders.length, 0, 'Small-drift orphan should be adopted (pass-2 fallback widened by ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER, docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §2 fix #2)');
+    const slot = mgr.orders.get('sell-3');
+    assert.strictEqual(slot.orderId, '1.7.572311650', 'Slot should now be bound to the re-anchored chain order');
+    assert.ok([ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL].includes(slot.state), 'Adopted slot should be ACTIVE or PARTIAL');
+    console.log('\u2713 SYNC-EXCESS-002b passed');
+}
+
+async function testPriceDriftTagWithStrictAdoptionKnob() {
+    console.log(' - With ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER=1 the drift band is unmatched again and still tagged price-drift-orphan...');
+    const tolerance = calculatePriceTolerance(100, 10, ORDER_TYPES.SELL, {
+        assetA: { id: '1.3.0', precision: 8, symbol: 'BTS' },
+        assetB: { id: '1.3.121', precision: 5, symbol: 'USD' }
+    }) || 0.5;
+    const driftPrice = 100 + (tolerance * 2);
+    const mgr = makeMgr({
+        orders: [
+            { id: 'sell-3', type: ORDER_TYPES.SELL, state: ORDER_STATES.VIRTUAL, price: 100, size: 0, orderId: '' }
+        ],
+        config: { gridLimits: { ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER: 1, PRICE_DRIFT_TOLERANCE_MULTIPLIER: 4 } }
+    });
+    const engine = new SyncEngine(mgr);
+
+    const chainOrder = makeChainOrder('1.7.572311651', ORDER_TYPES.SELL, driftPrice, 10);
+    const result = await engine.syncFromOpenOrders([chainOrder], { skipAccounting: true });
+
+    assert.strictEqual(result.unmatchedChainOrders.length, 1, 'Drift beyond strict adoption tolerance should be unmatched');
     const unmatched = result.unmatchedChainOrders[0];
     assert.strictEqual(unmatched.reason, 'price-drift-orphan', 'Small-drift reason should be price-drift-orphan');
     assert.strictEqual(unmatched.candidateSlotId, 'sell-3', 'Candidate slot id should be reported');
     assert.ok(unmatched.priceDiff > 0, 'priceDiff should be reported');
     assert.ok(unmatched.tolerance > 0, 'tolerance should be reported');
     assert.ok(unmatched.priceDiff <= unmatched.tolerance * 4, 'Drift should be within 4x tolerance budget');
-    console.log('\u2713 SYNC-EXCESS-002b passed');
+    const slot = mgr.orders.get('sell-3');
+    assert.ok(!slot.orderId, 'Strict adoption knob must leave the slot unbound');
+    console.log('\u2713 SYNC-EXCESS-002c passed');
 }
 
 async function testInToleranceOrphanIsAdopted() {
@@ -131,7 +159,8 @@ async function testInToleranceOrphanIsAdopted() {
 async function runTests() {
     console.log('Running Sync Engine Excess-Orphan Tests...');
     await testOutOfToleranceOrphanIsMarkedExcess();
-    await testSmallDriftOrphanIsTagged();
+    await testSmallDriftOrphanIsAdopted();
+    await testPriceDriftTagWithStrictAdoptionKnob();
     await testInToleranceOrphanIsAdopted();
     console.log('\u2713 Sync engine excess-orphan tests passed!');
 }

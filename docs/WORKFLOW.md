@@ -251,6 +251,7 @@ the canonical name is preferred in scripts and docs.
 | `dexbot export <bot>` | — | Export bot trades/settings for QTradeX backtesting |
 | `dexbot order` | `orders` | Analyze persisted order grids (spread, increment, funds) |
 | `dexbot order [<bot>]` | — | Analyze only the specified bot's order grid |
+| `dexbot credit` | — | Live summed MPA + borrowed-credit positions per asset per bot (`[<bot>]`) |
 | `dexbot status` | `stat` | Unified runtime health — daemon, adapter, bots |
 | `dexbot start` | `unlock` | Run credential daemon + bot (equivalent to running the `unlock` runtime, `dist/unlock.js`) |
 | `dexbot stop` / `dexbot start` | `stp`, `stopall` | Stop/start the monolithic runtime (unlock mode) |

@@ -72,6 +72,24 @@ const CLEANUP_HANDLER_TIMEOUT_MS = 10000;
 let cleanupHandlers: any[] = [];
 let shutdownInProgress = false;
 const shutdownLogger = new Logger('Shutdown');
+const exitWipeCallbacks: Array<{ name: string; wipeFn: () => void }> = [];
+
+/**
+ * Register a synchronous wipe callback that runs AFTER all LIFO cleanup
+ * handlers have completed, immediately before process exit. Unlike regular
+ * cleanup handlers (whose relative order depends on registration time), exit
+ * wipes are guaranteed to be the final code that runs during shutdown — used
+ * for security hygiene such as dropping signing-token HMAC secrets so no
+ * in-flight continuation can still read them after the process is done.
+ * @param {string} name - Description used in shutdown logs
+ * @param {Function} wipeFn - Synchronous function to execute last
+ */
+function registerExitWipe(name: any, wipeFn: () => void) {
+    if (typeof wipeFn !== 'function') {
+        throw new Error(`Exit wipe callback for '${name}' must be a function`);
+    }
+    exitWipeCallbacks.push({ name, wipeFn });
+}
 
 /**
  * Register a cleanup function to be called on graceful shutdown
@@ -150,6 +168,16 @@ async function executeCleanup() {
         }
     }
 
+    for (let i = 0; i < exitWipeCallbacks.length; i++) {
+        const { name, wipeFn } = exitWipeCallbacks[i];
+        try {
+            wipeFn();
+            shutdownLogger.info(`✓ ${name} (exit wipe)`);
+        } catch (err: any) {
+            shutdownLogger.error(`✗ Exit wipe ${name} failed: ${getErrorMessage(err) || err}`);
+        }
+    }
+
     shutdownLogger.info('Cleanup complete');
     await shutdownLogger.flush();
 }
@@ -160,13 +188,22 @@ async function executeCleanup() {
  */
 function setupGracefulShutdown() {
     const signals = ['SIGTERM', 'SIGINT'];
-    
+
     signals.forEach((signal: any) => {
         runtime.onSignal(signal, async () => {
             shutdownLogger.info(`Received ${signal}, initiating graceful shutdown...`);
             await executeCleanup();
             runtime.exit(0);
         });
+    });
+
+    // Exit wipes must also run on exit paths that bypass executeCleanup
+    // (direct process.exit calls, event-loop drain). The 'exit' event only
+    // allows synchronous work, which suits the wipe callbacks.
+    runtime.onSignal('exit', () => {
+        for (let i = 0; i < exitWipeCallbacks.length; i++) {
+            try { exitWipeCallbacks[i].wipeFn(); } catch (_) {}
+        }
     });
 
     // Also handle uncaught exceptions
@@ -185,5 +222,5 @@ function setupGracefulShutdown() {
     });
 }
 
-export { registerCleanup, unregisterCleanup, setupGracefulShutdown }
+export { registerCleanup, unregisterCleanup, registerExitWipe, setupGracefulShutdown }
 

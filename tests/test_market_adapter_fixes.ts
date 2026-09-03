@@ -133,29 +133,88 @@ async function testWhitelistGenerationOptionDefaults() {
     console.log(' - Testing whitelist generation option defaults...');
     assert.deepStrictEqual(
         parseOptions([]),
-        { dynamicWeight: false, asymmetricBounds: true, prune: false },
+        { dynamicWeight: false, asymmetricBounds: true, prune: false, botKeys: [] },
         'dynamicWeight should default off for newly generated whitelist entries'
     );
     assert.deepStrictEqual(
         parseOptions(['--dynamic-weight']),
-        { dynamicWeight: true, asymmetricBounds: true, prune: false },
+        { dynamicWeight: true, asymmetricBounds: true, prune: false, botKeys: [] },
         'dynamicWeight should be explicitly opt-in'
     );
     assert.deepStrictEqual(
         parseOptions(['--dynamic-weight=true', '--no-asymmetric-bounds']),
-        { dynamicWeight: true, asymmetricBounds: false, prune: false },
+        { dynamicWeight: true, asymmetricBounds: false, prune: false, botKeys: [] },
         'explicit dynamicWeight opt-in should combine with asymmetric-bounds opt-out'
     );
     assert.deepStrictEqual(
         parseOptions(['--dynamic-weight=true', '--no-dynamic-weight']),
-        { dynamicWeight: false, asymmetricBounds: true, prune: false },
+        { dynamicWeight: false, asymmetricBounds: true, prune: false, botKeys: [] },
         'explicit disable should win if conflicting dynamicWeight flags are provided'
     );
     assert.deepStrictEqual(
         parseOptions(['--prune']),
-        { dynamicWeight: false, asymmetricBounds: true, prune: true },
+        { dynamicWeight: false, asymmetricBounds: true, prune: true, botKeys: [] },
         '--prune should enable prune mode'
     );
+    assert.deepStrictEqual(
+        parseOptions(['--bot', 'my-bot']),
+        { dynamicWeight: false, asymmetricBounds: true, prune: false, botKeys: ['my-bot'] },
+        '--bot should collect targeted botKeys'
+    );
+    assert.deepStrictEqual(
+        parseOptions(['--bot', 'a', '--bot=b']),
+        { dynamicWeight: false, asymmetricBounds: true, prune: false, botKeys: ['a', 'b'] },
+        '--bot should support repeated and = forms'
+    );
+    for (const argv of [
+        ['--bot'],
+        ['--bot', '--prune'],
+        ['--bot='],
+        ['--bot', '--dynamic-weight'],
+    ] as const) {
+        assert.throws(() => parseOptions([...argv]), /--bot requires a value/, `parseOptions(${JSON.stringify(argv)}) should throw for missing/flag-like --bot value`);
+    }
+    assert.throws(() => parseOptions(['--bot', 'a,--prune']), /looks like a flag/, '--bot comma-list containing flag should throw');
+}
+
+async function testWhitelistGenerationBotOverwrite() {
+    console.log(' - Testing whitelist --bot overwrite...');
+    const bots = [
+        { name: 'Bot A', gridPrice: 'ama', botKey: 'bot-a' },
+        { name: 'Bot B', gridPrice: 'ama2', botKey: 'bot-b' },
+        { name: 'Bot C', gridPrice: 'pool', botKey: 'bot-c' },
+    ];
+    const existing = {
+        'bot-a': { ama: true, dynamicWeight: false, asymmetricBounds: false, derivativeSignals: 'keep-me' },
+        'bot-b': { ama: true, dynamicWeight: false, asymmetricBounds: true },
+        'stale-x': { ama: true, dynamicWeight: true, asymmetricBounds: true },
+    };
+
+    // Without --bot: existing entries preserved, only missing AMA bots untouched (bot-a not overwritten)
+    const additive = buildWhitelist(bots, existing, { dynamicWeight: true, asymmetricBounds: false, prune: false, botKeys: [] });
+    assert.deepStrictEqual(
+        additive.whitelist['bot-a'],
+        { ama: true, dynamicWeight: false, asymmetricBounds: false, derivativeSignals: 'keep-me' },
+        'without --bot, existing entry must be preserved'
+    );
+
+    // With --bot=bot-a: only bot-a overwritten (flag flip + keeps unknown fields), bot-b untouched, stale preserved
+    const overwritten = buildWhitelist(bots, existing, { dynamicWeight: true, asymmetricBounds: true, prune: false, botKeys: ['bot-a'] });
+    assert.deepStrictEqual(
+        overwritten.whitelist['bot-a'],
+        { ama: true, dynamicWeight: true, asymmetricBounds: true, derivativeSignals: 'keep-me' },
+        '--bot should overwrite only targeted key and preserve unknown fields'
+    );
+    assert.deepStrictEqual(
+        overwritten.whitelist['bot-b'],
+        { ama: true, dynamicWeight: false, asymmetricBounds: true },
+        '--bot for a must not affect other existing entries'
+    );
+    assert.deepStrictEqual(overwritten.whitelist['stale-x'], existing['stale-x'], 'stale entries preserved when --bot targeted');
+
+    // --bot zzz typo: no new bot added, existing untouched, warning path exercised via filtered loop (returns same whitelist)
+    const typo = buildWhitelist(bots, existing, { dynamicWeight: true, asymmetricBounds: true, prune: false, botKeys: ['zzz'] });
+    assert.deepStrictEqual(typo.whitelist, { 'bot-b': existing['bot-b'], 'bot-a': existing['bot-a'], 'stale-x': existing['stale-x'] } as any, '--bot typo should not create entries');
 }
 
 async function testWhitelistLoaderPreservesExistingFileEntries() {
@@ -428,6 +487,7 @@ async function runAll() {
     await testWhitelistCache();
     await testWhitelistGenerationPreservesExistingEntries();
     await testWhitelistGenerationOptionDefaults();
+    await testWhitelistGenerationBotOverwrite();
     await testWhitelistLoaderPreservesExistingFileEntries();
     await testWhitelistPruneRemovesStaleEntries();
     await testWhitelistPrunePreservesNonAmaManualEntries();

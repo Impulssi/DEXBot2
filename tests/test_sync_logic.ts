@@ -22,7 +22,7 @@ setCachedModule(
     }
 );
 const { OrderManager } = require('../modules/order/index').default;
-const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../modules/constants');
 const { createSilentLogger } = require('./helpers/silent_logger');
 
 // Seed the fee cache so getAssetFees resolves deterministically (frozen ESM
@@ -46,6 +46,10 @@ async function runTests() {
         mgr.logger = createSilentLogger();
         mgr.assets = { assetA: { id: '1.3.0', precision: 8 }, assetB: { id: '1.3.1', precision: 5 } };
         await mgr.setAccountTotals({ buy: 10000, sell: 100, buyFree: 10000, sellFree: 100 });
+        // Pre-seed the suspect-empty-read guard as confirmed so the legacy
+        // empty-chain fill-detection scenarios keep their original single-sync
+        // semantics (the guard itself is covered by test_orphan_cascade_fixes).
+        mgr._suspectEmptyReads = { count: Math.max(1, Number(TIMING.SYNC_SUSPECT_EMPTY_READ_LIMIT) || 3) - 1, firstAt: 1 };
         return mgr;
     };
 

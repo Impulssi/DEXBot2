@@ -42,9 +42,12 @@ async function runTests() {
     console.log(' - Testing VIRTUAL Order Placement Capping...');
     {
         const manager = await createManager();
+        // Use slot-N ids that are in-rail (genesis-frozen determinism: synthetic ids are excluded)
+        manager._gapSlots = 2;
+        manager.boundaryIdx = 5;
         const virtualOrders = [
-            { id: 'v-b-1', type: ORDER_TYPES.BUY, price: 99, size: 500, state: ORDER_STATES.VIRTUAL },
-            { id: 'v-s-1', type: ORDER_TYPES.SELL, price: 101, size: 50, state: ORDER_STATES.VIRTUAL }
+            { id: 'slot-0', type: ORDER_TYPES.BUY, price: 99, size: 500, state: ORDER_STATES.VIRTUAL },
+            { id: 'slot-8', type: ORDER_TYPES.SELL, price: 101, size: 50, state: ORDER_STATES.VIRTUAL }
         ];
         manager.pauseFundRecalc();
         for (const o of virtualOrders) {
@@ -67,24 +70,26 @@ async function runTests() {
     {
         const manager = await createManager();
         manager.config.targetSpreadPercent = 0; // Ensure minimal spread gap
-        // Add many slots to push the boundary far away from our test order (price 90)
+        manager._gapSlots = 2;
+        manager.boundaryIdx = 12;
+        // Use slot-N ids in-rail (BUY rail <=12). Add many slots to push window.
         for (let i = 0; i < 10; i++) {
-            await manager._updateOrder({ id: `v-extra-${i}`, type: ORDER_TYPES.BUY, price: 80 + i, size: 0, state: ORDER_STATES.VIRTUAL });
+            await manager._updateOrder({ id: `slot-${i}`, type: ORDER_TYPES.BUY, price: 80 + i, size: 0, state: ORDER_STATES.VIRTUAL });
         }
-        await manager._updateOrder({ id: 'p-d-1', type: ORDER_TYPES.BUY, price: 90, size: 5, state: ORDER_STATES.PARTIAL, orderId: 'c1' });
-        await manager._updateOrder({ id: 'v-boundary-push', type: ORDER_TYPES.BUY, price: 91, size: 0, state: ORDER_STATES.VIRTUAL });
+        await manager._updateOrder({ id: 'slot-5', type: ORDER_TYPES.BUY, price: 90, size: 5, state: ORDER_STATES.PARTIAL, orderId: 'c1' });
+        await manager._updateOrder({ id: 'slot-6', type: ORDER_TYPES.BUY, price: 91, size: 0, state: ORDER_STATES.VIRTUAL });
         
         const result = await manager.performSafeRebalance();
 
         // Modern COW planner keeps in-place non-rotation size updates out of strategy
         // and lets dedicated maintenance flows handle those updates.
-        const partialCancel = result.actions.find(a => a.type === 'cancel' && (a.id === 'p-d-1' || a.orderId === 'c1'));
+        const partialCancel = result.actions.find(a => a.type === 'cancel' && (a.id === 'slot-5' || a.orderId === 'c1'));
         assert(partialCancel === undefined, 'Should not cancel existing PARTIAL in rebalance plan');
 
         const creates = result.actions.filter(a => a.type === 'create');
         assert(creates.length > 0, 'Should create nearby target slots while PARTIAL remains managed');
 
-        const partialOrder = manager.orders.get('p-d-1');
+        const partialOrder = manager.orders.get('slot-5');
         assert(partialOrder && partialOrder.state === ORDER_STATES.PARTIAL, 'PARTIAL order should remain PARTIAL after planning');
     }
 
@@ -92,10 +97,12 @@ async function runTests() {
     {
         const manager = await createManager();
         manager.boundaryIdx = undefined;
+        manager._gapSlots = 2;
         manager.pauseFundRecalc();
         for (let i = 0; i < 10; i++) {
             const price = 95 + (i * 1.0);
-            await manager._updateOrder({ id: `o-${i}`, type: price < 100 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL, price, size: 100, state: ORDER_STATES.VIRTUAL });
+            const id = i < 5 ? `slot-${i}` : `slot-${8 + i}`;
+            await manager._updateOrder({ id, type: price < 100 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL, price, size: 100, state: ORDER_STATES.VIRTUAL });
         }
         await manager.resumeFundRecalc();
         
@@ -106,14 +113,16 @@ async function runTests() {
     console.log(' - Testing BUY Side Weighting...');
     {
         const manager = await createManager();
+        manager._gapSlots = 2;
+        manager.boundaryIdx = 5;
         manager.pauseFundRecalc();
-        await manager._updateOrder({ id: 'b-far', type: ORDER_TYPES.BUY, price: 85, size: 0, state: ORDER_STATES.VIRTUAL });
-        await manager._updateOrder({ id: 'b-near', type: ORDER_TYPES.BUY, price: 99, size: 0, state: ORDER_STATES.VIRTUAL });
+        await manager._updateOrder({ id: 'slot-0', type: ORDER_TYPES.BUY, price: 85, size: 0, state: ORDER_STATES.VIRTUAL });
+        await manager._updateOrder({ id: 'slot-5', type: ORDER_TYPES.BUY, price: 99, size: 0, state: ORDER_STATES.VIRTUAL });
         await manager.resumeFundRecalc();
 
         const result = await manager.performSafeRebalance();
-        const near = result.actions.find(a => a.type === 'create' && a.id === 'b-near');
-        const far = result.actions.find(a => a.type === 'create' && a.id === 'b-far');
+        const near = result.actions.find(a => a.type === 'create' && a.id === 'slot-5');
+        const far = result.actions.find(a => a.type === 'create' && a.id === 'slot-0');
         if (near && far) {
             assert(near.order.size >= far.order.size, 'Market-closest BUY should have more capital');
         }
@@ -129,10 +138,12 @@ async function runTests() {
         await manager.resetFunds();
 
         // Mock a target slot near market (shortage)
-        await manager._updateOrder({ id: 'target-1', type: ORDER_TYPES.BUY, price: 99, size: 0, state: ORDER_STATES.VIRTUAL });
+        manager._gapSlots = 2;
+        manager.boundaryIdx = 5;
+        await manager._updateOrder({ id: 'slot-5', type: ORDER_TYPES.BUY, price: 99, size: 0, state: ORDER_STATES.VIRTUAL });
 
         const result = await manager.performSafeRebalance();
-        const placement = result.actions.find(a => a.type === 'create' && a.id === 'target-1');
+        const placement = result.actions.find(a => a.type === 'create' && a.id === 'slot-5');
 
         if (placement) {
             assert(placement.order.size > 0, 'New placement size should be positive');

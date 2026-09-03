@@ -54,9 +54,10 @@ try {
     process.env.DEXBOT_PROFILE_ROOT = testRoot1;
 
     const p1 = freshPaths();
+    const got1 = typeof p1.resolveProfilesDir === 'function' ? p1.resolveProfilesDir() : p1.PATHS.PROFILES_DIR;
     check('DEXBOT_PROFILE_ROOT takes priority',
-        p1.PATHS.PROFILES_DIR === testRoot1,
-        `expected ${testRoot1}, got ${p1.PATHS.PROFILES_DIR}`);
+        got1 === testRoot1,
+        `expected ${testRoot1}, got ${got1}`);
 } finally {
     restoreEnv({ DEXBOT_PROFILE_ROOT: ORIG_ENV.DEXBOT_PROFILE_ROOT });
 }
@@ -68,9 +69,10 @@ try {
 
     const p2 = freshPaths();
     const want = path.join(testRoot2, 'profiles');
+    const got2 = typeof p2.resolveProfilesDir === 'function' ? p2.resolveProfilesDir() : p2.PATHS.PROFILES_DIR;
     check('DEXBOT2_ROOT appends /profiles',
-        p2.PATHS.PROFILES_DIR === want,
-        `expected ${want}, got ${p2.PATHS.PROFILES_DIR}`);
+        got2 === want,
+        `expected ${want}, got ${got2}`);
 } finally {
     restoreEnv({ DEXBOT2_ROOT: ORIG_ENV.DEXBOT2_ROOT });
 }
@@ -479,9 +481,10 @@ check('resolveProfilesDir returns a string',
     process.env.XDG_CONFIG_HOME = xdgBase;
     try {
         const p19 = freshPaths();
+        const gotHome = (typeof p19.getHomeProfilesDir === 'function' ? p19.getHomeProfilesDir() : p19.HOME_PROFILES_DIR);
         check('XDG_CONFIG_HOME redirects HOME_PROFILES_DIR',
-            p19.HOME_PROFILES_DIR === path.join(xdgBase, 'dexbot2', 'profiles'),
-            p19.HOME_PROFILES_DIR);
+            gotHome === path.join(xdgBase, 'dexbot2', 'profiles'),
+            gotHome);
     } finally {
         if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
         else process.env.XDG_CONFIG_HOME = savedXdg;

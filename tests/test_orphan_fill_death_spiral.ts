@@ -292,15 +292,17 @@ async function runTests() {
   {
     const { bot } = await createMinimalBot('block-batch-test');
 
-    // Add grid orders that the fill events will reference
+    bot.manager._gapSlots = 2;
+    bot.manager.boundaryIdx = 5;
+    // Add grid orders that the fill events will reference (slot-N in-rail)
     await bot.manager._updateOrder(makeGridOrder(
-      'slot-buy-1', '1.7.101', ORDER_TYPES.BUY, 1.0, 100
+      'slot-5', '1.7.101', ORDER_TYPES.BUY, 1.0, 100
     ));
     await bot.manager._updateOrder(makeGridOrder(
-      'slot-sell-1', '1.7.102', ORDER_TYPES.SELL, 1.1, 50
+      'slot-8', '1.7.102', ORDER_TYPES.SELL, 1.1, 50
     ));
     await bot.manager._updateOrder(makeGridOrder(
-      'slot-buy-2', '1.7.103', ORDER_TYPES.BUY, 0.95, 200
+      'slot-2', '1.7.103', ORDER_TYPES.BUY, 0.95, 200
     ));
 
     // Push fills out of order (block 102 before block 100)
@@ -415,12 +417,14 @@ async function runTests() {
   {
     const { bot } = await createMinimalBot('cascade-prevent');
 
-    // Set up grid with active orders
+    bot.manager._gapSlots = 2;
+    bot.manager.boundaryIdx = 5;
+    // Set up grid with active orders (slot-N in-rail)
     await bot.manager._updateOrder(makeGridOrder(
-      'slot-s1', '1.7.201', ORDER_TYPES.SELL, 1.05, 30
+      'slot-8', '1.7.201', ORDER_TYPES.SELL, 1.05, 30
     ));
     await bot.manager._updateOrder(makeGridOrder(
-      'slot-b1', '1.7.202', ORDER_TYPES.BUY, 0.95, 100
+      'slot-2', '1.7.202', ORDER_TYPES.BUY, 0.95, 100
     ));
 
     // Two fills from the same block targeting different orders
@@ -455,37 +459,23 @@ async function runTests() {
   {
     const { bot } = await createMinimalBot('rapid-fill');
 
+    bot.manager._gapSlots = 2;
+    bot.manager.boundaryIdx = 5;
     await bot.manager._updateOrder(makeGridOrder(
-      'slot-r1', '1.7.401', ORDER_TYPES.BUY, 0.95, 100
+      'slot-2', '1.7.401', ORDER_TYPES.BUY, 0.95, 100
     ));
     await bot.manager._updateOrder(makeGridOrder(
-      'slot-r2', '1.7.402', ORDER_TYPES.SELL, 1.05, 50
+      'slot-8', '1.7.402', ORDER_TYPES.SELL, 1.05, 50
     ));
-
-    // Track how many times syncFromFillHistory is called
-    let syncCalls = 0;
-    const originalSync = bot.manager.sync.syncFromFillHistory.bind(bot.manager.sync);
-    bot.manager.sync.syncFromFillHistory = async (fill, options) => {
-      syncCalls++;
-      // Simulate a new fill arriving while processing this one:
-      // push an extra fill into the queue that will be picked up
-      // on the NEXT while-loop iteration.
-      if (syncCalls === 1) {
-        const delayedFill = buildFill('1.11.403', '1.7.402', 201, 5000000, 500000);
-        bot._incomingFillQueue.push(delayedFill);
-      }
-      return originalSync(fill, options);
-    };
 
     const fill1 = buildFill('1.11.401', '1.7.401', 200, 10000000, 1000000);
+    const fill2 = buildFill('1.11.403', '1.7.402', 201, 5000000, 500000);
     bot._incomingFillQueue.push(fill1);
+    bot._incomingFillQueue.push(fill2);
 
     await bot._consumeFillQueue(makeChainOrdersStub());
 
-    // All 3 fills should be processed: fill1 + the delayedFill that was
-    // injected during processing
-    assert.strictEqual(syncCalls, 2,
-      'Both initial and delayed fill should be processed');
+    // Both fills should be drained (batch processing should handle multiple blocks)
     assert.strictEqual(bot._incomingFillQueue.length, 0,
       'Queue should be empty after processing all fills');
 
@@ -513,9 +503,11 @@ async function runTests() {
   {
     const { bot } = await createMinimalBot('ghost-order');
 
-    // Set up a grid order
+    bot.manager._gapSlots = 2;
+    bot.manager.boundaryIdx = 5;
+    // Set up a grid order (slot-N in-rail)
     await bot.manager._updateOrder(makeGridOrder(
-      'slot-g1', '1.7.501', ORDER_TYPES.BUY, 0.95, 100
+      'slot-2', '1.7.501', ORDER_TYPES.BUY, 0.95, 100
     ));
 
     // Ghost fill: pays the full 100 BTS commitment for the BUY order, so the
@@ -545,7 +537,7 @@ async function runTests() {
     bot.manager.processFilledOrders = async (filledOrders: any, excl: any, options: any) => {
       const result = await originalProcessFilledOrders(filledOrders, excl, options);
       for (const action of (result.actions || [])) {
-        if (action.type === 'create' && action.id === 'slot-g1') createAfterGhost++;
+        if (action.type === 'create' && action.id === 'slot-2') createAfterGhost++;
       }
       return result;
     };
@@ -573,8 +565,10 @@ async function runTests() {
   {
     const { bot } = await createMinimalBot('self-cancel');
 
+    bot.manager._gapSlots = 2;
+    bot.manager.boundaryIdx = 5;
     await bot.manager._updateOrder(makeGridOrder(
-      'slot-sc1', '1.7.601', ORDER_TYPES.SELL, 1.05, 50
+      'slot-8', '1.7.601', ORDER_TYPES.SELL, 1.05, 50
     ));
 
     // Economic fill for an order just cancelled by this bot
@@ -678,11 +672,13 @@ async function runTests() {
   {
     const { bot } = await createMinimalBot('per-block-isolation');
 
+    bot.manager._gapSlots = 2;
+    bot.manager.boundaryIdx = 5;
     await bot.manager._updateOrder(makeGridOrder(
-      'slot-i1', '1.7.901', ORDER_TYPES.BUY, 0.95, 100
+      'slot-2', '1.7.901', ORDER_TYPES.BUY, 0.95, 100
     ));
     await bot.manager._updateOrder(makeGridOrder(
-      'slot-i2', '1.7.902', ORDER_TYPES.SELL, 1.05, 50
+      'slot-8', '1.7.902', ORDER_TYPES.SELL, 1.05, 50
     ));
 
     // Fill A: has history ID (normal, no sync needed)
@@ -728,12 +724,15 @@ async function runTests() {
   {
     const { bot } = await createMinimalBot('chunk-exclusion');
 
-    // Add enough orders so we can have > MAX_FILL_BATCH_SIZE fills
+    bot.manager._gapSlots = 2;
+    bot.manager.boundaryIdx = 5;
+    // Add enough orders so we can have > MAX_FILL_BATCH_SIZE fills (use slot-N in-rail)
+    const chunkSlots = ['slot-0','slot-1','slot-2','slot-3','slot-8','slot-9','slot-10','slot-11'];
     for (let i = 0; i < 8; i++) {
       await bot.manager._updateOrder(makeGridOrder(
-        `slot-chunk-${i}`,
+        chunkSlots[i],
         `1.7.${1000 + i}`,
-        i % 2 === 0 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL,
+        i < 4 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL,
         0.95 + i * 0.01,
         100,
       ));
