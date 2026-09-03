@@ -98,6 +98,7 @@ import { Config } from './modules/config.js';
 import { waitForConnected } from './modules/bitshares_client.js';
 import * as readline from 'node:readline';
 import { getErrorMessage } from './modules/utils/errors.js';
+import { CLI_COLORS } from './modules/cli_colors.js';
 import { getStorage } from './modules/storage/index.js';
 import { usesAmaGridPrice } from './modules/dexbot_maintenance_runtime.js';
 setUmask(0o077);
@@ -114,9 +115,9 @@ const { ensureDir, unlink: safeUnlink } = storage;
 setupGracefulShutdown();
 
 const PM2_COLORS = {
-    reset: '\x1b[0m',
-    ok: '\x1b[1;92m',
-    error: '\x1b[1;31m',
+    reset: CLI_COLORS.reset,
+    ok: CLI_COLORS.brightGreen,
+    error: CLI_COLORS.boldRed,
 };
 
 function colorPm2Output(text: string, color: string, stream: any = process.stdout): string {

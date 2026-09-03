@@ -95,26 +95,29 @@ import { assertNoDuplicateBotKeys, loadSettingsFile } from './bot_settings.js';
 import { mergeSettings } from './settings_merge.js';
 import { getErrorMessage } from './utils/errors.js';
 import { roundToDecimals, parseRelativeMultiplier } from './order/utils/math.js';
+import { CLI_COLORS } from './cli_colors.js';
 const storage = getStorage();
 const { writeJSON } = storage;
 
 
 const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
+// Editor palette: values come from the centralized CLI_COLORS module
+// (rendered output unchanged).
 const COLORS = {
-    reset: '\x1b[0m',
-    bold: '\x1b[1m',
-    white: '\x1b[97m',
-    gray: '\x1b[38;5;250m',
-    blue: '\x1b[38;5;39m',
-    cyan: '\x1b[38;5;45m',
-    orange: '\x1b[38;5;208m',
-    yellow: '\x1b[33m',
-    yellowBold: '\x1b[1;33m',
-    green: '\x1b[92m',
-    greenBold: '\x1b[1;32m',
-    red: '\x1b[1;31m',
-    redStrong: '\x1b[38;5;196m'
+    reset: CLI_COLORS.reset,
+    bold: CLI_COLORS.bold,
+    white: CLI_COLORS.white,
+    gray: CLI_COLORS.silver,
+    blue: CLI_COLORS.blue,
+    cyan: CLI_COLORS.sky,
+    orange: CLI_COLORS.orange,
+    yellow: CLI_COLORS.yellow,
+    yellowBold: CLI_COLORS.yellowBold,
+    green: CLI_COLORS.buy,
+    greenBold: CLI_COLORS.greenBold,
+    red: CLI_COLORS.boldRed,
+    redStrong: CLI_COLORS.redStrong
 };
 
 /**

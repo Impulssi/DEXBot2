@@ -3,15 +3,18 @@
 import { getProcessDiscovery, formatUptime } from '../process_discovery.js';
 import { Config } from '../config.js';
 import { runtime } from '../runtime.js';
+import { CLI_COLORS } from '../cli_colors.js';
 
 
+// Status palette: values come from the centralized CLI_COLORS module
+// (rendered output unchanged).
 const STATUS_COLORS = {
-    reset: '\x1b[0m',
-    title: '\x1b[1;33m',
-    label: '\x1b[38;5;208m',
-    ok: '\x1b[1;92m',
-    warn: '\x1b[1;31m',
-    muted: '\x1b[97m',
+    reset: CLI_COLORS.reset,
+    title: CLI_COLORS.yellowBold,
+    label: CLI_COLORS.orange,
+    ok: CLI_COLORS.brightGreen,
+    warn: CLI_COLORS.boldRed,
+    muted: CLI_COLORS.white,
 };
 
 function colorStatus(text: string, color: string, stream: any = runtime.stdout): string {

@@ -29,21 +29,12 @@ import { getStorage } from '../modules/storage/index.js';
 const { readJSON } = getStorage();
 import { getErrorMessage } from '../modules/utils/errors.js';
 import { sanitizeKey } from '../modules/utils/sanitize_key.js';
+import { CLI_COLORS as colors } from '../modules/cli_colors.js';
 import { pathToFileURL } from 'node:url';
 const ORDERS_DIR = PATHS.ORDERS_DIR;
 const BOTS_CONFIG = PATHS.PROFILES.BOTS_JSON;
 
-// Color codes for terminal output
-const colors = {
-  reset: '\x1b[0m',
-  buy: '\x1b[92m',    // green
-  sell: '\x1b[91m',   // light red
-  buyDark: '\x1b[38;5;28m',  // even darker green
-  sellDark: '\x1b[31m', // dark red
-  spread: '\x1b[93m', // yellow
-  cyan: '\x1b[38;5;87m',   // bright cyan
-  gray: '\x1b[38;5;246m'    // medium grey (lighter than bright black)
-};
+// Color codes for terminal output (centralized in modules/cli_colors.ts).
 
 // Partial block characters for weight visualization (0-8 eighths height)
 const partialBlocks = ['', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
@@ -876,7 +867,7 @@ function createDistributionBar(counts: any): { bar: string; buyWidth: number } {
   }
 
   const buyBar = colors.buy + '█'.repeat(virtualBuyWidth) + colors.buyDark + '█'.repeat(activeBuyWidth) + colors.reset;
-  const spreadBar = '\x1b[97m' + '█'.repeat(spreadWidth) + colors.reset; // white
+  const spreadBar = colors.white + '█'.repeat(spreadWidth) + colors.reset; // white
   const sellBar = colors.sellDark + '█'.repeat(activeSellWidth) + colors.sell + '█'.repeat(virtualSellWidth) + colors.reset;
 
   return { bar: `${buyBar}${spreadBar}${sellBar}`, buyWidth: activeBuyWidth + virtualBuyWidth };
@@ -1515,7 +1506,7 @@ function generateHtmlReport(analyses: any[]) {
     gray: '#949494'
   };
 
-  const htmlColorMap = {
+  const htmlColorMap: Record<string, string> = {
     [colors.buy]: `<span style="color:${cssColors.buy}">`,
     [colors.sell]: `<span style="color:${cssColors.sell}">`,
     [colors.buyDark]: `<span style="color:${cssColors.buyDark}">`,
@@ -1523,7 +1514,7 @@ function generateHtmlReport(analyses: any[]) {
     [colors.spread]: `<span style="color:${cssColors.spread}">`,
     [colors.cyan]: `<span style="color:${cssColors.cyan}">`,
     [colors.gray]: `<span style="color:${cssColors.gray}">`,
-    '\x1b[97m': '<span style="color:#ffffff">' // white for spread bar
+    [colors.white]: '<span style="color:#ffffff">' // white for spread bar
   };
 
   function ansiToHtml(str: string): string {

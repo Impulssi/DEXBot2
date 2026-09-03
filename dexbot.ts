@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { fileURLToPath } from 'node:url';
+import { CLI_COLORS } from './modules/cli_colors.js';
 import { dirname as _esmDirname } from 'node:path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = _esmDirname(__filename);
@@ -77,6 +78,8 @@ const __dirname = _esmDirname(__filename);
  *   dexbot order [<bot>]          - Analyze only the specified bot's order grid
  *   dexbot order --export         - Export order analysis as standalone HTML report
  *   dexbot order [<bot>] --export - Export only the specified bot's analysis
+ *   dexbot credit               - Show live summed MPA + borrowed-credit positions per asset per bot
+ *   dexbot credit [<bot>]       - Show only the specified bot's positions
  *   dexbot help                   - Show this help message
  *
  * NPM SCRIPTS (alternative invocation):
@@ -173,7 +176,7 @@ if (typeof credentialPolicy.checkPolicyFileSecurity === 'function') credentialPo
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
 
-const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'help'];
+const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'help'];
 const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'unlock', defaults: 'default', stp: 'stop', stopall: 'stop', restartall: 'restart' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
@@ -190,14 +193,15 @@ const CLI_EXAMPLES = [
     { title: 'Update DEXBot2', command: 'dexbot update', notes: 'Fetches latest code, updates dependencies, and restarts PM2.' },
     { title: 'Export bot trades for QTradeX', command: 'dexbot export <bot>', notes: 'Exports trading history and settings to CSV/JSON for backtesting.' },
     { title: 'Analyze persisted order grids', command: 'dexbot order', notes: 'Runs the order analyzer across the orders directory (<profiles>/orders) and prints spread/increment/funds/distribution metrics. Add a bot key to render only that bot, and --export for an HTML report.' },
+    { title: 'Show live credit/MPA positions', command: 'dexbot credit', notes: 'Queries get_margin_positions + get_credit_deals_by_borrower per preferredAccount and prints debt/collateral sums per asset per bot. Add a bot key to render only that bot.' },
     { title: 'Clear all bot log files', command: 'dexbot clear', notes: 'Runs scripts/clear-logs.sh to remove log files from the logs directory (<profiles>/logs).' },
     { title: 'Reset settings to defaults', command: 'dexbot default', notes: 'Runs scripts/reset-settings.sh to delete general.settings.json, market_profiles.json, and market_adapter_settings.json.' }
 ];
 
 const STARTUP_COLORS = {
-    reset: '\x1b[0m',
-    ok: '\x1b[1;92m',
-    error: '\x1b[1;31m',
+    reset: CLI_COLORS.reset,
+    ok: CLI_COLORS.brightGreen,
+    error: CLI_COLORS.boldRed,
 };
 
 function colorStartupOutput(text: string, color: string, stream: any = process.stdout): string {
@@ -241,6 +245,7 @@ function printCLIUsage() {
     console.log('  pm2               Start all active bots with PM2 (authenticate + generate config + start).');
     console.log('  update            Update DEXBot2 from the repository and restart active bots.');
     console.log('  order             Analyze persisted order grids in <profiles>/orders/ (spread, increment, funds). Use --export for HTML.');
+    console.log('  credit [<bot>]    Show live summed MPA + borrowed-credit positions per asset per bot.');
     console.log('  order [<bot>]     Analyze only the specified bot.');
     console.log('  status, stat, stats  Show bot runtime status (unlock monolithic/isolated or PM2).');
     console.log('  unlock            Legacy alias for start (repo-root: `./unlock`).');
@@ -882,7 +887,7 @@ async function exportBotTrades(botName: string | undefined) {
 
 /**
  * Parse and execute CLI commands.
- * Supported commands: test, drystart, reset, default, disable, enable, key, bot, pm2, update, export, order, clear, status, whitelist, unlock, help
+  * Supported commands: test, drystart, reset, default, disable, enable, key, bot, pm2, update, export, order, credit, clear, status, whitelist, unlock, help
  * @returns {Promise<boolean>} True if a command was handled, false otherwise
  */
 async function handleCLICommands() {
@@ -1029,6 +1034,24 @@ async function handleCLICommands() {
             });
             if (result.error) {
                 console.error(`order: ${result.error.message}`);
+                process.exit(1);
+            }
+            process.exit(result.status ?? 0);
+            return true;
+        }
+        case 'credit': {
+            const { spawnSync } = require('child_process') as any as any;
+            const scriptArgs = buildRuntimeScriptArgs({
+                codeRoot: __dirname,
+                scriptSegments: ['scripts', 'analyze-credit'],
+                scriptArgs: cliArgs.slice(1),
+            });
+            const result = spawnSync(Config.EXEC_PATH, scriptArgs, {
+                cwd: PATHS.PROJECT_ROOT,
+                stdio: 'inherit',
+            });
+            if (result.error) {
+                console.error(`credit: ${result.error.message}`);
                 process.exit(1);
             }
             process.exit(result.status ?? 0);
