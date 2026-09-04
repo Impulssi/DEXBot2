@@ -3,6 +3,7 @@ import { getStorage } from './storage/index.js';
 import { readBotsFileSync } from './bots_file_lock.js';
 import { parseJsonWithComments } from './order/utils/system.js';
 import { createBotKey } from './account_orders.js';
+import { isSameBotName } from './utils/sanitize_key.js';
 import { isPositiveNumber, isPositiveNumberOrPercent, toDecimal } from './order/utils/math.js';
 import { resolveMinCollateralIncreaseThreshold } from './cr_planner.js';
 import { getErrorMessage } from './utils/errors.js';
@@ -59,7 +60,7 @@ function normalizeBotEntries(rawEntries: any[]): any[] {
 function selectBotEntry(settings: any, botName: string): any {
     const entries = resolveRawBotEntries(settings);
     if (!botName) return null;
-    return entries.find((b: any) => b && b.name === botName) || null;
+    return entries.find((b: any) => b && isSameBotName(b.name, botName)) || null;
 }
 
 function selectActiveBotEntries(settings: any): any[] {

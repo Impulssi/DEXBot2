@@ -110,6 +110,7 @@ EOF
 - `modules/fund_registry.ts` - Shared-account fund registry with cross-bot invariants
 - `modules/settings_merge.ts` - Consolidated settings merge (single source of truth)
 - `modules/cr_planner.ts` - Pure math / credit planning
+- `modules/credit_pricing.ts` - Canonical credit-pricing math (offer orientation, conversion rates, CR, fees) shared by runtime and analyzer
 - `modules/credit_runtime.ts` - Credit offer and MPA debt lifecycle management
 
 ### Order Management (`modules/order/`)

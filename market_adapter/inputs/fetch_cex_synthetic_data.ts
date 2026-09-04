@@ -21,6 +21,7 @@ const { PATHS } = require('../../modules/paths');
 const { MARKET_ADAPTER } = require('../../modules/constants');
 const { getAmaWarmupBars } = require('../core/strategies/ama');
 const { getErrorMessage } = require('../../modules/utils/errors');
+const { isSameBotName } = require('../../modules/utils/sanitize_key');
 const { candleFileForBot } = require('../../analysis/bot_key_utils');
 const {
     DEFAULTS: MARKET_ADAPTER_DEFAULTS,
@@ -97,7 +98,7 @@ function resolveBotEntryFromIdentity(config: any) {
 
     const botsFile = config.botsFile ? String(config.botsFile) : DEFAULT_BOTS_FILE;
     const entries = loadBotNameIndex(botsFile);
-    const match = entries.find(({ bot }: any) => String(bot.name || '').trim() === botName);
+    const match = entries.find(({ bot }: any) => isSameBotName(bot.name, botName));
     return match || null;
 }
 

@@ -25,6 +25,8 @@ const __dirname = _esmDirname(__filename);
  * dexbot pm2 stop <bot-name>       - Stop specific bot process
  * dexbot pm2 delete all            - Delete all dexbot processes from PM2
  * dexbot pm2 delete <bot-name>     - Delete specific bot from PM2
+ * dexbot pm2 reload all            - Reload managed apps without touching dexbot-cred
+ * dexbot pm2 reload <bot-name>     - Reload a bot without touching dexbot-cred
  * dexbot pm2 restart all           - Restart managed apps; re-unlock dexbot-cred only if needed
  * dexbot pm2 restart <target>      - Restart a bot or safely re-unlock dexbot-cred
 
@@ -98,6 +100,7 @@ import { Config } from './modules/config.js';
 import { waitForConnected } from './modules/bitshares_client.js';
 import * as readline from 'node:readline';
 import { getErrorMessage } from './modules/utils/errors.js';
+import { isSameBotName } from './modules/utils/sanitize_key.js';
 import { CLI_COLORS } from './modules/cli_colors.js';
 import { getStorage } from './modules/storage/index.js';
 import { usesAmaGridPrice } from './modules/dexbot_maintenance_runtime.js';
@@ -323,7 +326,7 @@ module.exports = { apps: ${JSON.stringify(appsClaw, null, 2)} }
         const bots = selectActiveBotEntries(config);
 
         if (botNameFilter) {
-            const filtered = bots.filter((b: any) => b.name === botNameFilter);
+            const filtered = bots.filter((b: any) => isSameBotName(b.name, botNameFilter));
             if (filtered.length === 0) {
                 fail(`Bot '${botNameFilter}' not found or not active in ${BOTS_JSON}`);
             }
@@ -418,10 +421,11 @@ async function ensureCredentialDaemonPM2({ forceRefresh = false, headless = fals
 async function assertActiveBotTarget(target: any) {
     try {
         const { config } = await readBotsFileWithLock(BOTS_JSON, parseJsonWithComments);
-        const botExists = selectActiveBotEntries(config).some((b: any) => b.name === target);
-        if (!botExists) {
+        const match = selectActiveBotEntries(config).find((b: any) => isSameBotName(b.name, target));
+        if (!match) {
             throw new Error(`Bot '${target}' not found or not active in ${BOTS_JSON}`);
         }
+        return match.name;
     } catch (err: any) {
         if (String(err && getErrorMessage(err) || '').includes('not found or not active')) {
             throw err;
@@ -843,13 +847,15 @@ async function stopPM2Processes(target: any) {
     }
 
     // Validate bot exists in configuration before stopping (with lock protection)
+    // and resolve to the canonical stored name (PM2 process names are case-sensitive).
     try {
         const { config } = await readBotsFileWithLock(BOTS_JSON, parseJsonWithComments);
-        const botExists = selectActiveBotEntries(config).some((b: any) => b.name === target);
+        const match = selectActiveBotEntries(config).find((b: any) => isSameBotName(b.name, target));
 
-        if (!botExists) {
+        if (!match) {
             throw new Error(`Bot '${target}' not found or not active in ${BOTS_JSON}`);
         }
+        target = match.name;
     } catch (err: any) {
         throw new Error(`Failed to read bots configuration: ${getErrorMessage(err)}`);
     }
@@ -891,13 +897,15 @@ async function deletePM2Processes(target: any) {
         }
 
         // Validate bot exists in configuration before deleting (with lock protection)
+        // and resolve to the canonical stored name (PM2 process names are case-sensitive).
         try {
             const { config } = await readBotsFileWithLock(BOTS_JSON, parseJsonWithComments);
-            const botExists = selectActiveBotEntries(config).some((b: any) => b.name === target);
+            const match = selectActiveBotEntries(config).find((b: any) => isSameBotName(b.name, target));
 
-            if (!botExists) {
+            if (!match) {
                 throw new Error(`Bot '${target}' not found or not active in ${BOTS_JSON}`);
             }
+            target = match.name;
         } catch (err: any) {
             throw new Error(`Failed to read bots configuration: ${getErrorMessage(err)}`);
         }
@@ -925,10 +933,37 @@ async function restartPM2Processes(target: any, { headless = false, passwordFile
         return;
     }
 
-    await assertActiveBotTarget(target);
+    target = await assertActiveBotTarget(target);
     await ensureCredentialDaemonPM2({ logReuse: false, headless, passwordFile });
     await execPM2Command('restart', target);
     console.log(`PM2 process '${target}' restarted.`);
+}
+
+/**
+ * Reload PM2 processes without touching the credential daemon.
+ * Mirrors restartPM2Processes but never ensures or refreshes dexbot-cred,
+ * so bots keep their existing key access.
+ * @param {string} target - 'all' or specific bot name.
+ * @returns {Promise<void>}
+ * @throws {Error} If target not found, is dexbot-cred, or reloading fails.
+ */
+async function reloadPM2Processes(target: any) {
+    console.log(`Reloading PM2 processes: ${target}`);
+
+    if (target === 'all') {
+        generateEcosystemConfig({ clawOnly: false, exitOnError: false });
+        await runManagedAppsPm2Action('restart');
+        console.log('Managed dexbot PM2 apps reloaded. dexbot-cred was left untouched.');
+        return;
+    }
+
+    if (target === CREDENTIAL_DAEMON_APP_NAME) {
+        throw new Error(`reload does not apply to '${CREDENTIAL_DAEMON_APP_NAME}'; use 'dexbot pm2 restart ${CREDENTIAL_DAEMON_APP_NAME}' to re-unlock it.`);
+    }
+
+    target = await assertActiveBotTarget(target);
+    await execPM2Command('restart', target);
+    console.log(`PM2 process '${target}' reloaded (dexbot-cred untouched).`);
 }
 
 /**
@@ -944,8 +979,9 @@ Commands:
   update                    Run the update script immediately
   stop <bot-name|all>       Stop PM2 process(es) - only dexbot processes
   delete <bot-name|all>     Delete PM2 process(es) - only dexbot processes
+  reload <bot-name|all>       Reload managed apps without touching dexbot-cred
   restart <bot-name|all|dexbot-cred>
-                            Restart managed apps safely; dexbot-cred uses fresh unlock flow
+                             Restart managed apps safely; dexbot-cred uses fresh unlock flow
   help                      Show this help message
 
 Flags:
@@ -961,9 +997,11 @@ Examples:
   dexbot pm2 --password-file /run/secrets/bot-password
                                    # Start all bots with password from file
   dexbot pm2 stop all             # Stop all dexbot processes
-  dexbot pm2 stop XRP-BTS         # Stop specific bot
+  dexbot pm2 stop AAA-BBB         # Stop specific bot
   dexbot pm2 delete all           # Delete all dexbot processes from PM2
-  dexbot pm2 delete XRP-BTS       # Delete specific bot from PM2
+  dexbot pm2 delete AAA-BBB       # Delete specific bot from PM2
+  dexbot pm2 reload all           # Reload managed apps, dexbot-cred untouched
+  dexbot pm2 reload AAA-BBB       # Reload a single bot, dexbot-cred untouched
   dexbot pm2 restart all          # Safe restart path for managed apps
   dexbot pm2 restart dexbot-cred  # Re-unlock credential daemon
 
@@ -1038,6 +1076,19 @@ if (isPm2DirectRun) {
                     console.error(pm2Error(`Failed to restart processes: ${getErrorMessage(err)}`));
                     process.exit(1);
                 }
+            } else if (command === 'reload') {
+                if (!target) {
+                    console.error(pm2Error('Error: Target required. Specify bot name or "all".'));
+                    showPM2Help();
+                    process.exit(1);
+                }
+                try {
+                    await reloadPM2Processes(target);
+                    process.exit(0);
+                } catch (err: any) {
+                    console.error(pm2Error(`Failed to reload processes: ${getErrorMessage(err)}`));
+                    process.exit(1);
+                }
             } else if (command === 'help') {
                 showPM2Help();
                 process.exit(0);
@@ -1052,7 +1103,7 @@ if (isPm2DirectRun) {
         }
     })();
 }
-export { buildCredentialDaemonApp, buildEcosystemApps, buildScopedChildEnv, countManagedBots, deletePM2Processes, ensureCredentialDaemonPM2, generateEcosystemConfig, isServiceApp, main, needsMarketAdapter, restartPM2Processes, stopPM2Processes, startManagedRuntimePM2, usesAmaGridPrice };
+export { buildCredentialDaemonApp, buildEcosystemApps, buildScopedChildEnv, countManagedBots, deletePM2Processes, ensureCredentialDaemonPM2, generateEcosystemConfig, isServiceApp, main, needsMarketAdapter, reloadPM2Processes, restartPM2Processes, stopPM2Processes, startManagedRuntimePM2, usesAmaGridPrice };
 
 
 export default {
@@ -1066,6 +1117,7 @@ export default {
     isServiceApp,
     main,
     needsMarketAdapter,
+    reloadPM2Processes,
     restartPM2Processes,
     stopPM2Processes,
     startManagedRuntimePM2,

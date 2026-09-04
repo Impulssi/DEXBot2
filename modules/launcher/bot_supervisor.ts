@@ -22,7 +22,7 @@ const storage = getStorage();
 const { ensureDir, readJSON, unlink: safeUnlink } = storage;
 import { buildRuntimeScriptPath, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry.js';
 import { getErrorMessage } from '../utils/errors.js';
-import { usesAmaGridPrice } from '../dexbot_maintenance_runtime.js';
+import { usesAmaGridPrice } from '../grid_price_source.js';
 
 const BOT_SCRIPT = buildRuntimeScriptPath(CODE_ROOT, ['bot']);
 const SOCKET_PATH = Config.DEXBOT_SUPERVISOR_SOCKET || PATHS.PROFILES.SUPERVISOR_SOCK;
@@ -701,6 +701,28 @@ function createBotSupervisor({
                 case 'restart-all':
                     await restartAll();
                     return { ok: true };
+                case 'reload':
+                    // reload mirrors restart for isolated bots (no credential
+                    // daemon is involved in this path).
+                    if (!cmd.bot) return { error: 'bot name required' };
+                    {
+                        const state = botStates.get(cmd.bot);
+                        if (!state) return { error: `bot '${cmd.bot}' not found` };
+                        if (state.status === 'running' && state.child) {
+                            state.pendingRestart = true;
+                            try { state.child.kill('SIGTERM'); } catch (_: any) {}
+                        } else if ((userStopped || state.stoppedByUser) && state.status === 'stopped' && state.appEntry) {
+                            spawnApp(state.appEntry);
+                        } else {
+                            return { error: `bot '${cmd.bot}' is not running (${state.status})` };
+                        }
+                        log(`reload: ${cmd.bot}`);
+                        return { ok: true };
+                    }
+                case 'reload-all':
+                    // reload-all mirrors restart-all (bots + market adapter only).
+                    await restartAll({ logAction: 'reload-all' });
+                    return { ok: true };
                 case 'delete':
                     await shutdown({ preserveSockets: cmd.preserveSockets || [] });
                     return { ok: true };
@@ -1033,7 +1055,7 @@ function createBotSupervisor({
         }
     }
 
-    async function restartAll() {
+    async function restartAll({ logAction = 'restart-all' }: any = {}) {
         await restartRunning({ logAction: false });
         for (const [, state] of botStates) {
             if (!state.bulkControl) continue;
@@ -1041,7 +1063,7 @@ function createBotSupervisor({
                 spawnApp(state.appEntry);
             }
         }
-        log('restart-all');
+        log(logAction);
     }
 
     function hasUserStopped() {

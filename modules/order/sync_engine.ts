@@ -1703,7 +1703,7 @@ class SyncEngine {
                     // and the last update wins (`applyGridUpdateBatch` is last-wins
                     // per slot), leaving a phantom residual equal to the earlier
                     // fills' sum — exactly the fund-invariant CRITICAL seen in the
-                    // XRP-BTS log whenever a batch contained 2+ fills of one order.
+                    // AAA-BBB log whenever a batch contained 2+ fills of one order.
                     const gridUpdates: any[] = [];
                     const filledOrders: any[] = [];
                     const updatedOrders: any[] = [];

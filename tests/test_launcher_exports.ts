@@ -25,8 +25,8 @@ assert.deepStrictEqual(
     'unlock parser should recognize claw-only mode'
 );
 assert.deepStrictEqual(
-    parseUnlockArgs(['node', 'unlock', 'XRP-BTS']),
-    { botName: 'XRP-BTS', clawOnly: false, isolated: false, dryrun: false, ...UNLOCK_BASE },
+    parseUnlockArgs(['node', 'unlock', 'AAA-BBB']),
+    { botName: 'AAA-BBB', clawOnly: false, isolated: false, dryrun: false, ...UNLOCK_BASE },
     'unlock parser should capture bot names'
 );
 assert.deepStrictEqual(
@@ -35,8 +35,8 @@ assert.deepStrictEqual(
     'unlock parser should recognize isolated flag'
 );
 assert.deepStrictEqual(
-    parseUnlockArgs(['node', 'unlock', '--isolated', 'XRP-BTS']),
-    { botName: 'XRP-BTS', clawOnly: false, isolated: true, dryrun: false, ...UNLOCK_BASE },
+    parseUnlockArgs(['node', 'unlock', '--isolated', 'AAA-BBB']),
+    { botName: 'AAA-BBB', clawOnly: false, isolated: true, dryrun: false, ...UNLOCK_BASE },
     'unlock parser should combine isolated flag with bot name'
 );
 assert.deepStrictEqual(
@@ -45,8 +45,8 @@ assert.deepStrictEqual(
     'unlock parser should recognize dryrun flag'
 );
 assert.deepStrictEqual(
-    parseUnlockArgs(['node', 'unlock', '--dryrun', 'XRP-BTS']),
-    { botName: 'XRP-BTS', clawOnly: false, isolated: false, dryrun: true, ...UNLOCK_BASE },
+    parseUnlockArgs(['node', 'unlock', '--dryrun', 'AAA-BBB']),
+    { botName: 'AAA-BBB', clawOnly: false, isolated: false, dryrun: true, ...UNLOCK_BASE },
     'unlock parser should combine dryrun flag with bot name'
 );
 assert.deepStrictEqual(
@@ -96,8 +96,8 @@ assert.deepStrictEqual(
     'pm2 parser should recognize headless flag'
 );
 assert.deepStrictEqual(
-    parsePm2Args(['node', 'pm2.js', '--headless', 'XRP-BTS']),
-    { command: null, target: 'XRP-BTS', clawOnly: false, headless: true, passwordFile: null },
+    parsePm2Args(['node', 'pm2.js', '--headless', 'AAA-BBB']),
+    { command: null, target: 'AAA-BBB', clawOnly: false, headless: true, passwordFile: null },
     'pm2 parser should combine headless with bot name'
 );
 assert.deepStrictEqual(
@@ -119,8 +119,8 @@ assert.deepStrictEqual(
     'pm2 parser should accept claw-only as a flag'
 );
 assert.deepStrictEqual(
-    parsePm2Args(['node', 'pm2.js', 'XRP-BTS']),
-    { command: null, target: 'XRP-BTS', clawOnly: false, ...PM2_BASE },
+    parsePm2Args(['node', 'pm2.js', 'AAA-BBB']),
+    { command: null, target: 'AAA-BBB', clawOnly: false, ...PM2_BASE },
     'pm2 parser should treat a bare bot name as the default PM2 target'
 );
 assert.deepStrictEqual(
@@ -130,8 +130,8 @@ assert.deepStrictEqual(
 );
 const expectedDexbotPath = path.join(__dirname, '..', 'dexbot.js');
 assert.deepStrictEqual(
-    unlock.buildDexbotStartArgs('XRP-BTS'),
-    [expectedDexbotPath, 'test', 'XRP-BTS'],
+    unlock.buildDexbotStartArgs('AAA-BBB'),
+    [expectedDexbotPath, 'test', 'AAA-BBB'],
     'launcher should append the requested bot name'
 );
 assert.deepStrictEqual(
@@ -140,8 +140,8 @@ assert.deepStrictEqual(
     'launcher should omit the bot arg when starting all bots'
 );
 assert.deepStrictEqual(
-    unlock.buildDexbotStartArgs('XRP-BTS', true),
-    [expectedDexbotPath, 'drystart', 'XRP-BTS'],
+    unlock.buildDexbotStartArgs('AAA-BBB', true),
+    [expectedDexbotPath, 'drystart', 'AAA-BBB'],
     'launcher should pass drystart when dryrun is true'
 );
 assert.deepStrictEqual(
@@ -166,8 +166,8 @@ assert.deepStrictEqual(
 
 for (const entry of [
     { args: ['node', 'unlock', 'status'], expected: { cmd: 'status', target: null } },
-    { args: ['node', 'unlock', 'stop', 'XRP-BTS'], expected: { cmd: 'stop', target: 'XRP-BTS' } },
-    { args: ['node', 'unlock', 'restart', 'XRP-BTS'], expected: { cmd: 'restart', target: 'XRP-BTS' } },
+    { args: ['node', 'unlock', 'stop', 'AAA-BBB'], expected: { cmd: 'stop', target: 'AAA-BBB' } },
+    { args: ['node', 'unlock', 'restart', 'AAA-BBB'], expected: { cmd: 'restart', target: 'AAA-BBB' } },
     { args: ['node', 'unlock', 'stop'], expected: { cmd: 'stop-all', target: null } },
     { args: ['node', 'unlock', 'restart'], expected: { cmd: 'restart-all', target: null } },
     { args: ['node', 'unlock', 'stop', 'all'], expected: { cmd: 'stop-all', target: null } },

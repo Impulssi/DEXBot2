@@ -39,7 +39,7 @@ function writeBotsFixture() {
     // level before the (mocked) settings loader runs.
     fs.writeFileSync(path.join(TEMP_PROFILE_ROOT, 'bots.json'), JSON.stringify({
         bots: [
-            { name: 'XRP-BTS', active: true },
+            { name: 'AAA-BBB', active: true },
             { name: 'H-BTS', active: true },
             { name: 'T-BTS', active: true },
         ],
@@ -86,7 +86,7 @@ function installModuleMocks() {
         loadSettingsFile: () => ({
             config: {
                 bots: [
-                    { name: 'XRP-BTS', active: true },
+                    { name: 'AAA-BBB', active: true },
                     { name: 'H-BTS', active: true },
                     { name: 'T-BTS', active: true },
                 ],
@@ -119,15 +119,15 @@ function installPathShim() {
                 targetIncludes: 'ecosystem.config.cjs',
                 stdout: [
                     '[PM2] cron restart at 0 0 * * *',
-                    '[PM2][WARN] Applications XRP-BTS, H-BTS, T-BTS, dexbot-update not running, starting...',
-                    '[PM2] App [XRP-BTS] launched (1 instances)',
+                    '[PM2][WARN] Applications AAA-BBB, H-BTS, T-BTS, dexbot-update not running, starting...',
+                    '[PM2] App [AAA-BBB] launched (1 instances)',
                     '[PM2] App [H-BTS] launched (1 instances)',
                     '[PM2] App [T-BTS] launched (1 instances)',
                     '[PM2] App [dexbot-update] launched (1 instances)',
                     '┌────┬────────────────────┬──────────┬──────┬───────────┬──────────┬──────────┐',
                     '│ id │ name               │ mode     │ ↺    │ status    │ cpu      │ memory   │',
                     '├────┼────────────────────┼──────────┼──────┼───────────┼──────────┼──────────┤',
-                    '│ 58 │ XRP-BTS            │ fork     │ 0    │ online    │ 0%       │ 44.1mb   │',
+                    '│ 58 │ AAA-BBB            │ fork     │ 0    │ online    │ 0%       │ 44.1mb   │',
                     '│ 59 │ H-BTS              │ fork     │ 0    │ online    │ 0%       │ 42.6mb   │',
                     '│ 60 │ T-BTS              │ fork     │ 0    │ online    │ 0%       │ 21.9mb   │',
                     '│ 61 │ dexbot-update      │ fork     │ 0    │ online    │ 0%       │ 26.6mb   │',
@@ -187,7 +187,7 @@ async function runMainOutputStage() {
         assert.ok(!logs.some((line) => line.includes('(1 instances)')), 'launcher should strip PM2 instance counts');
         assert.ok(!logs.some((line) => line.includes('(1 instance)')), 'launcher should strip PM2 instance counts');
         assert.ok(logs.includes('[PM2] App [dexbot-cred] launched'), 'launcher should list the credential daemon launch with other compact PM2 output');
-        assert.ok(logs.includes('[PM2] App [XRP-BTS] launched'), 'launcher should keep the app launch line without the instance count');
+        assert.ok(logs.includes('[PM2] App [AAA-BBB] launched'), 'launcher should keep the app launch line without the instance count');
         assert.ok(logs.includes('[PM2] App [H-BTS] launched'), 'launcher should keep the app launch line without the instance count');
         assert.ok(logs.includes('[PM2] App [T-BTS] launched'), 'launcher should keep the app launch line without the instance count');
         assert.ok(logs.includes('[PM2] App [dexbot-update] launched'), 'launcher should keep the app launch line without the instance count');

@@ -60,8 +60,8 @@ const _signalRunnerScript = _isDist ? `${BUILD_DIR}/market_adapter/ama_signal_ru
         },
         results: [
             {
-                botName: 'XRP-BTS',
-                botKey: 'xrp-bts-0',
+                botName: 'AAA-BBB',
+                botKey: 'aaa-bbb-0',
                 ok: true,
                 source: 'native-incremental',
                 candleCount: 123,

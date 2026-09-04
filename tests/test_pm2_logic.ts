@@ -16,7 +16,7 @@ const { selectActiveBotEntries } = require('../modules/bot_settings');
 assert.strictEqual(isServiceApp({ name: 'dexbot-cred' }), true, 'credential daemon should be treated as a service app');
 assert.strictEqual(isServiceApp({ name: 'dexbot-update' }), true, 'updater should be treated as a service app');
 assert.strictEqual(isServiceApp({ name: 'dexbot-adapter' }), true, 'adapter should be treated as a service app');
-assert.strictEqual(isServiceApp({ name: 'XRP-BTS' }), false, 'bot processes should not be treated as service apps');
+assert.strictEqual(isServiceApp({ name: 'AAA-BBB' }), false, 'bot processes should not be treated as service apps');
 assert.strictEqual(usesAmaGridPrice({ gridPrice: 'ama' }), true, 'ama should require the market adapter');
 assert.strictEqual(usesAmaGridPrice({ gridPrice: 'book' }), false, 'book should not require the market adapter');
 assert.strictEqual(usesAmaGridPrice({ gridPrice: '  AMA4  ' }), true, 'ama4 matching should be case-insensitive');
@@ -32,7 +32,7 @@ assert.strictEqual(
         { name: 'dexbot-cred' },
         { name: 'dexbot-adapter' },
         { name: 'dexbot-update' },
-        { name: 'XRP-BTS' },
+        { name: 'AAA-BBB' },
         { name: 'USD-BTS' },
     ]),
     2,
@@ -41,7 +41,7 @@ assert.strictEqual(
 
 assert.deepStrictEqual(selectActiveBotEntries({ bots: [] }), [], 'empty bot config should remain empty');
 assert.deepStrictEqual(
-    selectActiveBotEntries({ bots: [{ name: 'XRP-BTS', active: false }, { name: 'H-BTS', active: true }] }),
+    selectActiveBotEntries({ bots: [{ name: 'AAA-BBB', active: false }, { name: 'H-BTS', active: true }] }),
     [{ name: 'H-BTS', active: true }],
     'inactive bots should be filtered out'
 );
@@ -75,8 +75,8 @@ delete process.env.TEST_PM2_SECRET;
 assert.strictEqual(scopedEnv.TEST_PM2_SECRET, undefined, 'scoped child env should not forward arbitrary parent secrets');
 assert.strictEqual(scopedEnv.DEXBOT_CRED_BOOTSTRAP_PATH_FILE, '/tmp/test-bootstrap-path', 'scoped child env should keep explicit launcher extras');
 assert.strictEqual(
-    buildEcosystemApps([{ name: 'XRP-BTS' }], { includeUpdater: false, credentialEnv: { DEXBOT_CRED_BOOTSTRAP_PATH_FILE: '/tmp/test-bootstrap-path' } })
-        .find((app) => app.name === 'XRP-BTS').env,
+    buildEcosystemApps([{ name: 'AAA-BBB' }], { includeUpdater: false, credentialEnv: { DEXBOT_CRED_BOOTSTRAP_PATH_FILE: '/tmp/test-bootstrap-path' } })
+        .find((app) => app.name === 'AAA-BBB').env,
     undefined,
     'bot apps should not receive credential bootstrap env'
 );

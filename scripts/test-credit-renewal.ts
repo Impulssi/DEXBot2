@@ -13,9 +13,10 @@ const chainOrders = require('../modules/chain_orders');
 const { PATHS } = require('../modules/paths');
 const { getErrorMessage } = require('../modules/utils/errors');
 const { loadSettingsFile, normalizeBotEntries, resolveRawBotEntries } = require('../modules/bot_settings');
+const { isSameBotName } = require('../modules/utils/sanitize_key');
 const { blockchainToFloat } = require('../modules/order/utils/math');
 
-const DEFAULT_BOT_NAME = 'XRP-BTS';
+const DEFAULT_BOT_NAME = 'AAA-BBB';
 const DEFAULT_THRESHOLD_HOURS = 24;
 const DEFAULT_MAX_FEE_RATE_PER_DAY = 0.05;
 const DEFAULT_MAX_COLLATERAL_RATIO = 2.5;
@@ -102,7 +103,7 @@ function loadBot(botName: string) {
   const botsPath = PATHS.PROFILES.BOTS_JSON;
   const { config } = loadSettingsFile(botsPath, { silent: false, exitOnError: false });
   const entries = normalizeBotEntries(resolveRawBotEntries(config));
-  const bot = entries.find((entry: any) => entry.name === botName);
+  const bot = entries.find((entry: any) => isSameBotName(entry.name, botName));
   if (!bot) {
     throw new Error(`Bot profile "${botName}" not found in ${botsPath}`);
   }

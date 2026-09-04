@@ -14,7 +14,7 @@ const {
   "bots": [
     {
       /* block comment */
-      "name": "XRP-BTS",
+      "name": "AAA-BBB",
       "active": true,
       "startPrice": "pool",
       "assetA": "IOB.XRP",
@@ -26,7 +26,7 @@ const {
     const bots = parseBotsConfig(raw, 'inline-fixture');
     assert.ok(Array.isArray(bots), 'parseBotsConfig should return an array');
     assert.strictEqual(bots.length, 1, 'commented bots fixture should parse one bot');
-    assert.strictEqual(bots[0].name, 'XRP-BTS', 'parsed bot name should match');
+    assert.strictEqual(bots[0].name, 'AAA-BBB', 'parsed bot name should match');
 }
 
 {

@@ -12,8 +12,8 @@ import { Config } from '../modules/config.js';
  *
  * Usage:
  *   node dist/market_adapter/ama_signal_runner.js
- *   node dist/market_adapter/ama_signal_runner.js --bot XRP-BTS
- *   node dist/market_adapter/ama_signal_runner.js --bot xrp-bts-0 --compact
+ *   node dist/market_adapter/ama_signal_runner.js --bot AAA-BBB
+ *   node dist/market_adapter/ama_signal_runner.js --bot aaa-bbb-0 --compact
  */
 
 import { runOnceForAma } from './market_adapter.js';

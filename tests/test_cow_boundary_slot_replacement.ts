@@ -2,7 +2,7 @@
  * tests/test_cow_boundary_slot_replacement.ts
  *
  * Regression test for the "boundary slot not re-placed after stale cleanup"
- * bug (08:49 xrp-bts incident).
+ * bug (08:49 aaa-bbb incident).
  *
  * Root cause chain:
  * 1. A COW batch dies on a stale order (atomic executeBatch) → rotations lost.

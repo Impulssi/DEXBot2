@@ -21,7 +21,7 @@ const originalConsoleLog = console.log;
 const originalConsoleWarn = console.warn;
 const originalConsoleError = console.error;
 
-const targetBot = 'XRP-BTS';
+const targetBot = 'AAA-BBB';
 
 function makeTempProfileRoot() {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-pm2-single-'));

@@ -71,7 +71,8 @@ const __dirname = _esmDirname(__filename);
  * MAINTENANCE:
  *   dexbot update                 - Update to latest version (pull + install + restart)
  *   dexbot stop                   - Stop the monolithic runtime
- *   dexbot restart                - Restart the monolithic runtime
+ *   dexbot reload                 - Reload the monolithic runtime (leaves credential daemon untouched)
+ *   dexbot restart                - Restart the monolithic runtime (re-unlocks credential daemon)
  *   dexbot delete                 - Stop/delete all runtime processes
  *   dexbot export <bot>           - Export trading history to CSV/JSON for QTradeX
  *   dexbot order                  - Analyze persisted order grids in profiles/orders/
@@ -157,6 +158,7 @@ const { PATHS, getHomeProfilesDir, getRecalculateTriggerFile } = require('./modu
 const credentialPolicy = require('./modules/credential_policy');
 const { Config } = require('./modules/config');
 const { getErrorMessage } = require('./modules/utils/errors');
+const { isSameBotName } = require('./modules/utils/sanitize_key');
 
 // Setup graceful shutdown handlers
 
@@ -176,8 +178,8 @@ if (typeof credentialPolicy.checkPolicyFileSecurity === 'function') credentialPo
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
 
-const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'help'];
-const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'unlock', defaults: 'default', stp: 'stop', stopall: 'stop', restartall: 'restart' };
+const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'reload', 'help'];
+const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'unlock', defaults: 'default', stp: 'stop', stopall: 'stop', restartall: 'restart', reloadall: 'reload' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
 const CLI_EXAMPLES = [
@@ -193,7 +195,7 @@ const CLI_EXAMPLES = [
     { title: 'Update DEXBot2', command: 'dexbot update', notes: 'Fetches latest code, updates dependencies, and restarts PM2.' },
     { title: 'Export bot trades for QTradeX', command: 'dexbot export <bot>', notes: 'Exports trading history and settings to CSV/JSON for backtesting.' },
     { title: 'Analyze persisted order grids', command: 'dexbot order', notes: 'Runs the order analyzer across the orders directory (<profiles>/orders) and prints spread/increment/funds/distribution metrics. Add a bot key to render only that bot, and --export for an HTML report.' },
-    { title: 'Show live credit/MPA positions', command: 'dexbot credit', notes: 'Queries get_margin_positions + get_credit_deals_by_borrower per preferredAccount and prints debt/collateral sums per asset per bot. Add a bot key to render only that bot.' },
+    { title: 'Show live credit/MPA positions', command: 'dexbot credit', notes: 'Queries get_margin_positions + get_credit_deals_by_borrower per preferredAccount and prints debt/collateral sums plus one Curr. CR line per whitelisted pair (active CR, else borrow-now CR vs funds avail. on the offer) and one Avar. CR line per bot. CR covers only pairs whitelisted in bots.json and listed on the current credit offer. Add a bot key to render only that bot.' },
     { title: 'Clear all bot log files', command: 'dexbot clear', notes: 'Runs scripts/clear-logs.sh to remove log files from the logs directory (<profiles>/logs).' },
     { title: 'Reset settings to defaults', command: 'dexbot default', notes: 'Runs scripts/reset-settings.sh to delete general.settings.json, market_profiles.json, and market_adapter_settings.json.' }
 ];
@@ -250,7 +252,8 @@ function printCLIUsage() {
     console.log('  status, stat, stats  Show bot runtime status (unlock monolithic/isolated or PM2).');
     console.log('  unlock            Legacy alias for start (repo-root: `./unlock`).');
     console.log('  stop              Stop the monolithic runtime.');
-    console.log('  restart           Restart the monolithic runtime.');
+    console.log('  reload            Reload the monolithic runtime (leaves credential daemon untouched).');
+    console.log('  restart           Restart the monolithic runtime (re-unlocks credential daemon).');
     console.log('  delete            Stop/delete all runtime processes.');
     console.log('  whitelist, white  Generate market adapter whitelist from AMA bot configs. Flags (--dynamic-weight, --no-asymmetric-bounds, --prune, --bot <key>) are forwarded. --bot implies overwrite for that key.');
     console.log('  clear             Remove all log files from <profiles>/logs/ (runs scripts/clear-logs.sh).');
@@ -446,7 +449,7 @@ function scheduleBotStartRetry(entry: any, { forceDryRun = false, reason = '' }:
         try {
             const { config } = loadSettingsFile(PROFILES_BOTS_FILE);
             const entries = resolveRawBotEntries(config);
-            const match = entries.find((b: any) => b.name === botName);
+            const match = entries.find((b: any) => isSameBotName(b.name, botName));
             if (!match || match.active === false) {
                 console.log(`Auto-restart: bot '${botName}' is no longer active in ${path.basename(PROFILES_BOTS_FILE)}; giving up.`);
                 clearBotStartRetry(botName);
@@ -727,7 +730,7 @@ async function startBotByName(botName: string | null | undefined, { dryRun = fal
         console.error(startupError('No bot definitions exist in the tracked settings.'));
         process.exit(1);
     }
-    const match = entries.find((b: any) => b.name === botName);
+    const match = entries.find((b: any) => isSameBotName(b.name, botName));
     if (!match) {
         console.error(startupError(`Could not find any bot named '${botName}' in the tracked settings.`));
         process.exit(1);
@@ -773,7 +776,7 @@ async function setBotActiveState(botName: string | null | undefined, active: boo
         console.log(`Marked all bots ${inWord} in ${path.basename(filePath)}.`);
         return;
     }
-    const match = entries.find((b: any) => b.name === botName);
+    const match = entries.find((b: any) => isSameBotName(b.name, botName));
     if (!match) {
         console.error(startupError(`Could not find any bot named '${botName}' to ${action}.`));
         process.exit(1);
@@ -808,7 +811,7 @@ async function resetBotByName(botName: string | null | undefined) {
     const entries = normalizeBotEntries(resolveRawBotEntries(config));
 
     // Filter targets
-    const targets = botName ? entries.filter((b: any) => b.name === botName) : entries.filter((b: any) => b.active);
+    const targets = botName ? entries.filter((b: any) => isSameBotName(b.name, botName)) : entries.filter((b: any) => b.active);
     if (botName && targets.length === 0) {
         console.error(startupError(`Could not find any bot named '${botName}' to reset.`));
         process.exit(1);
@@ -847,7 +850,7 @@ async function exportBotTrades(botName: string | undefined) {
 
         // Load bots configuration
         const { config: botsData } = loadSettingsFile(PROFILES_BOTS_FILE);
-        const bot = resolveRawBotEntries(botsData).find((b: any) => b.name === botName);
+        const bot = resolveRawBotEntries(botsData).find((b: any) => isSameBotName(b.name, botName));
 
         if (!bot) {
             console.error(startupError(`Bot '${botName}' not found in ${PROFILES_BOTS_FILE}`));
@@ -971,7 +974,7 @@ async function handleCLICommands() {
         case 'pm2': {
             const { spawnSync } = require('child_process') as any as any;
             // Forward the remaining CLI args to pm2.js so subcommands work
-            // (`dexbot pm2 stop XRP-BTS`, `dexbot pm2 restart all`, `dexbot pm2
+            // (`dexbot pm2 stop AAA-BBB`, `dexbot pm2 restart all`, `dexbot pm2
             // help`...). Previously the subcommand was silently dropped and the
             // full-setup path ran, so `dexbot pm2 start X` started ALL bots and
             // `dexbot pm2 stop X` no-oped into a full setup.
@@ -1252,7 +1255,8 @@ async function handleCLICommands() {
         }
         case 'delete':
         case 'stop':
-        case 'restart': {
+        case 'restart':
+        case 'reload': {
             const { spawnSync } = require('child_process') as any as any;
             const unlockArgs = buildRuntimeScriptArgs({
                 codeRoot: __dirname,

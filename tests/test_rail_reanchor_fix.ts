@@ -4,7 +4,7 @@
  * Regression test for the "spread gap removed" bug (sell rail left behind
  * after a crawl-up).
  *
- * Scenario (mirrors the 08:29 xrp-bts incident):
+ * Scenario (mirrors the 08:29 aaa-bbb incident):
  * - gapSlots = 2, initial boundary = 5 -> sellStart = 8, sells at slots 8-13.
  * - Two sells (slots 8, 9) fill -> boundary crawls 5 -> 7 -> sellStart = 10,
  *   spread band becomes slots 8-9.
