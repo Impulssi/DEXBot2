@@ -7,11 +7,13 @@
  * TABLE OF CONTENTS (21 exported functions)
  * ===============================================================================
  *
- * SECTION 1: PRICE DERIVATION (8 functions)
+ * SECTION 1: PRICE DERIVATION (10 functions)
  *   - lookupAsset(BitShares, symbol) - Lookup asset metadata from blockchain
  *   - deriveMarketPrice(BitShares, symA, symB) - Derive price from order book
  *   - derivePoolPrice(BitShares, symA, symB) - Derive price from liquidity pool
  *   - derivePrice(BitShares, symA, symB, mode) - Derive price with fallback chain
+ *   - derivePriceViaBridges(BitShares, symA, symB, bridges, mode) - Multi-hop price via bridge assets
+ *   - derivePriceWithBridges(BitShares, symA, symB, bridges, mode) - Direct price, else bridge hops
  *   - resolveLiquidityPoolByShareAsset(BitShares, shareAsset) - Resolve LP by share asset
  *   - deriveLiquidityPoolTokenValue(BitShares, symA, symB) - Derive LP token value
  *   - loadAmaCenterPrice(manager) - Load AMA center price
@@ -413,6 +415,79 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
 };
 
 /**
+ * Default bridge assets for multi-hop price derivation. BTS is the core
+ * asset with the deepest markets, so almost every listed asset has a price
+ * path against it even when no direct market exists for an exotic pair.
+ */
+export const DEFAULT_PRICE_BRIDGES = ['BTS'];
+
+function isPositiveRate(value: any): value is number {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+/**
+ * Derive price via bridge assets only (no direct market attempt).
+ * Returns price in B/A format (units of asset B per 1 unit of asset A) as
+ * price(A in X) * price(X in B) for the first bridge X with both legs
+ * available. Skips bridges equal to either side; identity (A === B) is 1.
+ *
+ * @param {Object} BitShares - BitShares client instance
+ * @param {string} symA - First asset symbol or ID
+ * @param {string} symB - Second asset symbol or ID
+ * @param {string[]} [bridges] - Bridge asset symbols/IDs to try in order
+ * @param {string} [mode='auto'] - Price derivation mode passed to derivePrice
+ * @returns {Promise<{rate:number,path:string}|null>} Rate plus 'bridge:<ref>' path, or null
+ */
+export async function derivePriceViaBridges(BitShares: any, symA: string, symB: string, bridges: string[] = DEFAULT_PRICE_BRIDGES, mode: string = 'auto'): Promise<{ rate: number; path: string } | null> {
+    try {
+        if (String(symA) === String(symB)) {
+            return { rate: 1, path: 'identity' };
+        }
+        const list = Array.isArray(bridges) ? bridges : [];
+        for (const bridge of list) {
+            if (!bridge || String(bridge) === String(symA) || String(bridge) === String(symB)) continue;
+            const [legA, legB] = await Promise.all([
+                derivePrice(BitShares, symA, bridge, mode).catch(() => null),
+                derivePrice(BitShares, bridge, symB, mode).catch(() => null),
+            ]);
+            if (isPositiveRate(legA) && isPositiveRate(legB)) {
+                return { rate: legA * legB, path: `bridge:${bridge}` };
+            }
+        }
+        return null;
+    } catch (err: any) {
+        systemLogger.debug(`derivePriceViaBridges failed for ${symA}/${symB}: ${getErrorMessage(err)}`);
+        return null;
+    }
+}
+
+/**
+ * Derive price with universal fallback: direct pool/book market first, then
+ * multi-hop via bridge assets. Unlike derivePrice (null when no direct
+ * market exists), this resolves a rate for every pair whose assets each
+ * have some market against a shared bridge — the last-resort pricing used
+ * for credit collateral conversion when the lending offer lists no price
+ * for the collateral (or the pool cannot be valued directly).
+ *
+ * @param {Object} BitShares - BitShares client instance
+ * @param {string} symA - First asset symbol or ID
+ * @param {string} symB - Second asset symbol or ID
+ * @param {string[]} [bridges] - Bridge asset symbols/IDs to try in order
+ * @param {string} [mode='auto'] - Price derivation mode passed to derivePrice
+ * @returns {Promise<{rate:number,path:string}|null>} Rate plus 'direct' | 'identity' | 'bridge:<ref>' path, or null
+ */
+export async function derivePriceWithBridges(BitShares: any, symA: string, symB: string, bridges: string[] = DEFAULT_PRICE_BRIDGES, mode: string = 'auto'): Promise<{ rate: number; path: string } | null> {
+    if (String(symA) === String(symB)) {
+        return { rate: 1, path: 'identity' };
+    }
+    const direct = await derivePrice(BitShares, symA, symB, mode).catch(() => null);
+    if (isPositiveRate(direct)) {
+        return { rate: direct, path: 'direct' };
+    }
+    return derivePriceViaBridges(BitShares, symA, symB, bridges, mode);
+}
+
+/**
  * Resolve a liquidity pool from a share asset reference.
  * Looks up the share asset, then queries the blockchain for associated pools.
  *
@@ -499,9 +574,13 @@ async function getAssetCurrentSupply(BitShares: any, assetRef: any): Promise<any
  * @param {string} shareAssetRef - Share asset symbol
  * @param {string} denominationAssetRef - Denomination asset symbol
  * @param {string} [mode='auto'] - Price derivation mode ("pool", "book", or "auto")
+ * @param {boolean} [allowBridges=false] - When true, a reserve leg with no
+ *   direct market may be priced via bridge assets (see derivePriceViaBridges).
+ *   Defaults to false so existing callers keep the previous direct-only
+ *   behavior; the credit runtime opts in explicitly.
  * @returns {Promise<number|null>} Value per share in denomination asset, or null
  */
-export async function deriveLiquidityPoolTokenValue(BitShares: any, shareAssetRef: string, denominationAssetRef: string, mode: string = 'auto'): Promise<number | null> {
+export async function deriveLiquidityPoolTokenValue(BitShares: any, shareAssetRef: string, denominationAssetRef: string, mode: string = 'auto', allowBridges: boolean = false): Promise<number | null> {
     try {
         const [shareAsset, denominationAsset] = await Promise.all([
             lookupAsset(BitShares, shareAssetRef),
@@ -533,18 +612,29 @@ export async function deriveLiquidityPoolTokenValue(BitShares: any, shareAssetRe
             return null;
         }
 
-        const priceA = String(assetA.id) === String(denominationAsset.id)
-            ? 1
-            : await derivePrice(BitShares, assetA.id, denominationAsset.id, mode).catch((e: any) => {
-                systemLogger.debug(`deriveLiquidityPoolTokenValue: derivePrice failed for ${assetA.id}/${denominationAsset.id}: ${getErrorMessage(e)}`);
+        // Each reserve leg is priced directly first, then — only when the
+        // caller opts in via allowBridges — via bridge assets (e.g.
+        // reserve -> BTS -> denomination). Without the bridge fallback the
+        // whole LP valuation fails when a single exotic reserve has no
+        // direct market against the denomination asset.
+        const priceReserveLeg = async (asset: any): Promise<number | null> => {
+            if (String(asset.id) === String(denominationAsset.id)) return 1;
+            const direct = await derivePrice(BitShares, asset.id, denominationAsset.id, mode).catch((e: any) => {
+                systemLogger.debug(`deriveLiquidityPoolTokenValue: derivePrice failed for ${asset.id}/${denominationAsset.id}: ${getErrorMessage(e)}`);
                 return null;
             });
-        const priceB = String(assetB.id) === String(denominationAsset.id)
-            ? 1
-            : await derivePrice(BitShares, assetB.id, denominationAsset.id, mode).catch((e: any) => {
-                systemLogger.debug(`deriveLiquidityPoolTokenValue: derivePrice failed for ${assetB.id}/${denominationAsset.id}: ${getErrorMessage(e)}`);
-                return null;
-            });
+            if (isPositiveRate(direct)) return direct;
+            if (!allowBridges) return null;
+            const bridged = await derivePriceViaBridges(BitShares, asset.id, denominationAsset.id, DEFAULT_PRICE_BRIDGES, mode).catch(() => null);
+            if (bridged && isPositiveRate(bridged.rate)) {
+                systemLogger.debug(`deriveLiquidityPoolTokenValue: bridged reserve leg ${asset.id}/${denominationAsset.id} via ${bridged.path}`);
+                return bridged.rate;
+            }
+            return null;
+        };
+
+        const priceA = await priceReserveLeg(assetA);
+        const priceB = await priceReserveLeg(assetB);
 
         if (priceA == null || priceB == null || !isValidNumber(priceA) || !isValidNumber(priceB) || priceA <= 0 || priceB <= 0) {
             return null;

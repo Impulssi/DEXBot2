@@ -8,7 +8,12 @@ const require = createRequire(import.meta.url);
  *
  * Live-chain overview of active MPA (margin / call-order) and credit
  * (borrowed deal) positions, summed per asset per bot — the credit
- * counterpart to `dexbot order` (scripts/analyze-orders.ts).
+ * counterpart to `dexbot order` (scripts/analyze-orders.ts). Credit deals
+ * additionally report per-pair and average CR, but only for pairs that are
+ * both whitelisted in bots.json (debtPolicy.lending) and listed on the
+ * current credit offer (acceptable_collateral) — anything else is reported
+ * as ignored/unpriced and excluded from the average. A borrow-now preview
+ * per configured pair shows the rate a fresh borrow would get today.
  *
  * Chain source of truth (see bitshares-core):
  * - MPA positions:  database_api::get_margin_positions(account)
@@ -27,6 +32,7 @@ const require = createRequire(import.meta.url);
  */
 
 const { BitShares, waitForConnected, disconnectClient, setSuppressConnectionLog } = require('../modules/bitshares_client');
+const { FEE_PARAMETERS } = require('../modules/constants');
 const { PATHS } = require('../modules/paths');
 const { getErrorMessage } = require('../modules/utils/errors');
 const { sanitizeKey } = require('../modules/utils/sanitize_key');
@@ -84,6 +90,16 @@ function formatAmount(value: number): string {
 function hasLending(bot: any): boolean {
   return Boolean(bot && bot.debtPolicy && Array.isArray(bot.debtPolicy.lending) && bot.debtPolicy.lending.length > 0);
 }
+
+// Credit CR math lives in modules/credit_pricing.ts (single source of truth,
+// shared with the live credit runtime) — no local copies here.
+import {
+  averageCollateralRatio as averageCreditCr,
+  creditDealCollateralRatio as creditDealCr,
+  dailyOfferFeeRate,
+  extractOfferConversionRate,
+  normalizeCollateralMap as normalizeOfferCollateralMap,
+} from '../modules/credit_pricing.js';
 
 function lendingAssetsOfType(bot: any, type: string): string[] {
   if (!hasLending(bot)) return [];
@@ -242,6 +258,83 @@ async function main() {
     } catch { /* keep raw symbol */ }
     return { id: null, symbol: s };
   }
+  async function fetchOfferObjects(offerIds: string[]): Promise<Map<string, any>> {
+    const out = new Map<string, any>();
+    const unique = [...new Set(offerIds.filter(Boolean).map(String))];
+    for (let i = 0; i < unique.length; i += 100) {
+      const batch = unique.slice(i, i + 100);
+      try {
+        const res = await dbCall('get_objects', [batch]);
+        if (Array.isArray(res)) {
+          for (const o of res) {
+            if (o?.id) out.set(String(o.id), o);
+          }
+        }
+      } catch { /* leave missing; deal falls back to pool/market pricing */ }
+    }
+    return out;
+  }
+  // Paginate to exhaustion (no page cap — books with >300 offers must not
+  // silently lose pairs). MAX_OFFER_PAGES is only an infinite-loop guard
+  // against a misbehaving node; the loop normally ends on a short page or
+  // a repeated cursor.
+  const MAX_OFFER_PAGES = 100;
+  async function fetchLiveOffers(debtAssetId: string): Promise<any[]> {
+    const out: any[] = [];
+    const seen = new Set<string>();
+    let start: string | null = null;
+    for (let page = 0; page < MAX_OFFER_PAGES; page++) {
+      const args = start == null ? [debtAssetId, 100] : [debtAssetId, 100, start];
+      let rows: any;
+      try {
+        rows = await dbCall('get_credit_offers_by_asset', args);
+      } catch { break; }
+      if (!Array.isArray(rows) || rows.length === 0) break;
+      for (const o of rows) {
+        if (o?.id && !seen.has(String(o.id))) {
+          seen.add(String(o.id));
+          out.push(o);
+        }
+      }
+      if (rows.length < 100) break;
+      const lastId = rows[rows.length - 1]?.id;
+      if (typeof lastId !== 'string' || lastId === start) break;
+      start = lastId;
+    }
+    return out;
+  }
+  // Wallet (free) balances per asset id, raw ints. Parsed from
+  // get_full_accounts the same way chain_orders.getOnChainAssetBalances does.
+  const walletCache = new Map<string, Map<string, number>>();
+  async function fetchWalletRaw(account: string): Promise<Map<string, number>> {
+    if (walletCache.has(account)) return walletCache.get(account)!;
+    const out = new Map<string, number>();
+    try {
+      const res = await dbCall('get_full_accounts', [[account], false]);
+      const entry = Array.isArray(res) && Array.isArray(res[0]) && res[0].length >= 2 ? res[0][1] : res?.[0];
+      const balances = entry?.balances || [];
+      for (const b of balances) {
+        const aid = String(b?.asset_type || b?.asset_id || b?.asset || '');
+        const raw = Number(b?.balance ?? b?.amount);
+        if (aid && Number.isFinite(raw) && raw > 0) {
+          out.set(aid, (out.get(aid) || 0) + raw);
+        }
+      }
+    } catch { /* empty map; borrow-now shows N/A wallet */ }
+    walletCache.set(account, out);
+    return out;
+  }
+  const precisionOf = (assetId: string): number | null => {
+    const info = assetCache.get(String(assetId));
+    return info ? info.precision : null;
+  };
+  async function ensurePrecisions(assetIds: Iterable<string>): Promise<void> {
+    for (const id of assetIds) {
+      if (id && !assetCache.has(String(id))) {
+        try { await assetInfo(String(id)); } catch { /* leave missing */ }
+      }
+    }
+  }
 
   console.log(`\n${colors.cyan}💳 Credit Overview (live chain)${botFilter ? ` — filter: ${botFilter}` : ''}${colors.reset}`);
   console.log(`${colors.cyan}${'='.repeat(62)}${colors.reset}`);
@@ -320,7 +413,7 @@ async function main() {
     // position for the "(×N, ▲ …)" display.
     async function sumPositions(kind: 'mpa' | 'credit', items: any[]) {
       const debt = new Map<string, { total: number; count: number; max: number }>();
-      const coll = new Map<string, { total: number; count: number }>();
+      const coll = new Map<string, { total: number; count: number; max: number }>();
       for (const it of items) {
         if (kind === 'mpa') {
           const dId = mpaDebtAssetId(it);
@@ -337,8 +430,8 @@ async function main() {
           if (cId) {
             const f = await toFloat(cRaw, cId);
             if (f != null) {
-              const e = coll.get(cId) || { total: 0, count: 0 };
-              e.total += f; e.count += 1; coll.set(cId, e);
+              const e = coll.get(cId) || { total: 0, count: 0, max: 0 };
+              e.total += f; e.count += 1; e.max = Math.max(e.max, f); coll.set(cId, e);
             }
           }
         } else {
@@ -356,8 +449,8 @@ async function main() {
           if (cId && Number.isFinite(cRaw)) {
             const f = await toFloat(cRaw, cId);
             if (f != null) {
-              const e = coll.get(cId) || { total: 0, count: 0 };
-              e.total += f; e.count += 1; coll.set(cId, e);
+              const e = coll.get(cId) || { total: 0, count: 0, max: 0 };
+              e.total += f; e.count += 1; e.max = Math.max(e.max, f); coll.set(cId, e);
             }
           }
         }
@@ -370,6 +463,99 @@ async function main() {
     totalMpa += mpaOrders.length;
     totalDeals += creditDeals.length;
     analyzed++;
+
+    // ---- Credit CR: whitelisted pairs only ----
+    // A deal counts towards the CR numbers only when its exact
+    // debt←collateral pair is whitelisted in this bot's debtPolicy
+    // (type creditOffer) AND the pair is listed on the current credit
+    // offer (acceptable_collateral). Anything else is reported separately
+    // as ignored/unpriced and excluded from the average CR.
+    const lendingItems: any[] = hasLending(bot) && Array.isArray((bot as any).debtPolicy?.lending)
+      ? (bot as any).debtPolicy.lending
+      : [];
+    // Configured credit pairs drive the whitelist, per-pair CR lines, and
+    // the borrow-now preview.
+    const creditPairs: Array<{ debtId: string | null; debtSym: string; collId: string | null; collSym: string; maxCR: number | null }> = [];
+    for (const item of lendingItems) {
+      if (!item || item.type !== 'creditOffer' || typeof item.asset !== 'string' || typeof item.collateralAsset !== 'string') continue;
+      const [debtR, collR] = await Promise.all([
+        resolveLendingRef(String(item.asset)),
+        resolveLendingRef(String(item.collateralAsset)),
+      ]);
+      const maxCR = Number(item.maxCollateralRatio);
+      creditPairs.push({
+        debtId: debtR.id, debtSym: debtR.symbol,
+        collId: collR.id, collSym: collR.symbol,
+        maxCR: Number.isFinite(maxCR) && maxCR > 0 ? maxCR : null,
+      });
+    }
+    const pairIdKeys = new Set(
+      creditPairs.filter((p) => p.debtId && p.collId).map((p) => `${p.debtId}←${p.collId}`),
+    );
+    const pairSymKeys = new Set(
+      creditPairs.map((p) => `${p.debtSym.toUpperCase()}←${p.collSym.toUpperCase()}`),
+    );
+
+    // Offer objects for the deals' conversion rates (debt per collateral).
+    const dealOfferIds = creditDeals.map((d: any) => d?.offer_id).filter(Boolean).map(String);
+    const offerById = await fetchOfferObjects(dealOfferIds);
+    await ensurePrecisions((() => {
+      const legIds = new Set<string>();
+      for (const o of offerById.values()) {
+        for (const price of normalizeOfferCollateralMap(o?.acceptable_collateral).values()) {
+          if (price?.base?.asset_id) legIds.add(String(price.base.asset_id));
+          if (price?.quote?.asset_id) legIds.add(String(price.quote.asset_id));
+        }
+      }
+      return legIds;
+    })());
+
+    interface CrRow {
+      dealId: string | null; debtId: string | null; debtSym: string; debtFloat: number | null;
+      collId: string | null; collSym: string; collFloat: number | null;
+      supported: boolean; rate: number | null; source: string | null;
+      offerId: string | null; value: number | null; cr: number | null;
+    }
+    const crRows: CrRow[] = [];
+    for (const d of creditDeals) {
+      const debtId = typeof d?.debt_asset === 'string' ? d.debt_asset : null;
+      const collId = typeof d?.collateral_asset === 'string' ? d.collateral_asset : null;
+      const [debtFloat, collFloat] = await Promise.all([
+        debtId ? toFloat(Number(d?.debt_amount), debtId) : null,
+        collId ? toFloat(Number(d?.collateral_amount), collId) : null,
+      ]);
+      const debtSym = debtId ? await symbolOf(debtId) : '?';
+      const collSym = collId ? await symbolOf(collId) : '?';
+      let supported = false;
+      if (debtId && collId && pairIdKeys.has(`${debtId}←${collId}`)) supported = true;
+      else if (pairSymKeys.size > 0 && debtId && collId) {
+        try {
+          supported = pairSymKeys.has(`${(await symbolOf(debtId)).toUpperCase()}←${(await symbolOf(collId)).toUpperCase()}`);
+        } catch { /* stays false */ }
+      }
+      // Conversion rate comes ONLY from the deal's current credit offer
+      // (acceptable_collateral). A pair whose collateral is not listed on
+      // the offer gets no CR — no pool/market estimates.
+      let rate: number | null = null;
+      let source: string | null = null;
+      const offerId = d?.offer_id != null ? String(d.offer_id) : null;
+      const offer = offerId ? offerById.get(offerId) : null;
+      if (offer && collId && debtId) {
+        const offerRate = extractOfferConversionRate(offer?.acceptable_collateral, collId, debtId, precisionOf);
+        if (offerRate !== null) { rate = offerRate; source = 'offer'; }
+      }
+      const value = debtFloat != null && collFloat != null && rate !== null ? collFloat * rate : null;
+      const cr = debtFloat != null && collFloat != null ? creditDealCr(debtFloat, collFloat, rate) : null;
+      crRows.push({
+        dealId: d?.id != null ? String(d.id) : null, debtId, debtSym, debtFloat,
+        collId, collSym, collFloat, supported, rate, source, offerId, value, cr,
+      });
+    }
+    const supportedRows = crRows.filter((r) => r.supported);
+    const ignoredRows = crRows.filter((r) => !r.supported);
+    const pricedSupported = supportedRows.filter((r) => r.cr !== null && r.value !== null && r.debtFloat !== null);
+    const unpricedSupported = supportedRows.filter((r) => r.cr === null);
+    const avgCr = averageCreditCr(pricedSupported.map((r) => ({ debt: r.debtFloat as number, value: r.value as number })));
 
     async function fmtParts(m: Map<string, { total: number; count: number; max?: number }>, showBiggest = false): Promise<string[]> {
       if (m.size === 0) return [];
@@ -409,7 +595,117 @@ async function main() {
       if (mpaOrders.length > 0) console.log('');
       await printAssetLines('Credit debt', creditSum.debt, true, colors.sell);
       console.log('');
-      await printAssetLines('Credit coll', creditSum.coll, false, colors.buy);
+      await printAssetLines('Credit coll', creditSum.coll, true, colors.buy);
+      if (creditPairs.length > 0) console.log('');
+      // Compact CR summary: one Curr. CR line per whitelisted pair, one
+      // Avar. CR line per bot. A CR exists only for pairs both whitelisted
+      // in bots.json and listed on the current credit offer.
+      const feeDenom = Number(FEE_PARAMETERS?.GRAPHENE_FEE_RATE_DENOM) || 1000000;
+      const walletRaw = await fetchWalletRaw(account);
+      const matchPair = (pair: { debtId: string | null; debtSym: string; collId: string | null; collSym: string }, r: CrRow): boolean =>
+        (pair.debtId !== null && r.debtId !== null && pair.debtId === r.debtId && pair.collId !== null && r.collId !== null && pair.collId === r.collId) ||
+        (pair.debtSym.toUpperCase() === r.debtSym.toUpperCase() && pair.collSym.toUpperCase() === r.collSym.toUpperCase());
+      for (const pair of creditPairs) {
+        const pairRows = supportedRows.filter((r) => matchPair(pair, r));
+        const pricedPair = pairRows.filter((r) => r.cr !== null && r.value !== null && r.debtFloat !== null);
+        const pairDebt = pricedPair.reduce((s, r) => s + (r.debtFloat || 0), 0);
+        const pairValue = pricedPair.reduce((s, r) => s + (r.value || 0), 0);
+        const pairCr = pairDebt > 0 ? pairValue / pairDebt : null;
+        const walletFloat = pair.collId && walletRaw.has(pair.collId)
+          ? await toFloat(walletRaw.get(pair.collId)!, pair.collId)
+          : null;
+        // Current credit for the pair: active deal's offer first, else the
+        // cheapest live offer listing the pair.
+        let liveOffer: any = null;
+        let liveRate: number | null = null;
+        const offerRows = pairRows.filter((r) => r.source === 'offer' && r.rate !== null && r.offerId);
+        if (offerRows.length > 0) {
+          const ranked = offerRows.map((r) => ({ r, daily: dailyOfferFeeRate(offerById.get(r.offerId!), feeDenom) }))
+            .sort((a, b) => a.daily - b.daily || String(a.r.offerId).localeCompare(String(b.r.offerId)));
+          liveOffer = offerById.get(ranked[0].r.offerId!) || null;
+          liveRate = ranked[0].r.rate;
+        } else if (pair.debtId && pair.collId) {
+          const liveOffers = (await fetchLiveOffers(pair.debtId)).filter((o) => o?.enabled !== false);
+          const cands: Array<{ offer: any; rate: number; daily: number; id: string }> = [];
+          for (const o of liveOffers) {
+            await ensurePrecisions((() => {
+              const ids = new Set<string>();
+              for (const price of normalizeOfferCollateralMap(o?.acceptable_collateral).values()) {
+                if (price?.base?.asset_id) ids.add(String(price.base.asset_id));
+                if (price?.quote?.asset_id) ids.add(String(price.quote.asset_id));
+              }
+              return ids;
+            })());
+            const rate = extractOfferConversionRate(o?.acceptable_collateral, pair.collId, pair.debtId, precisionOf);
+            if (rate !== null) cands.push({ offer: o, rate, daily: dailyOfferFeeRate(o, feeDenom), id: String(o.id) });
+          }
+          cands.sort((a, b) => a.daily - b.daily || a.id.localeCompare(b.id));
+          if (cands.length > 0) { liveOffer = cands[0].offer; liveRate = cands[0].rate; }
+        }
+        const avail = liveOffer && pair.debtId
+          ? await toFloat(Number(liveOffer.current_balance), pair.debtId)
+          : null;
+        // No active debt: borrow-now CR — wallet collateral value against
+        // the offer's available funds, i.e. the CR a fresh borrow of the
+        // full available amount would land at.
+        let displayCr = pairCr;
+        if (displayCr === null && walletFloat !== null && walletFloat > 0 && liveRate !== null && avail !== null && avail > 0) {
+          displayCr = (walletFloat * liveRate) / avail;
+        }
+        // Green at/below the user max (borrow allowed), red above it, white
+        // when no max is defined, gray when there is no CR at all.
+        const crColor = displayCr === null
+          ? colors.gray
+          : pair.maxCR === null
+            ? colors.white
+            : displayCr > pair.maxCR ? colors.sell : colors.buy;
+        const crText = displayCr !== null ? formatAmount(displayCr) : 'n/a';
+        const availText = avail !== null && avail > 0
+          ? `${formatAmount(avail)} ${pair.debtSym} avail.`
+          : 'no funds avail.';
+        console.log(`   ${colors.bold}Curr. CR:${colors.reset} ${crColor}${crText}${colors.reset} ${pair.debtSym}←${pair.collSym} | ${availText}`);
+      }
+      if (creditPairs.length > 0) console.log('');
+      if (avgCr !== null) {
+        // Color against the pairs' user max: single shared max → green/red,
+        // mixed or undefined max → white (same rule as Current CR).
+        const avgMaxSet = new Set<number>();
+        for (const r of pricedSupported) {
+          const pair = creditPairs.find((p) => matchPair(p, r));
+          if (pair?.maxCR != null) avgMaxSet.add(pair.maxCR);
+        }
+        const avgMax = avgMaxSet.size === 1 ? [...avgMaxSet][0] : null;
+        const avgColor = avgMax === null ? colors.white : avgCr > avgMax ? colors.sell : colors.buy;
+        const pairTotals = new Map<string, { debtSym: string; collSym: string; debt: number; coll: number }>();
+        for (const r of pricedSupported) {
+          const key = `${r.debtSym}←${r.collSym}`;
+          if (!pairTotals.has(key)) {
+            pairTotals.set(key, { debtSym: r.debtSym, collSym: r.collSym, debt: 0, coll: 0 });
+          }
+          const t = pairTotals.get(key)!;
+          t.debt += r.debtFloat || 0;
+          t.coll += r.collFloat || 0;
+        }
+        const segments = [...pairTotals.values()]
+          .map((t) => `${formatAmount(t.debt)} ${t.debtSym} ← ${formatAmount(t.coll)} ${t.collSym}`)
+          .join(' + ');
+        console.log(`   ${colors.bold}Avar. CR:${colors.reset} ${avgColor}${formatAmount(avgCr)}${colors.reset}, ${segments} ${colors.gray}(x${pricedSupported.length})${colors.reset}`);
+      } else if (supportedRows.length > 0) {
+        console.log(`   ${colors.bold}Avar. CR:${colors.reset} n/a (no priced, available credit)`);
+      }
+      // Split by reason so the runtime/analyzer asymmetry is visible:
+      // "not whitelisted" never counts anywhere; "no offer price" is
+      // whitelisted but absent from the current offer (the live runtime
+      // still prices these via its pool/market fallback, the analyzer
+      // deliberately does not).
+      const ignored = ignoredRows.length;
+      const unpriced = unpricedSupported.length;
+      if (ignored + unpriced > 0) {
+        const reasons: string[] = [];
+        if (ignored > 0) reasons.push(`${ignored} not whitelisted`);
+        if (unpriced > 0) reasons.push(`${unpriced} no offer price`);
+        console.log(`   ${colors.gray}Excluded: ${ignored + unpriced} deal${ignored + unpriced === 1 ? '' : 's'} (${reasons.join(', ')})${colors.reset}`);
+      }
     }
     if (mpaOrders.length === 0 && creditDeals.length === 0) {
       console.log(`   ${colors.gray}no active MPA/credit positions${colors.reset}`);

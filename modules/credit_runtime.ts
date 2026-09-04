@@ -18,6 +18,7 @@ import { FEE_PARAMETERS, DEFAULT_TARGET_CR, TIMING, NATIVE_CLIENT } from './cons
 import { PATHS } from './paths.js';
 import {
     deriveLiquidityPoolTokenValue,
+    derivePriceWithBridges,
     ensureDir as ensureDirSync,
 } from './order/utils/system.js';
 
@@ -29,6 +30,16 @@ import {
     resolveMinCollateralIncreaseThreshold,
     resolveTargetCollateralRatio,
 } from './cr_planner.js';
+import {
+    borrowAmountForCollateral as sharedBorrowAmountForCollateral,
+    collateralValueFromOfferPrice as sharedCollateralValueFromOfferPrice,
+    creditDealFee as sharedCreditDealFee,
+    creditPriceOrientation as sharedCreditPriceOrientation,
+    dailyOfferFeeRate as sharedDailyOfferFeeRate,
+    extractOfferConversionRate as sharedExtractOfferConversionRate,
+    normalizeCollateralMap,
+    requiredCollateralForBorrow as sharedRequiredCollateralForBorrow,
+} from './credit_pricing.js';
 import { getErrorMessage } from './utils/errors.js';
 
 const CREDIT_FEE_RATE_DENOM = FEE_PARAMETERS.GRAPHENE_FEE_RATE_DENOM;
@@ -79,18 +90,6 @@ function toGrapheneCollateralRatio(value: any): number | null {
     return Number.isInteger(scaled) && scaled > 0 && scaled <= 0xffff ? scaled : null;
 }
 
-function getMapEntries(value: any): any[] {
-    if (value instanceof Map) return Array.from(value.entries());
-    if (Array.isArray(value)) {
-        if (value.length > 0 && typeof value[0] === 'object' && !Array.isArray(value[0]) && value[0] !== null && 'key' in value[0] && 'value' in value[0]) {
-            return value.map((item: any) => [item.key, item.value]);
-        }
-        return value;
-    }
-    if (value && typeof value === 'object') return Object.entries(value);
-    return [];
-}
-
 function getPriceQuoteAssetId(price: any): string | null {
     return price?.quote?.asset_id || null;
 }
@@ -136,15 +135,6 @@ function isDeterministicMpaDebtBalanceError(err: any, plan: any): boolean {
 function isMaxBorrowAmountError(err: any): boolean {
     const message = String(err?.message || err || '');
     return /would exceed maxBorrowAmount/.test(message) || /exceeds maxBorrowAmountPerOperation/.test(message);
-}
-
-function normalizeCollateralMap(acceptableCollateral: any): Map<string, any> {
-    const result = new Map();
-    for (const [assetId, price] of getMapEntries(acceptableCollateral)) {
-        if (!assetId || !price) continue;
-        result.set(String(assetId), price);
-    }
-    return result;
 }
 
 function resolveAutoRepayValue(value: any): number {
@@ -776,13 +766,16 @@ class CreditRuntime {
         }
 
         // Offer map had no usable entry — fall back to pool derivation for LP
-        // shares. Only attempt when cached is stale to avoid hourly
+        // shares, then to universal DEX pricing (direct market, else bridge
+        // hops via BTS) so every collateral/debt pair resolves a rate even
+        // when the collateral or pool is not part of the credit offer.
+        // Only attempt when cached is stale to avoid hourly
         // deriveLiquidityPoolTokenValue failures when a fresh live-offer rate
         // would already have returned. Reuses debtAsset/collateralAsset
         // resolved above.
         if (!cachedIsFresh) {
             if (collateralAsset?.for_liquidity_pool && debtAsset?.id) {
-                const poolRate = await deriveLiquidityPoolTokenValue(BitShares, collateralAsset.id, debtAsset.id).catch((e: any) => {
+                const poolRate = await deriveLiquidityPoolTokenValue(BitShares, collateralAsset.id, debtAsset.id, 'auto', true).catch((e: any) => {
                     this.log(`credit runtime: pool token rate derivation failed for ${collateralAsset.id}/${debtAsset.id}: ${getErrorMessage(e)}`);
                     return null;
                 });
@@ -791,6 +784,19 @@ class CreditRuntime {
                     this.state.positions[posKey].creditConversionRate = poolRate;
                     this.state.positions[posKey].creditConversionRateAt = Date.now();
                     return options.includeSource ? { price: poolRate, source: 'pool-derived' } : poolRate;
+                }
+            }
+            if (collateralAsset?.id && debtAsset?.id) {
+                const bridged = await derivePriceWithBridges(BitShares, collateralAsset.id, debtAsset.id).catch((e: any) => {
+                    this.log(`credit runtime: market rate derivation failed for ${collateralAsset.id}/${debtAsset.id}: ${getErrorMessage(e)}`);
+                    return null;
+                });
+                if (bridged && Number.isFinite(bridged.rate) && bridged.rate > 0) {
+                    if (!this.state.positions[posKey]) this.state.positions[posKey] = {};
+                    this.state.positions[posKey].creditConversionRate = bridged.rate;
+                    this.state.positions[posKey].creditConversionRateAt = Date.now();
+                    const source = bridged.path === 'direct' ? 'market-direct' : `market-${bridged.path}`;
+                    return options.includeSource ? { price: bridged.rate, source } : bridged.rate;
                 }
             }
         }
@@ -932,39 +938,45 @@ class CreditRuntime {
     }
 
     _creditPriceOrientation(collateralPrice: any, debtAsset: any, collateralAsset: any): string {
-        const baseAssetId = String(collateralPrice?.base?.asset_id || '');
-        const quoteAssetId = String(collateralPrice?.quote?.asset_id || '');
-        const debtAssetId = String(debtAsset?.id || '');
-        const collateralAssetId = String(collateralAsset?.id || '');
-        if (baseAssetId === debtAssetId && quoteAssetId === collateralAssetId) return 'core';
-        if (baseAssetId === collateralAssetId && quoteAssetId === debtAssetId) return 'legacy-reversed';
-        return 'core';
+        return sharedCreditPriceOrientation(
+            String(collateralPrice?.base?.asset_id || ''),
+            String(collateralPrice?.quote?.asset_id || ''),
+            String(debtAsset?.id || ''),
+            String(collateralAsset?.id || ''),
+        );
+    }
+
+    _precisionOfPair(debtAsset: any, collateralAsset: any): (assetId: string) => number | null {
+        return (assetId: string) => {
+            if (debtAsset && String(assetId) === String(debtAsset.id)) return getAssetPrecision(debtAsset);
+            if (collateralAsset && String(assetId) === String(collateralAsset.id)) return getAssetPrecision(collateralAsset);
+            return null;
+        };
     }
 
     _extractRateFromCollateralMap(collateralMap: Map<string, any>, collateralAssetId: string, debtAsset: any, collateralAsset: any): number | null {
-        const price = collateralMap.get(collateralAssetId);
-        if (!price) return null;
-        const orientation = this._creditPriceOrientation(price, debtAsset, collateralAsset);
-        const baseAmount = blockchainAmountToFloat(price?.base, orientation === 'legacy-reversed' ? collateralAsset : debtAsset);
-        const quoteAmount = blockchainAmountToFloat(price?.quote, orientation === 'legacy-reversed' ? debtAsset : collateralAsset);
-        if (baseAmount == null || quoteAmount == null || baseAmount <= 0) return null;
-        const rate = orientation === 'legacy-reversed'
-            ? quoteAmount / baseAmount
-            : baseAmount / quoteAmount;
-        if (!Number.isFinite(rate) || rate <= 0) return null;
+        const rate = sharedExtractOfferConversionRate(
+            collateralMap,
+            String(collateralAssetId),
+            String(debtAsset?.id || ''),
+            this._precisionOfPair(debtAsset, collateralAsset),
+        );
+        // The offer lists this collateral but the price is unusable (missing
+        // asset precision or invalid base/quote amounts) — log it, otherwise
+        // the null is indistinguishable from "not listed" downstream.
+        if (rate === null && collateralMap?.get(String(collateralAssetId)) != null) {
+            this.log(`credit runtime: offer lists ${collateralAssetId} but its price cannot be resolved (missing precision or invalid base/quote amounts)`);
+        }
         return rate;
     }
 
     _calculateBorrowAmountFromCollateral(collateralAmountInt: any, collateralPrice: any, debtAsset: any = null, collateralAsset: any = null): number | null {
-        const baseAmount = toFiniteNumber(collateralPrice?.base?.amount, undefined);
-        const quoteAmount = toFiniteNumber(collateralPrice?.quote?.amount, undefined);
-        if (!Number.isFinite(baseAmount) || !Number.isFinite(quoteAmount) || baseAmount <= 0 || quoteAmount <= 0) {
-            return null;
-        }
-        if (this._creditPriceOrientation(collateralPrice, debtAsset, collateralAsset) === 'legacy-reversed') {
-            return Math.floor((Number(collateralAmountInt) * quoteAmount) / baseAmount);
-        }
-        return Math.floor((Number(collateralAmountInt) * baseAmount) / quoteAmount);
+        return sharedBorrowAmountForCollateral(
+            collateralAmountInt,
+            collateralPrice,
+            debtAsset?.id != null ? String(debtAsset.id) : null,
+            collateralAsset?.id != null ? String(collateralAsset.id) : null,
+        );
     }
 
     _enforceMaxBorrowAmount(policy: any, borrowInt: any, debtAsset: any, options: Record<string, any> = {}): void {
@@ -1069,13 +1081,8 @@ class CreditRuntime {
     }
 
     _calculateDailyFeeRate(offer: any): number {
-        const feeRate = toFiniteNumber(offer?.fee_rate, 0) || 0;
-        const maxDurationSeconds = toFiniteNumber(offer?.max_duration_seconds, 0) || 0;
-        if (feeRate <= 0 || maxDurationSeconds <= 0) return 0;
         const feeRateDenom = this.bot?.config?.feeParams?.GRAPHENE_FEE_RATE_DENOM ?? FEE_PARAMETERS.GRAPHENE_FEE_RATE_DENOM;
-        const flatFeePercent = feeRate / feeRateDenom;
-        const durationDays = maxDurationSeconds / 86400;
-        return flatFeePercent / durationDays;
+        return sharedDailyOfferFeeRate(offer, feeRateDenom);
     }
 
     _getDefaultMaxFeeRatePerDay(): number {
@@ -1119,47 +1126,30 @@ class CreditRuntime {
     }
 
     async _calculateCollateralValueInDebtAsset(collateralAmountInt: any, collateralAsset: any, debtAsset: any, collateralPrice: any): Promise<any> {
-        const collateralAmountFloat = blockchainToFloat(collateralAmountInt, collateralAsset.precision);
-        if (!Number.isFinite(collateralAmountFloat) || collateralAmountFloat <= 0) {
-            return null;
-        }
-
         if (collateralAsset?.for_liquidity_pool) {
-            const valuePerShare = await deriveLiquidityPoolTokenValue(BitShares, collateralAsset.id, debtAsset.id);
+            const collateralAmountFloat = blockchainToFloat(collateralAmountInt, collateralAsset.precision);
+            if (!Number.isFinite(collateralAmountFloat) || collateralAmountFloat <= 0) {
+                return null;
+            }
+            const valuePerShare = await deriveLiquidityPoolTokenValue(BitShares, collateralAsset.id, debtAsset.id, 'auto', true);
             if (valuePerShare == null || !Number.isFinite(valuePerShare) || valuePerShare <= 0) {
                 return null;
             }
             return collateralAmountFloat * valuePerShare;
         }
 
-        const orientation = this._creditPriceOrientation(collateralPrice, debtAsset, collateralAsset);
-        const baseAmountFloat = blockchainAmountToFloat(collateralPrice?.base, orientation === 'legacy-reversed' ? collateralAsset : debtAsset);
-        const quoteAmountFloat = blockchainAmountToFloat(collateralPrice?.quote, orientation === 'legacy-reversed' ? debtAsset : collateralAsset);
-        if (baseAmountFloat == null || quoteAmountFloat == null || baseAmountFloat <= 0 || quoteAmountFloat <= 0) {
-            return null;
-        }
-        if (orientation === 'legacy-reversed') {
-            return (collateralAmountFloat * quoteAmountFloat) / baseAmountFloat;
-        }
-        return (collateralAmountFloat * baseAmountFloat) / quoteAmountFloat;
+        return this._calculateCreditOfferCollateralValueInDebtAsset(collateralAmountInt, collateralAsset, debtAsset, collateralPrice);
     }
 
     _calculateCreditOfferCollateralValueInDebtAsset(collateralAmountInt: any, collateralAsset: any, debtAsset: any, collateralPrice: any): number | null {
-        const collateralAmountFloat = blockchainToFloat(collateralAmountInt, collateralAsset.precision);
-        if (!Number.isFinite(collateralAmountFloat) || collateralAmountFloat <= 0) {
-            return null;
-        }
-
-        const orientation = this._creditPriceOrientation(collateralPrice, debtAsset, collateralAsset);
-        const baseAmountFloat = blockchainAmountToFloat(collateralPrice?.base, orientation === 'legacy-reversed' ? collateralAsset : debtAsset);
-        const quoteAmountFloat = blockchainAmountToFloat(collateralPrice?.quote, orientation === 'legacy-reversed' ? debtAsset : collateralAsset);
-        if (baseAmountFloat == null || quoteAmountFloat == null || baseAmountFloat <= 0 || quoteAmountFloat <= 0) {
-            return null;
-        }
-        if (orientation === 'legacy-reversed') {
-            return (collateralAmountFloat * quoteAmountFloat) / baseAmountFloat;
-        }
-        return (collateralAmountFloat * baseAmountFloat) / quoteAmountFloat;
+        return sharedCollateralValueFromOfferPrice(
+            collateralAmountInt,
+            collateralAsset?.precision,
+            collateralPrice,
+            String(debtAsset?.id || ''),
+            String(collateralAsset?.id || ''),
+            this._precisionOfPair(debtAsset, collateralAsset),
+        );
     }
 
     async _fetchBorrowerDeals(): Promise<any[]> {
@@ -1818,23 +1808,16 @@ class CreditRuntime {
     }
 
     _calculateRequiredCollateral(borrowAmountInt: any, collateralPrice: any, debtAsset: any = null, collateralAsset: any = null): number | null {
-        const baseAmount = toFiniteNumber(collateralPrice?.base?.amount, undefined);
-        const quoteAmount = toFiniteNumber(collateralPrice?.quote?.amount, undefined);
-        if (!Number.isFinite(baseAmount) || !Number.isFinite(quoteAmount) || baseAmount <= 0 || quoteAmount <= 0) {
-            return null;
-        }
-        if (this._creditPriceOrientation(collateralPrice, debtAsset, collateralAsset) === 'legacy-reversed') {
-            return Math.ceil((Number(borrowAmountInt) * baseAmount) / quoteAmount);
-        }
-        return Math.ceil((Number(borrowAmountInt) * quoteAmount) / baseAmount);
+        return sharedRequiredCollateralForBorrow(
+            borrowAmountInt,
+            collateralPrice,
+            debtAsset?.id != null ? String(debtAsset.id) : null,
+            collateralAsset?.id != null ? String(collateralAsset.id) : null,
+        );
     }
 
     _calculateCreditFee(repayAmountInt: any, feeRate: any): number {
-        const repay = BigInt(Math.max(0, Math.trunc(Number(repayAmountInt))));
-        const rate = BigInt(Math.max(0, Math.trunc(Number(feeRate))));
-        const denom = BigInt(CREDIT_FEE_RATE_DENOM);
-        if (repay <= 0n || rate <= 0n) return 0;
-        return Number(((repay * rate) + denom - 1n) / denom);
+        return sharedCreditDealFee(repayAmountInt, feeRate, CREDIT_FEE_RATE_DENOM);
     }
 
     async buildCreditDealRepayOperation(deal: any, repayAmount: any): Promise<any> {
