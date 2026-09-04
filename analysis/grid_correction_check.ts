@@ -37,7 +37,7 @@ import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import * as KC from '../market_adapter/core/kibana_client.js';
 import * as C from '../modules/constants.js';
-import { loadBotMeta, loadBotSettings, computeBotKey } from './bot_key_utils.js';
+import { loadBotMeta, loadBotSettings, computeBotKey, persistBotAccountId } from './bot_key_utils.js';
 
 const { kibanaSearch, DEFAULT_CONFIG: BASE_CONFIG } = KC;
 
@@ -221,8 +221,11 @@ Time range (one of):
 
 Options:
   --account <id>         Override account ID (default: from bot preferredAccount)
-  --lookup               Resolve account name to ID via BitShares node
-  --node <url>           BitShares node URL for --lookup / precision resolution
+  --lookup               Legacy: account names always resolve via BitShares node
+  --refresh-account      Force re-resolution of preferredAccount and update the
+                         stored accountId when it changed (default: reuse the
+                         stored accountId with no chain lookup)
+  --node <url>           BitShares node URL for account / precision resolution
   --increment <pct>      Grid increment percent (default: from bot config or ${Number((C as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5)})
   --tolerance <pct>      Deprecated alias for --increment (kept for compat, prefer --increment)
   --per-fill             Check at fill granularity (default: per-order aggregated)
@@ -262,6 +265,7 @@ function parseArgs() {
         end: null,
         account: null,
         lookup: false,
+        refreshAccount: false,
         node: C.NODE_MANAGEMENT.DEFAULT_NODES[0],
         perFill: false,
         includeCrossPair: false,
@@ -279,6 +283,7 @@ function parseArgs() {
             case '--end': opts.end = args[++i]; break;
             case '--account': opts.account = args[++i]; break;
             case '--lookup': opts.lookup = true; break;
+            case '--refresh-account': opts.refreshAccount = true; break;
             case '--node': opts.node = args[++i]; break;
             case '--per-fill': opts.perFill = true; break;
             case '--include-cross-pair': opts.includeCrossPair = true; break;
@@ -356,32 +361,63 @@ async function resolveAccountId(name: string, nodeUrl: string): Promise<string |
     }
 }
 
-async function resolveAccountForBot(botKey: string, overrideAccount: string | null, nodeUrl: string, doLookup: boolean): Promise<{ accountId: string; botMeta: any }> {
+async function resolveAccountForBot(botKey: string, overrideAccount: string | null, nodeUrl: string, doRefresh: boolean): Promise<{ accountId: string; botMeta: any }> {
     const botMeta = loadBotMeta(botKey);
     if (!botMeta && !overrideAccount) {
         console.error(`Error: bot key '${botKey}' not found in profiles/bots.json and no --account provided.`);
         console.error(`Use --list-bots to see available keys, or pass --account <1.2.x> explicitly.`);
         process.exit(1);
     }
-    let accountId = overrideAccount ?? botMeta?.preferredAccount ?? null;
-    if (!accountId) {
+    // An explicit --account always wins and is never persisted.
+    if (overrideAccount) {
+        if (/^1\.2\.\d+$/.test(String(overrideAccount))) {
+            return { accountId: String(overrideAccount), botMeta };
+        }
+        console.log(`  Resolving account name '${overrideAccount}'...`);
+        const resolvedOverride = await resolveAccountId(String(overrideAccount), nodeUrl);
+        if (!resolvedOverride) {
+            console.error(`Error: failed to resolve --account '${overrideAccount}' to 1.2.x`);
+            process.exit(1);
+        }
+        console.log(`  → ${resolvedOverride}`);
+        return { accountId: String(resolvedOverride), botMeta };
+    }
+    const prefRaw = botMeta?.preferredAccount != null ? String(botMeta.preferredAccount) : null;
+    const prefIsId = !!prefRaw && /^1\.2\.\d+$/.test(prefRaw);
+    const storedId = /^1\.2\.\d+$/.test(String(botMeta?.accountId ?? '')) ? String(botMeta.accountId) : null;
+    // An explicit 1.2.x preferredAccount is authoritative: the stored accountId
+    // is a derived cache and must never override it. Self-heal the cache.
+    if (prefIsId) {
+        if (storedId && storedId !== prefRaw && persistBotAccountId(botKey, prefRaw as string)) {
+            console.log(`  Updated stale stored accountId ${storedId} → ${prefRaw} from preferredAccount`);
+        }
+        return { accountId: prefRaw as string, botMeta };
+    }
+    if (!prefRaw) {
         console.error(`Error: bot '${botKey}' has no preferredAccount and no --account provided.`);
         process.exit(1);
     }
-    // If account looks like a name, resolve it
-    if (!/^1\.2\.\d+$/.test(String(accountId))) {
-        if (doLookup || !String(accountId).startsWith('1.2.')) {
-            console.log(`  Resolving account name '${accountId}'...`);
-            const resolved = await resolveAccountId(String(accountId), nodeUrl);
-            if (!resolved) {
-                console.error(`Error: failed to resolve account name '${accountId}' to 1.2.x`);
-                process.exit(1);
-            }
-            console.log(`  → ${resolved}`);
-            accountId = resolved;
-        }
+    // Name + fresh-enough cache + no refresh requested: offline-friendly fast path.
+    if (storedId && !doRefresh) {
+        console.log(`  Using stored accountId ${storedId} from profiles/bots.json (no lookup needed; pass --refresh-account to re-verify)`);
+        return { accountId: storedId, botMeta };
     }
-    return { accountId: String(accountId), botMeta };
+    // No cache, or --refresh-account: resolve the name on-chain.
+    console.log(`  Resolving account name '${prefRaw}'...`);
+    const resolved = await resolveAccountId(prefRaw, nodeUrl);
+    if (!resolved) {
+        console.error(`Error: failed to resolve account name '${prefRaw}' to 1.2.x`);
+        process.exit(1);
+    }
+    console.log(`  → ${resolved}`);
+    if (!storedId && persistBotAccountId(botKey, resolved)) {
+        console.log(`  Stored accountId ${resolved} in profiles/bots.json for '${botKey}'`);
+    } else if (storedId && storedId !== resolved && persistBotAccountId(botKey, resolved)) {
+        console.log(`  Updated stored accountId ${storedId} → ${resolved} in profiles/bots.json for '${botKey}'`);
+    } else if (storedId === resolved) {
+        console.log(`  Stored accountId ${resolved} confirmed up to date`);
+    }
+    return { accountId: String(resolved), botMeta };
 }
 
 // ─── Asset precision resolution ───────────────────────────────────────────────
@@ -829,7 +865,7 @@ async function main() {
     console.log(`\nGrid correction check — bot-key: ${opts.botKey}`);
     console.log(`Range: ${label}`);
 
-    const { accountId, botMeta } = await resolveAccountForBot(opts.botKey, opts.account, opts.node, opts.lookup);
+    const { accountId, botMeta } = await resolveAccountForBot(opts.botKey, opts.account, opts.node, opts.refreshAccount);
     console.log(`Account: ${accountId}${botMeta ? `  (${botMeta.assetA}/${botMeta.assetB})` : ''}`);
     const incrementPercent = resolveIncrementPercent(botMeta, opts.incrementPercent);
     console.log(`Increment: ${incrementPercent}% (halfInc ${incrementPercent/2}%)${opts.incrementPercent == null && botMeta?.incrementPercent != null ? ' — from bot config' : opts.incrementPercent != null ? ' — from --increment' : ' — default'}`);

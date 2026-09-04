@@ -86,7 +86,8 @@
 
 import { path } from './path_api.js';
 import { getStorage } from './storage/index.js';
-import { ensureProfilesDirectory, readInput } from './order/utils/system.js';
+import { ensureProfilesDirectory, readInput, sleep } from './order/utils/system.js';
+import { setGlobalConsoleLevel, getGlobalConsoleLevel } from './order/logger.js';
 import { DEFAULT_CONFIG, GRID_LIMITS, TIMING, RANGE_QUALITY, LOG_LEVEL, UPDATER, MARKET_ADAPTER, NODE_MANAGEMENT, FILL_PROCESSING, PIPELINE_TIMING, CREDENTIAL_PROMPTS, MAINTENANCE, COW_PERFORMANCE, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, LOGGING_CONFIG, NATIVE_CLIENT, LAUNCHER } from './constants.js';
 import { PATHS } from './paths.js';
 import { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } from './general_settings.js';
@@ -1027,6 +1028,107 @@ function normalizeBotDraft(base = {}) {
 }
 
 /**
+ * Resolve data.preferredAccount to a chain account ID and stamp data.accountId
+ * (persisted to profiles/bots.json on save). A typed 1.2.x ID is stored
+ * directly; a name is resolved via chain lookup (lazy import so the config
+ * editor never drags in the chain stack at module load). Fail-soft: when the
+ * lookup fails or times out (offline), accountId is left unset with a warning
+ * and analysis tools backfill it on their next successful lookup.
+ *
+ * CONTRACT: a cached accountId is only trusted when it was stored for the
+ * current preferredAccount value. Callers that change preferredAccount MUST
+ * either delete data.accountId first or pass force=true; otherwise a stale
+ * ID is returned as 'cached' without verification.
+ *
+ * Side effects are contained: chain INFO/WARN spam is suppressed for the
+ * duration of the lookup (setSuppressConnectionLog + the Logger global
+ * console floor, both restored in `finally`), and the shared client is
+ * disconnected afterwards so the configurator never holds a socket open
+ * longer than needed (`dexbot bot` additionally disconnects and exits).
+ * Residual edge: if our timeout abandons a still-in-flight connect sweep,
+ * the stack's own total-timeout guard settles it later; the next lookup's
+ * `finally` disconnects any socket it left behind.
+ *
+ * @warning Disconnects the SHARED chain client in `finally`. Call ONLY from
+ * short-lived flows (bot configurator, one-shot scripts) that own no live
+ * connection. NEVER from a long-running process (bot runtime, daemon,
+ * concurrent worker) — it would drop the socket out from under the runtime.
+ * @param {Object} data - Bot draft being edited.
+ * @param {number} [timeoutMs=15000] - Max ms to wait for the chain lookup.
+ * @param {boolean} [quiet=false] - Suppress console output.
+ * @param {boolean} [force=false] - Ignore a cached accountId and re-resolve.
+ * @returns {Promise<{id: string|null, reason: string}>} reason is one of
+ *   'invalid' (no usable preferredAccount), 'id' (typed 1.2.x ID, stamped
+ *   directly), 'cached' (previously verified ID reused, no chain hit),
+ *   'resolved' (fresh chain lookup succeeded), 'not-found' (chain answered,
+ *   no such account), 'timeout' (nodes unreachable within timeoutMs),
+ *   'error' (import/lookup threw).
+ */
+async function ensureBotAccountId(data: any, timeoutMs = 15000, quiet = false, force = false): Promise<{ id: string | null; reason: string }> {
+    if (!data || typeof data !== 'object') return { id: null, reason: 'invalid' };
+    const ref = String(data.preferredAccount ?? '').trim();
+    if (!ref) return { id: null, reason: 'invalid' };
+    if (/^1\.2\.\d+$/.test(ref)) {
+        if (data.accountId !== ref) data.accountId = ref;
+        return { id: ref, reason: 'id' };
+    }
+    if (!force && data.accountId && /^1\.2\.\d+$/.test(String(data.accountId))) {
+        return { id: String(data.accountId), reason: 'cached' };
+    }
+    let chainClient: any = null;
+    let prevSuppress = false;
+    let prevGlobalLevel: string | null = null;
+    let suppressionArmed = false;
+    try {
+        chainClient = await import('./bitshares_client.js');
+        prevSuppress = chainClient.isSuppressConnectionLog();
+        prevGlobalLevel = getGlobalConsoleLevel();
+        suppressionArmed = true;
+        chainClient.setSuppressConnectionLog(true);
+        setGlobalConsoleLevel('warn');
+        const chainOrders = await import('./chain_orders.js');
+        const timeoutErr: any = new Error(`account lookup timed out after ${timeoutMs}ms`);
+        timeoutErr.code = 'ACCOUNT_LOOKUP_TIMEOUT';
+        let id: string | null = null;
+        try {
+            id = await Promise.race([
+                chainOrders.resolveAccountId(ref),
+                sleep(timeoutMs).then(() => { throw timeoutErr; }),
+            ]);
+        } catch (err: any) {
+            const reason = err && err.code === 'ACCOUNT_LOOKUP_TIMEOUT' ? 'timeout' : 'error';
+            if (!quiet) {
+                const hint = reason === 'timeout'
+                    ? `nodes unreachable (timed out after ${timeoutMs}ms). Continuing without accountId — it will be stored automatically once a lookup succeeds.`
+                    : `(${getErrorMessage(err)}). Continuing without accountId — it will be stored automatically once a lookup succeeds.`;
+                console.log(`  ${COLORS.yellow}Could not resolve account '${ref}' to 1.2.x ${hint}${COLORS.reset}`);
+            }
+            return { id: null, reason };
+        }
+        if (id && /^1\.2\.\d+$/.test(String(id))) {
+            data.accountId = String(id);
+            if (!quiet) console.log(`  ${COLORS.green}Resolved account '${ref}' → ${id} (stored as accountId).${COLORS.reset}`);
+            return { id: String(id), reason: 'resolved' };
+        }
+        if (!quiet) console.log(`  ${COLORS.yellow}Account '${ref}' not found on the blockchain. Continuing without accountId — fix the name and it will be stored automatically once a lookup succeeds.${COLORS.reset}`);
+        return { id: null, reason: 'not-found' };
+    } catch (err: any) {
+        if (!quiet) console.log(`  ${COLORS.yellow}Could not resolve account '${ref}' to 1.2.x (${getErrorMessage(err)}). Continuing without accountId — it will be stored automatically once a lookup succeeds.${COLORS.reset}`);
+        return { id: null, reason: 'error' };
+    } finally {
+        if (chainClient) {
+            try { await chainClient.disconnectClient(); } catch (_) { /* best-effort cleanup */ }
+            if (suppressionArmed) {
+                try { chainClient.setSuppressConnectionLog(prevSuppress); } catch (_) { /* restore-only */ }
+            }
+        }
+        if (suppressionArmed) {
+            try { setGlobalConsoleLevel(prevGlobalLevel); } catch (_) { /* restore-only */ }
+        }
+    }
+}
+
+/**
  * Interactive menu to edit bot data.
  * @param {Object} [base={}] - The initial bot data to edit.
  * @returns {Promise<Object|null>} The edited bot data or null if cancelled.
@@ -1075,8 +1177,29 @@ async function promptBotData(base = {}) {
             case '2':
                 const name = await askRequiredString('Bot name', data.name);
                 if (name === '\x1b') break;
-                const prefAcc = await askRequiredString('Preferred account', data.preferredAccount);
+                let prefAcc = await askRequiredString('Preferred account', data.preferredAccount);
                 if (prefAcc === '\x1b') break;
+                // Verify the account exists on the blockchain and stamp its ID.
+                // Re-prompt while verification fails. A 'timeout' means the
+                // nodes were unreachable (indistinguishable from a bad name
+                // while offline); anything else means the name is unknown.
+                {
+                    const draft = { ...data, preferredAccount: prefAcc };
+                    for (;;) {
+                        const checked = await ensureBotAccountId(draft, 15000, true, true);
+                        if (checked.id) break;
+                        const why = checked.reason === 'timeout'
+                            ? `nodes unreachable (lookup timed out). Check your connection and try again, or press Esc to cancel.`
+                            : `account '${draft.preferredAccount}' not found on the blockchain. Check the name and try again, or press Esc to cancel.`;
+                        console.log(`${COLORS.red}Error: ${why}${COLORS.reset}`);
+                        const retry = await askRequiredString('Preferred account', String(draft.preferredAccount ?? ''));
+                        if (retry === '\x1b') { prefAcc = retry; break; }
+                        draft.preferredAccount = retry;
+                    }
+                    if (prefAcc === '\x1b') break;
+                    prefAcc = String(draft.preferredAccount);
+                    data.accountId = draft.accountId;
+                }
                 const active = await askBoolean('Active', data.active);
                 if (active === '\x1b') break;
                 const dryRun = await askBoolean('Dry run', data.dryRun);
@@ -1157,6 +1280,9 @@ async function promptBotData(base = {}) {
                         break;
                     }
                 }
+                // Stamp accountId when possible (fail-soft when offline); the
+                // Identity section above already hard-verifies the name on entry.
+                await ensureBotAccountId(data);
                 finished = true;
                 break;
             case 'c':
@@ -1428,5 +1554,5 @@ async function main() {
     console.log('Botmanager closed!');
 }
 
-export { main, normalizeBotDraft, parseJsonWithComments, parseCronToDelta, deltaToCron }
+export { main, normalizeBotDraft, ensureBotAccountId, parseJsonWithComments, parseCronToDelta, deltaToCron }
 

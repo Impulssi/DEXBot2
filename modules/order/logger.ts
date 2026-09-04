@@ -13,6 +13,35 @@ import { CLI_COLORS } from '../cli_colors.js';
 const storage = getStorage();
 
 /**
+ * Process-wide console-output floor shared by all Logger instances.
+ * When set (e.g. to 'warn'), console output below that level is suppressed
+ * for every logger while file logging continues unchanged. Used to keep
+ * interactive prompts (bot configurator) free of chain-stack INFO spam
+ * during short supervised operations. Always save/restore via
+ * setGlobalConsoleLevel — never leave a non-null value behind.
+ */
+let _globalConsoleLevel: string | null = null;
+
+/**
+ * Set or clear the process-wide console log floor.
+ * @param {string|null} level - Minimum level shown on console ('debug' |
+ *   'info' | 'warn' | 'error' | 'critical'), or null to restore per-logger levels.
+ *
+ * Single-flight only: no concurrency guard, no nesting support. Overlapping
+ * users clobber each other's saved value on restore — restrict to short
+ * supervised sections of single-threaded CLI flows (bot editor, one-shot
+ * analysis tools). NEVER use from a concurrent or long-running runtime.
+ */
+function setGlobalConsoleLevel(level: string | null) {
+    _globalConsoleLevel = level;
+}
+
+/** Return the current process-wide console log floor (null = per-logger levels). */
+function getGlobalConsoleLevel(): string | null {
+    return _globalConsoleLevel;
+}
+
+/**
  * Color-coded console logger with structured output, optional file logging,
  * batched async writes, log rotation, JSON output, and correlation ID tracing.
  *
@@ -225,7 +254,8 @@ class Logger {
      * @param {string} [level='info'] - debug | info | warn | error | critical
      */
     log(message: string, level = 'info') {
-        if (this.levels[level] >= this.levels[this.level]) {
+        const effectiveLevel = _globalConsoleLevel ?? this.level;
+        if (this.levels[level] >= this.levels[effectiveLevel]) {
             const color = this.colors[level] || '';
             const isUnderPm2 = !!Config.pm_exec_path;
             const timestamp = isUnderPm2 ? '' : new Date().toISOString();
@@ -263,6 +293,20 @@ class Logger {
     debug(msg: string) { this.log(msg, 'debug'); }
     /** Log at critical level (above error — sustained failure signal). */
     critical(msg: string) { this.log(msg, 'critical'); }
+
+    /**
+     * Console visibility for direct (un-leveled) output such as grid dumps
+     * and status tables. Treated as 'info': hidden while a global floor
+     * above info is set. File logging is unaffected — the floor is
+     * console-only. `raw()` and the [LOGGER] self-diagnostics bypass this
+     * deliberately: raw() is explicit caller output, and logger-internal
+     * errors must never be silencable.
+     */
+    _consoleVisible(level = 'info'): boolean {
+        if (this.quiet) return false;
+        if (_globalConsoleLevel == null) return true;
+        return (this.levels[level] ?? 1) >= (this.levels[_globalConsoleLevel] ?? 0);
+    }
 
     /**
      * Write raw output (no timestamp, no level).
@@ -322,10 +366,10 @@ class Logger {
         output += 'Price       Slot      Type      State       Size\n';
         output += '----------------------------------------------------\n';
 
-        if (!this.quiet) console.log(header);
-        if (this.marketName && !this.quiet) console.log(`Market: ${this.marketName} @ ${startPrice}`);
-        if (!this.quiet) console.log('Price       Slot      Type      State       Size');
-        if (!this.quiet) console.log('----------------------------------------------------');
+        if (this._consoleVisible()) console.log(header);
+        if (this.marketName && this._consoleVisible()) console.log(`Market: ${this.marketName} @ ${startPrice}`);
+        if (this._consoleVisible()) console.log('Price       Slot      Type      State       Size');
+        if (this._consoleVisible()) console.log('----------------------------------------------------');
 
         const sorted = [...orders].sort((a, b) => b.price - a.price);
 
@@ -348,11 +392,11 @@ class Logger {
 
             this._logOrderRow(high);
             if (mid) {
-                if (midIdx > highIdx + 1) { if (!this.quiet) console.log(''); output += '\n'; }
+                if (midIdx > highIdx + 1) { if (this._consoleVisible()) console.log(''); output += '\n'; }
                 this._logOrderRow(mid);
-                if (lowIdx > midIdx + 1) { if (!this.quiet) console.log(''); output += '\n'; }
+                if (lowIdx > midIdx + 1) { if (this._consoleVisible()) console.log(''); output += '\n'; }
             } else if (lowIdx > highIdx + 1) {
-                if (!this.quiet) console.log(''); output += '\n';
+                if (this._consoleVisible()) console.log(''); output += '\n';
             }
 
             if (low.id !== high.id) {
@@ -365,7 +409,7 @@ class Logger {
         [...buyNearSpread, ...buyEdge].forEach(order => this._logOrderRow(order));
 
         const footer = '===============================================\n';
-        if (!this.quiet) console.log(footer);
+        if (this._consoleVisible()) console.log(footer);
         this._enqueueWrite(output + footer);
     }
 
@@ -379,7 +423,7 @@ class Logger {
         const size = Format.formatAmount8(order.size);
         const output = `${price}${id}${typeColor}${type}${this.colors.reset}${stateColor}${state}${this.colors.reset}${size}`;
 
-        if (!this.quiet) {
+        if (this._consoleVisible()) {
             console.log(output);
         }
         this._enqueueWrite(output);
@@ -495,7 +539,7 @@ class Logger {
         ];
 
         lines.forEach(line => {
-            if (!this.quiet) console.log(line);
+            if (this._consoleVisible()) console.log(line);
             this._enqueueWrite(line);
         });
     }
@@ -567,7 +611,7 @@ class Logger {
         lines.push(`Spread Condition: ${manager.outOfSpread > 0 ? 'TOO WIDE (' + manager.outOfSpread + ')' : 'Normal'}`);
 
         lines.forEach(line => {
-            if (!this.quiet) console.log(line);
+            if (this._consoleVisible()) console.log(line);
             this._enqueueWrite(line);
         });
     }
@@ -580,7 +624,7 @@ function isPm2Runtime(): boolean {
 function createPm2AwareLogger(category: string, options: { quietUnderPm2?: boolean } = {}) {
     return new Logger(category, options);
 }
-export { createPm2AwareLogger, isPm2Runtime }
+export { createPm2AwareLogger, isPm2Runtime, setGlobalConsoleLevel, getGlobalConsoleLevel }
 export default Logger
 
 

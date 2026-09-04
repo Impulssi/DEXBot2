@@ -13,6 +13,7 @@ const chainOrders = require('../modules/chain_orders');
 const { PATHS } = require('../modules/paths');
 const { getErrorMessage } = require('../modules/utils/errors');
 const { loadSettingsFile, normalizeBotEntries, resolveRawBotEntries } = require('../modules/bot_settings');
+const { getStoredBotAccountId, persistBotAccountId } = require('../analysis/bot_key_utils');
 const { isSameBotName } = require('../modules/utils/sanitize_key');
 const { blockchainToFloat } = require('../modules/order/utils/math');
 
@@ -163,9 +164,35 @@ async function main() {
     maxRetryDelayMs: 1000,
     refreshNodesEveryMs: 5000,
   });
-  const accountId = await chainOrders.resolveAccountId(accountRef);
+  let accountId: string | null = null;
+  if (/^1\.2\.\d+$/.test(String(accountRef))) {
+    accountId = String(accountRef);
+  } else if (!args.account && (profileBot as any).botKey) {
+    // Bot's own account: reuse the ID stamped by the bot editor when it still
+    // matches the current preferredAccount (no chain hit).
+    try {
+      accountId = getStoredBotAccountId((profileBot as any).botKey, accountRef);
+    } catch (_) {
+      accountId = null;
+    }
+    if (accountId) console.log(`Using stored accountId ${accountId} for bot "${(profileBot as any).name}" (no lookup needed)`);
+  }
+  if (!accountId) {
+    accountId = await chainOrders.resolveAccountId(accountRef);
+    if (!accountId) throw new Error(`Unable to resolve account: ${accountRef}`);
+    // Backfill the stamped ID so later runs (and analysis tools) can skip the
+    // lookup. Explicit --account overrides resolve fresh and are never stored.
+    if (!args.account && (profileBot as any).botKey) {
+      try {
+        if (persistBotAccountId((profileBot as any).botKey, accountId)) {
+          console.log(`Stored accountId ${accountId} in profiles/bots.json for bot "${(profileBot as any).name}"`);
+        }
+      } catch (_) {
+        // Persistence must never break the dry run.
+      }
+    }
+  }
   const accountName = await chainOrders.resolveAccountName(accountId || accountRef);
-  if (!accountId) throw new Error(`Unable to resolve account: ${accountRef}`);
 
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-credit-renewal-'));
   const dryRunCalls: any[] = [];

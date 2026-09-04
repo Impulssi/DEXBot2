@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import * as KC from '../market_adapter/core/kibana_client.js';
 import * as C from '../modules/constants.js';
+import { findBotKeyByAccountRef, getStoredBotAccountId, persistBotAccountId } from './bot_key_utils.js';
 
 const { kibanaSearch, DEFAULT_CONFIG: BASE_CONFIG } = KC;
 
@@ -194,14 +195,15 @@ Analyzes filled orders for a BitShares account, computing realized PnL
 via FIFO or sequential (LIFO) inventory tracking.
 
 Arguments:
-  accountId              BitShares account ID (1.2.x) or name (with --lookup)
+  accountId              BitShares account ID (1.2.x) or name (auto-resolved in the background)
 
 Options:
   --start <iso>          Start time (ISO 8601, e.g. 2025-01-01 or 2025-01-01T00:00:00Z)
   --end <iso>            End time (ISO 8601)
   --hours <n>            Lookback hours from now (alternative to --start/--end)
   --asset <assetId>      Filter to one base asset (e.g. 1.3.113 for bitUSD)
-  --lookup               Resolve account name to ID via BitShares node
+  --lookup               Legacy (no-op): account names always resolve automatically
+  --refresh-account      Force re-resolution and update the stored accountId
   --node <url>           BitShares node URL (default: first healthy from built-in pool)
   --csv <file>           Export trade list as CSV
   --json <file>          Export full analysis as JSON
@@ -233,6 +235,7 @@ function parseArgs() {
         end: null,
         asset: null,
         lookup: false,
+        refreshAccount: false,
         node: C.NODE_MANAGEMENT.DEFAULT_NODES[0],
         csv: null,
         json: null,
@@ -249,6 +252,7 @@ function parseArgs() {
             case '--end':          opts.end      = args[++i]; break;
             case '--asset':        opts.asset    = args[++i]; break;
             case '--lookup':       opts.lookup   = true; break;
+            case '--refresh-account': opts.refreshAccount = true; break;
             case '--node':         opts.node     = args[++i]; break;
             case '--csv':          opts.csv      = args[++i]; break;
             case '--json':         opts.json     = args[++i]; break;
@@ -1329,13 +1333,37 @@ async function run() {
     const opts = parseArgs();
     let accountId = opts.accountId;
 
-    if (opts.lookup) {
-        const resolved = await resolveAccountId(accountId, opts.node);
-        if (!resolved) {
-            console.error(`  Could not resolve "${accountId}" to an account ID`);
-            process.exit(1);
+    if (!/^1\.2\.\d+$/.test(String(accountId))) {
+        // Background resolution: the Kibana query below filters on the 1.2.x
+        // account_id field, so a name must always resolve first (a raw name
+        // would silently return zero fills).
+        // Stored ID first: when the name belongs to a bot in profiles/bots.json
+        // and its stamped accountId still matches, no chain lookup is needed.
+        let matchedKey: string | null = null;
+        let stored: string | null = null;
+        try {
+            const match = findBotKeyByAccountRef(accountId);
+            if (match) {
+                matchedKey = match.botKey;
+                stored = getStoredBotAccountId(match.botKey, accountId);
+            }
+        } catch (_) {
+            // bots.json issues must never break resolution; fall through to chain.
         }
-        accountId = resolved;
+        if (stored && !opts.refreshAccount) {
+            console.log(`  Using stored accountId ${stored} from profiles/bots.json (no lookup needed; pass --refresh-account to re-verify)`);
+            accountId = stored;
+        } else {
+            const resolved = await resolveAccountId(accountId, opts.node);
+            if (!resolved) {
+                console.error(`  Could not resolve "${accountId}" to an account ID`);
+                process.exit(1);
+            }
+            accountId = resolved;
+            if (matchedKey && persistBotAccountId(matchedKey, resolved)) {
+                console.log(`  Stored accountId ${resolved} in profiles/bots.json`);
+            }
+        }
     }
 
     // Build time range

@@ -138,8 +138,8 @@ Fetches `fill_order` operations for a BitShares account from Kibana within a spe
 # Account by ID, last 7 days (default)
 node dist/analysis/trade_profitability.js 1.2.123456
 
-# Account by name with on-chain resolution
-node dist/analysis/trade_profitability.js "my-account-name" --lookup --hours 720
+# Account by name (auto-resolved in the background)
+node dist/analysis/trade_profitability.js "my-account-name" --hours 720
 
 # Absolute window with asset filter
 node dist/analysis/trade_profitability.js 1.2.123456 \
@@ -162,7 +162,8 @@ node dist/analysis/trade_profitability.js 1.2.123456 \
 | `--end <iso>` | — | End time |
 | `--hours <n>` | `168` (7d) | Lookback hours (alternative to start/end) |
 | `--asset <id>` | all | Filter to one base asset ID |
-| `--lookup` | off | Resolve account name to 1.2.x ID via BitShares node |
+| `--lookup` | off | Legacy (no-op): account names always resolve automatically |
+| `--refresh-account` | off | Force re-resolution and update the stored `accountId` |
 | `--node <url>` | first healthy from built-in pool (10 nodes) | BitShares node for account + asset resolution |
 | `--csv <file>` | — | Export chronologically sorted trade list |
 | `--json <file>` | — | Export full analysis with per-pair PnL data |
@@ -240,7 +241,7 @@ npm run analysis:grid-check -- --bot-key <bot-key> --per-fill --hours 168
 npm run analysis:grid-check -- --bot-key <bot-key> --hours 168 --tolerance 0.1
 ```
 
-Exit code `0` = pass, `2` = violations found, `1` = fatal error. Bot keys resolve via `profiles/bots.json` (`--list-bots` to enumerate); the account defaults to the bot's `preferredAccount` and can be overridden with `--account <1.2.x|name>`.
+Exit code `0` = pass, `2` = violations found, `1` = fatal error. Bot keys resolve via `profiles/bots.json` (`--list-bots` to enumerate); the account defaults to the bot's stored `accountId` when present (no chain lookup — the ID is auto-saved next to `preferredAccount` after the first successful name resolution, re-verified with `--refresh-account`), otherwise `preferredAccount` is resolved on-chain, and can be overridden with `--account <1.2.x|name>`.
 
 <details><summary>Options (click to expand)</summary>
 
@@ -250,7 +251,8 @@ Exit code `0` = pass, `2` = violations found, `1` = fatal error. Bot keys resolv
 | `--hours <n>` | `168` | Lookback hours from now |
 | `--start <iso>` / `--end <iso>` | — | Absolute time window |
 | `--account <id>` | bot `preferredAccount` | Override account ID or name |
-| `--lookup` | off | Resolve account name to 1.2.x via BitShares node |
+| `--lookup` | off | Legacy (no-op): account names always resolve via BitShares node when no stored ID exists |
+| `--refresh-account` | off | Force re-resolution of `preferredAccount` and update the stored `accountId` when it changed |
 | `--node <url>` | first built-in node | Node for account/asset resolution |
 | `--per-fill` | off | Check at fill granularity instead of per-order aggregated |
 | `--include-cross-pair` | off | Also check consecutive fills across different pairs |

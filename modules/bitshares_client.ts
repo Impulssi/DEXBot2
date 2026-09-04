@@ -229,9 +229,13 @@ function ensureInitialized() {
             list: effectiveNodes,
         };
         nodeManager = new NodeManager(nodeConfig);
-        logger.info(`Loaded config for ${nodeConfig.list.length} nodes`);
+        if (!suppressConnectionLog) {
+            logger.info(`Loaded config for ${nodeConfig.list.length} nodes`);
+        }
     } else {
-        logger.info(`Node management disabled; using ${effectiveNodes.length} configured node(s)`);
+        if (!suppressConnectionLog) {
+            logger.info(`Node management disabled; using ${effectiveNodes.length} configured node(s)`);
+        }
     }
 }
 
@@ -255,6 +259,11 @@ const _lazyBitShares: any = new Proxy({}, {
  */
 function setSuppressConnectionLog(suppress: any) {
     suppressConnectionLog = suppress;
+}
+
+/** Whether connection log output is currently suppressed. */
+function isSuppressConnectionLog(): boolean {
+    return suppressConnectionLog;
 }
 
 /**
@@ -619,7 +628,8 @@ function getConnectionError() {
 const _internal = {
     get connected() { return connected; },
 };
+const _default = { BitShares: _lazyBitShares, createAccountClient, waitForConnected, getConnectionStatus, disconnectClient, reconnectForCycle, setSuppressConnectionLog, isSuppressConnectionLog, onReconnect, withTimeout, _assessFailover: assessFailover, getNodeManager, getNodeStats, getNodeSummary, getConnectionError, _internal }
 
-const _default = { BitShares: _lazyBitShares, createAccountClient, waitForConnected, getConnectionStatus, disconnectClient, reconnectForCycle, setSuppressConnectionLog, onReconnect, withTimeout, _assessFailover: assessFailover, getNodeManager, getNodeStats, getNodeSummary, getConnectionError, _internal }
 export default _default;
-export { _lazyBitShares as BitShares, createAccountClient, waitForConnected, getConnectionStatus, disconnectClient, reconnectForCycle, setSuppressConnectionLog, onReconnect, withTimeout, assessFailover as _assessFailover, getNodeManager, getNodeStats, getNodeSummary, getConnectionError, _internal }
+
+export { _lazyBitShares as BitShares, createAccountClient, waitForConnected, getConnectionStatus, disconnectClient, reconnectForCycle, setSuppressConnectionLog, isSuppressConnectionLog, onReconnect, withTimeout, assessFailover as _assessFailover, getNodeManager, getNodeStats, getNodeSummary, getConnectionError, _internal }
