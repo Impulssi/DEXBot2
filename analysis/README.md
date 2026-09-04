@@ -24,7 +24,7 @@ Tools that inspect DEXBot trading behavior and the market data it operates on. O
 | [`grid_correction_check.ts`](#grid-correction-check-grid_correction_checkts) | "Is my grid placing orders monotonically?" — sell/buy price inversion detector | `npm run analysis:grid-check -- --bot-key <bot-key>` |
 | [`analyze_risk_profile.ts`](#risk-profile-analyzer-analyze_risk_profilets) | "How wide should my Safe Range clamps be?" | `node dist/analysis/analyze_risk_profile.js --bot-key <bot-key>` |
 | [`analyze_trade_heatmap.ts`](#trade-heatmap-analyze_trade_heatmapts) | "Where did trade volume cluster vs the AMA?" | `node dist/analysis/analyze_trade_heatmap.js --bot-key <bot-key>` |
-| [`tradingview/analyze_tradingview.ts`](#tradingview-chart-tradingviewanalyze_tradingviewts) | "Just give me a candle chart" | `npm run analysis:tradingview -- --source market_adapter --bot-key <bot-key>` |
+| [`tradingview/analyze_tradingview.ts`](#tradingview-chart-tradingviewanalyze_tradingviewts) | "Just give me a candle chart" | `dexbot tv <bot-key>` |
 | [`analyze_dynamic_weight.ts`](#dynamic-weight-research-analyze_dynamic_weightts) | "Are buy/sell weights tuned for this regime?" | `node dist/analysis/analyze_dynamic_weight.js --bot-key <bot-key>` |
 | [`analyze_volatility.ts`](#volatility-analyze_volatilityts) | "Both weights clipped too hard / not enough?" | `node dist/analysis/analyze_volatility.js --bot-key <bot-key>` |
 | [`analyze_regime.ts`](#supporting-sub-signals) | "Is the trend/chaos gate too aggressive?" | `node dist/analysis/analyze_regime.js --bot-key <bot-key>` |
@@ -311,7 +311,12 @@ node dist/analysis/analyze_trade_heatmap.js \
 Generates a standalone TradingView-style HTML chart with candle OHLC, SMA, AMA, VWMA, and volume panel. See [tradingview/README.md](tradingview/README.md) for full documentation.
 
 ```bash
-# Bot-key (auto-resolves candle file and AMA settings)
+# Recommended one-step: bot, pool, or pair (fetches candles + renders, default 3 months)
+dexbot tv <bot-key>
+dexbot tv 133
+dexbot tv TOKENA/TOKENB
+
+# Manual: bot-key (auto-resolves candle file and AMA settings)
 npm run analysis:tradingview -- --source market_adapter --bot-key <bot-key>
 
 # From an explicit candle file

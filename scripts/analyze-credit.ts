@@ -41,32 +41,15 @@ import { pathToFileURL } from 'node:url';
 // Terminal colors: centralized palette (modules/cli_colors.ts), shared with
 // `dexbot order` so both analyzers stay visually in lockstep.
 import { CLI_COLORS as colors } from '../modules/cli_colors.js';
+import { muteChainLogs } from '../modules/utils/chain_logs.js';
 
 const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const CONNECT_TIMEOUT_MS = 30000;
 const PAGE_LIMIT = 300;
 
-// Chain connection chatter ([Transport] / [NodeManager] / [bitshares_client]
-// status lines) would drown the overview, and the native loggers don't honor
-// setSuppressConnectionLog — so drop their prefixed lines at the console
-// level for the whole run. console.error stays untouched so real failures
-// (thrown errors, per-bot fetch failures) still surface.
-const _consoleLog = console.log.bind(console);
-const _consoleInfo = console.info.bind(console);
-const _consoleWarn = console.warn.bind(console);
-const CHAIN_LOG_RE = /\[(Transport|NodeManager|bitshares_client)\]/;
-function muteChainLogs() {
-  const mute = (orig: (...args: any[]) => void) => (...args: any[]) => {
-    if (args.length > 0 && typeof args[0] === 'string' && CHAIN_LOG_RE.test(args[0])) return;
-    orig(...args);
-  };
-  console.log = mute(_consoleLog) as typeof console.log;
-  console.info = mute(_consoleInfo) as typeof console.info;
-  console.warn = mute(_consoleWarn) as typeof console.warn;
-}
-
-// Terminal colors — centralized palette (modules/cli_colors.ts), shared with
-// `dexbot order` so both analyzers stay visually in lockstep.
+// Chain connection chatter is muted via the shared modules/utils/chain_logs.ts
+// helper (console.error stays untouched so real failures still surface).
+muteChainLogs();
 
 function formatAmount(value: number): string {
   if (!Number.isFinite(value)) return 'N/A';
@@ -223,7 +206,6 @@ async function main() {
   }
 
   setSuppressConnectionLog(true);
-  muteChainLogs();
   await waitForConnected(CONNECT_TIMEOUT_MS);
   // Asset metadata cache: id -> { symbol, precision }
   const assetCache = new Map<string, { symbol: string; precision: number }>();

@@ -81,6 +81,7 @@ const __dirname = _esmDirname(__filename);
  *   dexbot order [<bot>] --export - Export only the specified bot's analysis
  *   dexbot credit               - Show live summed MPA + borrowed-credit positions per asset per bot
  *   dexbot credit [<bot>]       - Show only the specified bot's positions
+ *   dexbot tv <bot|pool|pair>   - TradingView chart: 1h candles, N months (default 3, --month N)
  *   dexbot help                   - Show this help message
  *
  * NPM SCRIPTS (alternative invocation):
@@ -178,7 +179,7 @@ if (typeof credentialPolicy.checkPolicyFileSecurity === 'function') credentialPo
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
 
-const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'reload', 'help'];
+const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'tv', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'reload', 'help'];
 const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'unlock', defaults: 'default', stp: 'stop', stopall: 'stop', restartall: 'restart', reloadall: 'reload' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
@@ -196,6 +197,7 @@ const CLI_EXAMPLES = [
     { title: 'Export bot trades for QTradeX', command: 'dexbot export <bot>', notes: 'Exports trading history and settings to CSV/JSON for backtesting.' },
     { title: 'Analyze persisted order grids', command: 'dexbot order', notes: 'Runs the order analyzer across the orders directory (<profiles>/orders) and prints spread/increment/funds/distribution metrics. Add a bot key to render only that bot, and --export for an HTML report.' },
     { title: 'Show live credit/MPA positions', command: 'dexbot credit', notes: 'Queries get_margin_positions + get_credit_deals_by_borrower per preferredAccount and prints debt/collateral sums plus one Curr. CR line per whitelisted pair (active CR, else borrow-now CR vs funds avail. on the offer) and one Avar. CR line per bot. CR covers only pairs whitelisted in bots.json and listed on the current credit offer. Add a bot key to render only that bot.' },
+    { title: 'TradingView chart for a bot, pool, or pair', command: 'dexbot tv <bot|pool-id|AssetA/AssetB> --month 3', notes: 'Fetches 1h candles for N months (default 3, pool-first with orderbook fallback for pairs) and writes an auto-named HTML chart.' },
     { title: 'Clear all bot log files', command: 'dexbot clear', notes: 'Runs scripts/clear-logs.sh to remove log files from the logs directory (<profiles>/logs).' },
     { title: 'Reset settings to defaults', command: 'dexbot default', notes: 'Runs scripts/reset-settings.sh to delete general.settings.json, market_profiles.json, and market_adapter_settings.json.' }
 ];
@@ -248,6 +250,7 @@ function printCLIUsage() {
     console.log('  update            Update DEXBot2 from the repository and restart active bots.');
     console.log('  order             Analyze persisted order grids in <profiles>/orders/ (spread, increment, funds). Use --export for HTML.');
     console.log('  credit [<bot>]    Show live summed MPA + borrowed-credit positions per asset per bot.');
+    console.log('  tv <target>       TradingView chart: 1h candles for <bot|pool-id|AssetA/AssetB> over --month N (default 3).');
     console.log('  order [<bot>]     Analyze only the specified bot.');
     console.log('  status, stat, stats  Show bot runtime status (unlock monolithic/isolated or PM2).');
     console.log('  unlock            Legacy alias for start (repo-root: `./unlock`).');
@@ -890,7 +893,7 @@ async function exportBotTrades(botName: string | undefined) {
 
 /**
  * Parse and execute CLI commands.
-  * Supported commands: test, drystart, reset, default, disable, enable, key, bot, pm2, update, export, order, credit, clear, status, whitelist, unlock, help
+  * Supported commands: test, drystart, reset, default, disable, enable, key, bot, pm2, update, export, order, credit, tv, clear, status, whitelist, unlock, help
  * @returns {Promise<boolean>} True if a command was handled, false otherwise
  */
 async function handleCLICommands() {
@@ -1055,6 +1058,24 @@ async function handleCLICommands() {
             });
             if (result.error) {
                 console.error(`credit: ${result.error.message}`);
+                process.exit(1);
+            }
+            process.exit(result.status ?? 0);
+            return true;
+        }
+        case 'tv': {
+            const { spawnSync } = require('child_process') as any as any;
+            const scriptArgs = buildRuntimeScriptArgs({
+                codeRoot: __dirname,
+                scriptSegments: ['scripts', 'tv'],
+                scriptArgs: cliArgs.slice(1),
+            });
+            const result = spawnSync(Config.EXEC_PATH, scriptArgs, {
+                cwd: PATHS.PROJECT_ROOT,
+                stdio: 'inherit',
+            });
+            if (result.error) {
+                console.error(`tv: ${result.error.message}`);
                 process.exit(1);
             }
             process.exit(result.status ?? 0);

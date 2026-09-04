@@ -54,8 +54,11 @@ function toEpochSeconds(ts: any, fallbackIdx: any) {
     return fallbackIdx * 3600;
 }
 
-function writeChartFile(filePath: any, html: any) {
-    const chartDir = path.dirname(filePath);
+function toFileUrl(filePath: any): string {
+    return `file://${path.resolve(String(filePath))}`;
+}
+
+function writeChartFile(filePath: any, html: any) {    const chartDir = path.dirname(filePath);
     if (!fs.existsSync(chartDir)) ensureDir(chartDir);
     ensureSiblingUplotAssets(chartDir);
     // Atomic write (tmp + rename, matching the production storage adapter
@@ -190,5 +193,5 @@ function bindPan(chart) {
 }
 `;
 
-export { escapeHtml, serializeJsonForScript, toEpochSeconds, writeChartFile, embedFunctionSources, UPLOT_SHARED_SCRIPT }
+export { escapeHtml, serializeJsonForScript, toEpochSeconds, writeChartFile, toFileUrl, embedFunctionSources, UPLOT_SHARED_SCRIPT }
 

@@ -240,8 +240,8 @@ Defaults in [`modules/constants.ts`](modules/constants.ts) are overridable at gl
 ```bash
 dexbot start/stop          # Stop/start the monolithic runtime
 dexbot start --dryrun      # Dry-run (no transactions broadcast)
-dexbot reload              # Reload the monolithic runtime (leaves credential daemon untouched)
-dexbot restart             # Restart the monolithic runtime (re-unlocks credential daemon)
+dexbot reload              # Reload the runtime (leaves credential daemon untouched)
+dexbot restart             # Restart the runtime (re-unlocks credential daemon)
 dexbot delete              # Shut down and clean up
 ```
 
@@ -261,6 +261,7 @@ dexbot enable {all|<bot>}  # Enable bot in config
 dexbot stat                # Runtime status (unlock or PM2)
 dexbot order [<bot>]       # Analyze order grids
 dexbot order --export      # Export as HTML to analysis/charts/
+dexbot tv <bot|pool|A/B>   # TradingView 1h chart with AMA overlay (default: 3 months)
 dexbot credit [<bot>]      # Live summed MPA + borrowed-credit positions per asset per bot
 
 dexbot update              # Update DEXBot2

@@ -28,6 +28,7 @@ import { getWhitelistFlags } from '../modules/market_adapter_whitelist.js';
 import { getStorage } from '../modules/storage/index.js';
 const { readJSON } = getStorage();
 import { getErrorMessage } from '../modules/utils/errors.js';
+import { toFileUrl } from '../analysis/chart_utils.js';
 import { isSameBotName, sanitizeKey } from '../modules/utils/sanitize_key.js';
 import { CLI_COLORS as colors } from '../modules/cli_colors.js';
 import { pathToFileURL } from 'node:url';
@@ -1581,22 +1582,7 @@ function generateHtmlReport(analyses: any[]) {
   const outPath = path.join(PATHS.ANALYSIS.CHARTS_DIR, 'order-analysis.html');
   fs.mkdirSync(PATHS.ANALYSIS.CHARTS_DIR, { recursive: true });
   fs.writeFileSync(outPath, html, 'utf-8');
-  console.log(`\n📄 Order Analysis: ${formatClickablePath(outPath)}`);
-}
-
-/**
- * formatClickablePath: Render an absolute path as a terminal hyperlink.
- *
- * Uses the OSC 8 escape sequence so supporting terminals (GNOME Terminal,
- * iTerm2, Kitty, WezTerm, Windows Terminal, ...) render the path as a
- * clickable link targeting the file:// URL. Non-TTY output (pipes, logs)
- * falls back to the plain file:// URL, which most terminals also auto-link
- * and which stays copy-paste friendly.
- */
-function formatClickablePath(filePath: string): string {
-  const url = `file://${filePath}`;
-  if (!process.stdout.isTTY) return url;
-  return `\x1b]8;;${url}\x1b\\${filePath}\x1b]8;;\x1b\\`;
+  console.log(`\n📄 Order Analysis saved. Open report: (${toFileUrl(outPath)})`);
 }
 
 function main() {

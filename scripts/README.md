@@ -385,6 +385,18 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 
 ## 📈 CHART GENERATION
 
+### TradingView (`dexbot tv`)
+**File:** `tv.ts`
+**Purpose:** One-step TradingView-style 1h chart for a bot (with AMA overlay), pool, or pair. Fetches candles in monthly Kibana chunks, then renders via `analysis/tradingview/`.
+**Output:** `analysis/charts/tv_<bot|pool_<id>|<a>_<b>>_1h_<N>m.html`
+```bash
+# Bot chart (default: 3 months)
+dexbot tv <bot>
+# Pool or pair, custom window
+dexbot tv 133 --month 6
+dexbot tv TOKENA/TOKENB --month 1 --chart analysis/charts/custom.html
+```
+
 ### LP Chart
 **File:** `generate_lp_chart.ts`
 **Purpose:** Generate the standard uPlot LP chart output.
