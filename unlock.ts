@@ -27,7 +27,8 @@ const __dirname = _esmDirname(__filename);
  *   dexbot start --headless --password-file <path>
  *   dexbot stat, status        Runtime status
  *   dexbot stop                Stop the monolithic runtime
- *   dexbot restart             Restart the monolithic runtime
+ *   dexbot reload              Reload the monolithic runtime (leaves credential daemon untouched)
+ *   dexbot restart             Restart the monolithic runtime (re-unlocks credential daemon)
  *   dexbot delete              Shut down and clean up
  *
  * Repo-root users can run `./unlock` instead.
@@ -812,15 +813,15 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
     const effectiveCmd = cmd === 'shutdown' ? 'delete' : cmd === 'stat' ? 'status' : cmd;
     const actionLabel = getControlActionLabel(cmd);
 
-    if ((effectiveCmd === 'stop-all' || effectiveCmd === 'delete' || effectiveCmd === 'status' || effectiveCmd === 'restart-all') && !target) {
+    if ((effectiveCmd === 'stop-all' || effectiveCmd === 'delete' || effectiveCmd === 'status' || effectiveCmd === 'restart-all' || effectiveCmd === 'reload-all') && !target) {
         const { pid, stale } = readLiveMonolithicPid();
 
         if (pid > 0) {
             const summaryBotNames = getControlBotNames(undefined, true);
             const summaryServiceNames = getControlServiceNames(effectiveCmd, summaryBotNames);
 
-            if (effectiveCmd === 'restart-all') {
-                if (process.stdin.isTTY) {
+            if (effectiveCmd === 'restart-all' || effectiveCmd === 'reload-all') {
+                if (effectiveCmd === 'restart-all' && process.stdin.isTTY) {
                     const credResult = await stopCredentialDaemon();
                     if (credResult.signaled) {
                         console.log('Stop signal sent to credential daemon');
@@ -836,6 +837,9 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
                     }
                     controller.releaseManagedDaemon();
                 }
+                // reload-all intentionally skips the credential daemon
+                // stop/re-unlock above: bots keep their key access while the
+                // bot process + market adapter are recycled via SIGUSR2.
                 await stopMarketAdapterFromLock();
                 try {
                     runtime.kill(pid, 'SIGUSR2');
@@ -997,8 +1001,8 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
         if (resp.ok && resp.status) {
             printControlStatus(resp.status);
         } else {
-            if (target || effectiveCmd === 'stop-all' || effectiveCmd === 'restart-all' || effectiveCmd === 'delete') {
-                const summaryBotNames = getControlBotNames(target, !target && (effectiveCmd === 'stop-all' || effectiveCmd === 'restart-all' || effectiveCmd === 'delete'));
+            if (target || effectiveCmd === 'stop-all' || effectiveCmd === 'restart-all' || effectiveCmd === 'reload-all' || effectiveCmd === 'delete') {
+                const summaryBotNames = getControlBotNames(target, !target && (effectiveCmd === 'stop-all' || effectiveCmd === 'restart-all' || effectiveCmd === 'reload-all' || effectiveCmd === 'delete'));
                 const summaryServiceNames = getControlServiceNames(effectiveCmd, summaryBotNames);
                 printControlActionSummary(actionLabel, summaryBotNames, summaryServiceNames);
             }

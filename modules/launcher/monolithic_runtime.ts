@@ -374,13 +374,16 @@ function getControlBotNames(target: any, wholeRuntime: any = false) {
 
 function getControlActionLabel(cmd: any) {
     if (cmd === 'restart' || cmd === 'restart-all') return 'restarting';
+    if (cmd === 'reload' || cmd === 'reload-all') return 'reloading';
     if (cmd === 'shutdown' || cmd === 'delete') return 'shutting down';
     return 'stopping';
 }
 
 function getControlServiceNames(cmd: any, botNames: any) {
-    if (!['stop-all', 'restart-all', 'delete', 'shutdown'].includes(cmd)) return [];
+    if (!['stop-all', 'restart-all', 'reload-all', 'delete', 'shutdown'].includes(cmd)) return [];
     const serviceNames: string[] = [];
+    // reload-all mirrors restart-all but leaves the credential daemon untouched,
+    // so it must not list the daemon as an affected service.
     if (cmd === 'restart-all' || cmd === 'delete' || cmd === 'shutdown') {
         serviceNames.push('credential daemon');
     }

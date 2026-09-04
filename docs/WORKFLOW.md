@@ -255,7 +255,8 @@ the canonical name is preferred in scripts and docs.
 | `dexbot status` | `stat` | Unified runtime health — daemon, adapter, bots |
 | `dexbot start` | `unlock` | Run credential daemon + bot (equivalent to running the `unlock` runtime, `dist/unlock.js`) |
 | `dexbot stop` / `dexbot start` | `stp`, `stopall` | Stop/start the monolithic runtime (unlock mode) |
-| `dexbot restart` | `restartall` | Restart the monolithic runtime (unlock mode) |
+| `dexbot reload` | `reloadall` | Reload the monolithic runtime without touching the credential daemon (unlock mode) |
+| `dexbot restart` | `restartall` | Restart the monolithic runtime (unlock mode, re-unlocks credential daemon) |
 | `dexbot delete` | — | Shut down and clean up the monolithic runtime (unlock mode) |
 | `dexbot whitelist` | `white` | Generate market adapter whitelist from AMA bot configs |
 | `dexbot clear` | — | Remove all log files from the logs directory (`<profiles>/logs`) |

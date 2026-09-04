@@ -71,7 +71,8 @@ const __dirname = _esmDirname(__filename);
  * MAINTENANCE:
  *   dexbot update                 - Update to latest version (pull + install + restart)
  *   dexbot stop                   - Stop the monolithic runtime
- *   dexbot restart                - Restart the monolithic runtime
+ *   dexbot reload                 - Reload the monolithic runtime (leaves credential daemon untouched)
+ *   dexbot restart                - Restart the monolithic runtime (re-unlocks credential daemon)
  *   dexbot delete                 - Stop/delete all runtime processes
  *   dexbot export <bot>           - Export trading history to CSV/JSON for QTradeX
  *   dexbot order                  - Analyze persisted order grids in profiles/orders/
@@ -176,8 +177,8 @@ if (typeof credentialPolicy.checkPolicyFileSecurity === 'function') credentialPo
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
 
-const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'help'];
-const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'unlock', defaults: 'default', stp: 'stop', stopall: 'stop', restartall: 'restart' };
+const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'reload', 'help'];
+const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'unlock', defaults: 'default', stp: 'stop', stopall: 'stop', restartall: 'restart', reloadall: 'reload' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
 const CLI_EXAMPLES = [
@@ -250,7 +251,8 @@ function printCLIUsage() {
     console.log('  status, stat, stats  Show bot runtime status (unlock monolithic/isolated or PM2).');
     console.log('  unlock            Legacy alias for start (repo-root: `./unlock`).');
     console.log('  stop              Stop the monolithic runtime.');
-    console.log('  restart           Restart the monolithic runtime.');
+    console.log('  reload            Reload the monolithic runtime (leaves credential daemon untouched).');
+    console.log('  restart           Restart the monolithic runtime (re-unlocks credential daemon).');
     console.log('  delete            Stop/delete all runtime processes.');
     console.log('  whitelist, white  Generate market adapter whitelist from AMA bot configs. Flags (--dynamic-weight, --no-asymmetric-bounds, --prune, --bot <key>) are forwarded. --bot implies overwrite for that key.');
     console.log('  clear             Remove all log files from <profiles>/logs/ (runs scripts/clear-logs.sh).');
@@ -1252,7 +1254,8 @@ async function handleCLICommands() {
         }
         case 'delete':
         case 'stop':
-        case 'restart': {
+        case 'restart':
+        case 'reload': {
             const { spawnSync } = require('child_process') as any as any;
             const unlockArgs = buildRuntimeScriptArgs({
                 codeRoot: __dirname,

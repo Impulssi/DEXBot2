@@ -1,6 +1,6 @@
 
 import { Config } from '../config.js';
-const CONTROL_COMMANDS = new Set(['status', 'stat', 'stop', 'delete', 'restart', 'stop-all', 'restart-all', 'shutdown']);
+const CONTROL_COMMANDS = new Set(['status', 'stat', 'stop', 'delete', 'restart', 'reload', 'stop-all', 'restart-all', 'reload-all', 'shutdown']);
 
 function findFirstPositionalArg(args: string[]): string | null {
     return args.find((arg: string) => !arg.startsWith('-') && arg !== 'claw-only' && !CONTROL_COMMANDS.has(arg)) || null;
@@ -52,8 +52,9 @@ function parseUnlockArgs(argv = process.argv) {
         let cmd = positionalArgs[0];
         const target = positionalArgs[1] || null;
 
-        // Normalize whole-runtime controls: restart/stop (no target or 'all') → *-all
-        const consumedAll = (cmd === 'restart' || cmd === 'stop') && (!target || target === 'all');
+        // Normalize whole-runtime controls: restart/reload/stop (no target or 'all') → *-all
+        // reload mirrors restart but skips the credential daemon re-unlock.
+        const consumedAll = (cmd === 'restart' || cmd === 'reload' || cmd === 'stop') && (!target || target === 'all');
         if (consumedAll) {
             cmd += '-all';
         }
@@ -97,7 +98,7 @@ function parsePm2Args(argv = process.argv) {
         filteredArgs.push(a);
     }
     const command = filteredArgs[0] || null;
-    const knownCommands = new Set(['claw-only', '--claw-only', 'update', 'stop', 'delete', 'restart', 'help']);
+    const knownCommands = new Set(['claw-only', '--claw-only', 'update', 'stop', 'delete', 'restart', 'reload', 'help']);
 
     if (command === 'claw-only' || command === '--claw-only') {
         return {
