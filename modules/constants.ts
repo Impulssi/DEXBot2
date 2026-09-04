@@ -192,6 +192,11 @@ let DEFAULT_CONFIG = {
     botFunds: { sell: "100%", buy: "100%" },      // Percentage of wallet balance to allocate ("100%" or numeric value)
     activeOrders: { sell: 20, buy: 20 },          // Number of orders to maintain closest to market on each side
 
+    // Buy-window behavior (keep-low ladder + minimum size + fill delay)
+    buyFloorUSDT: 1.0,        // Minimum BUY order size in quote currency (0 = off)
+    buyDelayMinutes: 15,      // Pause after a BUY fill before new buys (0 = off)
+    buyWindowMode: 'low',     // BUY placement window: 'low' (rail bottom) or 'closest' (market)
+
     // BTS fee management for non-BTS pairs
     min_BTS_value: null,          // Minimum BTS balance to maintain (null = auto from activeOrders × fees × multiplier)
 };

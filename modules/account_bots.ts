@@ -1001,6 +1001,24 @@ async function askGridPriceMode(promptText: string, defaultValue?: any, startPri
 }
 
 /**
+ * Prompts the user for the BUY window placement mode.
+ * @param {string} promptText - The prompt text to display.
+ * @param {string} [defaultValue] - The default value ('low').
+ * @returns {Promise<string>} 'low' or 'closest', or '\x1b' if ESC.
+ */
+async function askBuyWindowMode(promptText: string, defaultValue?: any): Promise<any> {
+    while (true) {
+        const def = defaultValue === undefined || defaultValue === null ? 'low' : String(defaultValue);
+        const raw = (await readInput(`${promptText} [${def}]: `)).trim();
+        if (raw === '\x1b') return '\x1b';
+        if (!raw) return def;
+        const lower = raw.toLowerCase();
+        if (lower === 'low' || lower === 'closest') return lower;
+        console.log('Please enter: low (rail bottom) or closest (market).');
+    }
+}
+
+/**
  * Normalizes a bot draft for editing or saving.
  * Preserves existing fields and strips unsupported runtime-managed fields.
  * @param {Object} [base={}] - The initial bot data to edit.
@@ -1019,6 +1037,9 @@ function normalizeBotDraft(base = {}) {
     if (data.maxPrice === undefined) data.maxPrice = DEFAULT_CONFIG.maxPrice;
     if (data.incrementPercent === undefined) data.incrementPercent = DEFAULT_CONFIG.incrementPercent;
     if (data.targetSpreadPercent === undefined) data.targetSpreadPercent = DEFAULT_CONFIG.targetSpreadPercent;
+    if (data.buyFloorUSDT === undefined) data.buyFloorUSDT = DEFAULT_CONFIG.buyFloorUSDT;
+    if (data.buyDelayMinutes === undefined) data.buyDelayMinutes = DEFAULT_CONFIG.buyDelayMinutes;
+    if (data.buyWindowMode === undefined) data.buyWindowMode = DEFAULT_CONFIG.buyWindowMode;
     if (data.startPrice === undefined) data.startPrice = data.startPrice || DEFAULT_CONFIG.startPrice || 'pool';
     if (data.gridPrice === undefined) data.gridPrice = null;
     delete data.gridPriceOffsetPct;
@@ -1044,7 +1065,7 @@ async function promptBotData(base = {}) {
              console.log(`${COLORS.yellowBold}1) Pair:${COLORS.reset}       ${COLORS.cyan}${data.assetA || '?'} / ${data.assetB || '?'}${COLORS.reset}`);
              console.log(`${COLORS.yellowBold}2) Identity:${COLORS.reset}   ${COLORS.orange}Name:${COLORS.reset} ${data.name || '?'} , ${COLORS.orange}Account:${COLORS.reset} ${data.preferredAccount || '?'} , ${COLORS.orange}Active:${COLORS.reset} ${colorBooleanFlag(data.active, true)}, ${COLORS.orange}DryRun:${COLORS.reset} ${colorBooleanFlag(data.dryRun, false)}`);
              console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}      ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}], ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${data.poolRef || 'none'}, ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice, data.startPrice)}`);
-             console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%`);
+              console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%, ${COLORS.orange}Floor:${COLORS.reset} ${data.buyFloorUSDT ?? '?'}, ${COLORS.orange}Delay:${COLORS.reset} ${data.buyDelayMinutes ?? '?'}m, ${COLORS.orange}Win:${COLORS.reset} ${data.buyWindowMode ?? '?'}`);
              console.log(`${COLORS.yellowBold}5) Funding:${COLORS.reset}    ${COLORS.orange}Sell:${COLORS.reset} ${colorPercentageInput(data.botFunds.sell)}, ${COLORS.orange}Buy:${COLORS.reset} ${colorPercentageInput(data.botFunds.buy)} | ${COLORS.orange}Orders:${COLORS.reset} (S:${data.activeOrders.sell}, B:${data.activeOrders.buy})`);
              console.log('--------------------------------------------------');
              console.log(`${COLORS.greenBold}S) Save & Exit${COLORS.reset}`);
@@ -1119,10 +1140,19 @@ async function promptBotData(base = {}) {
                 const targetS = await askTargetSpreadPercent('targetSpread %', defaultSpread, incrP, currentSettings.GRID_LIMITS.MIN_SPREAD_FACTOR);
 
                 if (targetS === '\x1b') break;
+                const buyFloor = await askNumberWithBounds('buy floor USDT, min BUY size (0 = off)', data.buyFloorUSDT ?? 1.0, 0, 100000);
+                if (buyFloor === '\x1b') break;
+                const buyDelay = await askIntegerInRange('buy delay minutes after a BUY fill (0 = off)', data.buyDelayMinutes ?? 15, 0, 10080);
+                if (buyDelay === '\x1b') break;
+                const buyWin = await askBuyWindowMode('buy window (low = rail bottom, closest = market)', data.buyWindowMode ?? 'low');
+                if (buyWin === '\x1b') break;
                 data.weightDistribution.sell = wSell;
                 data.weightDistribution.buy = wBuy;
                 data.incrementPercent = incrP;
                 data.targetSpreadPercent = targetS;
+                data.buyFloorUSDT = buyFloor;
+                data.buyDelayMinutes = buyDelay;
+                data.buyWindowMode = buyWin;
                 showMenu = true;
                 break;
             case '5':

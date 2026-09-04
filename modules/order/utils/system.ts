@@ -968,15 +968,17 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
             // stray on-chain SELL inside the new spread band (kept typed SELL by
             // the SPREAD GUARD) would be picked as "closest to market" and never
             // relocated, collapsing the spread after a boundary shift.
-            // KEEP-LOW BUY window (mirrors strategy.ts): BUY candidates are
-            // sorted lowest-price first so desiredSlots = the BOTTOM slots of
-            // the rail, never the boundary-adjacent ones. With the previous
+            // BUY window follows config buyWindowMode (default 'low', mirrors
+            // strategy.ts). 'low' sorts lowest-first so desiredSlots = the
+            // BOTTOM slots of the rail; 'closest' restores upstream
+            // closest-to-market order. With the previous unconditional
             // descending sort the divergence path placed the top buys at
             // -1..-3% under market and they filled immediately.
+            const windowLowDiv = orderType !== ORDER_TYPES.BUY || MathUtils.resolveBuyWindowMode(manager.config) !== 'closest';
             const allSideSlots = (Array.from(workingGrid.values()) as any[])
                 .filter((o: any) => o.type === orderType)
                 .filter(inRailByType(orderType))
-                .sort((a: any, b: any) => a.price - b.price);
+                .sort((a: any, b: any) => (orderType === ORDER_TYPES.BUY && !windowLowDiv) ? b.price - a.price : a.price - b.price);
 
             // Calculate target count
             const baseTargetCount = (manager.config.activeOrders && Number.isFinite(manager.config.activeOrders[sideName]))
@@ -1049,24 +1051,26 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
             }
 
             // Process holes: CREATE new orders for empty desired slots
-            // BUY guard: skip creates below the MIN_BUY_USDT floor (mirrors
-            // strategy.ts) and while the 15 min buy delay (deadline) is armed —
-            // divergence corrections must not bypass either.
-            const MIN_BUY_USDT = 0.75;
+            // BUY guard: skip creates below the floor (config buyFloorUSDT,
+            // default 1.0, 0 = off; mirrors strategy.ts) and while the buy
+            // delay (config buyDelayMinutes, default 15, 0 = off; deadline)
+            // is armed — divergence corrections must not bypass either.
+            const buyFloorUsdtDiv = MathUtils.resolveBuyFloorUsdt(manager.config);
+            const buyDelayMsDiv = MathUtils.resolveBuyDelayMs(manager.config);
             for (const slot of desiredSlots) {
                 const hasCreate = hasActionForOrder(actions, COW_ACTIONS.CREATE, slot);
                 if (!onChainBySlotId.has(slot.id) && slot.size > 0 && !hasCreate) {
                     if (orderType === ORDER_TYPES.BUY) {
                         const lastBuyTime = (manager as any)._lastBuyFillTime || 0;
-                        const delayActive = lastBuyTime !== 0
-                            && (Date.now() - lastBuyTime) < (15 * 60 * 1000);
+                        const delayActive = buyDelayMsDiv > 0 && lastBuyTime !== 0
+                            && (Date.now() - lastBuyTime) < buyDelayMsDiv;
                         if (delayActive) {
                             manager.logger.log(`[DIVERGENCE-COW] Skipping BUY create for ${slot.id} — buy delay active`, 'info');
                             continue;
                         }
                         // BUY size is in quote (USDT) — the size IS the notional.
-                        if (Number(slot.size) < MIN_BUY_USDT) {
-                            manager.logger.log(`[DIVERGENCE-COW] Skipping BUY create for ${slot.id} — size ${Number(slot.size).toFixed(3)} USDT < ${MIN_BUY_USDT}`, 'info');
+                        if (buyFloorUsdtDiv > 0 && Number(slot.size) < buyFloorUsdtDiv) {
+                            manager.logger.log(`[DIVERGENCE-COW] Skipping BUY create for ${slot.id} — size ${Number(slot.size).toFixed(3)} USDT < ${buyFloorUsdtDiv}`, 'info');
                             continue;
                         }
                     }

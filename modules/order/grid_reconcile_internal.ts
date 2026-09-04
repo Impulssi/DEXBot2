@@ -9,7 +9,7 @@
 
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
-import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findCrossedOrder, resolveGapBand, isSlotInRail, priceSlotEqual } from './utils/math.js';
+import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findCrossedOrder, resolveGapBand, isSlotInRail, priceSlotEqual, resolveBuyFloorUsdt, resolveBuyWindowMode } from './utils/math.js';
 import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection } from './utils/order.js';
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
@@ -194,22 +194,24 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
     const typeFilter = boundaryKnown
         ? (slot: any) => slot && (slot.type === type || slot.type === ORDER_TYPES.SPREAD)
         : (slot: any) => slot && slot.type === type;
-    // Keep-low BUY selection (mirrors strategy.ts farthest-first window):
-    // BUY candidates are limited to the BOTTOM `count` slots of the rail
-    // (farthest below market). The MIN_BUY_USDT floor then filters WITHIN
-    // that window — a sub-floor slot is skipped WITHOUT walking up the rail,
-    // otherwise the floor would redirect selection to the heavier
+    // BUY window follows config buyWindowMode (default 'low', mirrors the
+    // strategy keep-low window): candidates limited to the BOTTOM `count`
+    // slots of the rail (farthest below market). The floor then filters
+    // WITHIN that window — a sub-floor slot is skipped WITHOUT walking up
+    // the rail, otherwise the floor would redirect selection to the heavier
     // boundary-adjacent slots (i.e. buying near the market, the exact
     // behavior this window exists to prevent). Unfunded bottom slots simply
-    // stay virtual and their funds remain free. SELL keeps closest-first.
-    // MIN_BUY_USDT floor: a BUY whose notional (size × price) is below the
-    // floor is skipped — same constant as strategy.ts / manager.ts guard.
-    const MIN_BUY_USDT = 0.75;
+    // stay virtual and their funds remain free. 'closest' restores upstream
+    // closest-to-market selection. SELL keeps closest-first.
+    // Floor: config buyFloorUSDT (default 1.0, 0 = off) — same resolver as
+    // strategy.ts / manager.ts guard. BUY size is in quote (USDT).
+    const windowLow = type !== ORDER_TYPES.BUY || resolveBuyWindowMode(manager?.config) !== 'closest';
+    const buyFloorUsdt = type === ORDER_TYPES.BUY ? resolveBuyFloorUsdt(manager?.config) : 0;
     const slotsOfType = (Array.from(manager.orders.values()) as any[])
         .filter(typeFilter)
         .filter(inRail)
-        .sort((a: any, b: any) => a.price - b.price);
-    const candidates = type === ORDER_TYPES.BUY
+        .sort((a: any, b: any) => (type === ORDER_TYPES.BUY && windowLow) || type !== ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
+    const candidates = type === ORDER_TYPES.BUY && windowLow
         ? slotsOfType.slice(0, count)
         : slotsOfType;
 
@@ -243,16 +245,15 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
             }
 
             if (slot.id && effectiveSize >= effectiveMin) {
-                // MIN_BUY_USDT floor for BUY activations: sub-floor slots are
-                // skipped in place (window is fixed to the rail bottom — no
-                // walk-up toward the boundary).
-                if (type === ORDER_TYPES.BUY) {
+                // Floor for BUY activations: sub-floor slots are skipped in
+                // place (window is fixed — no walk-up toward the boundary).
+                if (type === ORDER_TYPES.BUY && buyFloorUsdt > 0) {
                     // BUY size is in quote (USDT) — the size IS the notional.
                     const notional = Number(effectiveSize);
-                    if (notional < MIN_BUY_USDT) {
+                    if (notional < buyFloorUsdt) {
                         manager.logger?.log?.(
                             `[ACTIVATE] skip ${slot.id} @${Number(slot.price).toPrecision(4)} ` +
-                            `size=${notional.toFixed(3)} USDT < ${MIN_BUY_USDT}`,
+                            `size=${notional.toFixed(3)} USDT < ${buyFloorUsdt}`,
                             'info'
                         );
                         continue;

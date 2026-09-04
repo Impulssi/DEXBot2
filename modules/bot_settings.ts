@@ -84,6 +84,20 @@ function validateBotEntry(b: any, i: number, src: string): string | null {
         }
     }
 
+    // Buy-window behavior (optional; defaults apply when absent)
+    if ('buyFloorUSDT' in b && b.buyFloorUSDT !== null && b.buyFloorUSDT !== undefined) {
+        const v = Number(b.buyFloorUSDT);
+        if (!Number.isFinite(v) || v < 0) problems.push("'buyFloorUSDT' must be a non-negative number (quote currency, 0 = off)");
+    }
+    if ('buyDelayMinutes' in b && b.buyDelayMinutes !== null && b.buyDelayMinutes !== undefined) {
+        const v = Number(b.buyDelayMinutes);
+        if (!Number.isFinite(v) || v < 0 || v > 10080) problems.push("'buyDelayMinutes' must be a number 0-10080 (0 = off)");
+    }
+    if ('buyWindowMode' in b && b.buyWindowMode !== null && b.buyWindowMode !== undefined) {
+        const v = String(b.buyWindowMode).trim().toLowerCase();
+        if (v !== 'low' && v !== 'closest') problems.push("'buyWindowMode' must be 'low' or 'closest'");
+    }
+
     if ('botFunds' in b) {
         if (typeof b.botFunds !== 'object' || b.botFunds === null) problems.push("'botFunds' must be an object");
         else {

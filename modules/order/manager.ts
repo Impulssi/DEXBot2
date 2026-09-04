@@ -48,7 +48,9 @@ import {
     isExplicitZeroAllocation,
     floatToBlockchainInt,
     validateBoundaryCommit,
-    resolveGapSlots
+    resolveGapSlots,
+    resolveBuyFloorUsdt,
+    resolveBuyWindowMode
 } from './utils/math.js';
 import {
     validateOrder,
@@ -118,26 +120,26 @@ function stalePlacementDropReason(action: any, planBoundary: number): string | n
     return null;
 }
 
-// MIN_BUY_USDT: single chokepoint for every BUY placement path (strategy
+// Buy-floor guard: single chokepoint for every BUY placement path (strategy
 // target, startup reconcile, bootstrap activation). Any BUY CREATE/UPDATE
-// below this USDT value is dropped from the COW plan regardless of which
-// planner produced it. Mirrors the constant in strategy.ts.
-const MIN_BUY_USDT = 0.75;
+// below the configured floor (config buyFloorUSDT, default 1.0, 0 = off) is
+// dropped from the COW plan regardless of which planner produced it.
 
 /**
- * Drop BUY placements whose notional (size × price) is below MIN_BUY_USDT.
+ * Drop BUY placements whose notional is below the configured floor.
  * Returns a drop reason string, or null when the action may proceed.
  * SELL actions and non-placement actions are never dropped here.
  */
-function minBuySizeDropReason(action: any): string | null {
+function minBuySizeDropReason(action: any, buyFloorUsdt: number): string | null {
     if (!action || (action.type !== COW_ACTIONS.CREATE && action.type !== COW_ACTIONS.UPDATE)) return null;
     if (action?.order?.type !== ORDER_TYPES.BUY) return null;
+    if (!(buyFloorUsdt > 0)) return null;
     // BUY order size is denominated in the quote asset (USDT) — the size IS
     // the notional. Do NOT multiply by price.
     const size = Number(action?.order?.size || 0);
     if (!Number.isFinite(size) || size <= 0) return null;
-    if (size < MIN_BUY_USDT) {
-        return `BUY ${action.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${action.id}: notional ${size.toFixed(3)} USDT < ${MIN_BUY_USDT} USDT minimum`;
+    if (size < buyFloorUsdt) {
+        return `BUY ${action.type === COW_ACTIONS.UPDATE ? 'update' : 'create'} for slot ${action.id}: notional ${size.toFixed(3)} USDT < ${buyFloorUsdt} USDT minimum`;
     }
     return null;
 }
@@ -261,14 +263,16 @@ class COWRebalanceEngine {
             optimizedActions.push(...guarded);
         }
 
-        // MIN_BUY_USDT guard: drop dust-size BUY placements from ANY planner
+        // Buy-floor guard: drop dust-size BUY placements from ANY planner
         // (strategy target, startup reconcile, bootstrap activation) so the
-        // exchange never sees a buy below the floor. Runs unconditionally —
-        // unlike the boundary guard above, dust buys have no valid deferral.
+        // exchange never sees a buy below the floor (config buyFloorUSDT,
+        // default 1.0, 0 = off). Runs unconditionally — unlike the boundary
+        // guard above, dust buys have no valid deferral.
         {
+            const buyFloorUsdt = resolveBuyFloorUsdt(this.config);
             const before = optimizedActions.length;
             const guarded = optimizedActions.filter((a: any) => {
-                const dropReason = minBuySizeDropReason(a);
+                const dropReason = minBuySizeDropReason(a, buyFloorUsdt);
                 if (dropReason) {
                     this.logger?.log(`[COW] Dropping dust ${dropReason}`, 'warn');
                     return false;
@@ -277,7 +281,7 @@ class COWRebalanceEngine {
             });
             if (guarded.length < before) {
                 this.logger?.log(
-                    `[COW] MIN_BUY guard removed ${before - guarded.length} placement(s); ${guarded.length} action(s) remain`,
+                    `[COW] Buy-floor guard removed ${before - guarded.length} placement(s); ${guarded.length} action(s) remain`,
                     'warn'
                 );
             }
@@ -1612,22 +1616,24 @@ class OrderManager {
         // Reverse for placement order (highest first)
         validSells.sort((a: any, b: any) => b.price - a.price);
 
-        // Get FARTHEST virtual buys (lowest prices first = farthest below market).
-        // Mirrors strategy.ts keep-low window: the candidate set is limited to
-        // the BOTTOM buyCount slots — the MIN_BUY_USDT floor filters WITHIN
-        // that window and must never redirect selection to the heavier
-        // boundary-adjacent slots (that would buy near the market).
-        // Chain-order matching (sync adoption) is unaffected: it
-        // matches by price level, not by this selection.
-        const MIN_BUY_USDT = 0.75;
-        const buysFarthestFirst = this.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.VIRTUAL)
-            .sort((a: any, b: any) => a.price - b.price)
-            .slice(0, buyCount);
+        // Virtual BUY selection follows config buyWindowMode (default 'low'):
+        // 'low' limits candidates to the BOTTOM buyCount slots (mirrors the
+        // strategy keep-low window) and the floor filters WITHIN that window,
+        // never redirecting selection to the heavier boundary-adjacent slots
+        // (that would buy near the market). 'closest' restores upstream
+        // closest-to-market selection. Chain-order matching (sync adoption) is
+        // unaffected: it matches by price level, not by this selection.
+        const windowLow = resolveBuyWindowMode(this.config) !== 'closest';
+        const buyFloorUsdt = resolveBuyFloorUsdt(this.config);
+        const buysSorted = this.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.VIRTUAL)
+            .sort((a: any, b: any) => windowLow ? a.price - b.price : b.price - a.price);
+        const buysFarthestFirst = windowLow ? buysSorted.slice(0, buyCount) : buysSorted;
         const validBuys: any[] = [];
         for (const o of buysFarthestFirst) {
+            if (validBuys.length >= buyCount) break;
             if (floatToBlockchainInt(o.size, buyPrecision) < minBuySizeInt) continue;
             // BUY size is in quote (USDT) — the size IS the notional.
-            if (Number(o.size || 0) < MIN_BUY_USDT) continue;
+            if (buyFloorUsdt > 0 && Number(o.size || 0) < buyFloorUsdt) continue;
             validBuys.push(o);
         }
         // Reverse for placement order (lowest first)

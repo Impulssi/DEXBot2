@@ -620,6 +620,59 @@ function resolveConfigValueWithRegistry(value: any, chainTotal: any, account: an
 }
 
 /**
+ * Buy-window behavior defaults (keep-low ladder + minimum size + fill delay).
+ * Branch default preserves the protective behavior; each is overridable per
+ * bot via bots.json. A value of 0 disables that protection (upstream behavior
+ * for the floor/delay); missing/invalid values fall back to the defaults.
+ */
+const BUY_WINDOW_DEFAULTS = {
+    floorUsdt: 1.0,       // buyFloorUSDT: minimum BUY order size in quote currency
+    delayMinutes: 15,     // buyDelayMinutes: pause after a BUY fill before new buys
+    windowMode: 'low',    // buyWindowMode: 'low' (rail bottom) or 'closest' (market)
+};
+
+/**
+ * Resolve the minimum BUY order size (quote currency, e.g. USDT) from config.
+ * BUY slot sizes are already denominated in quote — compare directly, do NOT
+ * multiply by price.
+ *
+ * @param {any} config - Bot config (may carry buyFloorUSDT)
+ * @returns {number} Floor in quote units; 0 disables the floor
+ */
+function resolveBuyFloorUsdt(config: any): number {
+    const raw = config?.buyFloorUSDT;
+    if (raw === null || raw === undefined || raw === '') return BUY_WINDOW_DEFAULTS.floorUsdt;
+    const v = Number(raw);
+    if (Number.isFinite(v) && v >= 0) return v;
+    return BUY_WINDOW_DEFAULTS.floorUsdt;
+}
+
+/**
+ * Resolve the post-fill BUY delay in milliseconds from config.
+ *
+ * @param {any} config - Bot config (may carry buyDelayMinutes)
+ * @returns {number} Delay in ms; 0 disables the delay
+ */
+function resolveBuyDelayMs(config: any): number {
+    const raw = config?.buyDelayMinutes;
+    if (raw === null || raw === undefined || raw === '') return BUY_WINDOW_DEFAULTS.delayMinutes * 60 * 1000;
+    const v = Number(raw);
+    if (Number.isFinite(v) && v >= 0) return Math.round(v * 60 * 1000);
+    return BUY_WINDOW_DEFAULTS.delayMinutes * 60 * 1000;
+}
+
+/**
+ * Resolve the BUY window placement mode from config.
+ *
+ * @param {any} config - Bot config (may carry buyWindowMode)
+ * @returns {'low'|'closest'} 'low' = rail bottom (protective), 'closest' = market
+ */
+function resolveBuyWindowMode(config: any): string {
+    const v = String(config?.buyWindowMode || '').trim().toLowerCase();
+    return v === 'closest' ? 'closest' : BUY_WINDOW_DEFAULTS.windowMode;
+}
+
+/**
  * Check if account totals contain valid buy/sell balance data.
  * 
  * @param {Object} accountTotals - Account total balances object
@@ -1725,7 +1778,7 @@ function buildGenesisFromPriceLevels(startPrice: number, incrementPercent: numbe
     };
 }
 
-export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals, priceLevelsForGenesis, priceForSlot, slotIndexForPrice, slotIdForPrice, assertSlotPriceInvariant, priceSlotEqual, buildGenesisFromPriceLevels, hashPriceLevels }
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, BUY_WINDOW_DEFAULTS, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals, priceLevelsForGenesis, priceForSlot, slotIndexForPrice, slotIdForPrice, assertSlotPriceInvariant, priceSlotEqual, buildGenesisFromPriceLevels, hashPriceLevels }
 
 /**
  * Round a value to a given factor.

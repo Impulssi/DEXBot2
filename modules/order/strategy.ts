@@ -50,12 +50,8 @@
 
 import { ORDER_TYPES, ORDER_STATES } from '../constants.js';
 
-// BUY_DELAY_MS: after a BUY fill, keep new buys virtual for 15 min to avoid
-// rapid re-buying in chop. Sell side is immediate. Module-level constant so
-// both processFillsOnly (arming) and calculateTargetGrid (checking) agree.
-const BUY_DELAY_MS = 15 * 60 * 1000;
 import { calculateGapSlots } from './grid.js';
-import { isSlotInRail } from './utils/math.js';
+import { isSlotInRail, resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode } from './utils/math.js';
 import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal } from './utils/order.js';
 import { assignGridRoles } from './utils/order.js';
 import {
@@ -123,17 +119,21 @@ class StrategyEngine {
             const isPartial = filledOrder.isPartial === true;
             mgr.logger.log(`[STRATEGY] Processing fill: id=${filledOrder.id}, type=${filledOrder.type}, price=${filledOrder.price}, size=${filledOrder.size}, partial=${isPartial}`, 'debug');
 
-            // BUY_DELAY_MS bookkeeping: any BUY fill (full or delayed-rotation
-            // partial) arms the 15 min buy-side delay used by calculateTargetGrid.
+            // Buy-delay bookkeeping: any BUY fill (full or delayed-rotation
+            // partial) arms the buy-side delay (config buyDelayMinutes,
+            // default 15) used by calculateTargetGrid.
             // DEADLINE semantics: re-arm only when the previous window has fully
             // expired. A sliding re-arm lets live sub-floor dust orders (which
             // keep filling on every oscillation) postpone new buys forever.
             if (filledOrder.type === ORDER_TYPES.BUY) {
                 const mgrAny = mgr as any;
-                const prev = mgrAny._lastBuyFillTime || 0;
-                if (prev === 0 || (Date.now() - prev) >= BUY_DELAY_MS) {
-                    mgrAny._lastBuyFillTime = Date.now();
-                    mgr.logger.log(`[STRATEGY] Buy fill detected — buy-side updates paused ${BUY_DELAY_MS / 1000 |0}s`, 'info');
+                const delayMs = resolveBuyDelayMs(mgr?.config);
+                if (delayMs > 0) {
+                    const prev = mgrAny._lastBuyFillTime || 0;
+                    if (prev === 0 || (Date.now() - prev) >= delayMs) {
+                        mgrAny._lastBuyFillTime = Date.now();
+                        mgr.logger.log(`[STRATEGY] Buy fill detected — buy-side updates paused ${delayMs / 1000 |0}s`, 'info');
+                    }
                 }
             }
 
@@ -283,16 +283,18 @@ class StrategyEngine {
         const inBuyRail = (o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.BUY, o);
         const inSellRail = (o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.SELL, o);
 
-        // Buy window: KEEP LOW — do not crawl buys to the ceiling.
-        // Requested: after InitializeGrid 0.001196-0.001290, buys must stay
-        // there even when price goes to 2.412 and sells fill at the top.
-        // Pick the *farthest* (lowest) buys in the rail, not the closest to
-        // boundary. BUY side 15 min delay arms in processFillsOnly (any BUY
-        // fill) and holds new buys virtual here; sell side is immediate.
+        // Buy window placement (config buyWindowMode, default 'low'):
+        // - 'low': farthest (lowest) buys in the rail — static low ladder that
+        //   never crawls to the ceiling with the boundary.
+        // - 'closest': upstream behavior — closest to the boundary.
+        // Buy-side delay (config buyDelayMinutes, default 15, 0 = off) arms in
+        // processFillsOnly on any BUY fill and holds new buys virtual here;
+        // sell side is immediate.
+        const buyDelayMs = resolveBuyDelayMs(config);
         const lastBuyTime = (this.manager as any)._lastBuyFillTime || 0;
-        const buyDelayActive = lastBuyTime !== 0 && (Date.now() - lastBuyTime) < BUY_DELAY_MS;
+        const buyDelayActive = buyDelayMs > 0 && lastBuyTime !== 0 && (Date.now() - lastBuyTime) < buyDelayMs;
         if (buyDelayActive) {
-            this.manager.logger.log(`[STRATEGY] Buy delay active: ${((BUY_DELAY_MS - (Date.now() - lastBuyTime))/1000 |0)}s remaining, keeping buys virtual`, 'info');
+            this.manager.logger.log(`[STRATEGY] Buy delay active: ${((buyDelayMs - (Date.now() - lastBuyTime))/1000 |0)}s remaining, keeping buys virtual`, 'info');
         }
         // Sort Farthest-First for BUY windowing, then collapse duplicate price
         // levels before slicing so the active window keeps as many
@@ -300,9 +302,10 @@ class StrategyEngine {
         // guard as upstream's snapRail (duplicate levels after rotation
         // re-typing), but anchored at the RAIL BOTTOM so the ladder never
         // crawls to the boundary. SELL keeps upstream closest-first.
+        const windowLow = resolveBuyWindowMode(config) !== 'closest';
         const buyCandidates = allBuySlots
             .filter(inBuyRail)
-            .sort((a: any, b: any) => a.price - b.price);
+            .sort((a: any, b: any) => windowLow ? a.price - b.price : b.price - a.price);
         const sellCandidates = allSellSlots
             .filter(inSellRail)
             .sort((a: any, b: any) => a.price - b.price);
@@ -320,10 +323,11 @@ class StrategyEngine {
             return kept;
         };
 
-        // dir +1 for BUY = farthest-first (rail bottom); upstream used -1
-        // (closest-first). buySlotsRaw is the static low ladder; the 15 min
-        // deadline delay empties it while armed (sell side unaffected).
-        const buySlotsRaw = snapRail(buyCandidates, +1).slice(0, targetCountBuy);
+        // dir +1 for BUY in 'low' mode = farthest-first (rail bottom);
+        // 'closest' mode sorts descending via buyCandidates above. buySlotsRaw
+        // is the window; the deadline delay empties it while armed (sell side
+        // unaffected).
+        const buySlotsRaw = snapRail(buyCandidates, windowLow ? +1 : -1).slice(0, targetCountBuy);
         const buySlots = buyDelayActive ? [] : buySlotsRaw;
         const sellSlots = snapRail(sellCandidates, +1).slice(0, targetCountSell);
         
@@ -354,19 +358,20 @@ class StrategyEngine {
         const buySizeById = new Map(allBuySortedForSizing.map((slot: any, i: any) => [slot.id, fullBuySizes[i] || 0]));
         const sellSizeById = new Map(allSellSortedForSizing.map((slot: any, i: any) => [slot.id, fullSellSizes[i] || 0]));
 
-        // MIN_BUY_USDT: skip buys that would be <0.75 USDT (dust-like but larger than fee dust).
-        // Keeps remaining funds as free (virtualReservation not locked) instead of
-        // shrinking all orders to 0.45, 0.30, ... as fills eat the budget.
+        // Minimum BUY size (config buyFloorUSDT, default 1.0, 0 = off): skip
+        // buys below the floor. Keeps remaining funds as free
+        // (virtualReservation not locked) instead of shrinking all orders
+        // to 0.45, 0.30, ... as fills eat the budget.
         // NOTE: BUY slot sizes are already denominated in the quote asset
         // (USDT) — the size IS the notional, do NOT multiply by price.
-        const MIN_BUY_USDT = 0.75;
+        const buyFloorUsdt = resolveBuyFloorUsdt(config);
         const filteredBuySlots: any[] = [];
         buySlots.forEach((slot: any) => {
             const sz = buySizeById.get(slot.id) || 0;
-            if (sz >= MIN_BUY_USDT) {
+            if (!(buyFloorUsdt > 0) || sz >= buyFloorUsdt) {
                 filteredBuySlots.push(slot);
             } else if (sz > 0) {
-                this.manager.logger.log(`[STRATEGY] Skipping buy ${slot.id} @${Number(slot.price).toPrecision(4)} size ${sz.toFixed(3)} USDT < ${MIN_BUY_USDT} USDT minimum`, 'info');
+                this.manager.logger.log(`[STRATEGY] Skipping buy ${slot.id} @${Number(slot.price).toPrecision(4)} size ${sz.toFixed(3)} USDT < ${buyFloorUsdt} USDT minimum`, 'info');
             }
         });
         const buySlotsToUse = filteredBuySlots;
