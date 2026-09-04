@@ -666,7 +666,7 @@ export async function deriveLiquidityPoolTokenValue(BitShares: any, shareAssetRe
  * Called by initializeGrid() when manager.config.gridPrice uses an AMA keyword,
  * by performGridResync(), and by refreshDynamicWeightDistribution() before every
  * rebalance so new orders use live weights — not only on grid reset.
- * @param {string} botKey - Bot key (e.g. "iob-xrp-bts-0")
+ * @param {string} botKey - Bot key (e.g. "iob-aaa-bbb-0")
  * @returns {Object|null} Snapshot with center and optional dynamicWeights fields, or null if invalid
  */
 export function loadAmaCenterSnapshot(botKey: string): any {
@@ -709,7 +709,7 @@ export function loadAmaCenterSnapshot(botKey: string): any {
 /**
  * Load the AMA grid center price written by market_adapter for a bot.
  * This is the numeric accessor used by the order engine.
- * @param {string} botKey - Bot key (e.g. "iob-xrp-bts-0")
+ * @param {string} botKey - Bot key (e.g. "iob-aaa-bbb-0")
  * @returns {number|null} Grid center price in B/A format, or null if file absent/invalid
  */
 export function loadAmaCenterPrice(botKey: string): number | null {

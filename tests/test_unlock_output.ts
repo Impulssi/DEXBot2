@@ -30,7 +30,7 @@ console.log('Running unlock output tests');
 const controllerPath = require.resolve('../modules/launcher/credential_daemon');
 
 const FIXTURE_BOTS = [
-    { name: 'XRP-BTS', active: true },
+    { name: 'AAA-BBB', active: true },
     { name: 'HONEST-BTS', active: true },
 ];
 
@@ -278,19 +278,19 @@ async function runAllBotsTest() {
 
 async function runSingleBotTest() {
     resetState();
-    await runUnlockStart(['node', 'unlock', 'XRP-BTS']);
+    await runUnlockStart(['node', 'unlock', 'AAA-BBB']);
 
     assert.strictEqual(state.ensureCount, 1, 'launcher should unlock the credential daemon once');
     assert.strictEqual(state.stopCount, 0, 'background startup should hand daemon ownership to the child');
     assert.strictEqual(state.calls.length, 1, 'launcher should spawn the background child once');
     assert.deepStrictEqual(
         state.calls[0].args,
-        [UNLOCK_JS, 'XRP-BTS'],
+        [UNLOCK_JS, 'AAA-BBB'],
         'single-bot unlock should pass the bot name through to the background child'
     );
-    assert.ok(state.logs.includes('Starting bot: XRP-BTS'), 'launcher should print the selected bot name');
+    assert.ok(state.logs.includes('Starting bot: AAA-BBB'), 'launcher should print the selected bot name');
     assert.ok(logsIncludePlain('DEXBot2 started 1 bot in background'), 'launcher should print the single-bot count');
-    assert.ok(logsIncludePlain('- XRP-BTS'), 'launcher should list the launched bot');
+    assert.ok(logsIncludePlain('- AAA-BBB'), 'launcher should list the launched bot');
 }
 
 async function runForegroundTest() {

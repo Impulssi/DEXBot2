@@ -233,8 +233,8 @@ async function testWatchdogUsesDirectRuntimeWithoutPm2() {
     const self = {
         _marketAdapterWatchdogFingerprint: null,
         config: {
-            botKey: 'xrp-bts-0',
-            name: 'XRP-BTS',
+            botKey: 'aaa-bbb-0',
+            name: 'AAA-BBB',
             gridPrice: 'ama',
         },
         _loadBotsConfigSnapshot: async () => ({
@@ -250,7 +250,7 @@ async function testWatchdogUsesDirectRuntimeWithoutPm2() {
     const result = await syncMarketAdapterOnPeriodicConfigCheck(self, 'unit-test');
 
     assert.deepStrictEqual(syncCalls, [
-        { botId: 'xrp-bts-0', shouldRun: true },
+        { botId: 'aaa-bbb-0', shouldRun: true },
     ], 'direct runtime should be used when PM2 is not active');
     assert.strictEqual(result.mode, 'direct', 'watchdog should report direct mode');
     assert.strictEqual(result.started, true, 'direct runtime should start the adapter when needed');
@@ -330,14 +330,14 @@ async function testWatchdogUsesSnapshotEntryWhenRuntimeConfigIsStale() {
     const self = {
         _marketAdapterWatchdogFingerprint: null,
         config: {
-            botKey: 'xrp-bts-0',
-            name: 'XRP-BTS',
+            botKey: 'aaa-bbb-0',
+            name: 'AAA-BBB',
             gridPrice: 'ama',
         },
         _loadBotsConfigSnapshot: async () => ({
             exists: true,
             fingerprint: 'fingerprint-runtime-stale',
-            activeBots: [{ botKey: 'xrp-bts-0', name: 'XRP-BTS', active: true, gridPrice: 'book' }],
+            activeBots: [{ botKey: 'aaa-bbb-0', name: 'AAA-BBB', active: true, gridPrice: 'book' }],
             needsMarketAdapter: false,
         }),
         _log: () => {},
@@ -347,7 +347,7 @@ async function testWatchdogUsesSnapshotEntryWhenRuntimeConfigIsStale() {
     const result = await syncMarketAdapterOnPeriodicConfigCheck(self, 'unit-test');
 
     assert.deepStrictEqual(syncCalls, [
-        { botId: 'xrp-bts-0', shouldRun: false },
+        { botId: 'aaa-bbb-0', shouldRun: false },
     ], 'live snapshot entry should override stale runtime AMA config');
     assert.strictEqual(result.required, false, 'adapter should no longer be required after current bot leaves AMA pricing');
     assert.strictEqual(result.stopped, true, 'direct runtime should stop after current bot leaves AMA pricing');
@@ -379,8 +379,8 @@ async function testWatchdogReleasesDirectRuntimeWithoutPm2() {
     const self = {
         _marketAdapterWatchdogFingerprint: 'old-fingerprint',
         config: {
-            botKey: 'xrp-bts-0',
-            name: 'XRP-BTS',
+            botKey: 'aaa-bbb-0',
+            name: 'AAA-BBB',
         },
         _loadBotsConfigSnapshot: async () => ({
             exists: true,
@@ -395,7 +395,7 @@ async function testWatchdogReleasesDirectRuntimeWithoutPm2() {
     const result = await syncMarketAdapterOnPeriodicConfigCheck(self, 'unit-test');
 
     assert.deepStrictEqual(syncCalls, [
-        { botId: 'xrp-bts-0', shouldRun: false },
+        { botId: 'aaa-bbb-0', shouldRun: false },
     ], 'direct runtime should receive the no-AMA stop request');
     assert.strictEqual(result.mode, 'direct', 'watchdog should report direct mode');
     assert.strictEqual(result.stopped, true, 'direct runtime should stop the adapter when AMA is disabled');

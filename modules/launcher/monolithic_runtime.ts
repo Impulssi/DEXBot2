@@ -26,6 +26,7 @@ import {
 } from './bot_supervisor.js';
 import { buildRuntimeScriptArgs, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry.js';
 import { getErrorMessage } from '../utils/errors.js';
+import { isSameBotName } from '../utils/sanitize_key.js';
 
 const MONOLITHIC_PID_FILE = PATHS.PROFILES.MONOLITHIC_PID;
 const MONOLITHIC_BOT_PID_FILE = PATHS.PROFILES.MONOLITHIC_BOT_PID;
@@ -387,9 +388,8 @@ function getControlServiceNames(cmd: any, botNames: any) {
     if (cmd === 'restart-all' || cmd === 'delete' || cmd === 'shutdown') {
         serviceNames.push('credential daemon');
     }
-    const botNameSet = new Set(botNames);
     const affectedAmaBots = listConfiguredBots().some((bot: any) => (
-        bot.active && usesAmaGridPrice(bot) && botNameSet.has(bot.name)
+        bot.active && usesAmaGridPrice(bot) && (botNames as any[]).some((n: any) => isSameBotName(n, bot.name))
     ));
     if (affectedAmaBots) {
         serviceNames.push('market adapter');

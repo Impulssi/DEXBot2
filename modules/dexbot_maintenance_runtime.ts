@@ -29,6 +29,7 @@ import { BroadcastUncertainError } from './dexbot_credential_client.js';
 import * as configModule from './config.js';
 const { Config } = configModule;
 import { getErrorMessage } from './utils/errors.js';
+import { isSameBotName } from './utils/sanitize_key.js';
 import { usesAmaGridPrice } from './grid_price_source.js';
 function hasOpenOrdersSyncLoopMsSet(...args: any) { return require('./config').hasOpenOrdersSyncLoopMsSet(...args); }
 function getOpenOrdersSyncLoopMs(...args: any) { return require('./config').getOpenOrdersSyncLoopMs(...args); }
@@ -836,7 +837,7 @@ function performGridResync(bot: any, options: {
                 const content = storage.readFile(PROFILES_BOTS_FILE);
                 const allBotsConfig = parseJsonWithComments(content).bots || [];
                 const myName = self.config.name;
-                const updatedBot = allBotsConfig.find((b: any) => b.name === myName);
+                const updatedBot = allBotsConfig.find((b: any) => isSameBotName(b.name, myName));
 
                 if (updatedBot) {
                     self._log(`Reloaded configuration for bot '${myName}'`);

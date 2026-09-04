@@ -46,7 +46,7 @@ function createThrowingGetStatusSupervisor() {
 
 async function runIsolatedPollRejectStage() {
     fs.writeFileSync(path.join(TEMP_PROFILE_ROOT, 'bots.json'), JSON.stringify({
-        bots: [{ name: 'XRP-BTS', active: true }],
+        bots: [{ name: 'AAA-BBB', active: true }],
     }));
 
     const controller = makeControllerStub();

@@ -70,6 +70,7 @@ const credentialPolicy = require('./modules/credential_policy');
 const { PATHS } = require('./modules/paths');
 const { Config } = require('./modules/config');
 const { getErrorMessage } = require('./modules/utils/errors');
+const { isSameBotName } = require('./modules/utils/sanitize_key');
 
 // Setup graceful shutdown handlers
 setupGracefulShutdown();
@@ -176,7 +177,7 @@ async function getSigningSecretForAccount(accountName: string) {
           const allBotsConfig = resolveRawBotEntries(allBotsConfigData);
          
          // Find the current bot's index in the unfiltered bots.json array
-         const botIndex = allBotsConfig.findIndex((b: any) => b.name === botName);
+          const botIndex = allBotsConfig.findIndex((b: any) => isSameBotName(b.name, botName));
          if (botIndex === -1) {
              throw new Error(`Bot "${botName}" not found in ${PROFILES_BOTS_FILE}`);
          }

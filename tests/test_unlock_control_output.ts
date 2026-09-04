@@ -21,7 +21,7 @@ console.log('Running unlock control output tests');
 // construction at module load.
 
 const FIXTURE_BOTS = [
-    { name: 'XRP-BTS', active: true },
+    { name: 'AAA-BBB', active: true },
     { name: 'HONEST-BTS', active: true },
 ];
 

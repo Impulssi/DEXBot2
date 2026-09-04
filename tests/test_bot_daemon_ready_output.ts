@@ -47,7 +47,7 @@ function installStubs() {
             config: {
                 bots: [
                     {
-                        name: 'XRP-BTS',
+                        name: 'AAA-BBB',
                         active: true,
                         assetA: 'XRP',
                         assetB: 'BTS',
@@ -103,10 +103,10 @@ function installStubs() {
         waitForConnected: async () => {},
     });
 
-    process.argv = ['node', require.resolve('../bot.js'), 'XRP-BTS'];
+    process.argv = ['node', require.resolve('../bot.js'), 'AAA-BBB'];
     const { Config } = require('../modules/config');
-    Config.ARGS = ['XRP-BTS'];
-    Config.BOT_NAME = 'XRP-BTS';
+    Config.ARGS = ['AAA-BBB'];
+    Config.BOT_NAME = 'AAA-BBB';
 
     console.log = (...args) => {
         const line = args.map((part) => String(part)).join(' ').trim();

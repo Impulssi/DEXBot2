@@ -3,7 +3,7 @@
  *
  * Regression tests for the SIZE-CONSISTENCY TIEBREAK (sync_engine pass 1).
  *
- * Incident (XRP-BTS2 2026-08-31T22:59Z): a trigger reset rebuilt the grid over
+ * Incident (AAA-BBB2 2026-08-31T22:59Z): a trigger reset rebuilt the grid over
  * a live order (0-order phantom read). The rebuild's duplicate-price order
  * (…047, full size) raced the fill booking, the slot's orderId was
  * mis-assigned to it, and the REAL order (…029, post-fill size 0.5626) was

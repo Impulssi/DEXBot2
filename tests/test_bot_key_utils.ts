@@ -42,8 +42,8 @@ try {
     });
 
     check('sanitizeKey: lowercases and kebab-cases', () => {
-        assert.strictEqual(sanitizeKey('XRP-BTS'), 'xrp-bts');
-        assert.strictEqual(sanitizeKey('XRP BTS'), 'xrp-bts');
+        assert.strictEqual(sanitizeKey('AAA-BBB'), 'aaa-bbb');
+        assert.strictEqual(sanitizeKey('AAA BBB'), 'aaa-bbb');
         assert.strictEqual(sanitizeKey('  My Bot!!  '), 'my-bot');
     });
 
@@ -53,13 +53,13 @@ try {
     });
 
     check('computeBotKey: named bot uses sanitized name only', () => {
-        const key = computeBotKey({ name: 'XRP-BTS', id: '1.2.123' }, 0);
-        assert.strictEqual(key, 'xrp-bts');
+        const key = computeBotKey({ name: 'AAA-BBB', id: '1.2.123' }, 0);
+        assert.strictEqual(key, 'aaa-bbb');
     });
 
     check('computeBotKey: named bot ignores index', () => {
-        const key = computeBotKey({ name: 'XRP-BTS' }, 7);
-        assert.strictEqual(key, 'xrp-bts');
+        const key = computeBotKey({ name: 'AAA-BBB' }, 7);
+        assert.strictEqual(key, 'aaa-bbb');
     });
 
     check('computeBotKey: missing name uses bot-N-index fallback, ignores id', () => {
@@ -71,8 +71,8 @@ try {
 
     check('candleFileForBot: path format', () => {
         const customDir = path.join(tmpRoot, 'custom-data');
-        const p = candleFileForBot('xrp-bts-0', '1h', customDir);
-        assert.strictEqual(p, path.join(customDir, 'market_adapter_xrp-bts-0_1h.json'));
+        const p = candleFileForBot('aaa-bbb-0', '1h', customDir);
+        assert.strictEqual(p, path.join(customDir, 'market_adapter_aaa-bbb-0_1h.json'));
     });
 
     check('candleFileForBot: defaults to PATHS.MARKET_ADAPTER.DATA_DIR', () => {
@@ -84,7 +84,7 @@ try {
     const botsFile = path.join(tmpRoot, 'bots.json');
     fs.writeFileSync(botsFile, JSON.stringify({
         bots: [
-            { name: 'XRP-BTS', id: '1.2.100', assetA: 'XRP', assetB: 'BTS' },
+            { name: 'AAA-BBB', id: '1.2.100', assetA: 'XRP', assetB: 'BTS' },
             { name: 'HONEST-BTC', assetA: 'HONEST.BTC', assetB: 'BTC' },
         ],
     }));
@@ -96,7 +96,7 @@ try {
     check('loadBotSettings: valid file returns parsed object', () => {
         const loaded = loadBotSettings(botsFile);
         assert.ok(loaded && Array.isArray(loaded.bots) && loaded.bots.length === 2);
-        assert.strictEqual(loaded.bots[0].name, 'XRP-BTS');
+        assert.strictEqual(loaded.bots[0].name, 'AAA-BBB');
     });
 
     check('loadBotSettings: null path returns null', () => {
@@ -104,8 +104,8 @@ try {
     });
 
     check('resolveBotKey: name hit returns canonical key', () => {
-        const key = resolveBotKey('XRP-BTS', botsFile);
-        assert.strictEqual(key, 'xrp-bts');
+        const key = resolveBotKey('AAA-BBB', botsFile);
+        assert.strictEqual(key, 'aaa-bbb');
     });
 
     check('resolveBotKey: name hit (no id) uses sanitized name', () => {
@@ -122,11 +122,11 @@ try {
         assert.strictEqual(resolveBotKey('', botsFile), null);
     });
 
-    const directFile = path.join(tmpDataDir, 'market_adapter_xrp-bts_1h.json');
+    const directFile = path.join(tmpDataDir, 'market_adapter_aaa-bbb_1h.json');
     fs.writeFileSync(directFile, '{}');
 
     check('resolveCandleFile: direct key hit returns direct path', () => {
-        const p = resolveCandleFile('xrp-bts', '1h', tmpDataDir, botsFile);
+        const p = resolveCandleFile('aaa-bbb', '1h', tmpDataDir, botsFile);
         assert.strictEqual(p, directFile);
     });
 
@@ -145,9 +145,9 @@ try {
     check('resolveCandleFile: direct hit preferred over name resolution', () => {
         const dataDir2 = path.join(tmpRoot, 'data2');
         fs.mkdirSync(dataDir2, { recursive: true });
-        const directOnly = path.join(dataDir2, 'market_adapter_xrp-bts_1h.json');
+        const directOnly = path.join(dataDir2, 'market_adapter_aaa-bbb_1h.json');
         fs.writeFileSync(directOnly, '{}');
-        const p = resolveCandleFile('xrp-bts', '1h', dataDir2, botsFile);
+        const p = resolveCandleFile('aaa-bbb', '1h', dataDir2, botsFile);
         assert.strictEqual(p, directOnly);
     });
 

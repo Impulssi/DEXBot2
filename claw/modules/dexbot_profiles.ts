@@ -10,6 +10,7 @@ import { acquireFileLock } from '../../market_adapter/utils/file_lock.js';
 import { assertNoDuplicateBotKeys } from '../../modules/bot_settings.js';
 import { clone } from './utils.js';
 import { createBotKey, sanitizeKey } from '../../modules/account_orders.js';
+import { isSameBotName } from '../../modules/utils/sanitize_key.js';
 const storage = getStorage();
 
 import type { BotSettings, ProfileOptions, ClawProfileBundle } from './types.js';
@@ -815,10 +816,10 @@ function matchBotIdentifier(bot: any, identifier: any) {
   }
 
   if (typeof identifier === 'object') {
-    if (identifier.botKey && bot.botKey === identifier.botKey) {
+    if (identifier.botKey && (bot.botKey === identifier.botKey || isSameBotName(bot.botKey, identifier.botKey))) {
       return true;
     }
-    if (identifier.name && bot.name === identifier.name) {
+    if (identifier.name && isSameBotName(bot.name, identifier.name)) {
       return true;
     }
     if (identifier.assetA && identifier.assetB && bot.assetA === identifier.assetA && bot.assetB === identifier.assetB) {
@@ -839,7 +840,7 @@ function matchBotIdentifier(bot: any, identifier: any) {
     return false;
   }
 
-  if (bot.botKey === value || bot.name === value) {
+  if (bot.botKey === value || isSameBotName(bot.botKey, value) || isSameBotName(bot.name, value)) {
     return true;
   }
 

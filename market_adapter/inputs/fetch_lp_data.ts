@@ -39,6 +39,7 @@ import { writeJsonAtomic } from '../utils/atomic_write.js';
 import { PATHS } from '../../modules/paths.js';
 import * as bitsharesClient from '../../modules/bitshares_client.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
+import { isSameBotName } from '../../modules/utils/sanitize_key.js';
 import { pathToFileURL } from 'node:url';
 
 const storage = getStorage();
@@ -581,7 +582,7 @@ function parseBotsConfig(raw: any, sourceLabel: any = BOTS_JSON) {
  */
 function selectBot(bots: any, botName: any) {
     if (botName) {
-        const bot = bots.find((b: any) => b.name === botName);
+        const bot = bots.find((b: any) => isSameBotName(b.name, botName));
         if (!bot) throw new Error(`Bot "${botName}" not found in bots.json`);
         return bot;
     }

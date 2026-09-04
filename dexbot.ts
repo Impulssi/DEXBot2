@@ -158,6 +158,7 @@ const { PATHS, getHomeProfilesDir, getRecalculateTriggerFile } = require('./modu
 const credentialPolicy = require('./modules/credential_policy');
 const { Config } = require('./modules/config');
 const { getErrorMessage } = require('./modules/utils/errors');
+const { isSameBotName } = require('./modules/utils/sanitize_key');
 
 // Setup graceful shutdown handlers
 
@@ -448,7 +449,7 @@ function scheduleBotStartRetry(entry: any, { forceDryRun = false, reason = '' }:
         try {
             const { config } = loadSettingsFile(PROFILES_BOTS_FILE);
             const entries = resolveRawBotEntries(config);
-            const match = entries.find((b: any) => b.name === botName);
+            const match = entries.find((b: any) => isSameBotName(b.name, botName));
             if (!match || match.active === false) {
                 console.log(`Auto-restart: bot '${botName}' is no longer active in ${path.basename(PROFILES_BOTS_FILE)}; giving up.`);
                 clearBotStartRetry(botName);
@@ -729,7 +730,7 @@ async function startBotByName(botName: string | null | undefined, { dryRun = fal
         console.error(startupError('No bot definitions exist in the tracked settings.'));
         process.exit(1);
     }
-    const match = entries.find((b: any) => b.name === botName);
+    const match = entries.find((b: any) => isSameBotName(b.name, botName));
     if (!match) {
         console.error(startupError(`Could not find any bot named '${botName}' in the tracked settings.`));
         process.exit(1);
@@ -775,7 +776,7 @@ async function setBotActiveState(botName: string | null | undefined, active: boo
         console.log(`Marked all bots ${inWord} in ${path.basename(filePath)}.`);
         return;
     }
-    const match = entries.find((b: any) => b.name === botName);
+    const match = entries.find((b: any) => isSameBotName(b.name, botName));
     if (!match) {
         console.error(startupError(`Could not find any bot named '${botName}' to ${action}.`));
         process.exit(1);
@@ -810,7 +811,7 @@ async function resetBotByName(botName: string | null | undefined) {
     const entries = normalizeBotEntries(resolveRawBotEntries(config));
 
     // Filter targets
-    const targets = botName ? entries.filter((b: any) => b.name === botName) : entries.filter((b: any) => b.active);
+    const targets = botName ? entries.filter((b: any) => isSameBotName(b.name, botName)) : entries.filter((b: any) => b.active);
     if (botName && targets.length === 0) {
         console.error(startupError(`Could not find any bot named '${botName}' to reset.`));
         process.exit(1);
@@ -849,7 +850,7 @@ async function exportBotTrades(botName: string | undefined) {
 
         // Load bots configuration
         const { config: botsData } = loadSettingsFile(PROFILES_BOTS_FILE);
-        const bot = resolveRawBotEntries(botsData).find((b: any) => b.name === botName);
+        const bot = resolveRawBotEntries(botsData).find((b: any) => isSameBotName(b.name, botName));
 
         if (!bot) {
             console.error(startupError(`Bot '${botName}' not found in ${PROFILES_BOTS_FILE}`));
@@ -973,7 +974,7 @@ async function handleCLICommands() {
         case 'pm2': {
             const { spawnSync } = require('child_process') as any as any;
             // Forward the remaining CLI args to pm2.js so subcommands work
-            // (`dexbot pm2 stop XRP-BTS`, `dexbot pm2 restart all`, `dexbot pm2
+            // (`dexbot pm2 stop AAA-BBB`, `dexbot pm2 restart all`, `dexbot pm2
             // help`...). Previously the subcommand was silently dropped and the
             // full-setup path ran, so `dexbot pm2 start X` started ALL bots and
             // `dexbot pm2 stop X` no-oped into a full setup.

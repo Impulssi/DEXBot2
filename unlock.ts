@@ -65,6 +65,7 @@ import { createMarketAdapterWatchdog } from './modules/launcher/market_adapter_w
 import { isLikelyMarketAdapterProcess } from './modules/launcher/market_adapter_runtime.js';
 import { Config } from './modules/config.js';
 import { getErrorMessage } from './modules/utils/errors.js';
+import { isSameBotName } from './modules/utils/sanitize_key.js';
 import { withTimeout } from './modules/order/utils/timeout.js';
 setUmask(0o077);
 
@@ -210,7 +211,7 @@ function waitForStableChildStartup(child: any, { label = 'child process', timeou
 function resolveBotEntryForName(botName: string) {
     const { config } = loadSettingsFile(BOTS_FILE);
     const raw = resolveRawBotEntries(config);
-    const match = raw.find((b: any) => b && b.name === botName);
+    const match = raw.find((b: any) => b && isSameBotName(b.name, botName));
     if (!match) return null;
     const entryCopy = JSON.parse(JSON.stringify(match));
     entryCopy.active = true;

@@ -56,7 +56,7 @@ function testResolveBotCfgWiresMissingPairAndBotOverrides() {
                     },
                 },
                 botOverrides: {
-                    'XRP-BTS': {
+                    'AAA-BBB': {
                         maxSlopeOffset: 0.44,
                         dispScaleMinPct: 0.35,
                         hurstZoneBand: 0.09,
@@ -78,7 +78,7 @@ function testResolveBotCfgWiresMissingPairAndBotOverrides() {
     const { DEFAULTS, resolveBotCfg } = require('../market_adapter/market_adapter');
 
     const bot = {
-        name: 'XRP-BTS',
+        name: 'AAA-BBB',
         assetA: 'IOB.XRP',
         assetB: 'BTS',
         assetAId: '1.3.1',
@@ -183,7 +183,7 @@ function testResolveBotCfgPassesThroughUnmarkedAmaSlopePercents() {
     const { DEFAULTS, resolveBotCfg } = require('../market_adapter/market_adapter');
 
     const bot = {
-        name: 'XRP-BTS',
+        name: 'AAA-BBB',
         assetA: 'IOB.XRP',
         assetB: 'BTS',
         assetAId: '1.3.1',
@@ -222,7 +222,7 @@ function testResolveBotCfgKeepsMarkedPerBarAmaSlopePercents() {
                     amaSlopeDeltaThresholdPercent: 0.0017,
                 },
                 botOverrides: {
-                    'XRP-BTS': {
+                    'AAA-BBB': {
                         amaSlopeDeltaThresholdPercent: 0.0011,
                     },
                 },
@@ -234,7 +234,7 @@ function testResolveBotCfgKeepsMarkedPerBarAmaSlopePercents() {
     const { DEFAULTS, resolveBotCfg } = require('../market_adapter/market_adapter');
 
     const bot = {
-        name: 'XRP-BTS',
+        name: 'AAA-BBB',
         assetA: 'IOB.XRP',
         assetB: 'BTS',
         assetAId: '1.3.1',
@@ -283,7 +283,7 @@ function testResolveBotCfgSanitizesAtrPeriodAndVolatilityClampOverrides() {
                     volatilityThreshold: -1,
                 },
                 botOverrides: {
-                    'XRP-BTS': {
+                    'AAA-BBB': {
                         atrPeriod: 14.5,
                         maxVolatilityOffset: 0,
                         volatilityThreshold: Number.NaN,
@@ -298,7 +298,7 @@ function testResolveBotCfgSanitizesAtrPeriodAndVolatilityClampOverrides() {
     const { MARKET_ADAPTER } = require('../modules/constants');
 
     const bot = {
-        name: 'XRP-BTS',
+        name: 'AAA-BBB',
         assetA: 'IOB.XRP',
         assetB: 'BTS',
         assetAId: '1.3.1',
@@ -348,7 +348,7 @@ function testResolveBotCfgDoesNotLeakNestedTopLevelOverridesAcrossBots() {
     const globalCfg = { ...DEFAULTS };
 
     const matched = resolveBotCfg({
-        name: 'XRP-BTS',
+        name: 'AAA-BBB',
         assetA: 'IOB.XRP',
         assetB: 'BTS',
         assetAId: '1.3.1',
@@ -419,7 +419,7 @@ function testResolveBotCfgPrefersExactPairOverFlippedFallback() {
     const { DEFAULTS, resolveBotCfg } = require('../market_adapter/market_adapter');
 
     const bot = {
-        name: 'XRP-BTS',
+        name: 'AAA-BBB',
         assetA: 'IOB.XRP',
         assetB: 'BTS',
         assetAId: '1.3.1',
@@ -439,7 +439,7 @@ function testResolveBotCfgMergesPartialKalmanOverride() {
                 assetBSymbol: 'BTS',
                 marketAdapterSettings: {},
                 botOverrides: {
-                    'XRP-BTS': {
+                    'AAA-BBB': {
                         kalman: { rNoise: 0.8 },
                     },
                 },
@@ -451,7 +451,7 @@ function testResolveBotCfgMergesPartialKalmanOverride() {
     const { resolveBotCfg } = require('../market_adapter/market_adapter');
 
     const bot = {
-        name: 'XRP-BTS',
+        name: 'AAA-BBB',
         assetA: 'IOB.XRP',
         assetB: 'BTS',
         assetAId: '1.3.1',
