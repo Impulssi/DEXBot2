@@ -1100,8 +1100,13 @@ class DEXBot {
             'info'
         );
 
-        // Track last filled prices for BUY-above-last-buy guard (re-introduced after anchor revert)
-        try { (this.manager as any)?.recordLastFilledPrices?.(fills); } catch {}
+        // NOTE: the LAST-FILL guard pivot is recorded per chunk inside the loop
+        // below (not once per cycle): a multi-fill cycle broadcasts chunks
+        // serially over tens of seconds, and each chunk's guard pivot must
+        // include every fill ingested so far — not just the fills known at
+        // cycle start. (Fills detected mid-cycle are additionally covered by
+        // the broadcast-time refreshLastFillPivotFromQueue in
+        // dexbot_cow_runtime.)
 
         if (typeof this.manager?.pauseFundRecalc === 'function') {
             this.manager.pauseFundRecalc();
@@ -1120,6 +1125,12 @@ class DEXBot {
                 const batchEnd = Math.min(i + currentBatchSize, totalFills);
                 const fillBatch = fills.slice(i, batchEnd);
                 i = batchEnd;
+
+                // Refresh the LAST-FILL guard pivot for this chunk's broadcast:
+                // recordLastFilledPrices walks the batch in order, so the pivot
+                // always reflects the latest ingested fill before planning and
+                // broadcasting this chunk's rotation/create ops.
+                try { (this.manager as any)?.recordLastFilledPrices?.(fillBatch); } catch {}
 
                 const batchIds = fillBatch.map((f: any) => f.id).join(', ');
                 const label = `${contextLabel} [${batchIds}]`;

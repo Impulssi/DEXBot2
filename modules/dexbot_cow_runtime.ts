@@ -1622,7 +1622,8 @@ function validateOrderSizeForExecution(bot: any, size: any, type: any, orderLike
  * LAST-FILL-GUARD helper — pivot ± halfIncrement (replaces price-tolerance).
  *  last fill @x with increment i: BUY < x*(1 - i/2/100), SELL > x*(1 + i/2/100)
  *  e.g. x=1000, i=0.5% => BUY < 997.5, SELL > 1002.5
- * Cold (pivot null or lastType null) => disabled. Spread correction bypasses via cowResult.origin === 'spread-correction'.
+ * Cold (pivot null or lastType null) => disabled. Spread-correction CREATES
+ * bypass per-action (see broadcast sites); rotations never bypass.
  * @param {number} price - Target order price
  * @param {number} size - Order size (unused, kept for compat)
  * @param {string} type - ORDER_TYPES.BUY/SELL
@@ -1652,6 +1653,115 @@ function isLastFillGuardBlocked(price: any, _size: any, type: any, lastPrice: an
 }
 
 /**
+ * Refresh the LAST-FILL guard pivot from fills that arrived while the current
+ * batch was being planned or broadcast but have not been ingested yet.
+ *
+ * The pivot (_lastFilledPrice) is recorded per fill-processing batch, but a
+ * multi-chunk COW broadcast spans tens of seconds — fills detected mid-cycle
+ * sit in _incomingFillQueue until the cycle ends, so ops built for later
+ * chunks would be checked against a stale pivot (production incident: a chunk
+ * planned with a pre-crash pivot placed asks 0.6% below the true latest fill
+ * that was already queued). Peek-only: never drains the queue, the owning
+ * fill cycle still processes every entry. Best-effort: returns false when no
+ * queued fill yields a usable side + price.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @returns {boolean} True when the pivot was refreshed from queued fills
+ */
+function refreshLastFillPivotFromQueue(bot: any): boolean {
+    try {
+        const queue = (bot as any)?._incomingFillQueue;
+        if (!Array.isArray(queue) || queue.length === 0) return false;
+        const mgr = (bot as any)?.manager;
+        if (!mgr || !mgr.orders) return false;
+        const assets = mgr.assets;
+        const findSlotByOrderId = (orderId: any) => {
+            if (!orderId) return null;
+            try {
+                for (const o of mgr.orders.values()) {
+                    if ((o as any)?.orderId === orderId) return o as any;
+                }
+            } catch { /* ignore iteration errors */ }
+            return null;
+        };
+        let latest: { price: number; type: string } | null = null;
+        for (const fill of queue) {
+            const fillOp = (fill as any)?.op?.[1] || fill;
+            const orderId = fillOp?.order_id || (fill as any)?.orderId;
+            let type: any = null;
+            let price: number | null = null;
+            // Prefer the grid slot: a limit fill executes at (or better than)
+            // its slot price, which is exactly the guard's price convention.
+            const slot = findSlotByOrderId(orderId);
+            if (slot && (slot.type === ORDER_TYPES.BUY || slot.type === ORDER_TYPES.SELL)) {
+                type = slot.type;
+                const slotPrice = Number(slot.price);
+                if (Number.isFinite(slotPrice) && slotPrice > 0) price = slotPrice;
+            }
+            // Fall back to fill economics (B/A convention, mirroring
+            // _computeFillContext's pays-asset side resolution, including
+            // SPREAD slots carrying on-chain orders).
+            if ((type == null || price == null) && fillOp?.pays && fillOp?.receives && assets?.assetA && assets?.assetB) {
+                try {
+                    const paysId = fillOp.pays.asset_id;
+                    const paysAmt = Number(fillOp.pays.amount);
+                    const recvAmt = Number(fillOp.receives.amount);
+                    if (Number.isFinite(paysAmt) && paysAmt > 0 && Number.isFinite(recvAmt) && recvAmt > 0) {
+                        const paysFloat = (base: number, precision: number) => base / Math.pow(10, precision);
+                        if (paysId === assets.assetA.id) {
+                            type = ORDER_TYPES.SELL;
+                            price = paysFloat(recvAmt, assets.assetB.precision) / paysFloat(paysAmt, assets.assetA.precision);
+                        } else if (paysId === assets.assetB.id) {
+                            type = ORDER_TYPES.BUY;
+                            price = paysFloat(paysAmt, assets.assetB.precision) / paysFloat(recvAmt, assets.assetA.precision);
+                        }
+                    }
+                } catch { /* best-effort */ }
+            }
+            if ((type === ORDER_TYPES.BUY || type === ORDER_TYPES.SELL)
+                && Number.isFinite(price as number) && (price as number) > 0) {
+                latest = { price: price as number, type };
+            }
+        }
+        if (!latest) return false;
+        mgr._lastFilledPrice = (latest as { price: number; type: string }).price;
+        mgr._lastFilledType = (latest as { price: number; type: string }).type;
+        if ((latest as { price: number; type: string }).type === ORDER_TYPES.BUY) {
+            mgr._lastFilledBuyPrice = (latest as { price: number; type: string }).price;
+        } else {
+            mgr._lastFilledSellPrice = (latest as { price: number; type: string }).price;
+        }
+        try {
+            mgr.logger?.log?.(
+                `[LAST-FILL-GUARD] Pivot refreshed from ${queue.length} pending queued fill(s): ` +
+                `${(latest as { price: number; type: string }).type} @${Format.formatPrice6((latest as { price: number; type: string }).price)}`,
+                'debug'
+            );
+        } catch { /* ignore logging errors */ }
+        return true;
+    } catch { return false; }
+}
+
+/**
+ * Resolve the grid increment percent for the LAST-FILL guard in one place so
+ * every check site and the batch summary use (and print) the same value.
+ * Falls back to the default 0.5 when unset/invalid.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @returns {number} Positive increment percent
+ */
+function resolveLastFillGuardIncrement(bot: any): number {
+    const raw = Number(
+        (bot as any)?.manager?.config?.incrementPercent
+        ?? (bot as any)?.config?.incrementPercent
+        ?? (constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent
+        ?? 0.5
+    );
+    if (Number.isFinite(raw) && raw > 0) return raw;
+    return Number((constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent) > 0
+        ? Number((constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent)
+        : 0.5;
+}
+
+/**
  * Build COW actions array from a simple plan object.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object|Array} plan
@@ -1668,6 +1778,13 @@ function buildActionsFromPlan(_bot: any, plan: any) {
         ordersToUpdate = [],
         ordersToCancel = []
     } = normalizedPlan;
+
+    // Per-action origin: guard bypasses are scoped per action (not per batch),
+    // so a future rotation entry merged into a correction plan cannot silently
+    // inherit the spread-correction bypass. Actions built outside this helper
+    // carry no origin and default to guarded (safe default).
+    const planOrigin = (normalizedPlan as any)?.origin;
+    const withOrigin = (action: any) => (planOrigin ? { ...action, origin: planOrigin } : action);
 
     const actions: any[] = [];
 
@@ -1692,7 +1809,7 @@ function buildActionsFromPlan(_bot: any, plan: any) {
 
         if (!id || !orderId || !newGridId || !orderType || !Number.isFinite(newPrice) || !(newSize > 0)) continue;
 
-        actions.push({
+        actions.push(withOrigin({
             type: COW_ACTIONS.UPDATE,
             id,
             orderId,
@@ -1705,7 +1822,7 @@ function buildActionsFromPlan(_bot: any, plan: any) {
                 price: newPrice,
                 size: newSize
             }
-        });
+        }));
     }
 
     for (const o of ordersToUpdate) {
@@ -1719,7 +1836,7 @@ function buildActionsFromPlan(_bot: any, plan: any) {
 
         if (!id || !orderId) continue;
 
-        actions.push({
+        actions.push(withOrigin({
             type: COW_ACTIONS.UPDATE,
             id,
             orderId,
@@ -1731,12 +1848,12 @@ function buildActionsFromPlan(_bot: any, plan: any) {
                 type: orderType,
                 size: newSize
             }
-        });
+        }));
     }
 
     for (const o of ordersToPlace) {
         if (!o?.id) continue;
-        actions.push({ type: COW_ACTIONS.CREATE, id: o.id, order: o });
+        actions.push(withOrigin({ type: COW_ACTIONS.CREATE, id: o.id, order: o }));
     }
 
     return actions;
@@ -2674,6 +2791,14 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     const opContexts: any[] = [];
     const skippedUpdateSlotIds = new Set();
     let skippedUpdateCount = 0;
+    // Per-batch LAST-FILL-GUARD disposition counters. Per-action pass lines
+    // would spam big batches, so the guard emits one batch summary instead
+    // (see the summary after the action loop below).
+    const lastFillGuardStats = { checked: 0, passed: 0, skipped: 0, bypassed: 0 };
+    // Whether any guard check in this batch refreshed the pivot from
+    // still-queued fills — reported in the batch summary so a pivot change
+    // that altered a guard decision is visible at info, not just debug.
+    let lastFillGuardPivotRefreshed = false;
     // Slots whose size-update op was broadcast with a post-fill-clamped
     // target: the working grid still holds the planned (larger) size, so the
     // slots are re-synced from master before commit to keep the committed
@@ -2822,14 +2947,23 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     }
 
                     // LAST-FILL PRICE GUARD: pivot ± halfIncrement (BUY < pivot*(1-half), SELL > pivot*(1+half)).
-                    // Spread correction bypasses so gap repair can close. Cold (null) => disabled.
+                    // Bypass is per-action: only spread-correction CREATES skip so gap repair can close.
+                    // The batch-level origin is honored only for actions without their own origin stamp
+                    // (back-compat for plans that bypass buildActionsFromPlan). Cold (null) => disabled.
                     try {
-                        if ((cowResult as any)?.origin !== 'spread-correction') {
+                        const actionOrigin = (action as any)?.origin;
+                        const batchOrigin = (cowResult as any)?.origin;
+                        const isCorrectionCreate = actionOrigin === 'spread-correction'
+                            || (actionOrigin == null && batchOrigin === 'spread-correction');
+                        if (!isCorrectionCreate) {
+                            try { if (refreshLastFillPivotFromQueue(bot)) lastFillGuardPivotRefreshed = true; } catch { /* best-effort */ }
                             const lastPrice = (bot.manager as any)?._lastFilledPrice;
                             const lastType = (bot.manager as any)?._lastFilledType;
-                            const inc = Number(bot.manager?.config?.incrementPercent ?? (bot as any)?.config?.incrementPercent ?? (constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
+                            const inc = resolveLastFillGuardIncrement(bot);
                             const check = isLastFillGuardBlocked(createPrice, order.size, order.type, lastPrice, lastType, inc);
+                            lastFillGuardStats.checked++;
                             if (check.blocked) {
+                                lastFillGuardStats.skipped++;
                                 const dir = order.type === ORDER_TYPES.BUY ? 'above' : 'below';
                                 bot.manager.logger.log(
                                     `[LAST-FILL-GUARD] Skipping ${order.type} CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} (halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)}); re-planned after market moves`,
@@ -2837,6 +2971,9 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                 );
                                 continue;
                             }
+                            lastFillGuardStats.passed++;
+                        } else {
+                            lastFillGuardStats.bypassed++;
                         }
                     } catch (_e: any) { /* guard is best-effort */ }
 
@@ -2961,24 +3098,31 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         }
 
                         // LAST-FILL PRICE GUARD (UPDATE rotation): pivot ± halfIncrement — same as CREATE.
+                        // No origin bypass here, ever: a rotation reprices, so it always obeys the guard —
+                        // even if a future correction plan carries rotation entries (per-action scoping).
+                        // The pivot is refreshed from still-queued fills first: fills detected mid-broadcast
+                        // sit in _incomingFillQueue until the fill cycle ends, and without this the later
+                        // chunks of a long broadcast would be checked against a stale pivot.
                         try {
-                            if ((cowResult as any)?.origin !== 'spread-correction') {
-                                const lastPrice = (bot.manager as any)?._lastFilledPrice;
-                                const lastType = (bot.manager as any)?._lastFilledType;
-                                const inc = Number(bot.manager?.config?.incrementPercent ?? (bot as any)?.config?.incrementPercent ?? (constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
-                                const check = isLastFillGuardBlocked(newPrice, newSize, orderType, lastPrice, lastType, inc);
-                                if (check.blocked) {
-                                    skippedUpdateCount++;
-                                    if (action.id) skippedUpdateSlotIds.add(action.id);
-                                    if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
-                                    const dir = orderType === ORDER_TYPES.BUY ? 'above' : 'below';
-                                    bot.manager.logger.log(
-                                        `[LAST-FILL-GUARD] Skipping ${orderType} UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} (halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)})`,
-                                        'warn'
-                                    );
-                                    continue;
-                                }
+                            try { if (refreshLastFillPivotFromQueue(bot)) lastFillGuardPivotRefreshed = true; } catch { /* best-effort */ }
+                            const lastPrice = (bot.manager as any)?._lastFilledPrice;
+                            const lastType = (bot.manager as any)?._lastFilledType;
+                            const inc = resolveLastFillGuardIncrement(bot);
+                            const check = isLastFillGuardBlocked(newPrice, newSize, orderType, lastPrice, lastType, inc);
+                            lastFillGuardStats.checked++;
+                            if (check.blocked) {
+                                lastFillGuardStats.skipped++;
+                                skippedUpdateCount++;
+                                if (action.id) skippedUpdateSlotIds.add(action.id);
+                                if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
+                                const dir = orderType === ORDER_TYPES.BUY ? 'above' : 'below';
+                                bot.manager.logger.log(
+                                    `[LAST-FILL-GUARD] Skipping ${orderType} UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} (halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)})`,
+                                    'warn'
+                                );
+                                continue;
                             }
+                            lastFillGuardStats.passed++;
                         } catch (_e: any) { /* best-effort */ }
 
                         const { amountToSell, minToReceive } = buildCreateOrderArgs(
@@ -3129,6 +3273,34 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                     );
                                     continue;
                                 }
+                                // LAST-FILL GUARD (fallback variant): this CREATE
+                                // replaces a rotation UPDATE at a repriced level,
+                                // so it obeys the same guard with a refreshed
+                                // pivot — no origin bypass, same as rotations.
+                                try { if (refreshLastFillPivotFromQueue(bot)) lastFillGuardPivotRefreshed = true; } catch { /* best-effort */ }
+                                try {
+                                    const fbInc = resolveLastFillGuardIncrement(bot);
+                                    const fbCheck = isLastFillGuardBlocked(
+                                        fbPrice, fbSize, fbType,
+                                        (bot.manager as any)?._lastFilledPrice,
+                                        (bot.manager as any)?._lastFilledType,
+                                        fbInc
+                                    );
+                                    lastFillGuardStats.checked++;
+                                    if (fbCheck.blocked) {
+                                        lastFillGuardStats.skipped++;
+                                        const fbDir = fbType === ORDER_TYPES.BUY ? 'above' : 'below';
+                                        bot.manager.logger.log(
+                                            `[LAST-FILL-GUARD] Skipping CREATE fallback for ${targetSlotId} at ` +
+                                            `${Format.formatPrice6(fbPrice)}: ${fbDir} last filled ` +
+                                            `${Format.formatPrice6(fbCheck.pivot)} (halfInc ${fbCheck.halfInc}% thr ` +
+                                            `${Format.formatPrice6(fbCheck.threshold)}); re-planned after market moves`,
+                                            'warn'
+                                        );
+                                        continue;
+                                    }
+                                    lastFillGuardStats.passed++;
+                                } catch (_fbGuardErr: any) { /* guard is best-effort */ }
                                 const fbArgs = buildCreateOrderArgs(
                                     { type: fbType, size: fbSize, price: fbPrice },
                                     assetA, assetB
@@ -3174,6 +3346,42 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 }
             }
         }
+
+        // Batch-level LAST-FILL-GUARD summary: per-action pass lines would spam
+        // big batches, so one line per batch records the mode, pivot, resolved
+        // increment, and pass/skip/bypass counts — the guard's pass decisions
+        // are what incident reconstruction needs. Origin folds in here as
+        // mode=bypassed(<origin>); there is no second source of truth.
+        // Cold (guard off) is warn, not info — a disabled guard must say so.
+        // pivotRefreshed surfaces whether a mid-broadcast queued fill moved the
+        // pivot under this batch's checks (the refresh itself stays debug).
+        // Note the printed pivot is end-of-batch state: when pivotRefreshed is
+        // true, early actions were checked against the older pivot.
+        try {
+            const totalGuarded = lastFillGuardStats.checked + lastFillGuardStats.bypassed;
+            if (totalGuarded > 0) {
+                const sumPivotRaw = (bot.manager as any)?._lastFilledPrice;
+                const sumType = (bot.manager as any)?._lastFilledType;
+                const sumInc = resolveLastFillGuardIncrement(bot);
+                const cold = sumPivotRaw == null || !Number.isFinite(Number(sumPivotRaw)) || sumType == null;
+                const batchOrigin = (cowResult as any)?.origin;
+                const mode = cold
+                    ? 'disabled(cold)'
+                    : (lastFillGuardStats.bypassed > 0 && lastFillGuardStats.checked === 0)
+                        ? `bypassed(${batchOrigin || 'unknown'})`
+                        : (lastFillGuardStats.bypassed > 0
+                            ? `active+bypassed(${batchOrigin || 'unknown'})`
+                            : 'active');
+                const pivotStr = cold ? 'none' : `${Format.formatPrice6(Number(sumPivotRaw))}(${sumType})`;
+                bot.manager.logger.log(
+                    `[LAST-FILL-GUARD] mode=${mode} pivot=${pivotStr} inc=${sumInc}% ` +
+                    `pivotRefreshed=${lastFillGuardPivotRefreshed} ` +
+                    `checked=${lastFillGuardStats.checked} passed=${lastFillGuardStats.passed} ` +
+                    `skipped=${lastFillGuardStats.skipped} bypassed=${lastFillGuardStats.bypassed}`,
+                    cold ? 'warn' : 'info'
+                );
+            }
+        } catch { /* summary is best-effort */ }
 
         if (skippedUpdateCount > 0) {
             restoreSkippedUpdateSlotsInWorkingGrid(bot, workingGrid, skippedUpdateSlotIds, skippedUpdateCount);
@@ -4052,7 +4260,15 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
                         });
                     }
                 }
-                bot.manager.logger.log(`Placed ${ctx.order.type} order ${ctx.order.id} -> ${chainOrderId}`, 'info');
+                // Success line mirrors the failure-path fingerprint below
+                // (type/price/size) so both are greppable by the same keys —
+                // this is what ties a fill back to the slot that placed it.
+                bot.manager.logger.log(
+                    `Placed ${ctx.order.type} order ${ctx.order.id} ` +
+                    `@${Format.formatPrice6(ctx.order.price)} x${Format.formatAmount(ctx.order.size)} ` +
+                    `-> ${chainOrderId}`,
+                    'info'
+                );
             } else {
                 const fingerprint = [
                     `type=${ctx.order.type || 'unknown'}`,
@@ -4184,7 +4400,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
         updateOperationCount
     };
 }
-export { isLastFillGuardBlocked, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain };
+export { isLastFillGuardBlocked, refreshLastFillPivotFromQueue, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain };
 
 
 export default {

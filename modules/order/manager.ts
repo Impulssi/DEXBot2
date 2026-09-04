@@ -1676,13 +1676,18 @@ class OrderManager {
      */
     recordLastFilledPrices(fills: any): void {
         if (!Array.isArray(fills) || fills.length === 0) return;
+        let recorded = 0;
+        let lastKind = 'unknown';
+        let lastPriceSrc = 'direct';
         for (const f of fills) {
             if (!f || (f.type !== ORDER_TYPES.BUY && f.type !== ORDER_TYPES.SELL)) continue;
             let price: number | null = Number(f.price ?? f.order?.price);
+            let priceSrc = 'direct';
             if (!Number.isFinite(price) || (price as number) <= 0) {
                 try {
                     const slot = f.id ? (this.orders as any)?.get?.(f.id) : null;
                     price = slot ? Number((slot as any).price) : null;
+                    if (Number.isFinite(price as number) && (price as number) > 0) priceSrc = 'slot-fallback';
                 } catch { price = null; }
             }
             if (!Number.isFinite(price as number) || (price as number) <= 0) continue;
@@ -1690,6 +1695,24 @@ class OrderManager {
             this._lastFilledType = f.type;
             if (f.type === ORDER_TYPES.BUY) this._lastFilledBuyPrice = price as number;
             else if (f.type === ORDER_TYPES.SELL) this._lastFilledSellPrice = price as number;
+            recorded++;
+            lastKind = (f as any)?.isPartial === true ? 'partial' : ((f as any)?.isPartial === false ? 'full' : 'unknown');
+            lastPriceSrc = priceSrc;
+        }
+        // One line per fill batch (chunk): the pivot mutations above are otherwise
+        // silent. src records the kind of the pivot-setting fill (full vs
+        // partial — partial pivots behave differently downstream) and whether
+        // its price came from the fill itself or the invisible slot fallback.
+        if (recorded > 0) {
+            try {
+                const fmt = (v: any) => (v == null || !Number.isFinite(Number(v)) ? 'none' : Format.formatPrice6(Number(v)));
+                this.logger?.log?.(
+                    `[FILL-PIVOT] pivot=${fmt(this._lastFilledPrice)}(${this._lastFilledType}) ` +
+                    `buy=${fmt((this as any)._lastFilledBuyPrice)} sell=${fmt((this as any)._lastFilledSellPrice)} ` +
+                    `n=${recorded} src=${lastKind}/${lastPriceSrc}`,
+                    'info'
+                );
+            } catch { /* logging is best-effort */ }
         }
     }
 
@@ -1701,11 +1724,15 @@ class OrderManager {
      * @param {Array} chainOpenOrders - raw chain open orders (from readOpenOrdersGuarded)
      */
     seedLastFilledPricesFromBook(chainOpenOrders: any): void {
-        if (!Array.isArray(chainOpenOrders) || chainOpenOrders.length === 0) return;
+        // Already armed — silent (the guard has a live pivot).
         if (this._lastFilledPrice != null) return;
         if (this._lastFilledType != null) return;
         // Only seed when cold (no fills yet) — don't overwrite a live value.
         if (this._lastFilledBuyPrice != null && this._lastFilledSellPrice != null) return;
+        if (!Array.isArray(chainOpenOrders) || chainOpenOrders.length === 0) {
+            try { this.logger?.log?.(`[LAST-FILL-GUARD] Book seed skipped: no chain orders; guard remains DISABLED (cold) until the first fill`, 'warn'); } catch {}
+            return;
+        }
         try {
             let maxBuy: number | null = null;
             let minSell: number | null = null;
@@ -1736,6 +1763,13 @@ class OrderManager {
             }
             if (maxBuy != null || minSell != null) {
                 try { this.logger?.log?.(`[LAST-FILL-GUARD] Seeded from book: lastBuy=${maxBuy} lastSell=${minSell} lastPrice=${this._lastFilledPrice} lastType=${this._lastFilledType}`, 'info'); } catch {}
+            }
+            // A startup that ends with the guard disabled must say so: the
+            // ambiguous seed (both sides present, no real fill yet) leaves
+            // _lastFilledType null by design, and that hole is otherwise only
+            // inferable by the absence of any log line.
+            if (this._lastFilledPrice == null || this._lastFilledType == null) {
+                try { this.logger?.log?.(`[LAST-FILL-GUARD] Book seed left guard DISABLED (cold): lastBuy=${maxBuy} lastSell=${minSell} lastPrice=${this._lastFilledPrice} lastType=${this._lastFilledType}; guard arms on the first fill`, 'warn'); } catch {}
             }
         } catch {}
     }

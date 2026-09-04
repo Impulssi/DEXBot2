@@ -1842,11 +1842,28 @@ async function executeMaintenanceLogic(bot: any, context: any) {
             // committed boundary, and re-plans on fund change, so this tick is
             // race-safe whenever it does run.
             if (!boundaryShiftPending) {
-                const spreadResult = await bot.manager.checkSpreadCondition(BitShares, bot.updateOrdersOnChainPlan.bind(bot));
-                if (await bot._abortFlowIfIllegalState(`${context} spread check`)) return;
-                if (spreadResult && spreadResult.ordersPlaced > 0) {
-                    bot._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
-                    await bot._persistAndRecoverIfNeeded();
+                // Re-check the fill queue: fills may have arrived during this
+                // tick's earlier phases (health check, dust cancels, divergence
+                // corrections), after the pipeline gate above passed. Sizing a
+                // correction from pre-fill budgets would under/over-fund the
+                // repair — defer to the next tick so the fill cycle runs first
+                // and side choice + sizing read fresh funds.
+                const queuedFills = Array.isArray((bot as any)?._incomingFillQueue)
+                    ? (bot as any)._incomingFillQueue.length
+                    : 0;
+                if (queuedFills > 0) {
+                    bot._log(
+                        `[SPREAD] Deferring spread check: ${queuedFills} fill(s) queued since pipeline gate; ` +
+                        `processing fills first for fresh funds`,
+                        'debug'
+                    );
+                } else {
+                    const spreadResult = await bot.manager.checkSpreadCondition(BitShares, bot.updateOrdersOnChainPlan.bind(bot));
+                    if (await bot._abortFlowIfIllegalState(`${context} spread check`)) return;
+                    if (spreadResult && spreadResult.ordersPlaced > 0) {
+                        bot._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
+                        await bot._persistAndRecoverIfNeeded();
+                    }
                 }
             }
         } catch (err: any) {
