@@ -22,7 +22,7 @@ const storage = getStorage();
 const { ensureDir, readJSON, unlink: safeUnlink } = storage;
 import { buildRuntimeScriptPath, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry.js';
 import { getErrorMessage } from '../utils/errors.js';
-import { usesAmaGridPrice } from '../dexbot_maintenance_runtime.js';
+import { usesAmaGridPrice } from '../grid_price_source.js';
 
 const BOT_SCRIPT = buildRuntimeScriptPath(CODE_ROOT, ['bot']);
 const SOCKET_PATH = Config.DEXBOT_SUPERVISOR_SOCKET || PATHS.PROFILES.SUPERVISOR_SOCK;

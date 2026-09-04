@@ -8,7 +8,6 @@ const require = createRequire(import.meta.url);
 
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
-import { createHash } from './crypto/sync.js';
 import { nowIso } from './order/utils/system.js';
 import { path } from './path_api.js';
 import * as chainOrders from './chain_orders.js';
@@ -44,6 +43,8 @@ function loadAmaCenterSnapshot(...args: any) { return require('./order/utils/sys
 function sleep(...args: any) { return require('./order/utils/system').sleep(...args); }
 function parseJsonWithComments(...args: any) { return require('./order/utils/system').parseJsonWithComments(...args); }
 function isPm2Runtime(...args: any) { return require('./order/logger').isPm2Runtime(...args); }
+function isWrapperAdapterOwner(...args: any) { return require('./launcher/adapter_requirement').isWrapperAdapterOwner(...args); }
+function readAdapterRequirement(...args: any) { return require('./launcher/adapter_requirement').readAdapterRequirement(...args); }
 function getSharedMarketAdapterRuntime(...args: any) { return require('./launcher/market_adapter_runtime').getSharedMarketAdapterRuntime(...args); }
 function resetMarketAdapterWhitelistCache(...args: any) { return require('./market_adapter_whitelist').resetMarketAdapterWhitelistCache(...args); }
 function isBotDynamicWeightWhitelisted(...args: any) { return require('./market_adapter_whitelist').isBotDynamicWeightWhitelisted(...args); }
@@ -274,40 +275,13 @@ async function maybeRunTargetedDriftReconciliation(bot: any, context: any) {
 
 /**
  * Load and fingerprint the bots.json configuration file.
+ * Delegates to the canonical launcher/adapter_requirement helper so the
+ * fingerprint is semantic (AMA-relevant changes only) and identical to the
+ * unlock wrapper watchdog's view of the same file.
  * @returns {any} Snapshot with exists flag, fingerprint, active bots list, and adapter requirement
  */
 function loadBotsConfigSnapshot() {
-    if (!storage.exists(PROFILES_BOTS_FILE)) {
-        return {
-            exists: false,
-            fingerprint: null,
-            activeBots: [],
-            needsMarketAdapter: false,
-        };
-    }
-
-    const raw = storage.readFile(PROFILES_BOTS_FILE);
-    if (!raw || !raw.trim()) {
-        return {
-            exists: false,
-            fingerprint: null,
-            activeBots: [],
-            needsMarketAdapter: false,
-        };
-    }
-
-    const fingerprint = createHash('sha1').update(raw).digest('hex');
-    const parsed = parseJsonWithComments(raw);
-    const bots = Array.isArray(parsed?.bots) ? parsed.bots.filter(Boolean) : [];
-    const activeBots = bots.filter((bot: any) => bot.active !== false);
-
-    return {
-        exists: true,
-        fingerprint,
-        config: parsed,
-        activeBots,
-        needsMarketAdapter: activeBots.some(usesAmaGridPrice),
-    };
+    return readAdapterRequirement(PROFILES_BOTS_FILE);
 }
 
 /**
@@ -428,6 +402,16 @@ async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = '
     if (typeof bot._syncMarketAdapterHook === 'function') {
         return await bot._syncMarketAdapterHook(context);
     }
+    // Centralized ownership: in monolithic mode the unlock wrapper watchdog
+    // (shared 1min tick) is the sole market-adapter spawner. A per-bot sync here would
+    // re-read bots.json and re-drive the adapter N times (once per bot) and
+    // fight the wrapper over the adapter child, so bots skip it entirely and
+    // act as pure adapter-output consumers. Wrapper-less modes (dexbot test
+    // one-shot, isolated supervisor, PM2) keep the in-bot fallback below.
+    // Checked before any file I/O so the skip also removes the duplicate read.
+    if (!isPm2Runtime() && isWrapperAdapterOwner()) {
+        return { skipped: true, reason: 'wrapper-owned' };
+    }
     if (bot._marketAdapterWatchdogInFlight) {
         return { skipped: true, reason: 'in-flight' };
     }
@@ -438,7 +422,19 @@ async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = '
         const snapshot = typeof bot._loadBotsConfigSnapshot === 'function'
             ? await bot._loadBotsConfigSnapshot()
             : loadBotsConfigSnapshot();
-        const previousFingerprint = bot._marketAdapterWatchdogFingerprint || null;
+        // Corrupt/unreadable bots.json must not move the adapter: previously
+        // the parse/read throw aborted the check and left the adapter alone.
+        // Keep that behavior by skipping the sync without touching the stored
+        // fingerprint, so the next tick re-evaluates once the file is valid.
+        if (snapshot.corrupt || snapshot.readError) {
+            const reason = snapshot.corrupt ? 'corrupt-config' : 'unreadable-config';
+            const detail = snapshot.corrupt ? 'corrupt' : 'unreadable';
+            bot._warn(`Ignoring ${detail} bots.json during ${context}; keeping previous market adapter state.`);
+            return { skipped: true, reason };
+        }
+        // ?? (not ||): the semantic fingerprint is legitimately '' when no
+        // active AMA bot exists, and '' must compare equal to a stored ''.
+        const previousFingerprint = bot._marketAdapterWatchdogFingerprint ?? null;
         const changed = snapshot.fingerprint !== previousFingerprint;
         bot._marketAdapterWatchdogFingerprint = snapshot.fingerprint;
 
@@ -1348,8 +1344,14 @@ function stopBlockchainFetchInterval(bot: any) {
 
 /**
  * Set up the periodic bots.json fingerprint poll interval.
- * Decoupled from the heavy blockchain fetch interval (default 240min) so
- * config changes are visible within BOTS_CONFIG_POLL_INTERVAL_MS (default 5min).
+ * Fallback config-change detector for wrapper-less modes (dexbot test
+ * one-shot, isolated supervisor, PM2): decoupled from the heavy blockchain
+ * fetch interval (default 240min) so config changes are visible within
+ * BOTS_CONFIG_POLL_INTERVAL_MS (default 1min, shared with the wrapper
+ * watchdog interval).
+ * In monolithic mode the unlock wrapper watchdog already polls bots.json
+ * on the same shared interval as the sole adapter owner, so no per-bot poll
+ * is created here.
  * Uses the shared fingerprint via syncMarketAdapterOnPeriodicConfigCheck so
  * the market adapter start/stop logic stays in one place.
  * @param {import('./dexbot_class.js').DEXBot} bot
@@ -1365,11 +1367,17 @@ function setupBotsConfigPollInterval(bot: any) {
         return;
     }
 
+    if (!isPm2Runtime() && isWrapperAdapterOwner()) {
+        bot._log('Bots-config poll disabled (market adapter owned by unlock wrapper).');
+        return;
+    }
+
     // Ensure the fingerprint exists before the first interval fires.
     // setupBlockchainFetchInterval already fires syncMarketAdapterOnPeriodicConfigCheck
     // at startup, so this is a fallback for bots that never run the blockchain interval
-    // (e.g. dryRun or accountId missing).
-    if (!bot._marketAdapterWatchdogFingerprint) {
+    // (e.g. dryRun or accountId missing). Gate on === null (never checked):
+    // '' is a valid checked steady-state and must not re-trigger the pre-seed.
+    if (bot._marketAdapterWatchdogFingerprint === null || bot._marketAdapterWatchdogFingerprint === undefined) {
         syncMarketAdapterOnPeriodicConfigCheck(bot, 'startup bots-config poll setup').catch((err: any) => {
             bot._warn(`Bots-config poll setup failed: ${getErrorMessage(err)}`);
         });
@@ -2540,11 +2548,12 @@ async function syncOpenOrdersAndProcessFillsImpl(bot: any, tag: any) {
         return { syncResult: null, aborted: true, hasUnmatched: -1, openOrders: null };
     }
 }
-export { loadBotsConfigSnapshot, refreshDynamicWeightDistribution, performGridResync, updateBotGridResetMetadata, handlePendingTriggerReset, setupTriggerFileDetection, performPeriodicGridChecks, isOpenOrdersSyncLoopEnabled, startOpenOrdersSyncLoop, stopOpenOrdersSyncLoop, setupBlockchainFetchInterval, stopBlockchainFetchInterval, setupBotsConfigPollInterval, stopBotsConfigPollInterval, executeMaintenanceLogic, cancelDustOrders, isOrderDoesNotExistError, runGridMaintenance, stopMarketAdapterPm2, releaseMarketAdapterRuntime, syncMarketAdapterOnPeriodicConfigCheck, findSnapshotBotForRuntimeConfig, runtimeConfigNeedsMarketAdapter, usesAmaGridPrice, checkBtsBalanceAndAcquire, acquireBts, runDustHealthCheck, setupDustHealthCheckInterval, requestGridReset, wireStructuralGridResyncRequest, getPipelineSignals, markGridActivity, getMetrics, syncOpenOrdersAndProcessFills };
+export { loadBotsConfigSnapshot, isWrapperAdapterOwner, refreshDynamicWeightDistribution, performGridResync, updateBotGridResetMetadata, handlePendingTriggerReset, setupTriggerFileDetection, performPeriodicGridChecks, isOpenOrdersSyncLoopEnabled, startOpenOrdersSyncLoop, stopOpenOrdersSyncLoop, setupBlockchainFetchInterval, stopBlockchainFetchInterval, setupBotsConfigPollInterval, stopBotsConfigPollInterval, executeMaintenanceLogic, cancelDustOrders, isOrderDoesNotExistError, runGridMaintenance, stopMarketAdapterPm2, releaseMarketAdapterRuntime, syncMarketAdapterOnPeriodicConfigCheck, findSnapshotBotForRuntimeConfig, runtimeConfigNeedsMarketAdapter, usesAmaGridPrice, checkBtsBalanceAndAcquire, acquireBts, runDustHealthCheck, setupDustHealthCheckInterval, requestGridReset, wireStructuralGridResyncRequest, getPipelineSignals, markGridActivity, getMetrics, syncOpenOrdersAndProcessFills };
 
 
 export default {
     loadBotsConfigSnapshot,
+    isWrapperAdapterOwner,
     refreshDynamicWeightDistribution,
     performGridResync,
     updateBotGridResetMetadata,

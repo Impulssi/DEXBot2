@@ -27,6 +27,7 @@ import {
 import { buildRuntimeScriptArgs, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry.js';
 import { getErrorMessage } from '../utils/errors.js';
 import { isSameBotName } from '../utils/sanitize_key.js';
+import { buildAdapterFingerprint } from './adapter_requirement.js';
 
 const MONOLITHIC_PID_FILE = PATHS.PROFILES.MONOLITHIC_PID;
 const MONOLITHIC_BOT_PID_FILE = PATHS.PROFILES.MONOLITHIC_BOT_PID;
@@ -343,11 +344,10 @@ function listConfiguredBots(botsFile?: any) {
 }
 
 function getActiveAmaBotFingerprint(botsFile?: any) {
-    return (botsFile ? listConfiguredBots(botsFile) : listConfiguredBots())
-        .filter((b: any) => b.active && usesAmaGridPrice(b))
-        .map((b: any) => `${b.name}:${b.gridPrice}`)
-        .sort()
-        .join('|');
+    // Canonical semantic fingerprint (see launcher/adapter_requirement.ts):
+    // identical to the per-bot snapshot fingerprint, so the wrapper watchdog
+    // and wrapper-less bot fallbacks agree on what "changed" means.
+    return buildAdapterFingerprint(listConfiguredBots(botsFile));
 }
 
 function getAllControlBotNames() {

@@ -136,6 +136,7 @@ class DEXBot {
     _blockchainFetchInFlight: number;
     _botsConfigPollInterval: any;
     _botsConfigPollInFlight: boolean;
+    _marketAdapterWatchdogFingerprint: string | null;
     _fillsUnsubscribe: any;
     _triggerWatcher: any;
     _triggerDebounceTimer: any;
@@ -241,6 +242,11 @@ class DEXBot {
         this._blockchainFetchInFlight = 0;
         this._botsConfigPollInterval = null;
         this._botsConfigPollInFlight = false;
+        this._marketAdapterWatchdogFingerprint = null;
+        // null = never checked. '' is a valid stored steady-state (no active
+        // AMA bots) and must compare equal across ticks — see ?? in
+        // syncMarketAdapterOnPeriodicConfigCheck and the === null gate in
+        // setupBotsConfigPollInterval.
         this._fillsUnsubscribe = null;
         this._triggerWatcher = null;
         this._triggerDebounceTimer = null;
@@ -1587,7 +1593,7 @@ class DEXBot {
     }
 
     /**
-     * Set up periodic bots.json fingerprint poll interval (max 5min SLA).
+     * Set up periodic bots.json fingerprint poll interval (shared 1min tick).
      * Decoupled from blockchain fetch so config changes are visible quickly.
      * @private
      */

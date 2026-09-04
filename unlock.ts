@@ -545,6 +545,10 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
                 env: {
                     ...process.env,
                     DEXBOT_MONOLITHIC_BG: '1',
+                    // The wrapper watchdog below owns the market adapter
+                    // lifecycle; the bot child must not run its own adapter
+                    // sync/poll (see launcher/adapter_requirement.ts).
+                    DEXBOT_ADAPTER_OWNER: 'wrapper',
                     ...(credentialDaemonPid ? { DEXBOT_MANAGED_CRED_PID: String(credentialDaemonPid) } : {}),
                 },
                 stdio: ['ignore', stdoutFd, stderrFd],
@@ -619,7 +623,10 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
 
                 const botProcess = childProcess.spawn(Config.EXEC_PATH, dexbotArgs, {
                     cwd: PATHS.PROJECT_ROOT,
-                    env: process.env,
+                    // DEXBOT_ADAPTER_OWNER marks the wrapper watchdog as the
+                    // sole market-adapter spawner so the bot child skips its
+                    // own adapter sync/poll (both foreground and background).
+                    env: { ...process.env, DEXBOT_ADAPTER_OWNER: 'wrapper' },
                     stdio: isMonolithicBgChild ? 'pipe' : 'inherit',
                 });
                 botProcessRef.current = botProcess;

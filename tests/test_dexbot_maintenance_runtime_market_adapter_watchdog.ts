@@ -445,9 +445,323 @@ async function testSetupBlockchainFetchIntervalRunsWatchdogBeforeDisabledReturn(
     );
 }
 
+async function testWrapperOwnedSkipsAdapterSyncWithoutReadingConfig() {
+    const previousOwner = process.env.DEXBOT_ADAPTER_OWNER;
+    process.env.DEXBOT_ADAPTER_OWNER = 'wrapper';
+    Config.pm_exec_path = undefined;
+    try {
+        const { syncMarketAdapterOnPeriodicConfigCheck } = loadRuntimeWithStubs();
+        const self = {
+            config: { botKey: 'wrapper-owned-bot', name: 'Wrapper Owned Bot' },
+            // Any config read attempt is a failure: wrapper-owned bots must
+            // skip before touching bots.json.
+            _loadBotsConfigSnapshot: async () => {
+                throw new Error('bots.json must not be read when the wrapper owns the adapter');
+            },
+            _log: () => {},
+            _warn: () => {},
+        };
+
+        const result = await syncMarketAdapterOnPeriodicConfigCheck(self, 'unit-test-wrapper-owned');
+
+        assert.strictEqual(result.skipped, true, 'wrapper-owned bot should skip adapter sync');
+        assert.strictEqual(result.reason, 'wrapper-owned', 'skip reason should name the wrapper owner');
+    } finally {
+        if (previousOwner === undefined) delete process.env.DEXBOT_ADAPTER_OWNER;
+        else process.env.DEXBOT_ADAPTER_OWNER = previousOwner;
+    }
+}
+
+async function testSemanticFingerprintIgnoresNonAmaEdits() {
+    const botsFile = require('../modules/paths').PATHS.PROFILES.BOTS_JSON;
+    const base = {
+        bots: [
+            { name: 'AMA Bot', active: true, gridPrice: 'ama3', botFunds: { buy: 100, sell: 1 } },
+            { name: 'Book Bot', active: true, gridPrice: 'book', botFunds: { buy: 50, sell: 2 } },
+        ],
+    };
+    const nonAmaEdit = JSON.parse(JSON.stringify(base));
+    nonAmaEdit.bots[1].botFunds.buy = 999;
+    const amaEdit = JSON.parse(JSON.stringify(base));
+    amaEdit.bots[1].gridPrice = 'ama1';
+
+    let content = JSON.stringify(base);
+    const savedExistsSync = fs.existsSync;
+    const savedReadFileSync = fs.readFileSync;
+    fs.existsSync = (filePath) => String(filePath) === botsFile;
+    fs.readFileSync = (filePath, encoding) => {
+        if (String(filePath) === botsFile) return content;
+        return originalReadFileSync(filePath, encoding);
+    };
+
+    try {
+        const { loadBotsConfigSnapshot } = loadRuntimeWithStubs();
+        const before = loadBotsConfigSnapshot();
+        assert.ok(before.fingerprint, 'fingerprint should be populated');
+
+        content = JSON.stringify(nonAmaEdit);
+        const afterNonAmaEdit = loadBotsConfigSnapshot();
+        assert.strictEqual(
+            afterNonAmaEdit.fingerprint, before.fingerprint,
+            'non-AMA edits (funds, comments) must not reset the adapter fingerprint'
+        );
+
+        content = JSON.stringify(amaEdit);
+        const afterAmaEdit = loadBotsConfigSnapshot();
+        assert.notStrictEqual(
+            afterAmaEdit.fingerprint, before.fingerprint,
+            'AMA-relevant edits (gridPrice book->ama) must reset the adapter fingerprint'
+        );
+        assert.strictEqual(afterAmaEdit.needsMarketAdapter, true, 'new AMA bot should require the adapter');
+    } finally {
+        fs.existsSync = savedExistsSync;
+        fs.readFileSync = savedReadFileSync;
+    }
+}
+
+async function testEmptyFingerprintSteadyStateReportsNoChange() {
+    // Regression: the semantic fingerprint is legitimately '' when no active
+    // AMA bot exists. `'' || null` coerced that to null, so every tick saw
+    // '' !== null and re-drove the adapter with a "changes detected" log.
+    const botsFile = require('../modules/paths').PATHS.PROFILES.BOTS_JSON;
+    const content = JSON.stringify({
+        bots: [{ name: 'Book Bot', active: true, gridPrice: 'book' }],
+    });
+    const savedExistsSync = fs.existsSync;
+    const savedReadFileSync = fs.readFileSync;
+    const previousOwner = process.env.DEXBOT_ADAPTER_OWNER;
+    delete process.env.DEXBOT_ADAPTER_OWNER;
+    Config.pm_exec_path = undefined;
+    try {
+        fs.existsSync = (filePath) => String(filePath) === botsFile;
+        fs.readFileSync = (filePath, encoding) => {
+            if (String(filePath) === botsFile) return content;
+            return savedReadFileSync(filePath, encoding);
+        };
+        const { syncMarketAdapterOnPeriodicConfigCheck } = loadRuntimeWithStubs();
+        const logs = [];
+        const self = {
+            config: { name: 'Book Bot' },
+            _marketAdapterWatchdogFingerprint: '', // matches DEXBot constructor init
+            _log: (msg) => logs.push(String(msg)),
+            _warn: (msg) => logs.push(`WARN:${msg}`),
+        };
+        const first = await syncMarketAdapterOnPeriodicConfigCheck(self, 'test tick 1');
+        const second = await syncMarketAdapterOnPeriodicConfigCheck(self, 'test tick 2');
+        assert.strictEqual(first.changed, false, 'steady empty fingerprint must not report change (tick 1)');
+        assert.strictEqual(second.changed, false, 'steady empty fingerprint must not report change (tick 2)');
+        assert.strictEqual(self._marketAdapterWatchdogFingerprint, '', 'empty fingerprint must be stored as-is');
+        assert.ok(
+            !logs.some((msg) => msg.includes('Detected bots.json changes')),
+            'steady state must not log change detection'
+        );
+    } finally {
+        fs.existsSync = savedExistsSync;
+        fs.readFileSync = savedReadFileSync;
+        if (previousOwner === undefined) delete process.env.DEXBOT_ADAPTER_OWNER;
+        else process.env.DEXBOT_ADAPTER_OWNER = previousOwner;
+    }
+}
+
+async function testCorruptBotsConfigSkipsSyncWithoutTouchingAdapter() {
+    // A transient partial write must leave the adapter alone (pre-refactor the
+    // parse throw aborted the check) and must not clobber the stored
+    // fingerprint, so the next tick re-evaluates once the file is valid.
+    const botsFile = require('../modules/paths').PATHS.PROFILES.BOTS_JSON;
+    const savedExistsSync = fs.existsSync;
+    const savedReadFileSync = fs.readFileSync;
+    const previousOwner = process.env.DEXBOT_ADAPTER_OWNER;
+    delete process.env.DEXBOT_ADAPTER_OWNER;
+    Config.pm_exec_path = undefined;
+    try {
+        fs.existsSync = (filePath) => String(filePath) === botsFile;
+        fs.readFileSync = (filePath, encoding) => {
+            if (String(filePath) === botsFile) return '{ corrupt json {{{';
+            return savedReadFileSync(filePath, encoding);
+        };
+        let syncBotCalls = 0;
+        const { syncMarketAdapterOnPeriodicConfigCheck } = loadRuntimeWithStubs({
+            marketAdapterRuntimeStub: {
+                getSharedMarketAdapterRuntime: () => ({
+                    syncBot: async () => { syncBotCalls += 1; return { running: false, started: false, stopped: false }; },
+                    releaseBot: async () => ({ running: false, stopped: false }),
+                }),
+            },
+        });
+        const logs = [];
+        const self = {
+            config: { name: 'AMA Bot' },
+            _marketAdapterWatchdogFingerprint: 'AMA Bot:ama3', // last known good
+            _log: (msg) => logs.push(String(msg)),
+            _warn: (msg) => logs.push(`WARN:${msg}`),
+        };
+        const result = await syncMarketAdapterOnPeriodicConfigCheck(self, 'test corrupt tick');
+        assert.deepStrictEqual(result, { skipped: true, reason: 'corrupt-config' });
+        assert.strictEqual(syncBotCalls, 0, 'corrupt config must not drive the adapter runtime');
+        assert.strictEqual(
+            self._marketAdapterWatchdogFingerprint, 'AMA Bot:ama3',
+            'corrupt config must preserve the previous fingerprint'
+        );
+        assert.ok(
+            logs.some((msg) => msg.includes('corrupt')),
+            'corrupt config should warn instead of silently skipping'
+        );
+    } finally {
+        fs.existsSync = savedExistsSync;
+        fs.readFileSync = savedReadFileSync;
+        if (previousOwner === undefined) delete process.env.DEXBOT_ADAPTER_OWNER;
+        else process.env.DEXBOT_ADAPTER_OWNER = previousOwner;
+    }
+}
+
+async function testUnreadableBotsConfigSkipsSyncWithoutTouchingAdapter() {
+    // A stat/read failure (transient I/O error) must behave like a corrupt
+    // file: previously the read throw aborted the check and left a running
+    // adapter alone instead of treating the file as missing (which would
+    // take the stop-adapter branch).
+    const botsFile = require('../modules/paths').PATHS.PROFILES.BOTS_JSON;
+    const savedExistsSync = fs.existsSync;
+    const savedReadFileSync = fs.readFileSync;
+    const previousOwner = process.env.DEXBOT_ADAPTER_OWNER;
+    delete process.env.DEXBOT_ADAPTER_OWNER;
+    Config.pm_exec_path = undefined;
+    try {
+        fs.existsSync = (filePath) => String(filePath) === botsFile;
+        fs.readFileSync = (filePath, encoding) => {
+            if (String(filePath) === botsFile) throw new Error('EIO: transient read failure');
+            return savedReadFileSync(filePath, encoding);
+        };
+        let syncBotCalls = 0;
+        const { syncMarketAdapterOnPeriodicConfigCheck } = loadRuntimeWithStubs({
+            marketAdapterRuntimeStub: {
+                getSharedMarketAdapterRuntime: () => ({
+                    syncBot: async () => { syncBotCalls += 1; return { running: true, started: false, stopped: false }; },
+                    releaseBot: async () => ({ running: false, stopped: false }),
+                }),
+            },
+        });
+        const logs = [];
+        const self = {
+            config: { name: 'AMA Bot' },
+            _marketAdapterWatchdogFingerprint: 'AMA Bot:ama3', // last known good
+            _log: (msg) => logs.push(String(msg)),
+            _warn: (msg) => logs.push(`WARN:${msg}`),
+        };
+        const result = await syncMarketAdapterOnPeriodicConfigCheck(self, 'test unreadable tick');
+        assert.deepStrictEqual(result, { skipped: true, reason: 'unreadable-config' });
+        assert.strictEqual(syncBotCalls, 0, 'unreadable config must not drive the adapter runtime');
+        assert.strictEqual(
+            self._marketAdapterWatchdogFingerprint, 'AMA Bot:ama3',
+            'unreadable config must preserve the previous fingerprint'
+        );
+    } finally {
+        fs.existsSync = savedExistsSync;
+        fs.readFileSync = savedReadFileSync;
+        if (previousOwner === undefined) delete process.env.DEXBOT_ADAPTER_OWNER;
+        else process.env.DEXBOT_ADAPTER_OWNER = previousOwner;
+    }
+}
+
+async function testBotsConfigPollPreseedsOnlyWhenUnchecked() {
+    // '' is a valid checked steady-state (no AMA bots) and must not re-fire
+    // the startup pre-seed sync; only null/undefined (never checked) may.
+    const botsFile = require('../modules/paths').PATHS.PROFILES.BOTS_JSON;
+    const content = JSON.stringify({
+        bots: [{ name: 'Book Bot', active: true, gridPrice: 'book' }],
+    });
+    const savedExistsSync = fs.existsSync;
+    const savedReadFileSync = fs.readFileSync;
+    const previousOwner = process.env.DEXBOT_ADAPTER_OWNER;
+    delete process.env.DEXBOT_ADAPTER_OWNER;
+    Config.pm_exec_path = undefined;
+    try {
+        fs.existsSync = (filePath) => String(filePath) === botsFile;
+        fs.readFileSync = (filePath, encoding) => {
+            if (String(filePath) === botsFile) return content;
+            return savedReadFileSync(filePath, encoding);
+        };
+        let syncBotCalls = 0;
+        const { setupBotsConfigPollInterval, stopBotsConfigPollInterval } = loadRuntimeWithStubs({
+            marketAdapterRuntimeStub: {
+                getSharedMarketAdapterRuntime: () => ({
+                    syncBot: async () => { syncBotCalls += 1; return { running: false, started: false, stopped: false }; },
+                    releaseBot: async () => ({ running: false, stopped: false }),
+                }),
+            },
+        });
+        const makeSelf = (fingerprint) => ({
+            config: { name: 'Book Bot', timing: { BOTS_CONFIG_POLL_INTERVAL_MS: 60000 } },
+            _botsConfigPollInterval: null,
+            _marketAdapterWatchdogFingerprint: fingerprint,
+            _log: () => {},
+            _warn: () => {},
+        });
+        const flush = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+        const checkedEmpty = makeSelf('');
+        setupBotsConfigPollInterval(checkedEmpty);
+        await flush();
+        assert.strictEqual(syncBotCalls, 0, 'checked-empty fingerprint must not re-fire the pre-seed sync');
+        stopBotsConfigPollInterval(checkedEmpty);
+
+        const neverChecked = makeSelf(null);
+        setupBotsConfigPollInterval(neverChecked);
+        await flush();
+        assert.strictEqual(syncBotCalls, 1, 'never-checked (null) fingerprint must fire the pre-seed sync once');
+        stopBotsConfigPollInterval(neverChecked);
+    } finally {
+        fs.existsSync = savedExistsSync;
+        fs.readFileSync = savedReadFileSync;
+        if (previousOwner === undefined) delete process.env.DEXBOT_ADAPTER_OWNER;
+        else process.env.DEXBOT_ADAPTER_OWNER = previousOwner;
+    }
+}
+
+async function testBotsConfigPollDisabledWhenWrapperOwned() {
+    const previousOwner = process.env.DEXBOT_ADAPTER_OWNER;
+    process.env.DEXBOT_ADAPTER_OWNER = 'wrapper';
+    Config.pm_exec_path = undefined;
+    try {
+        const { setupBotsConfigPollInterval, stopBotsConfigPollInterval } = loadRuntimeWithStubs();
+        const logs = [];
+        const self = {
+            config: { timing: { BOTS_CONFIG_POLL_INTERVAL_MS: 60000 } },
+            _botsConfigPollInterval: null,
+            _marketAdapterWatchdogFingerprint: null,
+            _log: (msg) => logs.push(String(msg)),
+            _warn: (msg) => logs.push(`WARN:${msg}`),
+        };
+
+        setupBotsConfigPollInterval(self);
+
+        assert.strictEqual(self._botsConfigPollInterval, null, 'no per-bot poll timer when wrapper owns the adapter');
+        assert.ok(
+            logs.some((msg) => msg.includes('owned by unlock wrapper')),
+            'disabled poll should log the wrapper-ownership reason'
+        );
+
+        // Wrapper-less fallback still polls.
+        delete process.env.DEXBOT_ADAPTER_OWNER;
+        setupBotsConfigPollInterval(self);
+        assert.ok(self._botsConfigPollInterval, 'fallback poll timer should exist without a wrapper');
+        stopBotsConfigPollInterval(self);
+        assert.strictEqual(self._botsConfigPollInterval, null, 'fallback poll timer should stop cleanly');
+    } finally {
+        if (previousOwner === undefined) delete process.env.DEXBOT_ADAPTER_OWNER;
+        else process.env.DEXBOT_ADAPTER_OWNER = previousOwner;
+    }
+}
+
 async function main() {
     try {
         await testSnapshotReaderDetectsAMAConfig();
+        await testWrapperOwnedSkipsAdapterSyncWithoutReadingConfig();
+        await testSemanticFingerprintIgnoresNonAmaEdits();
+        await testEmptyFingerprintSteadyStateReportsNoChange();
+        await testCorruptBotsConfigSkipsSyncWithoutTouchingAdapter();
+        await testUnreadableBotsConfigSkipsSyncWithoutTouchingAdapter();
+        await testBotsConfigPollPreseedsOnlyWhenUnchecked();
+        await testBotsConfigPollDisabledWhenWrapperOwned();
         await testWatchdogStartsAdapterWhenMissing();
         await testWatchdogSkipsLaunchWhenAdapterNotNeeded();
         await testWatchdogLeavesAdapterStoppedWhenAlreadyAbsent();

@@ -302,12 +302,13 @@ let TIMING = {
     LOG_THROTTLE_INTERVAL_MS: 30000,
 
     // BOTS_CONFIG_POLL_INTERVAL_MS: How often to poll bots.json for changes
-    // (fingerprint check via sha1). Guarantees that new/updated active bot
-    // entries are detected within this window. Decoupled from the heavy
-    // BLOCKCHAIN_FETCH_INTERVAL_MIN (240min) so config changes are visible
-    // quickly even on single-bot accounts. 5min = satisfies max-5min
-    // recognition SLA while keeping FS + hash cost negligible.
-    BOTS_CONFIG_POLL_INTERVAL_MS: 5 * 60 * 1000,
+    // (semantic fingerprint check via adapter_requirement). Guarantees that
+    // new/updated active bot entries are detected within this window.
+    // Decoupled from the heavy BLOCKCHAIN_FETCH_INTERVAL_MIN (240min) so
+    // config changes are visible quickly even on single-bot accounts. This is
+    // the single shared interval for both the unlock-wrapper market-adapter
+    // watchdog and the per-bot fallback poll in wrapper-less modes.
+    BOTS_CONFIG_POLL_INTERVAL_MS: 60 * 1000,
 
     // CREDENTIAL_BROADCAST_TIMEOUT_MS: Outer timeout for a credential-daemon broadcast
     // request, enforced by the bot socket client (modules/dexbot_credential_client.ts).
@@ -910,13 +911,16 @@ let MARKET_ADAPTER = {
     },
 
     // Watchdog defaults for launchers that supervise the standalone adapter.
-    // Reuse existing node-startup and recovery timings so restart polling and
-    // stability windows stay aligned with the rest of the runtime.
+    // The tick interval is the shared TIMING.BOTS_CONFIG_POLL_INTERVAL_MS so
+    // the wrapper watchdog and the per-bot fallback poll stay aligned on one
+    // constant; restart/stability windows reuse the recovery timings below.
     WATCHDOG_DEFAULTS: {
         staleLockGraceMs: 30 * 60 * 1000,
-        // Poll every 30s during startup/recovery and allow 13 fast retries:
-        // enough to ride out transient launch failures without retrying forever.
-        intervalMs: NODE_MANAGEMENT.STARTUP_REFRESH_INTERVAL_MS,
+        // Tick every BOTS_CONFIG_POLL_INTERVAL_MS (1min) and allow 13 retries:
+        // enough to ride out transient launch failures without retrying
+        // forever. Note the cadence: at 1min/tick the restart budget spans
+        // ~13min of no-adapter time before the watchdog gives up.
+        intervalMs: TIMING.BOTS_CONFIG_POLL_INTERVAL_MS,
         maxRestarts: 13,
         minUptimeMs: PIPELINE_TIMING.RECOVERY_RETRY_INTERVAL_MS,
         restartExhaustionResetMs: PIPELINE_TIMING.RECOVERY_DECAY_FALLBACK_MS,
