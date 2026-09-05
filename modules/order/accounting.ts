@@ -80,8 +80,8 @@ const require = createRequire(import.meta.url);
 
 import { ORDER_TYPES, ORDER_STATES, PIPELINE_TIMING, TIMING, FEE_PARAMETERS, GRID_LIMITS } from '../constants.js';
 import { resolveAccountRef } from './utils/system.js';
-import { resolveSpreadOrderSide, parseSlotIndex } from './utils/order.js';
-import { isSlotInRail } from './utils/math.js';
+import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, applyChainSizeToGridOrder, convertToSpreadPlaceholder } from './utils/order.js';
+import { isSlotInRail, floatToBlockchainInt } from './utils/math.js';
 import * as Format from './format.js';
 import * as fundRegistry from '../fund_registry.js';
 import * as chainOrders from '../chain_orders.js';
@@ -674,7 +674,22 @@ class Accountant {
         }
 
         // 1. Fetch fresh blockchain state
+        // Verify the fetch actually refreshed: _setAccountTotals stamps
+        // _lastFetchedAt only when the balance lookup succeeded. A failed fetch
+        // leaves the stale/optimistic snapshot in place — validating against it
+        // reports the drift as unfixable and burns a recovery attempt on data
+        // no amount of re-syncing can repair (production incident 2026-09-05:
+        // SELL drift 7.4151 reported identical before and after recovery).
+        const fetchedBefore = mgr.accountTotals?._lastFetchedAt || 0;
         await mgr.fetchAccountTotals(accountRef);
+        const fetchedAfter = mgr.accountTotals?._lastFetchedAt || 0;
+        if (fetchedAfter <= fetchedBefore) {
+            return {
+                isValid: false,
+                deferred: true,
+                reason: 'Recovery fetch did not refresh accountTotals (chain read failed or returned no balances) — deferring to next reconcile cycle instead of validating stale/optimistic balances',
+            };
+        }
         // After a fresh chain fetch, reset the orphan-fill credit
         // timestamp. The fetched values now incorporate on-chain fill
         // proceeds, so the temporary invariant tolerance is no longer needed.
@@ -726,7 +741,33 @@ class Accountant {
         }
 
         if (typeof mgr.checkFundDriftAfterFills === 'function') {
-            const driftValidation = mgr.checkFundDriftAfterFills();
+            let driftValidation = mgr.checkFundDriftAfterFills();
+            if (driftValidation && driftValidation.isValid === false) {
+                // Drift persisted past the structural resync. The sync re-matches
+                // orders but leaves the tracked commitment (grid ACTIVE/PARTIAL
+                // sizes) and the optimistic free balance un-reconciled when the
+                // divergence came from fill/broadcast races — re-matching alone
+                // reports the same drift forever (production incident 2026-09-05:
+                // SELL drift 7.4151 survived every recovery attempt). Rebuild the
+                // tracked commitment from the fresh chain read, recompute fund
+                // totals from the reconciled grid, and re-measure.
+                const recalibration = await this._recalibrateTrackedFundsFromChain(mgr, openOrders);
+                if (recalibration.attempted > 0) {
+                    mgr.logger?.log?.(
+                        `[RECOVERY] Fund recalibration from chain: attempted=${recalibration.attempted} ` +
+                        `resized=${recalibration.resized} virtualized=${recalibration.virtualized} rejected=${recalibration.rejected}`,
+                        'warn'
+                    );
+                    try {
+                        if (typeof mgr.recalculateFunds === 'function') {
+                            await mgr.recalculateFunds();
+                        }
+                    } catch (recalcErr: any) {
+                        mgr.logger?.log?.(`[RECOVERY] Post-recalibration fund recalc failed: ${getErrorMessage(recalcErr)}`, 'warn');
+                    }
+                    driftValidation = mgr.checkFundDriftAfterFills();
+                }
+            }
             if (driftValidation && driftValidation.isValid === false) {
                 if (unmatchedChainOrders.length > 0) {
                     return {
@@ -741,6 +782,113 @@ class Accountant {
         }
 
         return persistenceValidation;
+    }
+
+    /**
+     * Rebuild the tracked fund commitment from a fresh chain read (recovery
+     * recalibration).
+     *
+     * Runs AFTER the structural sync when the fund-drift check still fails.
+     * The sync re-matches orders but reconciliation short-circuits (pending
+     * price corrections, committed-order guards, rejected updates) can leave
+     * grid ACTIVE/PARTIAL sizes diverged from the chain's actual open-order
+     * sizes — the tracked total then disagrees with chain truth and every
+     * recovery attempt re-reports the same drift without repairing it.
+     *
+     * Conservative sweep, mirroring pass-1 semantics:
+     * - Matched order (orderId present in the fresh read, same type):
+     *   force slot size to the chain size; transition to PARTIAL when the
+     *   chain shows a smaller remainder; virtualize when fully consumed.
+     * - Absent order: leave untouched when recently committed/assigned
+     *   (the chain read may lag a live broadcast — virtualizing then would
+     *   strand live orders); otherwise treat as gone and virtualize.
+     * - Free balances are NEVER derived here (total − grid would absorb
+     *   third-party locked funds on shared accounts); they stay as fetched.
+     *
+     * Every mutation honors _applyOrderUpdate's result: a rejected update
+     * (fatal validation) is counted, not recorded as repaired.
+     *
+     * @param {Object} mgr - Manager instance
+     * @param {Array} openOrders - Fresh raw chain open orders (same read the sync used)
+     * @returns {Promise<{attempted: number, resized: number, virtualized: number, rejected: number}>}
+     */
+    async _recalibrateTrackedFundsFromChain(mgr: any, openOrders: any[]) {
+        const result = { attempted: 0, resized: 0, virtualized: 0, rejected: 0 };
+        if (!mgr?.orders || !Array.isArray(openOrders) || openOrders.length === 0) return result;
+
+        const parsedChainOrders = new Map();
+        for (const order of openOrders) {
+            try {
+                const parsed = parseChainOrder(order, mgr.assets);
+                if (!parsed) continue;
+                parsedChainOrders.set(order.id, parsed);
+            } catch { continue; }
+        }
+
+        const applyUpdate = async (nextOrder: any, context: string): Promise<boolean> => {
+            try {
+                const applied = await mgr._applyOrderUpdate(nextOrder, context, { skipAccounting: true, fee: 0 });
+                return applied !== false;
+            } catch (err: any) {
+                // _throwOnIllegalState mode throws instead of returning false —
+                // one rejected slot must not abort the whole sweep.
+                mgr.logger?.log?.(`[RECOVERY] Recalibration update rejected for ${nextOrder?.id}: ${getErrorMessage(err)}`, 'warn');
+                return false;
+            }
+        };
+
+        const sweep = async () => {
+            for (const gridOrder of Array.from(mgr.orders.values() as any[])) {
+                if (!gridOrder?.orderId) continue;
+                if (gridOrder.state !== ORDER_STATES.ACTIVE && gridOrder.state !== ORDER_STATES.PARTIAL) continue;
+                const chainOrder = parsedChainOrders.get(gridOrder.orderId);
+
+                if (chainOrder) {
+                    if (chainOrder.type !== gridOrder.type) continue; // type mismatches belong to the corrections path
+                    const precision = chainOrder.type === ORDER_TYPES.SELL ? mgr.assets.assetA.precision : mgr.assets.assetB.precision;
+                    let gridInt: number;
+                    let chainInt: number;
+                    try {
+                        gridInt = floatToBlockchainInt(gridOrder.size, precision);
+                        chainInt = floatToBlockchainInt(chainOrder.size, precision);
+                    } catch { continue; }
+                    if (gridInt === chainInt) continue;
+                    result.attempted++;
+                    if (chainInt <= 0) {
+                        const spreadOrder = convertToSpreadPlaceholder(gridOrder);
+                        if (await applyUpdate(spreadOrder, 'recovery-fund-recalibration')) result.virtualized++;
+                        else result.rejected++;
+                        continue;
+                    }
+                    let updated: any = null;
+                    try { updated = await applyChainSizeToGridOrder(mgr, gridOrder, chainOrder.size); } catch { updated = null; }
+                    const next: any = { ...gridOrder, ...(updated || {}) };
+                    if (chainInt < gridInt) next.state = ORDER_STATES.PARTIAL;
+                    if (await applyUpdate(next, 'recovery-fund-recalibration')) result.resized++;
+                    else result.rejected++;
+                } else {
+                    // Absent from the fresh read — same lag guards as pass 1's
+                    // committed-order escape hatches.
+                    const commitAge = Date.now() - (mgr._committedOrderIdsBuiltAt || 0);
+                    const recentCommit = mgr._committedOrderIds?.has?.(gridOrder.orderId) && commitAge < TIMING.SYNC_LOCK_TIMEOUT_MS;
+                    const assignedAt = mgr._orderIdAssignedAt?.get?.(gridOrder.orderId) || 0;
+                    const recentAssign = assignedAt > 0 && (Date.now() - assignedAt) < TIMING.SYNC_LOCK_TIMEOUT_MS;
+                    if (recentCommit || recentAssign) continue;
+                    result.attempted++;
+                    const spreadOrder = convertToSpreadPlaceholder(gridOrder);
+                    if (await applyUpdate(spreadOrder, 'recovery-fund-recalibration')) result.virtualized++;
+                    else result.rejected++;
+                }
+            }
+        };
+
+        try {
+            if (mgr._gridLock?.acquire) await mgr._gridLock.acquire(sweep);
+            else await sweep();
+        } catch (err: any) {
+            mgr.logger?.log?.(`[RECOVERY] Fund recalibration sweep failed: ${getErrorMessage(err)}`, 'warn');
+        }
+        return result;
     }
 
       /**

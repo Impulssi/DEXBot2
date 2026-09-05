@@ -452,7 +452,12 @@ async function runRecoveryReadTests() {
         fullAccountsResponse = [['1.2.345', { limit_orders: stubOrders, more_data_available: { limit_orders: false } }]];
 
         let capturedSyncOptions = null;
-        manager.fetchAccountTotals = async () => { };
+        // Recovery verifies the fetch actually refreshed accountTotals
+        // (_lastFetchedAt advanced) before trusting the balances — a no-op
+        // fetch stub must simulate the refresh stamp.
+        manager.fetchAccountTotals = async () => {
+            manager.accountTotals = { ...(manager.accountTotals || {}), _lastFetchedAt: Date.now() };
+        };
         manager.syncFromOpenOrders = async (_orders, options) => {
             capturedSyncOptions = options;
             return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
@@ -472,7 +477,9 @@ async function runRecoveryReadTests() {
         fullAccountsResponse = [['1.2.345', { limit_orders: [], more_data_available: { limit_orders: false } }]];
 
         let syncCalled = false;
-        manager.fetchAccountTotals = async () => { };
+        manager.fetchAccountTotals = async () => {
+            manager.accountTotals = { ...(manager.accountTotals || {}), _lastFetchedAt: Date.now() };
+        };
         manager.syncFromOpenOrders = async () => { syncCalled = true; };
 
         const result = await manager.accountant._performStateRecovery(manager);

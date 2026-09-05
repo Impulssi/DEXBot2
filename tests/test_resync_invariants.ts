@@ -228,7 +228,12 @@ async function runTests() {
         });
 
         manager.accountId = '1.2.test';
-        manager.fetchAccountTotals = async () => {};
+        // Recovery verifies the fetch actually refreshed accountTotals
+        // (_lastFetchedAt advanced) before trusting the balances — the fetch
+        // stub must simulate the refresh stamp.
+        manager.fetchAccountTotals = async () => {
+            manager.accountTotals = { ...(manager.accountTotals || {}), _lastFetchedAt: Date.now() };
+        };
         manager.syncFromOpenOrders = async () => ({ filledOrders: [], updatedOrders: [] });
         // A NON-EMPTY, NON-TRUNCATED read is authoritative, so the recovery
         // sync runs and the drift check fires. (An empty/truncated read now
