@@ -579,14 +579,43 @@ async function main() {
       console.log('');
       await printAssetLines('Credit coll', creditSum.coll, true, colors.buy);
       if (creditPairs.length > 0) console.log('');
-      // Compact CR summary: one Curr. CR line per whitelisted pair, one
-      // Avar. CR line per bot. A CR exists only for pairs both whitelisted
+      // Compact CR summary: one Avar. CR line per bot, then one Curr. CR
+      // line per whitelisted pair. A CR exists only for pairs both whitelisted
       // in bots.json and listed on the current credit offer.
       const feeDenom = Number(FEE_PARAMETERS?.GRAPHENE_FEE_RATE_DENOM) || 1000000;
       const walletRaw = await fetchWalletRaw(account);
       const matchPair = (pair: { debtId: string | null; debtSym: string; collId: string | null; collSym: string }, r: CrRow): boolean =>
         (pair.debtId !== null && r.debtId !== null && pair.debtId === r.debtId && pair.collId !== null && r.collId !== null && pair.collId === r.collId) ||
         (pair.debtSym.toUpperCase() === r.debtSym.toUpperCase() && pair.collSym.toUpperCase() === r.collSym.toUpperCase());
+      if (avgCr !== null) {
+        // Label in orange to distinguish from Curr. CR; value keeps the
+        // original health color (single shared max → green/red, mixed or
+        // undefined max → white).
+        const avgMaxSet = new Set<number>();
+        for (const r of pricedSupported) {
+          const pair = creditPairs.find((p) => matchPair(p, r));
+          if (pair?.maxCR != null) avgMaxSet.add(pair.maxCR);
+        }
+        const avgMax = avgMaxSet.size === 1 ? [...avgMaxSet][0] : null;
+        const avgColor = avgMax === null ? colors.white : avgCr > avgMax ? colors.sell : colors.buy;
+        const pairTotals = new Map<string, { debtSym: string; collSym: string; debt: number; coll: number }>();
+        for (const r of pricedSupported) {
+          const key = `${r.debtSym}←${r.collSym}`;
+          if (!pairTotals.has(key)) {
+            pairTotals.set(key, { debtSym: r.debtSym, collSym: r.collSym, debt: 0, coll: 0 });
+          }
+          const t = pairTotals.get(key)!;
+          t.debt += r.debtFloat || 0;
+          t.coll += r.collFloat || 0;
+        }
+        const segments = [...pairTotals.values()]
+          .map((t) => `${formatAmount(t.debt)} ${t.debtSym} ← ${formatAmount(t.coll)} ${t.collSym}`)
+          .join(' + ');
+        console.log(`   ${colors.orange}${colors.bold}Avar. CR:${colors.reset} ${avgColor}${formatAmount(avgCr)}${colors.reset}, ${segments} ${colors.gray}(x${pricedSupported.length})${colors.reset}`);
+      } else if (supportedRows.length > 0) {
+        console.log(`   ${colors.orange}${colors.bold}Avar. CR:${colors.reset} n/a (no priced, available credit)`);
+      }
+      if ((avgCr !== null || supportedRows.length > 0) && creditPairs.length > 0) console.log('');
       for (const pair of creditPairs) {
         const pairRows = supportedRows.filter((r) => matchPair(pair, r));
         const pricedPair = pairRows.filter((r) => r.cr !== null && r.value !== null && r.debtFloat !== null);
@@ -645,35 +674,7 @@ async function main() {
         const availText = avail !== null && avail > 0
           ? `${formatAmount(avail)} ${pair.debtSym} avail.`
           : 'no funds avail.';
-        console.log(`   ${colors.bold}Curr. CR:${colors.reset} ${crColor}${crText}${colors.reset} ${pair.debtSym}←${pair.collSym} | ${availText}`);
-      }
-      if (creditPairs.length > 0) console.log('');
-      if (avgCr !== null) {
-        // Color against the pairs' user max: single shared max → green/red,
-        // mixed or undefined max → white (same rule as Current CR).
-        const avgMaxSet = new Set<number>();
-        for (const r of pricedSupported) {
-          const pair = creditPairs.find((p) => matchPair(p, r));
-          if (pair?.maxCR != null) avgMaxSet.add(pair.maxCR);
-        }
-        const avgMax = avgMaxSet.size === 1 ? [...avgMaxSet][0] : null;
-        const avgColor = avgMax === null ? colors.white : avgCr > avgMax ? colors.sell : colors.buy;
-        const pairTotals = new Map<string, { debtSym: string; collSym: string; debt: number; coll: number }>();
-        for (const r of pricedSupported) {
-          const key = `${r.debtSym}←${r.collSym}`;
-          if (!pairTotals.has(key)) {
-            pairTotals.set(key, { debtSym: r.debtSym, collSym: r.collSym, debt: 0, coll: 0 });
-          }
-          const t = pairTotals.get(key)!;
-          t.debt += r.debtFloat || 0;
-          t.coll += r.collFloat || 0;
-        }
-        const segments = [...pairTotals.values()]
-          .map((t) => `${formatAmount(t.debt)} ${t.debtSym} ← ${formatAmount(t.coll)} ${t.collSym}`)
-          .join(' + ');
-        console.log(`   ${colors.bold}Avar. CR:${colors.reset} ${avgColor}${formatAmount(avgCr)}${colors.reset}, ${segments} ${colors.gray}(x${pricedSupported.length})${colors.reset}`);
-      } else if (supportedRows.length > 0) {
-        console.log(`   ${colors.bold}Avar. CR:${colors.reset} n/a (no priced, available credit)`);
+        console.log(`   ${colors.white}${colors.bold}Curr. CR:${colors.reset} ${crColor}${crText}${colors.reset}, ${pair.debtSym}←${pair.collSym} | ${availText}`);
       }
       // Split by reason so the runtime/analyzer asymmetry is visible:
       // "not whitelisted" never counts anywhere; "no offer price" is
