@@ -1320,11 +1320,18 @@ class Accountant {
                 const sideForPrecision = newSideType || oldSideType;
 
                 if (mgr.logger && mgr.logger.level === 'debug') {
+                    // Debug-formatter guard: formatSizeByOrderType throws on an
+                    // unresolvable side (precision undefined). A debug line must
+                    // never crash the accounting flow — fall back to raw numbers.
+                    const sideIsResolvable = sideForPrecision === ORDER_TYPES.BUY || sideForPrecision === ORDER_TYPES.SELL;
+                    const fmtSize = (value: any) => sideIsResolvable
+                        ? Format.formatSizeByOrderType(value, sideForPrecision, mgr.assets)
+                        : toFiniteNumber(value);
                     mgr.logger.log(
                         `[ACCOUNTING] updateOptimisticFreeBalance: id=${newOrder.id}, type=${newOrder.type}, ` +
                         `state=${oldOrder.state}->${newOrder.state}, ` +
-                        `size=${Format.formatSizeByOrderType(oldSize, sideForPrecision ?? '', mgr.assets)}->${Format.formatSizeByOrderType(newSize, sideForPrecision ?? '', mgr.assets)}, ` +
-                        `delta=${Format.formatSizeByOrderType(commitmentDelta, sideForPrecision ?? '', mgr.assets)}, context=${context}`,
+                        `size=${fmtSize(oldSize)}->${fmtSize(newSize)}, ` +
+                        `delta=${fmtSize(commitmentDelta)}, context=${context}`,
                         'debug'
                     );
                 }
