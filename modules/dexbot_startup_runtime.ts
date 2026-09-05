@@ -23,6 +23,7 @@ function withBlockchainRetry(...args: any) { return require('./order/utils/syste
 function buildFillKey(...args: any) { return require('./order/utils/order').buildFillKey(...args); }
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
 function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
+function restoreGapEvacStreaks(...args: any) { return require('./order/utils/system').restoreGapEvacStreaks(...args); }
 const storage = getStorage();
 function attemptResumePersistedGridByPriceMatch(...args: any) { return require('./order/grid_reconcile').attemptResumePersistedGridByPriceMatch(...args); }
 function decideStartupGridAction(...args: any) { return require('./order/grid_reconcile').decideStartupGridAction(...args); }
@@ -137,6 +138,7 @@ async function initializeStartupState(bot: any) {
     const persistedBtsBalance = bot.accountOrders.loadBtsBalance();
     const persistedRecentFillKeys = bot.accountOrders.loadRecentFillKeys();
     const persistedGenesis = bot.accountOrders.loadGenesis?.() ?? null;
+    const persistedGapEvacStreaks = bot.accountOrders.loadGapEvacStreaks?.() ?? null;
 
     return {
         persistedGrid: repairedGrid,
@@ -145,6 +147,7 @@ async function initializeStartupState(bot: any) {
         persistedBtsBalance,
         persistedRecentFillKeys,
         persistedGenesis,
+        persistedGapEvacStreaks,
     };
 }
 
@@ -161,6 +164,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
         persistedBtsBalance,
         persistedRecentFillKeys,
         persistedGenesis,
+        persistedGapEvacStreaks,
     } = startupState;
 
     try {
@@ -534,6 +538,14 @@ async function finishStartupSequence(bot: any, startupState: any) {
                 } else {
                     bot._log('Found active session. Loading and syncing existing grid.');
                     await botGridModule(bot).loadGrid(bot.manager, persistedGrid, persistedBoundaryIdx, persistedGenesis);
+                    // Phase 3 restart resilience: restore persisted gap-evacuation
+                    // streaks (pruned to surviving slots) so an order stranded
+                    // in-band across frequent restarts still reaches the cancel
+                    // threshold instead of resetting its cycle count each boot.
+                    const restoredStreaks = restoreGapEvacStreaks(bot.manager, persistedGapEvacStreaks);
+                    if (restoredStreaks > 0) {
+                        bot._log(`[GAP-EVAC] Restored ${restoredStreaks} persisted in-band streak(s) from snapshot`);
+                    }
                     let startupChainOpenOrders = chainOpenOrders;
                     if (chainReadTruncated) {
                         // Sync on a partial window would virtualize live ACTIVE

@@ -892,6 +892,13 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
         const btsFeesOwed = fundSnapshot?.btsFeesOwed ?? manager.funds.btsFeesOwed;
         const accountTotals = (fundSnapshot?.accountTotals ?? manager.accountTotals) || null;
         const genesis = (manager as any)._genesis || null;
+        // Gap-evacuation streaks (Phase 3 restart resilience): Map -> plain
+        // object; empty map persists as cleared so stale ids never resurrect.
+        // Non-Map (legacy callers without the field) passes undefined so
+        // storeMasterGrid leaves any previously stored streaks untouched.
+        const gapEvacStreaks = manager._gapEvacStreaks instanceof Map
+            ? Object.fromEntries([...manager._gapEvacStreaks.entries()].filter(([, n]) => Number.isFinite(Number(n)) && Number(n) > 0))
+            : undefined;
         await accountOrders.storeMasterGrid(
             orders,
             btsFeesOwed,
@@ -904,7 +911,8 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
                 btsBalance
             },
             fillKeys,
-            genesis
+            genesis,
+            gapEvacStreaks
         );
         return true;
     } catch (e: any) {
@@ -913,9 +921,38 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
 }
 
 /**
+ * Restore persisted gap-evacuation streaks into the manager (Phase 3
+ * restart resilience). Entries are pruned to slots that still exist in the
+ * loaded grid and to finite positive counts, so a grid reset (or a renamed
+ * slot scheme) can never resurrect stale streaks. The queued-once cancel
+ * markers (_gapEvacCancelQueued) deliberately stay in-memory: they are only
+ * meaningful alongside the in-memory corrections queue, which is empty
+ * after a restart.
+ *
+ * @param {Object} manager - OrderManager instance
+ * @param {Object|null} persisted - {slotId: count} from loadGapEvacStreaks
+ * @returns {number} Number of streak entries restored
+ */
+export function restoreGapEvacStreaks(manager: any, persisted: any): number {
+    if (!manager) return 0;
+    const streaks = new Map();
+    if (persisted && typeof persisted === 'object') {
+        for (const [id, count] of Object.entries(persisted)) {
+            const n = Math.floor(Number(count));
+            if (id && Number.isFinite(n) && n > 0
+                && manager.orders instanceof Map && manager.orders.has(id)) {
+                streaks.set(id, n);
+            }
+        }
+    }
+    manager._gapEvacStreaks = streaks;
+    return streaks.size;
+}
+
+/**
  * Retry grid persistence if previous attempt failed.
  * Clears persistence warning flag if successful.
- * 
+ *
  * @param {Object} manager - OrderManager instance
  * @returns {Promise<boolean>} True if persisted successfully or no warning, false on error
  */

@@ -38,6 +38,7 @@ const NAMES = {
         'readPassword', 'resolveAccountRef', 'resolveAssetByRef', 'sleep',
         'withBlockchainRetry', 'retryPersistenceIfNeeded',
         'applyGridDivergenceCorrections', 'initializeFeeCache',
+        'restoreGapEvacStreaks',
     ],
     format: ['formatCurrency', 'formatMetric2', 'isValidNumber', 'toFiniteNumber', 'formatPrice6'],
     orderUtils: [
