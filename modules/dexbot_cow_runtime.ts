@@ -1624,6 +1624,9 @@ function validateOrderSizeForExecution(bot: any, size: any, type: any, orderLike
  *  e.g. x=1000, i=0.5% => BUY < 997.5, SELL > 1002.5
  * Cold (pivot null or lastType null) => disabled. Spread-correction CREATES
  * bypass per-action (see broadcast sites); rotations never bypass.
+ * The pivot is the latest fill of either side and is never expired: it stays
+ * the durable mark (last sold level floors new sells; buy fills pull it down
+ * and re-open the sell side, buy-below-sell is never gated).
  * @param {number} price - Target order price
  * @param {number} size - Order size (unused, kept for compat)
  * @param {string} type - ORDER_TYPES.BUY/SELL
