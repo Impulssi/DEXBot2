@@ -283,8 +283,16 @@ function printCLIExamples() {
 }
 
 if (cliArgs.some(arg => CLI_HELP_FLAGS.includes(arg))) {
-    printCLIUsage();
-    process.exit(0);
+    // Commands whose target scripts own their `--help` output keep the flag
+    // so the script prints its usage. Only scripts with offline help handling
+    // belong here — forwarding to a script without it could misinterpret the
+    // flag as input (e.g. a bot-name filter triggering live work).
+    const HELP_OWNING_COMMANDS = new Set(['credit', 'tv']);
+    const requestedCommand = COMMAND_ALIASES[cliArgs[0]] ?? cliArgs[0];
+    if (!HELP_OWNING_COMMANDS.has(requestedCommand)) {
+        printCLIUsage();
+        process.exit(0);
+    }
 }
 
 if (cliArgs.includes(CLI_EXAMPLES_FLAG)) {
