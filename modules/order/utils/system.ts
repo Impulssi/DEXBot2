@@ -1096,7 +1096,23 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                     }
 
                     const current = slot || onChainOrder;
-                    workingGrid.set(onChainOrder.id, OrderUtils.convertToSpreadPlaceholder(current));
+                    // Rail-aware hole (Phase 2): a cancelled in-rail surplus
+                    // stays a rail-typed VIRTUAL hole (size preserved for the
+                    // rotation pairing downstream); only true gap-band slots
+                    // become side-neutral SPREAD.
+                    const holeGeoType = OrderUtils.geometryTypeForSlotIndex(
+                        OrderUtils.parseSlotIndex
+                            ? OrderUtils.parseSlotIndex(current?.id)
+                            : null,
+                        workingBoundaryIdx,
+                        gapSlots
+                    );
+                    workingGrid.set(
+                        onChainOrder.id,
+                        (holeGeoType === ORDER_TYPES.BUY || holeGeoType === ORDER_TYPES.SELL)
+                            ? OrderUtils.toRailHolePlaceholder(current, holeGeoType)
+                            : OrderUtils.convertToSpreadPlaceholder(current)
+                    );
                     continue;
                 }
 
@@ -1158,7 +1174,9 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         // removes churn when a fund-driven boundary shift re-types slots. The COW
         // executor already handles rotation UPDATEs (newGridId + newPrice remap).
         const optimizedActions = optimizeRebalanceActions(actions, manager.orders, {
-            logger: (msg: any, level: any) => manager.logger?.log?.(msg, level)
+            logger: (msg: any, level: any) => manager.logger?.log?.(msg, level),
+            boundaryIdx: pendingBoundaryIdx,
+            gapSlots: manager._gapSlots
         });
         if (optimizedActions !== actions) {
             actions.length = 0;

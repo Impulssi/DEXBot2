@@ -536,6 +536,20 @@ let GRID_LIMITS = {
     //         Buy @ 99.9, empty, Sell @ 100.0 → 1-slot spread (too tight, rebalance triggered)
     MIN_SPREAD_ORDERS: 2,
 
+    // GAP_EVACUATION_STREAK_THRESHOLD: Consecutive rebalance cycles a live
+    // on-chain order may sit inside the gap band (by slot-index geometry)
+    // before it is treated as a stuck gap-evacuation candidate. The streak
+    // is in-memory on the manager and resets on restart (a restart re-plans
+    // evacuation from scratch anyway).
+    GAP_EVACUATION_STREAK_THRESHOLD: 2,
+
+    // GAP_EVACUATION_CANCEL_THRESHOLD: Consecutive cycles after which the
+    // manager queues a cancel-only evacuation correction for a stuck in-band
+    // order (detected by GAP_EVACUATION_STREAK_THRESHOLD, which acts as the
+    // warn threshold one cycle earlier). Cancel settles the slot back to a
+    // spread placeholder — no re-placement, fee-light.
+    GAP_EVACUATION_CANCEL_THRESHOLD: 3,
+
 
     // Grid comparison metrics
     // Detects significant divergence between calculated (in-memory) and persisted grid state

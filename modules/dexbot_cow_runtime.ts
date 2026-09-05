@@ -21,13 +21,15 @@ const {
     extractBatchOperationResults,
     formatUnmatchedChainOrder,
     convertToSpreadPlaceholder,
+    toRailHolePlaceholder,
     buildOutsideInPairGroups,
     isOrderPlaced,
 } = orderUtils as any;
 import * as validate from './order/utils/validate.js';
 const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions } = validate as any;
 import * as math from './order/utils/math.js';
-const { validateOrderSize, findCrossedOrder, priceSlotEqual } = math as any;
+const { validateOrderSize, findCrossedOrder, priceSlotEqual, isEvacuationRotationAllowed, getSellStartIdx, getPrecisionByOrderType } = math as any;
+import { parseSlotIndex } from './order/utils/slot.js';
 function hasSlotPriceCollision(items: any[], targetPrice: number, precision: number, excludeId: string | null, predicate?: (it:any)=>boolean) {
     for (const it of items) {
         if (predicate && !predicate(it)) continue;
@@ -1623,7 +1625,10 @@ function validateOrderSizeForExecution(bot: any, size: any, type: any, orderLike
  *  last fill @x with increment i: BUY < x*(1 - i/2/100), SELL > x*(1 + i/2/100)
  *  e.g. x=1000, i=0.5% => BUY < 997.5, SELL > 1002.5
  * Cold (pivot null or lastType null) => disabled. Spread-correction CREATES
- * bypass per-action (see broadcast sites); rotations never bypass.
+ * bypass per-action (see broadcast sites); gap-evacuation rotation UPDATEs
+ * bypass only via the violation-reducing allowance (origin='gap-evacuation',
+ * UPDATE-only, frozen B-stamp or live-proven isEvacuationRotationAllowed) —
+ * see the UPDATE rotation guard block.
  * The pivot is the latest fill of either side and is never expired: it stays
  * the durable mark (last sold level floors new sells; buy fills pull it down
  * and re-open the sell side, buy-below-sell is never gated).
@@ -1787,7 +1792,28 @@ function buildActionsFromPlan(_bot: any, plan: any) {
     // inherit the spread-correction bypass. Actions built outside this helper
     // carry no origin and default to guarded (safe default).
     const planOrigin = (normalizedPlan as any)?.origin;
-    const withOrigin = (action: any) => (planOrigin ? { ...action, origin: planOrigin } : action);
+    // B-stamp: freeze the boundary + gap width AT PLAN-BUILD TIME. Plans can
+    // validate against a later-committed boundary, so the guard must judge
+    // evacuations against the geometry the plan was built for — never a
+    // re-derived live value at validation time.
+    const frozenBoundaryRaw = Number(
+        (normalizedPlan as any)?.boundaryIdx ?? (_bot as any)?.manager?.boundaryIdx
+    );
+    const frozenGapRaw = Number(
+        (normalizedPlan as any)?.gapSlots ?? (_bot as any)?.manager?._gapSlots
+    );
+    const hasFrozenGeometry = Number.isFinite(frozenBoundaryRaw) && Number.isFinite(frozenGapRaw) && frozenGapRaw >= 0;
+    const withOrigin = (action: any) => {
+        if (!planOrigin) return action;
+        const stamped: any = { ...action, origin: planOrigin };
+        // The gap-evacuation B-stamp rides on UPDATE actions only — CREATEs
+        // carry no source slot and can never claim an evacuation bypass.
+        if (planOrigin === 'gap-evacuation' && action?.type === COW_ACTIONS.UPDATE && hasFrozenGeometry) {
+            stamped.evacBoundary = frozenBoundaryRaw;
+            stamped.evacGapSlots = Math.floor(frozenGapRaw);
+        }
+        return stamped;
+    };
 
     const actions: any[] = [];
 
@@ -1881,11 +1907,28 @@ function buildCowResultFromPlan(bot: any, plan: any) {
         : bot.manager.boundaryIdx;
     const actions = buildActionsFromPlan(bot, plan);
 
+    // Rail-aware hole projection (Phase 2): a cleared in-rail slot stays a
+    // rail-typed VIRTUAL hole with its booked size preserved (rotation
+    // sources keep the remainder the guard/plan must see); only true
+    // gap-band slots become side-neutral SPREAD holes.
+    const toWorkingHole = (slot: any) => {
+        try {
+            const idx = parseSlotIndex(slot?.id);
+            const b = Number(workingBoundary);
+            const gapSlots = Number((bot as any)?.manager?._gapSlots);
+            if (idx !== null && idx !== undefined && Number.isFinite(b) && Number.isFinite(gapSlots) && gapSlots >= 0) {
+                if (Number(idx) <= b) return toRailHolePlaceholder(slot, ORDER_TYPES.BUY);
+                if (Number(idx) >= getSellStartIdx(b, gapSlots)) return toRailHolePlaceholder(slot, ORDER_TYPES.SELL);
+            }
+        } catch { /* fall through to SPREAD */ }
+        return convertToSpreadPlaceholder(slot);
+    };
+
     for (const action of actions) {
         if (action.type === COW_ACTIONS.CANCEL) {
             const current = workingGrid.get(action.id);
             if (!current) continue;
-            workingGrid.set(action.id, convertToSpreadPlaceholder(current));
+            workingGrid.set(action.id, toWorkingHole(current));
         } else if (action.type === COW_ACTIONS.CREATE) {
             if (!action.id || !action.order) continue;
             const current = workingGrid.get(action.id) || { id: action.id };
@@ -1900,7 +1943,7 @@ function buildCowResultFromPlan(bot: any, plan: any) {
             if (action.newGridId && action.newGridId !== action.id) {
                 const current = workingGrid.get(action.id);
                 if (current) {
-                    workingGrid.set(action.id, convertToSpreadPlaceholder(current));
+                    workingGrid.set(action.id, toWorkingHole(current));
                 }
 
                 const targetId = action.newGridId;
@@ -1966,7 +2009,11 @@ function applyRotationTransitionsToWorkingGrid(bot: any, workingGrid: any, execu
         const { rotation } = ctx;
         const { oldOrder, newGridId, newPrice, newSize, type } = rotation;
 
-        // Source slot → VIRTUAL (if it's a different slot)
+        // Source slot → VIRTUAL (if it's a different slot). Phase 2: the
+        // source stays a RAIL-TYPED hole with its booked size preserved —
+        // only state/orderId/rawOnChain are cleared, never type or size
+        // (no SPREAD retype, no zeroing). In-rail sources must remain
+        // visible to candidate-selection and evacuation geometry.
         if (oldOrder?.id && oldOrder.id !== newGridId) {
             const sourceSlot = workingGrid.get(oldOrder.id);
             if (sourceSlot && sourceSlot.orderId) {
@@ -3100,13 +3147,76 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             continue;
                         }
 
-                        // LAST-FILL PRICE GUARD (UPDATE rotation): pivot ± halfIncrement — same as CREATE.
-                        // No origin bypass here, ever: a rotation reprices, so it always obeys the guard —
-                        // even if a future correction plan carries rotation entries (per-action scoping).
+                        // LAST-FILL PRICE GUARD (UPDATE rotation): pivot ± halfIncrement — same as CREATE,
+                        // plus the GAP-EVACUATION ALLOWANCE (violation-reducing): a rotation stamped
+                        // origin='gap-evacuation' at plan-build moves a live order OUT of the gap band
+                        // onto its rail with bit-exact non-growing size — it shrinks the violation
+                        // surface instead of adding exposure, so it bypasses the guard. The bypass
+                        // is UPDATE-only (CREATEs carry no source slot and can never qualify) and
+                        // honors the frozen B-stamp (evacBoundary/evacGapSlots captured when the
+                        // plan was built — never re-derived here, since plans can validate against
+                        // a later-committed boundary):
+                        // - B-stamped: plan-build geometry already proved the evacuation; bypass
+                        //   outright (logged + counted as bypassed).
+                        // - Unstamped gap-evacuation: prove it live from oldPrice/oldSize read
+                        //   off the MASTER grid above (bot.manager.orders.get, before rotation
+                        //   pre-application virtualizes sources — after that the lookup lies);
+                        //   fail closed (block) when unresolvable; otherwise run the pure
+                        //   isEvacuationRotationAllowed decision and bypass only on allow.
+                        // Everything else obeys the guard (per-action scoping: a rotation entry
+                        // merged into another plan inherits no bypass).
                         // The pivot is refreshed from still-queued fills first: fills detected mid-broadcast
                         // sit in _incomingFillQueue until the fill cycle ends, and without this the later
                         // chunks of a long broadcast would be checked against a stale pivot.
                         try {
+                            let bypassedEvacuation = false;
+                            const rotationOrigin = (action as any)?.origin;
+                            if (rotationOrigin === 'gap-evacuation') {
+                                const frozenB = Number((action as any)?.evacBoundary);
+                                const frozenG = Number((action as any)?.evacGapSlots);
+                                if (Number.isFinite(frozenB) && Number.isFinite(frozenG)) {
+                                    bypassedEvacuation = true;
+                                    bot.manager.logger.log(
+                                        `[LAST-FILL-GUARD] Allowing ${orderType} evacuation UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: ` +
+                                        `gap-evacuation stamped at plan-build (boundary ${frozenB}, gap ${frozenG})`,
+                                        'warn'
+                                    );
+                                } else {
+                                    // Unstamped: prove violation-reducing live. masterOrder was
+                                    // captured from the master grid before any rotation
+                                    // pre-application — it must NOT be re-read afterwards.
+                                    const oldPrice = Number((masterOrder as any)?.price);
+                                    const oldSize = Number((masterOrder as any)?.size);
+                                    if (!Number.isFinite(oldPrice) || !(oldPrice > 0) || !Number.isFinite(oldSize) || !(oldSize > 0)) {
+                                        lastFillGuardStats.checked++;
+                                        lastFillGuardStats.skipped++;
+                                        skippedUpdateCount++;
+                                        if (action.id) skippedUpdateSlotIds.add(action.id);
+                                        if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
+                                        bot.manager.logger.log(
+                                            `[LAST-FILL-GUARD] Skipping ${orderType} UPDATE for ${action.id} -> ${action.newGridId}: ` +
+                                            `gap-evacuation source unresolvable from master grid (fail-closed)`,
+                                            'warn'
+                                        );
+                                        continue;
+                                    }
+                                    let sidePrecision: any = null;
+                                    try { sidePrecision = getPrecisionByOrderType(bot.manager.assets, orderType); } catch { sidePrecision = null; }
+                                    const evacCheck = isEvacuationRotationAllowed(oldPrice, oldSize, newPrice, newSize, orderType, sidePrecision);
+                                    if (evacCheck.allowed) {
+                                        bypassedEvacuation = true;
+                                        bot.manager.logger.log(
+                                            `[LAST-FILL-GUARD] Allowing ${orderType} evacuation UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: ` +
+                                            `${evacCheck.reason} (probed live: ${Format.formatPrice6(oldPrice)} -> ${Format.formatPrice6(newPrice)})`,
+                                            'warn'
+                                        );
+                                    }
+                                    // Not allowed: fall through to the normal guard below.
+                                }
+                            }
+                            if (bypassedEvacuation) {
+                                lastFillGuardStats.bypassed++;
+                            } else {
                             try { if (refreshLastFillPivotFromQueue(bot)) lastFillGuardPivotRefreshed = true; } catch { /* best-effort */ }
                             const lastPrice = (bot.manager as any)?._lastFilledPrice;
                             const lastType = (bot.manager as any)?._lastFilledType;
@@ -3126,6 +3236,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                 continue;
                             }
                             lastFillGuardStats.passed++;
+                            }
                         } catch (_e: any) { /* best-effort */ }
 
                         const { amountToSell, minToReceive } = buildCreateOrderArgs(

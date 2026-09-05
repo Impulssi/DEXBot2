@@ -823,23 +823,28 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null,
                             ? ORDER_TYPES.SELL
                             : ORDER_TYPES.SPREAD;
 
-                    // DEFENSIVE BACKSTOP: a VIRTUAL slot with no orderId and
-                    // zero size is side-neutral — it is a reusable placeholder
-                    // that may be activated on either rail.  Storing a stale
-                    // BUY/SELL type here misleads candidate-selection code
-                    // (e.g. spread-correction orphaned filters and reconcile
-                    // activation), which pick by stored type instead of boundary
-                    // geometry.  Force SPREAD so the stored type can never
-                    // pre-bias which side reuses the slot.  The VIRTUAL +
-                    // !orderId + size-0 combination already implies not on-chain
-                    // (on-chain requires ACTIVE/PARTIAL and an orderId).  This is
-                    // a defensive backstop for legacy persisted grids; the
-                    // boundary-shift and strategy re-plan paths use
-                    // assignGridRoles (order.ts) with assignOnChain, where
-                    // geometry-based typing wins.
+                    // RAIL-TYPED HOLES (Phase 2): a VIRTUAL slot with no orderId and
+                    // zero size keeps its RAIL type by geometry — an in-rail
+                    // hole stays BUY/SELL VIRTUAL so candidate-selection and
+                    // gap-evacuation geometry keep working across fill/rotation
+                    // cycles; only true gap-band slots are side-neutral SPREAD.
+                    // The stored type cannot pre-bias reuse: every consumer
+                    // filters by boundary geometry (getSlotCorrectType /
+                    // isSlotInRail), and spread-correction accepts both rail
+                    // and SPREAD stored types on its orphaned-virtual path.
+                    // NOTE: first load of legacy persisted grids reassigns
+                    // every normalized empty slot once — expect a one-time
+                    // [GRID-TYPE-CORRECT] spike; it is the backfill, not a
+                    // regression. On-chain slots still never become SPREAD
+                    // (handled below — SPREAD+ACTIVE/PARTIAL is illegal).
                     if (isEmptyGridSlot(slot, slot, { allowNullType: true })) {
-                        if (slot.type !== ORDER_TYPES.SPREAD) reassignCount++;
-                        return { ...slot, type: ORDER_TYPES.SPREAD };
+                        // Unparseable ids have no geometry (idx fell back to
+                        // array position, which is not canonical): keep
+                        // side-neutral SPREAD, never fabricate rail membership
+                        // from a position that carries no price meaning.
+                        const wantType = parsedIdx === null ? ORDER_TYPES.SPREAD : correctType;
+                        if (slot.type !== wantType) reassignCount++;
+                        return { ...slot, type: wantType };
                     }
 
                     if (slot.type !== correctType) {

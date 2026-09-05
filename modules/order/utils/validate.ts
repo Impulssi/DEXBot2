@@ -48,13 +48,18 @@ import {
     blockchainToFloat,
     getPrecisionSlack,
     getDoubleDustThreshold,
+    getSellStartIdx,
+    isSlotIndexInGapBand,
+    isEvacuationRotationAllowed,
     clamp
 } from './math.js';
 import { parseSlotIndex } from './slot.js';
 import {
     isOrderOnChain,
     isPhantomOrder,
-    convertToSpreadPlaceholder
+    convertToSpreadPlaceholder,
+    detectGapEvacuationCandidates,
+    updateGapEvacuationStreaks
 } from './order.js';
 const { isValidNumber, toFiniteNumber } = Format;
 
@@ -111,6 +116,13 @@ function validateOrder(order: any, oldOrder: any = null, context: any = 'validat
         });
         normalizedOrder.size = 0;
     }
+
+    // RAIL-HOLE PRESERVATION (Phase 2): a sized BUY/SELL VIRTUAL slot with no
+    // orderId is a rail-typed hole (rotation source, fill-consumed rail slot),
+    // NOT a spread placeholder — it must pass through untouched. Only SPREAD
+    // is size-normalized above; the phantom and ILLEGAL_SPREAD_STATE checks
+    // below fire solely for on-chain states, so rail holes are never
+    // zeroed, retyped, or rejected here. Locked by test_gap_evacuation.
 
     const isOnChainState = (
         normalizedOrder.state === ORDER_STATES.ACTIVE ||
@@ -386,6 +398,47 @@ function clampRotationSizeForPartial(surplusMaster: any, holeSize: number, logge
 }
 
 /**
+ * Stamp a rotation UPDATE as a gap-evacuation when plan-build geometry says
+ * it moves a live order OUT of the gap band onto its rail. The stamp freezes
+ * the boundary + gap width AT PLAN-BUILD TIME (B-stamp) so the COW executor's
+ * LAST-FILL guard validates against the geometry the plan was built for —
+ * plans can otherwise validate against a later-committed boundary and the
+ * evacuation gets misjudged. Stamping requires BOTH:
+ * - geometry: source slot index strictly inside the gap band, destination on
+ *   the same side's rail (pure parseSlotIndex vs frozen boundary/gapSlots —
+ *   never the stored slot type),
+ * - allowance: isEvacuationRotationAllowed(oldPrice, oldSize, newPrice,
+ *   newSize, type) — outward repricing with bit-exact non-growing size.
+ * Anything else stays unstamped and obeys the guard normally (safe default).
+ *
+ * @param {Object} action - Rotation UPDATE action being built
+ * @param {Object} sourceMaster - Live master-grid order for the source slot
+ * @param {number|string} destPrice - Destination (hole) price
+ * @param {number} destSize - Destination (clamped) size
+ * @param {string} type - ORDER_TYPES.BUY or SELL
+ * @param {number} frozenBoundary - Plan-build boundary index
+ * @param {number} frozenGapSlots - Plan-build gap slot count
+ * @returns {Object} The action, stamped when it qualifies
+ */
+function stampGapEvacuationRotation(action: any, sourceMaster: any, destPrice: any, destSize: any, type: any, frozenBoundary: any, frozenGapSlots: any) {
+    const b = Number(frozenBoundary);
+    const g = Number(frozenGapSlots);
+    if (!Number.isFinite(b) || !Number.isFinite(g) || g < 0) return action;
+    const srcIdx = parseSlotIndex(sourceMaster?.id ?? action?.id);
+    const dstIdx = parseSlotIndex(action?.newGridId);
+    if (srcIdx === null || srcIdx === undefined || dstIdx === null || dstIdx === undefined) return action;
+    if (!isSlotIndexInGapBand(srcIdx, b, g)) return action;
+    if (isSlotIndexInGapBand(dstIdx, b, g)) return action;
+    const sellStartIdx = getSellStartIdx(b, g);
+    const dstInRail = type === ORDER_TYPES.SELL ? Number(dstIdx) >= sellStartIdx : Number(dstIdx) <= b;
+    if (!dstInRail) return action;
+    const check = isEvacuationRotationAllowed(sourceMaster?.price, sourceMaster?.size, destPrice, destSize, type);
+    if (!check.allowed) return action;
+    return { ...action, origin: 'gap-evacuation', evacBoundary: b, evacGapSlots: Math.floor(g) };
+}
+
+
+/**
  * Reconcile target grid against master state
  * @param {Map} masterGrid - Current master grid
  * @param {Map} targetGrid - Target state from strategy
@@ -395,6 +448,11 @@ function clampRotationSizeForPartial(surplusMaster: any, holeSize: number, logge
  */
 function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, options: Record<string, any> = {}) {
     const { logger = null, dustThresholdPercent = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE } = options;
+    // B-stamp inputs for gap-evacuation rotation stamping (frozen at
+    // plan-build): callers pass the geometry this plan was built for. Absent
+    // or non-finite => no stamping (guarded default, never fail-open).
+    const planGapSlots = Number(options?.gapSlots);
+    const hasPlanGeometry = Number.isFinite(planGapSlots) && planGapSlots >= 0;
     const actions: any[] = [];
     
     const surplusesBuy: any[] = [];
@@ -522,17 +580,29 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
         for (let i = 0; i < rotationCount; i++) {
             const surplus = surpluses[i];
             const hole = healthyHoles[i];
+            const clampedSize = clampRotationSizeForPartial(surplus.master, hole.order.size, logger, hole.id);
 
-            actions.push({
+            let rotation: any = {
                 type: COW_ACTIONS.UPDATE,
                 id: surplus.id,
                 orderId: surplus.master.orderId,
                 newGridId: hole.id,
-                newSize: clampRotationSizeForPartial(surplus.master, hole.order.size, logger, hole.id),
+                newSize: clampedSize,
                 newPrice: hole.order.price,
                 order: hole.order,
                 isRotation: true
-            });
+            };
+            // Gap-evacuation B-stamp (plan-build frozen boundary): a surplus
+            // stranded in the gap band rotating onto its rail bypasses the
+            // LAST-FILL guard at execution — the rotation reduces the
+            // violation surface instead of adding exposure.
+            if (hasPlanGeometry) {
+                rotation = stampGapEvacuationRotation(
+                    rotation, surplus.master, hole.order.price, clampedSize,
+                    surplus.master?.type, validatedBoundary, planGapSlots
+                );
+            }
+            actions.push(rotation);
         }
 
         for (let i = rotationCount; i < healthyHoles.length; i++) {
@@ -552,10 +622,31 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
         }
     }
 
-    return { 
-        actions, 
+    // Phase 3: tick the per-slot gap-evacuation streak counter when the
+    // caller supplies a Map (in-memory on the manager; resets on restart).
+    // Detection is geometry-only (parse slot idx vs frozen boundary/gapSlots).
+    let evacReady: any[] = [];
+    try {
+        if (options?.evacStreaks instanceof Map && hasPlanGeometry) {
+            const candidates = detectGapEvacuationCandidates(masterGrid, validatedBoundary, planGapSlots);
+            const tick = updateGapEvacuationStreaks(options.evacStreaks, candidates);
+            evacReady = tick.ready;
+            if (evacReady.length > 0 && logger) {
+                logger(
+                    `[GAP-EVAC] ${evacReady.length} stuck in-band order(s) ` +
+                    `(boundary ${validatedBoundary}, gap ${planGapSlots}): ` +
+                    evacReady.map((c: any) => `${c.id}(x${tick.streaks[c.id] ?? '?'})`).join(', '),
+                    'warn'
+                );
+            }
+        }
+    } catch { /* streak tracking is best-effort */ }
+
+    return {
+        actions,
         aborted: false,
         boundaryIdx: validatedBoundary,
+        evacReady,
         summary: summarizeActions(actions)
     };
 }
@@ -572,6 +663,12 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
 function optimizeRebalanceActions(actions: any, masterGrid: any, options: Record<string, any> = {}) {
     if (!Array.isArray(actions) || actions.length === 0) return [];
     const { logger = null } = options;
+    // B-stamp inputs (same contract as reconcileGrid): frozen plan-build
+    // boundary + gap width for gap-evacuation rotation stamping. Absent =>
+    // no stamping, guarded default.
+    const optBoundary = Number(options?.boundaryIdx);
+    const optGapSlots = Number(options?.gapSlots);
+    const hasOptGeometry = Number.isFinite(optBoundary) && Number.isFinite(optGapSlots) && optGapSlots >= 0;
 
     const creates: any[] = [];
     const cancels: any[] = [];
@@ -629,16 +726,24 @@ function optimizeRebalanceActions(actions: any, masterGrid: any, options: Record
         }
 
         const createAction = remainingCreates.splice(bestIdx, 1)[0];
-        optimized.push({
+        const clampedSize = clampRotationSizeForPartial(masterOrder, toFiniteNumber(createAction?.order?.size), logger, createAction.id);
+        let rotation: any = {
             type: COW_ACTIONS.UPDATE,
             id: cancelAction.id,
             orderId: cancelAction.orderId,
             newGridId: createAction.id,
-            newSize: clampRotationSizeForPartial(masterOrder, toFiniteNumber(createAction?.order?.size), logger, createAction.id),
+            newSize: clampedSize,
             newPrice: toFiniteNumber(createAction?.order?.price),
             order: createAction.order,
             isRotation: true
-        });
+        };
+        if (hasOptGeometry) {
+            rotation = stampGapEvacuationRotation(
+                rotation, masterOrder, toFiniteNumber(createAction?.order?.price), clampedSize,
+                cancelType, optBoundary, optGapSlots
+            );
+        }
+        optimized.push(rotation);
     }
 
     for (const createAction of remainingCreates) {

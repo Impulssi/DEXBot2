@@ -38,7 +38,8 @@ import {
     LOG_LEVEL,
     PIPELINE_TIMING,
     COW_PERFORMANCE,
-    COW_ACTIONS
+    COW_ACTIONS,
+    GRID_LIMITS
 } from '../constants.js';
 import {
     getMinOrderSize,
@@ -63,7 +64,7 @@ import {
     buildSuccessResult,
     evaluateCommit
 } from './utils/validate.js';
-import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder } from './utils/order.js';
+import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain } from './utils/order.js';
 import { getErrorMessage } from '../utils/errors.js';
 const { toFiniteNumber } = Format;
 
@@ -176,7 +177,9 @@ class COWRebalanceEngine {
         boundaryIdx,
         funds,
         fills = [],
-        excludeIds = new Set()
+        excludeIds = new Set(),
+        gapSlots = null,
+        evacStreaks = null
     }: any) {
         const startTime = Date.now();
 
@@ -201,16 +204,30 @@ class COWRebalanceEngine {
             targetBoundary,
             {
                 logger: (msg: any, level: any) => this.logger?.log(msg, level),
-                dustThresholdPercent
+                dustThresholdPercent,
+                gapSlots,
+                evacStreaks
             }
         );
 
+        // Gap-evacuation telemetry: evacReady is the streak-tick output of
+        // reconcileGrid (stuck in-band candidates). It must survive both
+        // abort and success so the manager can act on it even when the
+        // rebalance plan itself aborts for an unrelated reason.
+        const evacReady = Array.isArray((reconcileResult as any)?.evacReady)
+            ? (reconcileResult as any).evacReady
+            : [];
+
         if (reconcileResult.aborted) {
-            return buildAbortedResult((reconcileResult as any).reason);
+            const aborted = buildAbortedResult((reconcileResult as any).reason);
+            (aborted as any).evacReady = evacReady;
+            return aborted;
         }
 
         const optimizedActions = optimizeRebalanceActions(reconcileResult.actions, masterGrid, {
-            logger: (msg: any, level: any) => this.logger?.log(msg, level)
+            logger: (msg: any, level: any) => this.logger?.log(msg, level),
+            boundaryIdx: targetBoundary,
+            gapSlots
         });
 
         // Stale-placement guard: drop placements crossing the plan's own
@@ -289,13 +306,16 @@ class COWRebalanceEngine {
             this.logger?.log(line, a.type === COW_ACTIONS.UPDATE ? 'info' : 'debug');
         }
 
-        return buildSuccessResult({
-            actions: optimizedActions,
-            stateUpdates,
-            workingGrid,
-            workingBoundary: targetBoundary,
-            planningDuration: duration
-        });
+        return {
+            ...buildSuccessResult({
+                actions: optimizedActions,
+                stateUpdates,
+                workingGrid,
+                workingBoundary: targetBoundary,
+                planningDuration: duration
+            }),
+            evacReady
+        };
     }
 }
 
@@ -431,6 +451,8 @@ class OrderManager {
     _lastFilledSellPrice: number | null;
     _lastFilledPrice: number | null;
     _lastFilledType: string | null;
+    _gapEvacStreaks: Map<string, number>;
+    _gapEvacCancelQueued: Set<string>;
     // anchor fields removed
     // Note: dedupe lives inside the anchor object (`_seenKeys`), not here.
     // Kept for backwards compat if external code checks existence; not used.
@@ -552,6 +574,8 @@ class OrderManager {
         this._lastFilledSellPrice = null;
         this._lastFilledPrice = null;
         this._lastFilledType = null;
+        this._gapEvacStreaks = new Map();
+        this._gapEvacCancelQueued = new Set();
 
         this._metrics = {
             fundRecalcCount: 0,
@@ -1899,10 +1923,99 @@ class OrderManager {
      * @returns {Object}
      */
     reconcileGrid(targetGrid: any, targetBoundary: any) {
+        if (!(this._gapEvacStreaks instanceof Map)) this._gapEvacStreaks = new Map();
         return reconcileGrid(this.orders, targetGrid, targetBoundary, {
             logger: (msg: any, level: any) => this.logger.log(msg, level),
-            dustThresholdPercent: this.config?.gridLimits?.PARTIAL_DUST_THRESHOLD_PERCENTAGE
+            dustThresholdPercent: this.config?.gridLimits?.PARTIAL_DUST_THRESHOLD_PERCENTAGE,
+            gapSlots: this._gapSlots,
+            evacStreaks: this._gapEvacStreaks
         });
+    }
+
+    /**
+     * Phase 3 safety net — turn stuck gap-evacuation candidates (evacReady
+     * from the COW reconcile streak tick) into cancel-only corrections.
+     *
+     * Gate chain per candidate, in order:
+     *  1. Slot idx is STILL genuinely in-band under the CURRENT committed
+     *     boundary/gap geometry (the plan's frozen geometry may be stale).
+     *  2. Streak >= GRID_LIMITS.GAP_EVACUATION_CANCEL_THRESHOLD (warn fires
+     *     one cycle earlier at GAP_EVACUATION_STREAK_THRESHOLD).
+     *  3. Queued-once marker (_gapEvacCancelQueued) not set — a queued entry
+     *     never re-queues until the slot resolves (leaves the band and its
+     *     streak entry is dropped).
+     *  4. No correction entry already exists for the same chain order.
+     *  5. The live slot still exists, is on-chain, and still owns that
+     *     chain order id.
+     *
+     * The entry uses isSurplus semantics (not bare cancelOnly): the runner
+     * cancels the chain order AND settles the slot back to a spread
+     * placeholder via convertToSpreadPlaceholder, keeping fund tracking
+     * honest and matching Phase 2 band semantics (genuinely in-band slots
+     * are SPREAD VIRTUAL). No re-placement, fee-light.
+     *
+     * @param {Array} candidates - evacReady candidates [{id, idx, type, price, size, orderId}]
+     * @returns {number} Number of corrections queued
+     */
+    _processGapEvacuationTeeth(candidates: any) {
+        if (!Array.isArray(candidates) || candidates.length === 0) return 0;
+        if (!Array.isArray(this.ordersNeedingPriceCorrection)) return 0;
+        if (!(this._gapEvacStreaks instanceof Map)) this._gapEvacStreaks = new Map();
+        if (!(this._gapEvacCancelQueued instanceof Set)) this._gapEvacCancelQueued = new Set();
+
+        // Release queued-once markers for slots that resolved (dropped from
+        // the streak map) so a future return to the band can be acted on again.
+        for (const id of Array.from(this._gapEvacCancelQueued)) {
+            if (!this._gapEvacStreaks.has(id)) this._gapEvacCancelQueued.delete(id);
+        }
+
+        const rawThreshold = Number(GRID_LIMITS?.GAP_EVACUATION_CANCEL_THRESHOLD);
+        const cancelThreshold = Number.isFinite(rawThreshold) && rawThreshold > 0 ? Math.floor(rawThreshold) : 3;
+        const boundary = this.boundaryIdx;
+        const gapSlots = this._gapSlots;
+        let queued = 0;
+
+        for (const candidate of candidates) {
+            const slotId = candidate?.id;
+            const chainOrderId = candidate?.orderId;
+            if (!slotId || !chainOrderId) continue;
+
+            // 1. Re-verify geometry against the CURRENT committed boundary.
+            const idx = parseSlotIndex(slotId);
+            if (idx === null || geometryTypeForSlotIndex(idx, boundary, gapSlots) !== ORDER_TYPES.SPREAD) continue;
+
+            // 2. Act threshold (stricter than the warn threshold).
+            if (Number(this._gapEvacStreaks.get(slotId) || 0) < cancelThreshold) continue;
+
+            // 3./4. Queued-once + no duplicate chain-order entry.
+            if (this._gapEvacCancelQueued.has(slotId)) continue;
+            if (this.ordersNeedingPriceCorrection.some((entry: any) => entry?.chainOrderId === chainOrderId)) continue;
+
+            // 5. Live slot check.
+            const slot = this.orders.get(slotId);
+            if (!slot || !isOrderOnChain(slot) || slot.orderId !== chainOrderId) continue;
+
+            this.ordersNeedingPriceCorrection.push({
+                gridOrder: { ...slot },
+                chainOrderId,
+                expectedPrice: slot.price,
+                actualPrice: slot.price,
+                size: slot.size,
+                type: slot.type,
+                isSurplus: true,
+                gapEvacuation: true,
+                boundaryIdx: boundary
+            });
+            this._gapEvacCancelQueued.add(slotId);
+            queued++;
+            this.logger?.log?.(
+                `[GAP-EVAC] Queued cancel-only evacuation for ${slotId} ` +
+                `(${slot.type} @${Format.formatPrice6(slot.price)}, ` +
+                `x${this._gapEvacStreaks.get(slotId)} in band, boundary ${boundary}, gap ${gapSlots})`,
+                'warn'
+            );
+        }
+        return queued;
     }
 
     /**
@@ -1986,14 +2099,32 @@ class OrderManager {
         }
 
         this._setRebalanceState(REBALANCE_STATES.REBALANCING);
+        if (!(this._gapEvacStreaks instanceof Map)) this._gapEvacStreaks = new Map();
+        if (!(this._gapEvacCancelQueued instanceof Set)) this._gapEvacCancelQueued = new Set();
         const result = await cowEngine.execute({
             masterGrid: this.orders,
             gridVersion: this._gridVersion,
             boundaryIdx: this.boundaryIdx,
             funds: this.getChainFundsSnapshot(),
             fills,
-            excludeIds
+            excludeIds,
+            gapSlots: this._gapSlots,
+            evacStreaks: this._gapEvacStreaks
         });
+
+        // Phase 3 safety net: act on stuck in-band orders regardless of the
+        // plan outcome — a plan that aborted for unrelated reasons must not
+        // delay the cancel-only evacuation queue. Queued-once per slot; the
+        // corrections runner (correctAllPriceMismatches) executes the cancel
+        // and settles the slot back to a spread placeholder.
+        try {
+            this._processGapEvacuationTeeth(result?.evacReady);
+        } catch (gapEvacError: any) {
+            this.logger?.log?.(
+                `[GAP-EVAC] Teeth processing failed (non-fatal): ${getErrorMessage(gapEvacError)}`,
+                'warn'
+            );
+        }
 
         if (result.aborted) {
             // Nothing was pushed for an aborted result — the push below is

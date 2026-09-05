@@ -109,8 +109,10 @@ import {
     calculatePriceTolerance,
     getAssetFees,
     getBtsSide,
+    getSellStartIdx,
     slotIndexForPrice,
     isSlotInRail,
+    isSlotIndexInGapBand,
     priceSlotEqual
 } from './utils/math.js';
 import {
@@ -126,6 +128,7 @@ import {
     resolveSpreadOrderSide,
     duplicateOrphanLogInfo
 } from './utils/order.js';
+import { parseSlotIndex } from './utils/slot.js';
 import {
     resolveProcessedFillPersistenceMode
 } from './processed_fill_store.js';
@@ -1136,7 +1139,21 @@ class SyncEngine {
                     chainOrderIdsOnGrid.add(chainOrderId);
                     await mgr._applyOrderUpdate(adoptedOrder, 'sync-pass2-adopt-orphan', { skipAccounting: skipAccounting, fee: 0 });
                     updatedOrders.push(adoptedOrder);
-                    mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) adopted into slot ${adoptedSlot.id} (was ${adoptedSlot.type})`, 'warn');
+                    // Phase 4 attribution: log the adoption slot's geometry
+                    // (idx vs frozen boundary/gap) so the next re-map incident
+                    // can tell an in-rail adoption from a gap-band re-map
+                    // without on-chain archaeology.
+                    let adoptGeo = '';
+                    try {
+                        const adoptIdx = parseSlotIndex(adoptedSlot.id);
+                        const adoptB = Number((mgr as any)?.boundaryIdx);
+                        const adoptG = Number((mgr as any)?._gapSlots);
+                        if (adoptIdx !== null && adoptIdx !== undefined && Number.isFinite(adoptB) && Number.isFinite(adoptG)) {
+                            const inBand = isSlotIndexInGapBand(adoptIdx, adoptB, adoptG);
+                            adoptGeo = ` geo(idx=${adoptIdx},boundary=${adoptB},gap=${adoptG},sellStart=${getSellStartIdx(adoptB, adoptG)},band=${inBand ? 'gap' : 'rail'})`;
+                        }
+                    } catch { /* geometry is diagnostic-only */ }
+                    mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) adopted into slot ${adoptedSlot.id} (was ${adoptedSlot.type})${adoptGeo}`, 'warn');
                 } else {
                     const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
                     const candidateDiagnostics = describeNearestAdoptionCandidates(mgr, chainOrder, precision, (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets), matchedGridOrderIds);
