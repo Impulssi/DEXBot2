@@ -18,12 +18,16 @@ const { writeJSON } = getStorage();
  *        Q1 — top 100 accounts by limit_order_create count
  *        Q2 — top 100 accounts by limit_order_cancel count
  *        Q3 — top 100 accounts by fill_order count
+ *        Q4 — top 200 accounts by limit_order_update count (op 77, DEXBot2 fingerprint)
  *   2. Merge & pre-filter:
  *        creates ≥ MIN_CREATES  (grid analysis determines DEXBot candidacy)
  *   3. Grid analysis (parallel, batches of 5):
  *        Fetch 200 raw orders per candidate → per-session geometric spacing test
  *   4. BitShares: resolve account IDs → names (batch db.get_objects call)
- *   5. Rank by DEX score and print table
+ *   5. Rank by DEX score and print table.
+ *        HIGH tier (80+) is split by op-77 usage:
+ *          updates ≥ 1 → DEXBot2 (native limit_order_update in-place re-price)
+ *          updates = 0 → DEXBot1-style (cancel-only, cancel + recreate)
  *
  * Usage:
  *   node dist/analysis/bot_usage/discover_bot_accounts.js
@@ -51,6 +55,7 @@ import {
     buildTopSellerAccountsQuery,
     buildTopCancellerAccountsQuery,
     buildTopFilledAccountsQuery,
+    buildTopUpdaterAccountsQuery,
     DEFAULT_CONFIG,
 } from './kibana_bot_queries.js';
 import { NODE_MANAGEMENT } from '../../modules/constants.js';
@@ -61,6 +66,7 @@ interface AccountCounts {
     creates: number;
     cancels: number;
     fills: number;
+    updates: number;
 }
 
 interface CandidateInfo {
@@ -68,6 +74,8 @@ interface CandidateInfo {
     creates: number;
     cancels: number;
     fills: number;
+    updates: number;
+    flavor: 'DEXBot2' | 'DEXBot1' | '';
     cancelRatio: number;
     fillRate: number;
     gridScore: number;
@@ -323,18 +331,21 @@ async function run() {
 
     console.log('Phase 1: Querying Kibana for top active accounts...');
 
-    const [createRes, cancelRes, fillRes]: any[] = await Promise.all([
+    const [createRes, cancelRes, fillRes, updateRes]: any[] = await Promise.all([
         withRetry(() => kibanaSearch(KIBANA_CFG, buildTopSellerAccountsQuery(lookbackH, 200, opts.minCreates)),
             'top-seller query'),
         withRetry(() => kibanaSearch(KIBANA_CFG, buildTopCancellerAccountsQuery(lookbackH, 200, 5)),
             'top-canceller query'),
         withRetry(() => kibanaSearch(KIBANA_CFG, buildTopFilledAccountsQuery(lookbackH, 200, 3)),
             'top-fills query'),
+        withRetry(() => kibanaSearch(KIBANA_CFG, buildTopUpdaterAccountsQuery(lookbackH, 200, 1)),
+            'top-updater query'),
     ]);
 
     const createBuckets = createRes?.aggregations?.by_account?.buckets ?? [];
     const cancelBuckets = cancelRes?.aggregations?.by_account?.buckets ?? [];
     const fillBuckets   = fillRes?.aggregations?.by_account?.buckets   ?? [];
+    const updateBuckets = updateRes?.aggregations?.by_account?.buckets ?? [];
 
     if (opts.verbose) {
         console.log(`  [verbose] createRes keys: ${Object.keys(createRes ?? {}).join(', ')}`);
@@ -344,6 +355,7 @@ async function run() {
     console.log(`  Creates: ${createBuckets.length} accounts with ≥${opts.minCreates} creates`);
     console.log(`  Cancels: ${cancelBuckets.length} accounts with ≥5 cancels`);
     console.log(`  Fills:   ${fillBuckets.length} accounts with ≥3 fills`);
+    console.log(`  Updates: ${updateBuckets.length} accounts with ≥1 limit_order_update (op 77)`);
 
     if (createBuckets.length === 0) {
         console.log('');
@@ -360,17 +372,23 @@ async function run() {
     console.log('\nPhase 2: Merging and filtering candidates...');
 
     const accounts: Record<string, AccountCounts> = {};
-    for (const b of createBuckets) accounts[b.key] = { creates: b.doc_count, cancels: 0, fills: 0 };
+    for (const b of createBuckets) accounts[b.key] = { creates: b.doc_count, cancels: 0, fills: 0, updates: 0 };
     for (const b of cancelBuckets) {
-        if (!accounts[b.key]) accounts[b.key] = { creates: 0, cancels: 0, fills: 0 };
+        if (!accounts[b.key]) accounts[b.key] = { creates: 0, cancels: 0, fills: 0, updates: 0 };
         accounts[b.key].cancels = b.doc_count;
     }
     for (const b of fillBuckets) {
-        if (!accounts[b.key]) accounts[b.key] = { creates: 0, cancels: 0, fills: 0 };
+        if (!accounts[b.key]) accounts[b.key] = { creates: 0, cancels: 0, fills: 0, updates: 0 };
         accounts[b.key].fills = b.doc_count;
+    }
+    for (const b of updateBuckets) {
+        if (!accounts[b.key]) accounts[b.key] = { creates: 0, cancels: 0, fills: 0, updates: 0 };
+        accounts[b.key].updates = b.doc_count;
     }
 
     // Pre-filter: must have creates ≥ minCreates (grid analysis determines DEXBot candidacy)
+    // Flavor: any limit_order_update (op 77) in-window → DEXBot2 (native in-place
+    // re-price); zero updates → DEXBot1-style (cancel-only: cancel + recreate).
     const candidates: CandidateInfo[] = (Object.entries(accounts) as [string, AccountCounts][])
         .filter(([, s]) => s.creates >= opts.minCreates)
         .map(([id, s]) => ({
@@ -378,6 +396,8 @@ async function run() {
             creates: s.creates,
             cancels: s.cancels,
             fills:   s.fills,
+            updates: s.updates,
+            flavor: (s.updates >= 1 ? 'DEXBot2' : 'DEXBot1') as 'DEXBot2' | 'DEXBot1',
             cancelRatio: s.cancels / Math.max(s.creates, 1),
             fillRate:    s.creates > 0 ? (s.fills / s.creates * 100) : 0,
         } as CandidateInfo))
@@ -492,9 +512,41 @@ async function run() {
     console.log('════════════════════════════════════════════════════════════════════════════════════');
     console.log('');
 
-    // Print by DEX score tier
+    // Print by DEX score tier. HIGH tier (80+) splits by update-order usage:
+    //   DEXBot2      — broadcast limit_order_update (op 77) in-window (in-place re-price)
+    //   DEXBot1-style — cancel-only, no op 77 (cancel + recreate)
+    const highV2 = results.filter(r => r.dexScore >= 80 && r.updates >= 1);
+    const highV1 = results.filter(r => r.dexScore >= 80 && r.updates < 1);
+
+    const hdrHigh = ' #   Name                  ID              Creates  Fills  Cancel  Fill%  C/C   MaxBatch  Incr%  Grid  DEX  Updates';
+    function printHighGroup(label: string, rows: CandidateInfo[]) {
+        if (!rows.length) return;
+        console.log(` ── ${label}`);
+        console.log('');
+        console.log(hdrHigh);
+        console.log(' ' + '─'.repeat(hdrHigh.length - 1));
+        for (const r of rows) {
+            const rank    = String(results.indexOf(r) + 1).padStart(2);
+            const name    = r.name.padEnd(22).slice(0, 22);
+            const id      = r.id.padEnd(14);
+            const creates = String(r.creates).padStart(7);
+            const fills   = String(r.fills).padStart(6);
+            const cancels = String(r.cancels).padStart(7);
+            const fr      = (r.fillRate.toFixed(1) + '%').padStart(5);
+            const cr      = r.cancelRatio.toFixed(2).padStart(4);
+            const batch   = String(r.maxBatch || '-').padStart(9);
+            const inc     = (r.impliedInc != null ? r.impliedInc.toFixed(2) + '%' : 'n/a').padStart(6);
+            const grid    = String(r.gridScore).padStart(5);
+            const dex     = String(r.dexScore).padStart(4);
+            const upd     = String(r.updates).padStart(7);
+            console.log(` ${rank}  ${name}  ${id}  ${creates}  ${fills}  ${cancels}  ${fr}  ${cr}  ${batch}  ${inc}  ${grid}  ${dex}  ${upd}`);
+        }
+        console.log('');
+    }
+    printHighGroup('HIGH confidence — DEXBot2 (80+, uses limit_order_update op 77)', highV2);
+    printHighGroup('HIGH confidence — DEXBot1-style (80+, cancel-only, no op 77)', highV1);
+
     const tiers = [
-        { label: 'HIGH confidence (80+) — almost certainly DEXBot/DEXBot2', min: 80, max: 101 },
         { label: 'MEDIUM confidence (50–79) — likely a grid bot',           min: 50, max:  80 },
         { label: 'LOW confidence (25–49) — some automation detected',       min: 25, max:  50 },
         { label: 'WEAK signal (<25) — create/cancel pattern, no grid',     min:  0, max:  25 },
@@ -531,13 +583,13 @@ async function run() {
 
     // ── Summary ───────────────────────────────────────────────────────────────
 
-    const high   = results.filter(r => r.dexScore >= 80).length;
+    const high   = highV2.length + highV1.length;
     const medium = results.filter(r => r.dexScore >= 50 && r.dexScore < 80).length;
     const low    = results.filter(r => r.dexScore >= 25 && r.dexScore < 50).length;
 
     console.log('════════════════════════════════════════════════════════════════════════════════════');
     console.log(` Total candidates scanned:  ${results.length}`);
-    console.log(` HIGH (80+):   ${high}  accounts — almost certainly DEXBot/DEXBot2`);
+    console.log(` HIGH (80+):   ${high}  accounts — DEXBot2: ${highV2.length} (op 77 updates) / DEXBot1-style: ${highV1.length} (cancel-only)`);
     console.log(` MEDIUM (50+): ${medium}  accounts — likely grid bots`);
     console.log(` LOW (25+):    ${low}  accounts — weak signal`);
     console.log('');
@@ -545,6 +597,7 @@ async function run() {
     console.log('   C/C = cancel/create ratio  (grid bots: ~1.0)');
     console.log('   Incr% = implied grid increment from price spacing');
     console.log('   Grid = grid quality 0-100  |  DEX = DEXBot confidence 0-100');
+    console.log('   Updates = limit_order_update (op 77) count — DEXBot2 only; 0 = cancel-only (DEXBot1-style)');
     console.log('');
 
     // ── Export JSON ────────────────────────────────────────────────────────────
@@ -553,9 +606,11 @@ async function run() {
         const exportData = results.map(r => ({
             id:          r.id,
             name:        r.name,
+            flavor:      r.flavor,
             creates:     r.creates,
             fills:       r.fills,
             cancels:     r.cancels,
+            updates:     r.updates,
             fillPct:     r.fillRate,
             cancelRatio: r.cancelRatio,
             maxBatch:    r.maxBatch,
