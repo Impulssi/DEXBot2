@@ -676,11 +676,13 @@ function hasExecutableActions(rebalanceResult: any) {
 /**
  * Validate that CREATE actions target slots that are not already occupied on-chain
  * and that no CREATE price collides with an existing placed order or unmatched
- * on-chain order.  Checks four layers:
+ * on-chain order.  Checks five layers:
  *   1. Slot occupancy — target grid slot already has a placed order
  *   2. Master grid slot collision — same slotId already placed (priceSlotEqual)
  *   3. Chain orphan slot collision — chain order's nearest slotId equals target slotId
  *   4. Same-batch duplicate slotId — two CREATEs target same slotId
+ *   5. Same-batch bit-identical duplicate price — two CREATEs on different
+ *      target slots at the exact same price (same side)
  *
  * Cancel and rotation-released slots are considered free.
  *
@@ -785,6 +787,29 @@ function validateCreateTargetSlots(actions: any, orders: any, _assets: any = nul
             if (seen.has(entry.targetId)) {
                 violations.push({ targetId: entry.targetId, currentOrderId: null, currentType: entry.type, currentState: 'CREATE', reason: 'same_batch_price_collision' });
             } else seen.add(entry.targetId);
+        }
+        // Same-batch bit-identical duplicate price across DIFFERENT target slots.
+        // The genesis-frozen slot mapping gives every slot a distinct price
+        // level, so two CREATEs at the exact same price on different slots
+        // indicate a degenerate plan (production incident 2026-08-29: several
+        // slots planned at one price; every batch was filtered down to a
+        // single op and the grid rebuild crawled at one placement per cycle).
+        // The tolerance-based price-collision check that caught this class was
+        // removed with the slot-based rewrite; this exact-equality check
+        // restores the protection without tolerance false-positives. First
+        // target per (type, price) wins; later duplicates are skipped by the
+        // caller via violatingTargetIds.
+        const priceOwner = new Map<string, string>();
+        for (const entry of createEntries) {
+            const priceNum = Number(entry.price);
+            if (!Number.isFinite(priceNum)) continue;
+            const key = `${String(entry.type)}:${priceNum}`;
+            const owner = priceOwner.get(key);
+            if (owner === undefined) {
+                priceOwner.set(key, entry.targetId);
+            } else if (owner !== entry.targetId) {
+                violations.push({ targetId: entry.targetId, currentOrderId: null, currentType: entry.type, currentState: 'CREATE', reason: 'same_batch_price_duplicate', duplicateOf: owner });
+            }
         }
     }
 
