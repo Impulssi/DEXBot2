@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.5.0 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.5.1 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
  - **Growth Phase**: 2,141 commits over ~9 active months
 - **Code Maturity**: Evolution from basic utilities to a ~100,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 248 automated test files
-- **Releases**: 102 release entries (v0.1.0 to v1.5.0)
+- **Releases**: 102 release entries (v0.1.0 to v1.5.1)
 
 ---
 
@@ -110,11 +110,12 @@ Compact, era-level view; per-release commit detail lives in [CHANGELOG.md](../CH
 | v1.4.23 → v1.4.24 | 3 | Native fill gap recovery with eager coalesced retry, LP collateral offer-first pricing |
 | v1.4.24 → v1.4.25 | 26 | Genesis-frozen price-slots, self-trade & fill-guard hardening, orphan & gap-band fixes, trigger/shutdown hardening, bot poll, grid monotonicity gate, whitelist scoped overwrite, Range legend |
 | v1.4.25 → v1.5.0 | 13 | Credit overview CLI + whitelist-scoped CR on shared pricing math, one-step TradingView chart, daemon-safe reload, offline account-ID cache, case-insensitive bot identity, stale-pivot guard fix, partial-surplus rotation clamp, adapter ownership centralization, op-77 bot discovery split |
+| v1.5.0 → v1.5.1 | 1 | Gap-evacuation guard allowance (pure helper, frozen B-stamp, UPDATE-only), rail-typed holes across load/fill/rotation/divergence paths, geometry-only detection + streak counter, orphan-adoption geometry diagnostics, cold-guard stub hardening |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
 **Last Updated**: September 05, 2026
-**Total Commits**: 2,141
+**Total Commits**: 2,146
 **Date Range**: December 2, 2025 – September 05, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

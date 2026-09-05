@@ -230,9 +230,12 @@ async function runTests() {
         manager.accountId = '1.2.test';
         // Recovery verifies the fetch actually refreshed accountTotals
         // (_lastFetchedAt advanced) before trusting the balances — the fetch
-        // stub must simulate the refresh stamp.
+        // stub must simulate the refresh stamp. +1 floors the stamp past any
+        // same-millisecond collision with the setAccountTotals stamp above
+        // (Date.now() granularity races under parallel-runner load).
         manager.fetchAccountTotals = async () => {
-            manager.accountTotals = { ...(manager.accountTotals || {}), _lastFetchedAt: Date.now() };
+            const prev = manager.accountTotals?._lastFetchedAt || 0;
+            manager.accountTotals = { ...(manager.accountTotals || {}), _lastFetchedAt: Math.max(Date.now(), prev + 1) };
         };
         manager.syncFromOpenOrders = async () => ({ filledOrders: [], updatedOrders: [] });
         // A NON-EMPTY, NON-TRUNCATED read is authoritative, so the recovery
