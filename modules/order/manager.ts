@@ -209,7 +209,9 @@ class COWRebalanceEngine {
             return buildAbortedResult((reconcileResult as any).reason);
         }
 
-        const optimizedActions = optimizeRebalanceActions(reconcileResult.actions, masterGrid);
+        const optimizedActions = optimizeRebalanceActions(reconcileResult.actions, masterGrid, {
+            logger: (msg: any, level: any) => this.logger?.log(msg, level)
+        });
 
         // Stale-placement guard: drop placements crossing the plan's own
         // boundary (see stalePlacementDropReason) — defer them to the next

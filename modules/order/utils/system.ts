@@ -1157,7 +1157,9 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         // of cancel+recreate. Mirrors the reconcile path (manager.ts:210) and
         // removes churn when a fund-driven boundary shift re-types slots. The COW
         // executor already handles rotation UPDATEs (newGridId + newPrice remap).
-        const optimizedActions = optimizeRebalanceActions(actions, manager.orders);
+        const optimizedActions = optimizeRebalanceActions(actions, manager.orders, {
+            logger: (msg: any, level: any) => manager.logger?.log?.(msg, level)
+        });
         if (optimizedActions !== actions) {
             actions.length = 0;
             actions.push(...optimizedActions);

@@ -345,6 +345,47 @@ function checkFundDrift(orders: Map<string, any>, accountTotals: any, assets: an
 // ===============================================================================
 
 /**
+ * Clamp a rotation UPDATE's target size to a partially-filled surplus order's
+ * booked remaining size.
+ *
+ * A rotation must never GROW a PARTIAL order in place: the fill is already
+ * booked into slot.size, and growing it restores the pre-fill size on chain
+ * while the books keep the post-fill remainder (fill accounting divergence —
+ * the COW executor skips such UPDATEs, which strands the hole and leaves a
+ * gap in the grid). Clamping keeps the plan's price intent and fills the hole
+ * at the remainder size, so the grid stays contiguous. A deliberate full-size
+ * top-up must go through a cancel+create cycle, not a silent in-place grow.
+ *
+ * Mirrors the clampPostFillUpdateSize policy used for plain size UPDATEs in
+ * the COW executor (modules/dexbot_cow_runtime.ts).
+ *
+ * @param {Object} surplusMaster - Live master-grid order for the rotation source
+ * @param {number} holeSize - Planned target (hole) size
+ * @param {Function|null} [logger=null] - Optional (msg, level) logger
+ * @param {string} [holeId=''] - Hole slot id for the log line
+ * @returns {number} The (possibly clamped) rotation size
+ */
+function clampRotationSizeForPartial(surplusMaster: any, holeSize: number, logger: any = null, holeId: string = '') {
+    const target = toFiniteNumber(holeSize);
+    if (!surplusMaster || surplusMaster.state !== ORDER_STATES.PARTIAL) return target;
+    const booked = toFiniteNumber(surplusMaster.size);
+    if (!Number.isFinite(target) || !Number.isFinite(booked) || booked <= 0) return target;
+    if (target > booked) {
+        if (logger) {
+            logger(
+                `[RECONCILE] Clamping rotation ${surplusMaster.id} -> ${holeId || '?'}: ` +
+                `surplus is PARTIAL with booked remaining ${Format.formatAmount8(booked)} ` +
+                `but hole targets ${Format.formatAmount8(target)} — rotating at remainder size ` +
+                `so the hole fills without growing the partial in place.`,
+                'warn'
+            );
+        }
+        return booked;
+    }
+    return target;
+}
+
+/**
  * Reconcile target grid against master state
  * @param {Map} masterGrid - Current master grid
  * @param {Map} targetGrid - Target state from strategy
@@ -487,7 +528,7 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
                 id: surplus.id,
                 orderId: surplus.master.orderId,
                 newGridId: hole.id,
-                newSize: hole.order.size,
+                newSize: clampRotationSizeForPartial(surplus.master, hole.order.size, logger, hole.id),
                 newPrice: hole.order.price,
                 order: hole.order,
                 isRotation: true
@@ -528,8 +569,9 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
  * @param {Map} masterGrid - Current master grid
  * @returns {Array<Object>} Optimized action list
  */
-function optimizeRebalanceActions(actions: any, masterGrid: any) {
+function optimizeRebalanceActions(actions: any, masterGrid: any, options: Record<string, any> = {}) {
     if (!Array.isArray(actions) || actions.length === 0) return [];
+    const { logger = null } = options;
 
     const creates: any[] = [];
     const cancels: any[] = [];
@@ -592,7 +634,7 @@ function optimizeRebalanceActions(actions: any, masterGrid: any) {
             id: cancelAction.id,
             orderId: cancelAction.orderId,
             newGridId: createAction.id,
-            newSize: toFiniteNumber(createAction?.order?.size),
+            newSize: clampRotationSizeForPartial(masterOrder, toFiniteNumber(createAction?.order?.size), logger, createAction.id),
             newPrice: toFiniteNumber(createAction?.order?.price),
             order: createAction.order,
             isRotation: true

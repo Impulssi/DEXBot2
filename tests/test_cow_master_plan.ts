@@ -6,7 +6,7 @@
 const assert = require('assert');
 const { WorkingGrid } = require('../modules/order/working_grid');
 const { ordersEqual, buildDelta, buildIndexes, validateIndexes } = require('../modules/order/utils/order');
-const { projectTargetToWorkingGrid, reconcileGrid } = require('../modules/order/utils/validate');
+const { projectTargetToWorkingGrid, reconcileGrid, optimizeRebalanceActions } = require('../modules/order/utils/validate');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
 function createTestOrder(id, type, state, price, amount, orderId = null) {
@@ -911,6 +911,118 @@ async function testCOW018c_PartialPreservePathNormalizesMalformedSize() {
     console.log('✓ COW-018c passed');
 }
 
+/**
+ * COW-019: PARTIAL surplus rotation must clamp to booked remainder (no grid gap).
+ *
+ * PRODUCTION INCIDENT (XRP-BTS, 2026-09-04): slot-103 filled and became a
+ * spread placeholder (hole), while distant slot-123 sat PARTIAL with 3.314
+ * remaining against a 4.84 hole target. The planner emitted rotation UPDATE
+ * slot-123 -> slot-103 at the full hole size, and the COW executor's
+ * post-fill growth guard correctly skipped every attempt (a partial must not
+ * be grown in place) — but the skip stranded the hole, leaving a 7-slot gap
+ * (945.55 -> 968.55) that never healed because the window counted slot-123
+ * as one of its 20 actives.
+ *
+ * Fix: the planner clamps rotation UPDATEs from PARTIAL surpluses to the
+ * booked remaining size (same policy as clampPostFillUpdateSize for plain
+ * size UPDATEs), so the hole fills at remainder size and the grid stays
+ * contiguous. Covers both pairing sites: reconcileGrid.pairRotations and
+ * optimizeRebalanceActions.
+ */
+async function testCOW019_PartialRotationClampedToBookedRemainder() {
+    console.log('\n[COW-019] Testing PARTIAL rotation clamps to booked remainder...');
+
+    // Case A: reconcileGrid — PARTIAL surplus + larger hole
+    const masterA = new Map([
+        ['slot-103', {
+            id: 'slot-103',
+            type: ORDER_TYPES.SPREAD,
+            state: ORDER_STATES.VIRTUAL,
+            price: 912.07,
+            size: 0,
+            orderId: null
+        }],
+        ['slot-123', {
+            id: 'slot-123',
+            type: ORDER_TYPES.SELL,
+            state: ORDER_STATES.PARTIAL,
+            price: 968.56,
+            size: 3.314,
+            orderId: '1.7.4001'
+        }]
+    ]);
+    const targetA = new Map([
+        ['slot-103', {
+            id: 'slot-103',
+            type: ORDER_TYPES.SELL,
+            state: ORDER_STATES.ACTIVE,
+            price: 912.07,
+            size: 4.8455
+        }],
+        ['slot-123', {
+            id: 'slot-123',
+            type: ORDER_TYPES.SELL,
+            state: ORDER_STATES.VIRTUAL,
+            price: 968.56,
+            size: 4.4612
+        }]
+    ]);
+
+    const resultA = reconcileGrid(masterA, targetA, null);
+    const updatesA = resultA.actions.filter(a => a.type === 'update');
+    assert.strictEqual(updatesA.length, 1, 'PARTIAL surplus + hole must still emit one rotation UPDATE (no stranded hole)');
+    assert.strictEqual(updatesA[0].id, 'slot-123', 'Rotation source should be the PARTIAL surplus slot');
+    assert.strictEqual(updatesA[0].newGridId, 'slot-103', 'Rotation destination should be the hole slot');
+    assert.strictEqual(updatesA[0].newSize, 3.314, 'Rotation size must clamp to booked remainder, not hole size');
+
+    // Case B: reconcileGrid — ACTIVE surplus is NOT clamped
+    const masterB = new Map([
+        ['slot-103', {
+            id: 'slot-103',
+            type: ORDER_TYPES.SPREAD,
+            state: ORDER_STATES.VIRTUAL,
+            price: 912.07,
+            size: 0,
+            orderId: null
+        }],
+        ['slot-123', {
+            id: 'slot-123',
+            type: ORDER_TYPES.SELL,
+            state: ORDER_STATES.ACTIVE,
+            price: 968.56,
+            size: 4.4612,
+            orderId: '1.7.4002'
+        }]
+    ]);
+    const resultB = reconcileGrid(masterB, targetA, null);
+    const updatesB = resultB.actions.filter(a => a.type === 'update');
+    assert.strictEqual(updatesB.length, 1, 'ACTIVE surplus + hole must emit one rotation UPDATE');
+    assert.strictEqual(updatesB[0].newSize, 4.8455, 'ACTIVE surplus rotation must keep the full hole size');
+
+    // Case C: optimizeRebalanceActions — CANCEL(PARTIAL) + CREATE pairing clamps
+    const actionsC = [
+        { type: 'cancel', id: 'slot-123', orderId: '1.7.4001', reason: 'surplus-no-rotation-target' },
+        { type: 'create', id: 'slot-103', order: { id: 'slot-103', type: ORDER_TYPES.SELL, price: 912.07, size: 4.8455 } }
+    ];
+    const masterC = new Map([
+        ['slot-123', {
+            id: 'slot-123',
+            type: ORDER_TYPES.SELL,
+            state: ORDER_STATES.PARTIAL,
+            price: 968.56,
+            size: 3.314,
+            orderId: '1.7.4001'
+        }]
+    ]);
+    const resultC = optimizeRebalanceActions(actionsC, masterC);
+    const updatesC = resultC.filter(a => a.type === 'update');
+    assert.strictEqual(updatesC.length, 1, 'CANCEL+CREATE pairing must fold into one rotation UPDATE');
+    assert.strictEqual(updatesC[0].newGridId, 'slot-103', 'Rotation destination should be the CREATE slot');
+    assert.strictEqual(updatesC[0].newSize, 3.314, 'Paired rotation from PARTIAL must clamp to booked remainder');
+
+    console.log('✓ COW-019 passed');
+}
+
 async function runAllTests() {
     console.log('=== Copy-on-Write Master Plan Test Suite ===\n');
     
@@ -935,6 +1047,7 @@ async function runAllTests() {
     await testCOW018b_ActiveOrderSizePreservedWithoutUpdateAction();
     await testCOW018c_PartialPreservePathNormalizesMalformedSize();
     await testCOW018d_ActiveOrderSizeUpdatedWithUpdateAction();
+    await testCOW019_PartialRotationClampedToBookedRemainder();
     
     console.log('\n=== All COW tests passed! ===');
 }
