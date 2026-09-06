@@ -7,11 +7,13 @@
  * TABLE OF CONTENTS (21 exported functions)
  * ===============================================================================
  *
- * SECTION 1: PRICE DERIVATION (8 functions)
+ * SECTION 1: PRICE DERIVATION (10 functions)
  *   - lookupAsset(BitShares, symbol) - Lookup asset metadata from blockchain
  *   - deriveMarketPrice(BitShares, symA, symB) - Derive price from order book
  *   - derivePoolPrice(BitShares, symA, symB) - Derive price from liquidity pool
  *   - derivePrice(BitShares, symA, symB, mode) - Derive price with fallback chain
+ *   - derivePriceViaBridges(BitShares, symA, symB, bridges, mode) - Multi-hop price via bridge assets
+ *   - derivePriceWithBridges(BitShares, symA, symB, bridges, mode) - Direct price, else bridge hops
  *   - resolveLiquidityPoolByShareAsset(BitShares, shareAsset) - Resolve LP by share asset
  *   - deriveLiquidityPoolTokenValue(BitShares, symA, symB) - Derive LP token value
  *   - loadAmaCenterPrice(manager) - Load AMA center price
@@ -413,6 +415,79 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
 };
 
 /**
+ * Default bridge assets for multi-hop price derivation. BTS is the core
+ * asset with the deepest markets, so almost every listed asset has a price
+ * path against it even when no direct market exists for an exotic pair.
+ */
+export const DEFAULT_PRICE_BRIDGES = ['BTS'];
+
+function isPositiveRate(value: any): value is number {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+/**
+ * Derive price via bridge assets only (no direct market attempt).
+ * Returns price in B/A format (units of asset B per 1 unit of asset A) as
+ * price(A in X) * price(X in B) for the first bridge X with both legs
+ * available. Skips bridges equal to either side; identity (A === B) is 1.
+ *
+ * @param {Object} BitShares - BitShares client instance
+ * @param {string} symA - First asset symbol or ID
+ * @param {string} symB - Second asset symbol or ID
+ * @param {string[]} [bridges] - Bridge asset symbols/IDs to try in order
+ * @param {string} [mode='auto'] - Price derivation mode passed to derivePrice
+ * @returns {Promise<{rate:number,path:string}|null>} Rate plus 'bridge:<ref>' path, or null
+ */
+export async function derivePriceViaBridges(BitShares: any, symA: string, symB: string, bridges: string[] = DEFAULT_PRICE_BRIDGES, mode: string = 'auto'): Promise<{ rate: number; path: string } | null> {
+    try {
+        if (String(symA) === String(symB)) {
+            return { rate: 1, path: 'identity' };
+        }
+        const list = Array.isArray(bridges) ? bridges : [];
+        for (const bridge of list) {
+            if (!bridge || String(bridge) === String(symA) || String(bridge) === String(symB)) continue;
+            const [legA, legB] = await Promise.all([
+                derivePrice(BitShares, symA, bridge, mode).catch(() => null),
+                derivePrice(BitShares, bridge, symB, mode).catch(() => null),
+            ]);
+            if (isPositiveRate(legA) && isPositiveRate(legB)) {
+                return { rate: legA * legB, path: `bridge:${bridge}` };
+            }
+        }
+        return null;
+    } catch (err: any) {
+        systemLogger.debug(`derivePriceViaBridges failed for ${symA}/${symB}: ${getErrorMessage(err)}`);
+        return null;
+    }
+}
+
+/**
+ * Derive price with universal fallback: direct pool/book market first, then
+ * multi-hop via bridge assets. Unlike derivePrice (null when no direct
+ * market exists), this resolves a rate for every pair whose assets each
+ * have some market against a shared bridge — the last-resort pricing used
+ * for credit collateral conversion when the lending offer lists no price
+ * for the collateral (or the pool cannot be valued directly).
+ *
+ * @param {Object} BitShares - BitShares client instance
+ * @param {string} symA - First asset symbol or ID
+ * @param {string} symB - Second asset symbol or ID
+ * @param {string[]} [bridges] - Bridge asset symbols/IDs to try in order
+ * @param {string} [mode='auto'] - Price derivation mode passed to derivePrice
+ * @returns {Promise<{rate:number,path:string}|null>} Rate plus 'direct' | 'identity' | 'bridge:<ref>' path, or null
+ */
+export async function derivePriceWithBridges(BitShares: any, symA: string, symB: string, bridges: string[] = DEFAULT_PRICE_BRIDGES, mode: string = 'auto'): Promise<{ rate: number; path: string } | null> {
+    if (String(symA) === String(symB)) {
+        return { rate: 1, path: 'identity' };
+    }
+    const direct = await derivePrice(BitShares, symA, symB, mode).catch(() => null);
+    if (isPositiveRate(direct)) {
+        return { rate: direct, path: 'direct' };
+    }
+    return derivePriceViaBridges(BitShares, symA, symB, bridges, mode);
+}
+
+/**
  * Resolve a liquidity pool from a share asset reference.
  * Looks up the share asset, then queries the blockchain for associated pools.
  *
@@ -499,9 +574,13 @@ async function getAssetCurrentSupply(BitShares: any, assetRef: any): Promise<any
  * @param {string} shareAssetRef - Share asset symbol
  * @param {string} denominationAssetRef - Denomination asset symbol
  * @param {string} [mode='auto'] - Price derivation mode ("pool", "book", or "auto")
+ * @param {boolean} [allowBridges=false] - When true, a reserve leg with no
+ *   direct market may be priced via bridge assets (see derivePriceViaBridges).
+ *   Defaults to false so existing callers keep the previous direct-only
+ *   behavior; the credit runtime opts in explicitly.
  * @returns {Promise<number|null>} Value per share in denomination asset, or null
  */
-export async function deriveLiquidityPoolTokenValue(BitShares: any, shareAssetRef: string, denominationAssetRef: string, mode: string = 'auto'): Promise<number | null> {
+export async function deriveLiquidityPoolTokenValue(BitShares: any, shareAssetRef: string, denominationAssetRef: string, mode: string = 'auto', allowBridges: boolean = false): Promise<number | null> {
     try {
         const [shareAsset, denominationAsset] = await Promise.all([
             lookupAsset(BitShares, shareAssetRef),
@@ -533,18 +612,29 @@ export async function deriveLiquidityPoolTokenValue(BitShares: any, shareAssetRe
             return null;
         }
 
-        const priceA = String(assetA.id) === String(denominationAsset.id)
-            ? 1
-            : await derivePrice(BitShares, assetA.id, denominationAsset.id, mode).catch((e: any) => {
-                systemLogger.debug(`deriveLiquidityPoolTokenValue: derivePrice failed for ${assetA.id}/${denominationAsset.id}: ${getErrorMessage(e)}`);
+        // Each reserve leg is priced directly first, then — only when the
+        // caller opts in via allowBridges — via bridge assets (e.g.
+        // reserve -> BTS -> denomination). Without the bridge fallback the
+        // whole LP valuation fails when a single exotic reserve has no
+        // direct market against the denomination asset.
+        const priceReserveLeg = async (asset: any): Promise<number | null> => {
+            if (String(asset.id) === String(denominationAsset.id)) return 1;
+            const direct = await derivePrice(BitShares, asset.id, denominationAsset.id, mode).catch((e: any) => {
+                systemLogger.debug(`deriveLiquidityPoolTokenValue: derivePrice failed for ${asset.id}/${denominationAsset.id}: ${getErrorMessage(e)}`);
                 return null;
             });
-        const priceB = String(assetB.id) === String(denominationAsset.id)
-            ? 1
-            : await derivePrice(BitShares, assetB.id, denominationAsset.id, mode).catch((e: any) => {
-                systemLogger.debug(`deriveLiquidityPoolTokenValue: derivePrice failed for ${assetB.id}/${denominationAsset.id}: ${getErrorMessage(e)}`);
-                return null;
-            });
+            if (isPositiveRate(direct)) return direct;
+            if (!allowBridges) return null;
+            const bridged = await derivePriceViaBridges(BitShares, asset.id, denominationAsset.id, DEFAULT_PRICE_BRIDGES, mode).catch(() => null);
+            if (bridged && isPositiveRate(bridged.rate)) {
+                systemLogger.debug(`deriveLiquidityPoolTokenValue: bridged reserve leg ${asset.id}/${denominationAsset.id} via ${bridged.path}`);
+                return bridged.rate;
+            }
+            return null;
+        };
+
+        const priceA = await priceReserveLeg(assetA);
+        const priceB = await priceReserveLeg(assetB);
 
         if (priceA == null || priceB == null || !isValidNumber(priceA) || !isValidNumber(priceB) || priceA <= 0 || priceB <= 0) {
             return null;
@@ -576,7 +666,7 @@ export async function deriveLiquidityPoolTokenValue(BitShares: any, shareAssetRe
  * Called by initializeGrid() when manager.config.gridPrice uses an AMA keyword,
  * by performGridResync(), and by refreshDynamicWeightDistribution() before every
  * rebalance so new orders use live weights — not only on grid reset.
- * @param {string} botKey - Bot key (e.g. "iob-xrp-bts-0")
+ * @param {string} botKey - Bot key (e.g. "iob-aaa-bbb-0")
  * @returns {Object|null} Snapshot with center and optional dynamicWeights fields, or null if invalid
  */
 export function loadAmaCenterSnapshot(botKey: string): any {
@@ -619,7 +709,7 @@ export function loadAmaCenterSnapshot(botKey: string): any {
 /**
  * Load the AMA grid center price written by market_adapter for a bot.
  * This is the numeric accessor used by the order engine.
- * @param {string} botKey - Bot key (e.g. "iob-xrp-bts-0")
+ * @param {string} botKey - Bot key (e.g. "iob-aaa-bbb-0")
  * @returns {number|null} Grid center price in B/A format, or null if file absent/invalid
  */
 export function loadAmaCenterPrice(botKey: string): number | null {
@@ -802,6 +892,13 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
         const btsFeesOwed = fundSnapshot?.btsFeesOwed ?? manager.funds.btsFeesOwed;
         const accountTotals = (fundSnapshot?.accountTotals ?? manager.accountTotals) || null;
         const genesis = (manager as any)._genesis || null;
+        // Gap-evacuation streaks (Phase 3 restart resilience): Map -> plain
+        // object; empty map persists as cleared so stale ids never resurrect.
+        // Non-Map (legacy callers without the field) passes undefined so
+        // storeMasterGrid leaves any previously stored streaks untouched.
+        const gapEvacStreaks = manager._gapEvacStreaks instanceof Map
+            ? Object.fromEntries([...manager._gapEvacStreaks.entries()].filter(([, n]) => Number.isFinite(Number(n)) && Number(n) > 0))
+            : undefined;
         await accountOrders.storeMasterGrid(
             orders,
             btsFeesOwed,
@@ -814,7 +911,8 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
                 btsBalance
             },
             fillKeys,
-            genesis
+            genesis,
+            gapEvacStreaks
         );
         return true;
     } catch (e: any) {
@@ -823,9 +921,38 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
 }
 
 /**
+ * Restore persisted gap-evacuation streaks into the manager (Phase 3
+ * restart resilience). Entries are pruned to slots that still exist in the
+ * loaded grid and to finite positive counts, so a grid reset (or a renamed
+ * slot scheme) can never resurrect stale streaks. The queued-once cancel
+ * markers (_gapEvacCancelQueued) deliberately stay in-memory: they are only
+ * meaningful alongside the in-memory corrections queue, which is empty
+ * after a restart.
+ *
+ * @param {Object} manager - OrderManager instance
+ * @param {Object|null} persisted - {slotId: count} from loadGapEvacStreaks
+ * @returns {number} Number of streak entries restored
+ */
+export function restoreGapEvacStreaks(manager: any, persisted: any): number {
+    if (!manager) return 0;
+    const streaks = new Map();
+    if (persisted && typeof persisted === 'object') {
+        for (const [id, count] of Object.entries(persisted)) {
+            const n = Math.floor(Number(count));
+            if (id && Number.isFinite(n) && n > 0
+                && manager.orders instanceof Map && manager.orders.has(id)) {
+                streaks.set(id, n);
+            }
+        }
+    }
+    manager._gapEvacStreaks = streaks;
+    return streaks.size;
+}
+
+/**
  * Retry grid persistence if previous attempt failed.
  * Clears persistence warning flag if successful.
- * 
+ *
  * @param {Object} manager - OrderManager instance
  * @returns {Promise<boolean>} True if persisted successfully or no warning, false on error
  */
@@ -1013,7 +1140,23 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                     }
 
                     const current = slot || onChainOrder;
-                    workingGrid.set(onChainOrder.id, OrderUtils.convertToSpreadPlaceholder(current));
+                    // Rail-aware hole (Phase 2): a cancelled in-rail surplus
+                    // stays a rail-typed VIRTUAL hole (size preserved for the
+                    // rotation pairing downstream); only true gap-band slots
+                    // become side-neutral SPREAD.
+                    const holeGeoType = OrderUtils.geometryTypeForSlotIndex(
+                        OrderUtils.parseSlotIndex
+                            ? OrderUtils.parseSlotIndex(current?.id)
+                            : null,
+                        workingBoundaryIdx,
+                        gapSlots
+                    );
+                    workingGrid.set(
+                        onChainOrder.id,
+                        (holeGeoType === ORDER_TYPES.BUY || holeGeoType === ORDER_TYPES.SELL)
+                            ? OrderUtils.toRailHolePlaceholder(current, holeGeoType)
+                            : OrderUtils.convertToSpreadPlaceholder(current)
+                    );
                     continue;
                 }
 
@@ -1094,7 +1237,12 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         // of cancel+recreate. Mirrors the reconcile path (manager.ts:210) and
         // removes churn when a fund-driven boundary shift re-types slots. The COW
         // executor already handles rotation UPDATEs (newGridId + newPrice remap).
-        const optimizedActions = optimizeRebalanceActions(actions, manager.orders);
+        const optimizedActions = optimizeRebalanceActions(actions, manager.orders, {
+            logger: (msg: any, level: any) => manager.logger?.log?.(msg, level),
+            boundaryIdx: pendingBoundaryIdx,
+            gapSlots: manager._gapSlots,
+            assets: manager.assets
+        });
         if (optimizedActions !== actions) {
             actions.length = 0;
             actions.push(...optimizedActions);

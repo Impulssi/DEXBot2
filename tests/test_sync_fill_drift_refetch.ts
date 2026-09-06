@@ -2,7 +2,7 @@
  * tests/test_sync_fill_drift_refetch.ts
  *
  * Regression coverage for the "bot went stale because the first of 5 partial
- * fills was misclassified as a full fill" incident (XRP-BTS, 2026-07-03).
+ * fills was misclassified as a full fill" incident (AAA-BBB, 2026-07-03).
  *
  * The fix is two-part, both exercised here:
  *

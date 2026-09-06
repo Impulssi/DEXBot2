@@ -1674,6 +1674,87 @@ function isSlotInRail(boundaryIdx: any, gapSlots: any, orderType: any, slot: any
     return idx >= sellStartIdx;
 }
 
+/**
+ * Whether a slot index sits inside the gap (spread) band: strictly between
+ * the last BUY index (boundary) and the first SELL index. Geometry-only —
+ * never consults the stored slot type, so it keeps working after rail-typed
+ * holes (Phase 2) retype in-band actives to BUY/SELL.
+ *
+ * @param {number|null} idx - Parsed slot index (parseSlotIndex output)
+ * @param {number} boundaryIdx - Last BUY slot index
+ * @param {number} gapSlots - Spread gap slot count
+ * @returns {boolean} True when the index is inside the gap band
+ */
+function isSlotIndexInGapBand(idx: any, boundaryIdx: any, gapSlots: any): boolean {
+    // Explicit null guard: Number(null) === 0 must never read as slot 0.
+    if (idx === null || idx === undefined || idx === '') return false;
+    if (boundaryIdx === null || boundaryIdx === undefined || boundaryIdx === '') return false;
+    const n = Number(idx);
+    const b = Number(boundaryIdx);
+    const g = Number(gapSlots);
+    if (!Number.isFinite(n) || !Number.isFinite(b) || !Number.isFinite(g)) return false;
+    const sellStartIdx = getSellStartIdx(b, g);
+    if (!Number.isFinite(sellStartIdx)) return false;
+    return n > b && n < sellStartIdx;
+}
+
+/**
+ * Pure gap-evacuation rotation allowance: decides whether a slot-to-slot
+ * rotation (UPDATE with newGridId) reduces the violation surface enough to
+ * bypass the LAST-FILL guard. Unit-testable in isolation — the guard block
+ * stays thin and only wires origin/geometry/fail-closed around this.
+ *
+ * Allowance requires ALL of:
+ * - type is BUY or SELL (gap-evacuation moves a committed rail order;
+ *   CREATEs carry no source slot and never qualify),
+ * - old/new price and old/new size are finite, newSize > 0,
+ * - size is bit-exact non-growing: floatToBlockchainInt(newSize) <=
+ *   floatToBlockchainInt(oldSize) when a finite precision is supplied,
+ *   otherwise a strict numeric <= (never a float epsilon),
+ * - price moves outward onto the rail, away from the gap: SELL
+ *   newPrice >= oldPrice, BUY newPrice <= oldPrice. An evacuation that
+ *   reprices toward (or across) the gap is not violation-reducing.
+ *
+ * @param {number} oldPrice - Source slot price (master, pre-rotation)
+ * @param {number} oldSize - Source slot booked size (master, pre-rotation)
+ * @param {number} newPrice - Rotation destination price
+ * @param {number} newSize - Rotation destination size (clamped)
+ * @param {string} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+ * @param {number} [precision] - Asset precision for bit-exact int compare
+ * @returns {{allowed: boolean, reason: string}}
+ */
+function isEvacuationRotationAllowed(oldPrice: any, oldSize: any, newPrice: any, newSize: any, type: any, precision: any = null): { allowed: boolean; reason: string } {
+    if (type !== ORDER_TYPES.BUY && type !== ORDER_TYPES.SELL) {
+        return { allowed: false, reason: `type ${String(type)} is not a rail type` };
+    }
+    const oP = Number(oldPrice);
+    const oS = Number(oldSize);
+    const nP = Number(newPrice);
+    const nS = Number(newSize);
+    if (!Number.isFinite(oP) || oP <= 0) return { allowed: false, reason: 'oldPrice unresolvable' };
+    if (!Number.isFinite(oS) || oS <= 0) return { allowed: false, reason: 'oldSize unresolvable' };
+    if (!Number.isFinite(nP) || nP <= 0) return { allowed: false, reason: 'newPrice invalid' };
+    if (!Number.isFinite(nS) || nS <= 0) return { allowed: false, reason: 'newSize invalid' };
+    let grew: boolean;
+    if (precision != null && Number.isFinite(Number(precision))) {
+        try {
+            grew = floatToBlockchainInt(nS, Number(precision)) > floatToBlockchainInt(oS, Number(precision));
+        } catch {
+            grew = nS > oS;
+        }
+    } else {
+        grew = nS > oS;
+    }
+    if (grew) return { allowed: false, reason: 'rotation grows booked size' };
+    if (type === ORDER_TYPES.SELL && nP < oP) {
+        return { allowed: false, reason: 'SELL evacuation must not reprice toward the gap' };
+    }
+    if (type === ORDER_TYPES.BUY && nP > oP) {
+        return { allowed: false, reason: 'BUY evacuation must not reprice toward the gap' };
+    }
+    return { allowed: true, reason: 'evacuation reduces violation surface (outward repricing, non-growing size)' };
+}
+
 // ================================================================================
 // SECTION 10: GENESIS PRICE-SLOT DETERMINISM
 // ================================================================================
@@ -1778,7 +1859,7 @@ function buildGenesisFromPriceLevels(startPrice: number, incrementPercent: numbe
     };
 }
 
-export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, BUY_WINDOW_DEFAULTS, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals, priceLevelsForGenesis, priceForSlot, slotIndexForPrice, slotIdForPrice, assertSlotPriceInvariant, priceSlotEqual, buildGenesisFromPriceLevels, hashPriceLevels }
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, isSlotIndexInGapBand, isEvacuationRotationAllowed, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, BUY_WINDOW_DEFAULTS, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals, priceLevelsForGenesis, priceForSlot, slotIndexForPrice, slotIdForPrice, assertSlotPriceInvariant, priceSlotEqual, buildGenesisFromPriceLevels, hashPriceLevels }
 
 /**
  * Round a value to a given factor.

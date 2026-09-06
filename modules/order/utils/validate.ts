@@ -47,14 +47,20 @@ import {
     floatToBlockchainInt,
     blockchainToFloat,
     getPrecisionSlack,
+    getPrecisionByOrderType,
     getDoubleDustThreshold,
+    getSellStartIdx,
+    isSlotIndexInGapBand,
+    isEvacuationRotationAllowed,
     clamp
 } from './math.js';
 import { parseSlotIndex } from './slot.js';
 import {
     isOrderOnChain,
     isPhantomOrder,
-    convertToSpreadPlaceholder
+    convertToSpreadPlaceholder,
+    detectGapEvacuationCandidates,
+    updateGapEvacuationStreaks
 } from './order.js';
 const { isValidNumber, toFiniteNumber } = Format;
 
@@ -111,6 +117,13 @@ function validateOrder(order: any, oldOrder: any = null, context: any = 'validat
         });
         normalizedOrder.size = 0;
     }
+
+    // RAIL-HOLE PRESERVATION (Phase 2): a sized BUY/SELL VIRTUAL slot with no
+    // orderId is a rail-typed hole (rotation source, fill-consumed rail slot),
+    // NOT a spread placeholder — it must pass through untouched. Only SPREAD
+    // is size-normalized above; the phantom and ILLEGAL_SPREAD_STATE checks
+    // below fire solely for on-chain states, so rail holes are never
+    // zeroed, retyped, or rejected here. Locked by test_gap_evacuation.
 
     const isOnChainState = (
         normalizedOrder.state === ORDER_STATES.ACTIVE ||
@@ -345,6 +358,93 @@ function checkFundDrift(orders: Map<string, any>, accountTotals: any, assets: an
 // ===============================================================================
 
 /**
+ * Clamp a rotation UPDATE's target size to a partially-filled surplus order's
+ * booked remaining size.
+ *
+ * A rotation must never GROW a PARTIAL order in place: the fill is already
+ * booked into slot.size, and growing it restores the pre-fill size on chain
+ * while the books keep the post-fill remainder (fill accounting divergence —
+ * the COW executor skips such UPDATEs, which strands the hole and leaves a
+ * gap in the grid). Clamping keeps the plan's price intent and fills the hole
+ * at the remainder size, so the grid stays contiguous. A deliberate full-size
+ * top-up must go through a cancel+create cycle, not a silent in-place grow.
+ *
+ * Mirrors the clampPostFillUpdateSize policy used for plain size UPDATEs in
+ * the COW executor (modules/dexbot_cow_runtime.ts).
+ *
+ * @param {Object} surplusMaster - Live master-grid order for the rotation source
+ * @param {number} holeSize - Planned target (hole) size
+ * @param {Function|null} [logger=null] - Optional (msg, level) logger
+ * @param {string} [holeId=''] - Hole slot id for the log line
+ * @returns {number} The (possibly clamped) rotation size
+ */
+function clampRotationSizeForPartial(surplusMaster: any, holeSize: number, logger: any = null, holeId: string = '') {
+    const target = toFiniteNumber(holeSize);
+    if (!surplusMaster || surplusMaster.state !== ORDER_STATES.PARTIAL) return target;
+    const booked = toFiniteNumber(surplusMaster.size);
+    if (!Number.isFinite(target) || !Number.isFinite(booked) || booked <= 0) return target;
+    if (target > booked) {
+        if (logger) {
+            logger(
+                `[RECONCILE] Clamping rotation ${surplusMaster.id} -> ${holeId || '?'}: ` +
+                `surplus is PARTIAL with booked remaining ${Format.formatAmount8(booked)} ` +
+                `but hole targets ${Format.formatAmount8(target)} — rotating at remainder size ` +
+                `so the hole fills without growing the partial in place.`,
+                'warn'
+            );
+        }
+        return booked;
+    }
+    return target;
+}
+
+/**
+ * Stamp a rotation UPDATE as a gap-evacuation when plan-build geometry says
+ * it moves a live order OUT of the gap band onto its rail. The stamp freezes
+ * the boundary + gap width AT PLAN-BUILD TIME (B-stamp) so the COW executor's
+ * LAST-FILL guard validates against the geometry the plan was built for —
+ * plans can otherwise validate against a later-committed boundary and the
+ * evacuation gets misjudged. Stamping requires BOTH:
+ * - geometry: source slot index strictly inside the gap band, destination on
+ *   the same side's rail (pure parseSlotIndex vs frozen boundary/gapSlots —
+ *   never the stored slot type),
+ * - allowance: isEvacuationRotationAllowed(oldPrice, oldSize, newPrice,
+ *   newSize, type) — outward repricing with bit-exact non-growing size.
+ * Anything else stays unstamped and obeys the guard normally (safe default).
+ *
+ * @param {Object} action - Rotation UPDATE action being built
+ * @param {Object} sourceMaster - Live master-grid order for the source slot
+ * @param {number|string} destPrice - Destination (hole) price
+ * @param {number} destSize - Destination (clamped) size
+ * @param {string} type - ORDER_TYPES.BUY or SELL
+ * @param {number} frozenBoundary - Plan-build boundary index
+ * @param {number} frozenGapSlots - Plan-build gap slot count
+ * @returns {Object} The action, stamped when it qualifies
+ */
+function stampGapEvacuationRotation(action: any, sourceMaster: any, destPrice: any, destSize: any, type: any, frozenBoundary: any, frozenGapSlots: any, assets: any = null) {
+    const b = Number(frozenBoundary);
+    const g = Number(frozenGapSlots);
+    if (!Number.isFinite(b) || !Number.isFinite(g) || g < 0) return action;
+    const srcIdx = parseSlotIndex(sourceMaster?.id ?? action?.id);
+    const dstIdx = parseSlotIndex(action?.newGridId);
+    if (srcIdx === null || srcIdx === undefined || dstIdx === null || dstIdx === undefined) return action;
+    if (!isSlotIndexInGapBand(srcIdx, b, g)) return action;
+    if (isSlotIndexInGapBand(dstIdx, b, g)) return action;
+    const sellStartIdx = getSellStartIdx(b, g);
+    const dstInRail = type === ORDER_TYPES.SELL ? Number(dstIdx) >= sellStartIdx : Number(dstIdx) <= b;
+    if (!dstInRail) return action;
+    // Bit-exact size check with the side's on-chain precision (mirrors the
+    // live unstamped probe in dexbot_cow_runtime) — a 1-satoshi size growth
+    // must be refused at stamp time, not just at execution.
+    let stampPrecision: any = null;
+    try { stampPrecision = assets ? getPrecisionByOrderType(assets, type) : null; } catch { stampPrecision = null; }
+    const check = isEvacuationRotationAllowed(sourceMaster?.price, sourceMaster?.size, destPrice, destSize, type, stampPrecision);
+    if (!check.allowed) return action;
+    return { ...action, origin: 'gap-evacuation', evacBoundary: b, evacGapSlots: Math.floor(g) };
+}
+
+
+/**
  * Reconcile target grid against master state
  * @param {Map} masterGrid - Current master grid
  * @param {Map} targetGrid - Target state from strategy
@@ -354,6 +454,12 @@ function checkFundDrift(orders: Map<string, any>, accountTotals: any, assets: an
  */
 function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, options: Record<string, any> = {}) {
     const { logger = null, dustThresholdPercent = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE } = options;
+    // B-stamp inputs for gap-evacuation rotation stamping (frozen at
+    // plan-build): callers pass the geometry this plan was built for. Absent
+    // or non-finite => no stamping (guarded default, never fail-open).
+    const planGapSlots = Number(options?.gapSlots);
+    const hasPlanGeometry = Number.isFinite(planGapSlots) && planGapSlots >= 0;
+    const evacAssets = options?.assets ?? null;
     const actions: any[] = [];
     
     const surplusesBuy: any[] = [];
@@ -481,17 +587,29 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
         for (let i = 0; i < rotationCount; i++) {
             const surplus = surpluses[i];
             const hole = healthyHoles[i];
+            const clampedSize = clampRotationSizeForPartial(surplus.master, hole.order.size, logger, hole.id);
 
-            actions.push({
+            let rotation: any = {
                 type: COW_ACTIONS.UPDATE,
                 id: surplus.id,
                 orderId: surplus.master.orderId,
                 newGridId: hole.id,
-                newSize: hole.order.size,
+                newSize: clampedSize,
                 newPrice: hole.order.price,
                 order: hole.order,
                 isRotation: true
-            });
+            };
+            // Gap-evacuation B-stamp (plan-build frozen boundary): a surplus
+            // stranded in the gap band rotating onto its rail bypasses the
+            // LAST-FILL guard at execution — the rotation reduces the
+            // violation surface instead of adding exposure.
+            if (hasPlanGeometry) {
+                rotation = stampGapEvacuationRotation(
+                    rotation, surplus.master, hole.order.price, clampedSize,
+                    surplus.master?.type, validatedBoundary, planGapSlots, evacAssets
+                );
+            }
+            actions.push(rotation);
         }
 
         for (let i = rotationCount; i < healthyHoles.length; i++) {
@@ -511,10 +629,31 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
         }
     }
 
-    return { 
-        actions, 
+    // Phase 3: tick the per-slot gap-evacuation streak counter when the
+    // caller supplies a Map (in-memory on the manager; resets on restart).
+    // Detection is geometry-only (parse slot idx vs frozen boundary/gapSlots).
+    let evacReady: any[] = [];
+    try {
+        if (options?.evacStreaks instanceof Map && hasPlanGeometry) {
+            const candidates = detectGapEvacuationCandidates(masterGrid, validatedBoundary, planGapSlots);
+            const tick = updateGapEvacuationStreaks(options.evacStreaks, candidates);
+            evacReady = tick.ready;
+            if (evacReady.length > 0 && logger) {
+                logger(
+                    `[GAP-EVAC] ${evacReady.length} stuck in-band order(s) ` +
+                    `(boundary ${validatedBoundary}, gap ${planGapSlots}): ` +
+                    evacReady.map((c: any) => `${c.id}(x${tick.streaks[c.id] ?? '?'})`).join(', '),
+                    'warn'
+                );
+            }
+        }
+    } catch { /* streak tracking is best-effort */ }
+
+    return {
+        actions,
         aborted: false,
         boundaryIdx: validatedBoundary,
+        evacReady,
         summary: summarizeActions(actions)
     };
 }
@@ -528,8 +667,16 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
  * @param {Map} masterGrid - Current master grid
  * @returns {Array<Object>} Optimized action list
  */
-function optimizeRebalanceActions(actions: any, masterGrid: any) {
+function optimizeRebalanceActions(actions: any, masterGrid: any, options: Record<string, any> = {}) {
     if (!Array.isArray(actions) || actions.length === 0) return [];
+    const { logger = null } = options;
+    // B-stamp inputs (same contract as reconcileGrid): frozen plan-build
+    // boundary + gap width for gap-evacuation rotation stamping. Absent =>
+    // no stamping, guarded default.
+    const optBoundary = Number(options?.boundaryIdx);
+    const optGapSlots = Number(options?.gapSlots);
+    const hasOptGeometry = Number.isFinite(optBoundary) && Number.isFinite(optGapSlots) && optGapSlots >= 0;
+    const optAssets = options?.assets ?? null;
 
     const creates: any[] = [];
     const cancels: any[] = [];
@@ -587,16 +734,24 @@ function optimizeRebalanceActions(actions: any, masterGrid: any) {
         }
 
         const createAction = remainingCreates.splice(bestIdx, 1)[0];
-        optimized.push({
+        const clampedSize = clampRotationSizeForPartial(masterOrder, toFiniteNumber(createAction?.order?.size), logger, createAction.id);
+        let rotation: any = {
             type: COW_ACTIONS.UPDATE,
             id: cancelAction.id,
             orderId: cancelAction.orderId,
             newGridId: createAction.id,
-            newSize: toFiniteNumber(createAction?.order?.size),
+            newSize: clampedSize,
             newPrice: toFiniteNumber(createAction?.order?.price),
             order: createAction.order,
             isRotation: true
-        });
+        };
+        if (hasOptGeometry) {
+            rotation = stampGapEvacuationRotation(
+                rotation, masterOrder, toFiniteNumber(createAction?.order?.price), clampedSize,
+                cancelType, optBoundary, optGapSlots, optAssets
+            );
+        }
+        optimized.push(rotation);
     }
 
     for (const createAction of remainingCreates) {
@@ -634,11 +789,13 @@ function hasExecutableActions(rebalanceResult: any) {
 /**
  * Validate that CREATE actions target slots that are not already occupied on-chain
  * and that no CREATE price collides with an existing placed order or unmatched
- * on-chain order.  Checks four layers:
+ * on-chain order.  Checks five layers:
  *   1. Slot occupancy — target grid slot already has a placed order
  *   2. Master grid slot collision — same slotId already placed (priceSlotEqual)
  *   3. Chain orphan slot collision — chain order's nearest slotId equals target slotId
  *   4. Same-batch duplicate slotId — two CREATEs target same slotId
+ *   5. Same-batch bit-identical duplicate price — two CREATEs on different
+ *      target slots at the exact same price (same side)
  *
  * Cancel and rotation-released slots are considered free.
  *
@@ -743,6 +900,44 @@ function validateCreateTargetSlots(actions: any, orders: any, _assets: any = nul
             if (seen.has(entry.targetId)) {
                 violations.push({ targetId: entry.targetId, currentOrderId: null, currentType: entry.type, currentState: 'CREATE', reason: 'same_batch_price_collision' });
             } else seen.add(entry.targetId);
+        }
+        // Same-batch bit-identical duplicate price across DIFFERENT target slots.
+        // The genesis-frozen slot mapping gives every slot a distinct price
+        // level, so two CREATEs at the exact same price on different slots
+        // indicate a degenerate plan (production incident 2026-08-29: several
+        // slots planned at one price; every batch was filtered down to a
+        // single op and the grid rebuild crawled at one placement per cycle).
+        // The tolerance-based price-collision check that caught this class was
+        // removed with the slot-based rewrite; this exact-equality check
+        // restores the protection without tolerance false-positives. First
+        // target per (type, price) wins; later duplicates are skipped by the
+        // caller via violatingTargetIds.
+        const priceOwner = new Map<string, string>();
+        for (const entry of createEntries) {
+            const priceNum = Number(entry.price);
+            if (!Number.isFinite(priceNum)) continue;
+            // Key on the on-chain integer repr when the side precision is
+            // known (bit-exact: prices that quantize to the same chain int
+            // ARE the same price on the DEX); float fallback preserves the
+            // old behavior for callers without assets context.
+            let key: string;
+            let sidePrecision: any = null;
+            try { sidePrecision = _assets ? getPrecisionByOrderType(_assets, entry.type) : null; } catch { sidePrecision = null; }
+            if (Number.isFinite(Number(sidePrecision)) && Number(sidePrecision) > 0) {
+                try {
+                    key = `${String(entry.type)}:i${floatToBlockchainInt(priceNum, Number(sidePrecision))}`;
+                } catch {
+                    key = `${String(entry.type)}:${priceNum}`;
+                }
+            } else {
+                key = `${String(entry.type)}:${priceNum}`;
+            }
+            const owner = priceOwner.get(key);
+            if (owner === undefined) {
+                priceOwner.set(key, entry.targetId);
+            } else if (owner !== entry.targetId) {
+                violations.push({ targetId: entry.targetId, currentOrderId: null, currentType: entry.type, currentState: 'CREATE', reason: 'same_batch_price_duplicate', duplicateOf: owner });
+            }
         }
     }
 
@@ -1094,5 +1289,5 @@ function evaluateCommit(workingGrid: any, options: any = {}) {
 // EXPORTS
 // ===============================================================================
 
-export { validateOrder, validateGridForPersistence, validateWorkingGridFunds, checkFundDrift, reconcileGrid, optimizeRebalanceActions, hasExecutableActions, validateCreateTargetSlots, hasActionForOrder, removeActionsForOrder, projectTargetToWorkingGrid, buildStateUpdates, buildAbortedResult, buildSuccessResult, evaluateCommit }
+export { validateOrder, validateGridForPersistence, validateWorkingGridFunds, checkFundDrift, reconcileGrid, optimizeRebalanceActions, hasExecutableActions, validateCreateTargetSlots, hasActionForOrder, removeActionsForOrder, projectTargetToWorkingGrid, buildStateUpdates, buildAbortedResult, buildSuccessResult, evaluateCommit, stampGapEvacuationRotation }
 

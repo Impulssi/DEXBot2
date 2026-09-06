@@ -32,6 +32,10 @@
  *   limit_order_cancel:
  *     op_object.fee_paying_account        — account that cancelled
  *     op_object.order                     — the order ID cancelled
+ *
+ *   limit_order_update (op 77, DEXBot2-only — native in-place re-price):
+ *     op_object.seller                    — account that updated the order
+ *     op_object.order                     — the limit order ID updated
  */
 
 
@@ -42,6 +46,11 @@ import { kibanaSearch, DEFAULT_CONFIG as BASE_CONFIG } from '../../market_adapte
 const OP_LIMIT_ORDER_CREATE = 1;
 const OP_LIMIT_ORDER_CANCEL = 2;
 const OP_FILL_ORDER         = 4;
+// Native in-place order re-price. Only DEXBot2 broadcasts this (COW UPDATE
+// actions via buildUpdateOrderOp); DEXBot1 (Python staggered_orders) predates
+// it and can only cancel + recreate. Presence of op 77 on an account is the
+// DEXBot2 fingerprint; absence means cancel-only (DEXBot1-style).
+const OP_LIMIT_ORDER_UPDATE = 77;
 
 const DEFAULT_CONFIG = {
     ...BASE_CONFIG,
@@ -166,7 +175,37 @@ function buildTopFilledAccountsQuery(lookbackHours: number, topN: number = 100, 
     };
 }
 
+/**
+ * Top N accounts by limit_order_update count (seller field, op 77).
+ * DEXBot2 fingerprint: only DEXBot2 broadcasts native in-place re-prices
+ * (COW UPDATE actions). DEXBot1-style bots never emit op 77 — they cancel
+ * (op 2) and recreate (op 1) instead.
+ */
+function buildTopUpdaterAccountsQuery(lookbackHours: number, topN: number = 200, minUpdates: number = 1) {
+    return {
+        size: 0,
+        query: {
+            bool: {
+                filter: [
+                    { term:  { operation_type: OP_LIMIT_ORDER_UPDATE } },
+                    { range: { 'block_data.block_time': { gte: `now-${lookbackHours}h`, lte: 'now' } } },
+                ],
+            },
+        },
+        aggs: {
+            by_account: {
+                terms: {
+                    field:         'operation_history.op_object.seller.keyword',
+                    size:          topN,
+                    min_doc_count: minUpdates,
+                    order:         { _count: 'desc' },
+                },
+            },
+        },
+    };
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
-export { DEFAULT_CONFIG, kibanaSearch, buildOrderPriceQuery, buildTopSellerAccountsQuery, buildTopCancellerAccountsQuery, buildTopFilledAccountsQuery }
+export { DEFAULT_CONFIG, kibanaSearch, buildOrderPriceQuery, buildTopSellerAccountsQuery, buildTopCancellerAccountsQuery, buildTopFilledAccountsQuery, buildTopUpdaterAccountsQuery, OP_LIMIT_ORDER_UPDATE }
 

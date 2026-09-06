@@ -193,6 +193,49 @@ async function runTests() {
         assert.strictEqual(result.isValid, true, 'rotation releases source slot for create');
     }
 
+    // ── 11. Bit-exact same-batch price duplicate (on-chain int key) ────
+    console.log(' - 10. Layer-5 bit-exact price duplicate keying...');
+    {
+        // SELL side precision = assetA (8) — the repo-wide side-precision
+        // convention. Distinct floats that quantize to the SAME on-chain int
+        // (100.000000001 and 100.000000004 both -> 10000000000 at prec 8)
+        // must collide — they are one price on the DEX.
+        const colliding = [
+            makeCreateAction('slot-a', 100.000000001, ORDER_TYPES.SELL),
+            makeCreateAction('slot-b', 100.000000004, ORDER_TYPES.SELL)
+        ];
+        const resColliding = validateCreateTargetSlots(colliding, new Map(), dummyAssets);
+        assert.strictEqual(resColliding.isValid, false, 'same on-chain int = same price = duplicate');
+        const dup = resColliding.violations.find(v => v.reason === 'same_batch_price_duplicate');
+        assert.ok(dup, 'violation reason is same_batch_price_duplicate');
+        assert.strictEqual(dup.targetId, 'slot-b', 'first target wins, later duplicate flagged');
+
+        // Distinct on-chain ints (100.0000001 -> 100000001 vs
+        // 100.0000002 -> 100000002) must NOT false-positive, even though
+        // they are adjacent floats.
+        const distinct = [
+            makeCreateAction('slot-a', 100.0000001, ORDER_TYPES.SELL),
+            makeCreateAction('slot-b', 100.0000002, ORDER_TYPES.SELL)
+        ];
+        const resDistinct = validateCreateTargetSlots(distinct, new Map(), dummyAssets);
+        const dupDistinct = resDistinct.violations.find(v => v.reason === 'same_batch_price_duplicate');
+        assert.ok(!dupDistinct, 'distinct on-chain ints are distinct prices, no false positive');
+
+        // Without assets context the float fallback applies: the colliding
+        // pair above has distinct floats and passes (documented fallback).
+        const resFallback = validateCreateTargetSlots(colliding, new Map(), null);
+        const dupFallback = resFallback.violations.find(v => v.reason === 'same_batch_price_duplicate');
+        assert.ok(!dupFallback, 'float fallback for asset-less callers (old behavior)');
+
+        // Identical prices still collide under the int key (regression).
+        const identical = [
+            makeCreateAction('slot-a', 100, ORDER_TYPES.SELL),
+            makeCreateAction('slot-b', 100, ORDER_TYPES.SELL)
+        ];
+        const resIdentical = validateCreateTargetSlots(identical, new Map(), dummyAssets);
+        assert.ok(resIdentical.violations.some(v => v.reason === 'same_batch_price_duplicate'), 'exact duplicates still flagged with assets');
+    }
+
     console.log('\n✓ validateCreateTargetSlots tests PASSED!');
 }
 

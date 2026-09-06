@@ -3,6 +3,7 @@
 import { PATHS } from '../../modules/paths.js';
 import CreditRuntime from '../../modules/credit_runtime.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
+import { isSameBotName } from '../../modules/utils/sanitize_key.js';
 
 
 function createCreditRuntimeAdapter(infra: any, options: Record<string, any> = {}) {
@@ -55,7 +56,7 @@ function createCreditRuntimeAdapter(infra: any, options: Record<string, any> = {
     try {
       const bundle = await infra.profiles.loadBundle();
       const match = bundle.bots.find(
-        (b: Record<string, any>) => b.botKey === botRef || b.name === botRef,
+        (b: Record<string, any>) => isSameBotName(b.botKey, botRef) || isSameBotName(b.name, botRef),
       );
       return match || null;
     } catch {

@@ -56,6 +56,9 @@ import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveO
 import { assignGridRoles } from './utils/order.js';
 import {
     convertToSpreadPlaceholder,
+    toRailHolePlaceholder,
+    geometryTypeForSlotIndex,
+    parseSlotIndex,
     hasOnChainId,
     isOrderPlaced
 } from "./utils/order.js";
@@ -143,8 +146,26 @@ class StrategyEngine {
 
                 if (currentSlot && !slotReused && isOrderPlaced(currentSlot) && currentSlot.size > 0) {
                     mgr.logger.log(`[STRATEGY] Virtualizing filled slot ${filledOrder.id}`, 'debug');
+                    // Rail-aware hole (Phase 2): a consumed RAIL slot (e.g. a
+                    // filled sell) stays SELL/BUY VIRTUAL so evacuation
+                    // geometry survives the fill cycle; only true gap-band
+                    // slots become side-neutral SPREAD. Geometry by slot id,
+                    // never the stored type.
+                    let filledHole: any = null;
+                    try {
+                        const filledGeoType = geometryTypeForSlotIndex(
+                            parseSlotIndex(currentSlot?.id),
+                            (mgr as any)?.boundaryIdx,
+                            (mgr as any)?._gapSlots
+                        );
+                        filledHole = (filledGeoType === ORDER_TYPES.BUY || filledGeoType === ORDER_TYPES.SELL)
+                            ? toRailHolePlaceholder(currentSlot, filledGeoType, 0)
+                            : convertToSpreadPlaceholder(currentSlot);
+                    } catch {
+                        filledHole = convertToSpreadPlaceholder(currentSlot);
+                    }
                     const ok = await mgr._updateOrder(
-                        convertToSpreadPlaceholder(currentSlot),
+                        filledHole,
                         'fill',
                         { skipAccounting: false, fee: 0 }
                     );

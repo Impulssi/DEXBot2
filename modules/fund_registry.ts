@@ -83,7 +83,7 @@ function _ensureAccount(registry: any, account: string): any {
  * Register a bot's allocation on an account for a given side.
  * Called during bot startup.
  * @param {string} account - Blockchain account name (e.g., '1.2.x')
- * @param {string} botName - Bot identifier (e.g., 'XRP-BTS' or botKey)
+ * @param {string} botName - Bot identifier (e.g., 'AAA-BBB' or botKey)
  * @param {'buy'|'sell'} side - Trade side
  * @param {number|string} percentage - Percentage value (e.g., 1.0 or '100%')
  */

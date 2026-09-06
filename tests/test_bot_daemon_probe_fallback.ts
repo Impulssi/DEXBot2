@@ -3,7 +3,7 @@ process.env.DEXBOT_SKIP_PROFILE_VALIDATION = '1';
 // config.ts is first loaded (via module_cache_stub -> constants.ts ->
 // general_settings.ts -> paths.ts -> config.ts). Without this, Config.ARGS is
 // empty and bot.ts falls through to runtime.exit(1) before the test can run.
-process.env.BOT_NAME = 'XRP-BTS';
+process.env.BOT_NAME = 'AAA-BBB';
 const assert = require('assert');
 const fs = require('fs');
 const { setCachedModule } = require('./helpers/module_cache_stub');
@@ -55,7 +55,7 @@ function installStubs() {
             config: {
                 bots: [
                     {
-                        name: 'XRP-BTS',
+                        name: 'AAA-BBB',
                         active: true,
                         assetA: 'XRP',
                         assetB: 'BTS',
@@ -107,10 +107,10 @@ function installStubs() {
         waitForConnected: async () => {},
     });
 
-    process.argv = ['node', require.resolve('../bot.js'), 'XRP-BTS'];
+    process.argv = ['node', require.resolve('../bot.js'), 'AAA-BBB'];
     const { Config } = require('../modules/config');
-    Config.ARGS = ['XRP-BTS'];
-    Config.BOT_NAME = 'XRP-BTS';
+    Config.ARGS = ['AAA-BBB'];
+    Config.BOT_NAME = 'AAA-BBB';
 
     console.log = (...args) => {
         const line = args.map((part) => String(part)).join(' ').trim();

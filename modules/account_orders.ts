@@ -335,7 +335,7 @@ class AccountOrders {
    * @param {Object|null} recentFillKeys - Optional fill key dedup snapshot for crash recovery
    * @param {Object|null} genesis - Optional frozen genesis (priceLevels etc)
    */
-  async storeMasterGrid(orders: any[] = [], btsFeesOwed: any = null, boundaryIdx: any = null, assets: any = null, debugInputs: any = null, recentFillKeys: any = null, genesis: any = null) {
+  async storeMasterGrid(orders: any[] = [], btsFeesOwed: any = null, boundaryIdx: any = null, assets: any = null, debugInputs: any = null, recentFillKeys: any = null, genesis: any = null, gapEvacStreaks: any = undefined) {
     // Use AsyncLock to serialize read-modify-write operations
     await this._persistenceLock.acquire(async () => {
       // Reload from disk before writing to prevent race conditions
@@ -383,6 +383,24 @@ class AccountOrders {
         this.data.genesis = genesis;
       }
 
+      // Persist gap-evacuation streaks (Phase 3 restart resilience): only
+      // finite positive per-slot counts survive; an empty map clears the
+      // stored entry so stale ids never resurrect after a grid reset.
+      if (gapEvacStreaks !== undefined) {
+        const sanitized: Record<string, number> = {};
+        if (gapEvacStreaks && typeof gapEvacStreaks === 'object') {
+          for (const [id, count] of Object.entries(gapEvacStreaks)) {
+            const n = Math.floor(Number(count));
+            if (id && Number.isFinite(n) && n > 0) sanitized[id] = n;
+          }
+        }
+        if (Object.keys(sanitized).length > 0) {
+          this.data.gapEvacStreaks = sanitized;
+        } else {
+          delete (this.data as any).gapEvacStreaks;
+        }
+      }
+
       const timestamp = nowIso();
       this.data.lastUpdated = timestamp;
       if (this.data.meta) this.data.meta.updatedAt = timestamp;
@@ -408,6 +426,21 @@ class AccountOrders {
     }
     if (this.data && this.data.genesis && Array.isArray(this.data.genesis.priceLevels)) {
       return this.data.genesis;
+    }
+    return null;
+  }
+
+  /**
+   * Load the persisted gap-evacuation streaks (per-slot in-band cycle counts).
+   * @param {boolean} forceReload - If true, reload from disk
+   * @returns {Object|null} {slotId: count} map or null when absent
+   */
+  loadGapEvacStreaks(forceReload: boolean = false) {
+    if (forceReload) {
+      this.data = this._loadData() || emptyData();
+    }
+    if (this.data && this.data.gapEvacStreaks && typeof this.data.gapEvacStreaks === 'object') {
+      return this.data.gapEvacStreaks;
     }
     return null;
   }

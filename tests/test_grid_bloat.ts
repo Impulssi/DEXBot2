@@ -207,18 +207,20 @@ async function runTests() {
         // Check that stale types were corrected
         const getType = (id: string) => mgr.orders.get(id)?.type;
 
-        // All empty (size-0, no orderId) VIRTUAL slots are side-neutral SPREAD
-        // regardless of zone (Option A normalizer).
-        assert.strictEqual(getType('slot-0'), 'spread', 'slot-0 (empty virtual) should be SPREAD');
-        assert.strictEqual(getType('slot-1'), 'spread', 'slot-1 (empty virtual) should be SPREAD');
-        assert.strictEqual(getType('slot-2'), 'spread', 'slot-2 (empty virtual) should be SPREAD');
-        assert.strictEqual(getType('slot-4'), 'spread', 'slot-4 (empty virtual) should be SPREAD');
-        assert.strictEqual(getType('slot-5'), 'spread', 'slot-5 (empty virtual) should be SPREAD');
-        assert.strictEqual(getType('slot-6'), 'spread', 'slot-6 (empty virtual) should be SPREAD');
-        assert.strictEqual(getType('slot-7'), 'spread', 'slot-7 (empty virtual) should be SPREAD');
-        assert.strictEqual(getType('slot-8'), 'spread', 'slot-8 (empty virtual) should be SPREAD');
-        assert.strictEqual(getType('slot-9'), 'spread', 'slot-9 (empty virtual) should be SPREAD');
-        assert.strictEqual(getType('slot-10'), 'spread', 'slot-10 (empty virtual) should be SPREAD');
+        // Rail-typed holes (Phase 2): empty (size-0, no orderId) VIRTUAL slots
+        // keep their RAIL type by geometry — boundary 5, gapSlots 4 gives
+        // buyEndIdx=5, sellStartIdx=10, so slot-0..5 = BUY, slot-6..9 = SPREAD
+        // (gap band), slot-10.. = SELL. Only true band slots are SPREAD.
+        assert.strictEqual(getType('slot-0'), 'buy', 'slot-0 (empty in-rail hole) should be BUY');
+        assert.strictEqual(getType('slot-1'), 'buy', 'slot-1 (empty in-rail hole) should be BUY');
+        assert.strictEqual(getType('slot-2'), 'buy', 'slot-2 (empty in-rail hole) should be BUY');
+        assert.strictEqual(getType('slot-4'), 'buy', 'slot-4 (empty in-rail hole) should be BUY');
+        assert.strictEqual(getType('slot-5'), 'buy', 'slot-5 (empty in-rail hole) should be BUY');
+        assert.strictEqual(getType('slot-6'), 'spread', 'slot-6 (empty band slot) should be SPREAD');
+        assert.strictEqual(getType('slot-7'), 'spread', 'slot-7 (empty band slot) should be SPREAD');
+        assert.strictEqual(getType('slot-8'), 'spread', 'slot-8 (empty band slot) should be SPREAD');
+        assert.strictEqual(getType('slot-9'), 'spread', 'slot-9 (empty band slot) should be SPREAD');
+        assert.strictEqual(getType('slot-10'), 'sell', 'slot-10 (empty in-rail hole) should be SELL');
 
         // Slot-3: ACTIVE on-chain with size — corrected to BUY by geometry
         // (index 3 within BUY zone).  Subsequent sync detects the chain

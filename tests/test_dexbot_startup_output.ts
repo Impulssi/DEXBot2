@@ -63,7 +63,7 @@ function installStubs() {
             config: {
                 bots: [
                     {
-                        name: 'XRP-BTS',
+                        name: 'AAA-BBB',
                         active: true,
                         assetA: 'XRP',
                         assetB: 'BTS',
@@ -212,7 +212,7 @@ function assertPlainStartupOutput() {
 function assertColorStartupOutput() {
     assert.ok(logs.includes('Active bots:'), 'dexbot test should print the active-bot summary header');
     assert.ok(
-        logs.some((line) => line.includes('\x1b[1;92m') && line.includes('XRP-BTS')),
+        logs.some((line) => line.includes('\x1b[1;92m') && line.includes('AAA-BBB')),
         'dexbot test should color active bot names green'
     );
     assert.ok(

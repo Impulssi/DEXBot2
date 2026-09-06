@@ -9,6 +9,7 @@ import { loadSettingsFile, resolveRawBotEntries, saveSettingsFile, normalizeBotE
 import { normalizeMode, detectMode, setPreferredMode, describeModeChoice } from './launcher_mode_detector.js';
 import { normalizeRoot, resolveRuntimeScript, normalizeProfileDir } from './launcher_paths.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
+import { isSameBotName } from '../../modules/utils/sanitize_key.js';
 
 const storage = getStorage();
 
@@ -174,7 +175,7 @@ async function launcherReset(botName: string | null, options: Record<string, any
   const { config } = loadSettingsFile(PROFILES_BOTS_FILE);
   const entries = normalizeBotEntries(resolveRawBotEntries(config));
 
-  const targets = botName ? entries.filter((b: any) => b.name === botName) : entries.filter((b: any) => b.active !== false);
+  const targets = botName ? entries.filter((b: any) => isSameBotName(b.name, botName)) : entries.filter((b: any) => b.active !== false);
 
   if (botName && targets.length === 0) {
     throw new Error(`Bot '${botName}' not found in ${PROFILES_BOTS_FILE}`);
@@ -235,7 +236,7 @@ async function launcherDisable(botName: string | null, options: Record<string, a
     };
   }
 
-  const match = entries.find((b: any) => b.name === botName);
+  const match = entries.find((b: any) => isSameBotName(b.name, botName));
   if (!match) {
     throw new Error(`Bot '${botName}' not found in ${PROFILES_BOTS_FILE}`);
   }
@@ -268,7 +269,7 @@ async function launcherPm2Start(botName: string | null, options: Record<string, 
   const { config } = loadSettingsFile(PROFILES_BOTS_FILE);
   const entries = normalizeBotEntries(resolveRawBotEntries(config));
 
-  const targets = botName ? entries.filter((b: any) => b.name === botName) : entries.filter((b: any) => b.active !== false);
+  const targets = botName ? entries.filter((b: any) => isSameBotName(b.name, botName)) : entries.filter((b: any) => b.active !== false);
 
   if (botName && targets.length === 0) {
     throw new Error(`Bot '${botName}' not found or not active in ${PROFILES_BOTS_FILE}`);
@@ -287,7 +288,7 @@ async function launcherPm2Start(botName: string | null, options: Record<string, 
   // Filter apps if specific bot requested
   let appsToStart = apps;
   if (botName) {
-    appsToStart = apps.filter((app: any) => app.name === botName);
+    appsToStart = apps.filter((app: any) => isSameBotName(app.name, botName));
     if (appsToStart.length === 0) {
       throw new Error(`No PM2 app found for bot '${botName}'`);
     }

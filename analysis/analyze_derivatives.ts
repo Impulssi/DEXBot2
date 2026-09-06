@@ -14,7 +14,7 @@
  *
  *   node dist/analysis/analyze_derivatives.js \\
  *     --source market_adapter \
- *     --bot-key XRP-BTS
+ *     --bot-key AAA-BBB
  *
  * Output:
  *   analysis/charts/derivative_chart.html

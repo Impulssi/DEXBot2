@@ -1670,6 +1670,52 @@ async function _reconcileStartupSide({
     let cancelledIndex: number | null = null;
     let projectedSideBalance = Number(manager.accountTotals?.[balanceKey] || 0);
 
+    // Vacated-rail-slot tracking (Phase 4, vacate+create atomic): a re-map
+    // UPDATE moves an unmatched chain order from its current price onto a
+    // chosen slot, vacating the level it was created for. When that vacated
+    // price EXACTLY matches an empty rail slot of this side, queue a refill
+    // CREATE in the same pass so the rail level does not linger as a hole.
+    // Ghost levels (price matches no current slot — e.g. a mid-flight AMA
+    // offset shift) are intentionally NOT re-created: the lattice moved, a
+    // create at the ghost price would mismatch immediately. Those holes are
+    // owned by the gap-evacuation/adoption recovery paths instead.
+    const desiredSlotIds = new Set<string>(desiredSlots.map((s: any) => s?.id).filter(Boolean));
+    const vacatedRefillPlanned = new Set<string>();
+    const refillCandidates: any[] = [];
+
+    const planVacatedRailRefill = (chainOrder: any, parsedChain: any) => {
+        const boundary = manager.boundaryIdx;
+        const gapSlots = manager._gapSlots;
+        if (!Number.isFinite(Number(boundary)) || !Number.isFinite(Number(gapSlots))) return;
+        const chainPrice = parsedChain?.price;
+        if (!Number.isFinite(Number(chainPrice))) return;
+        const sidePrecision = orderType === ORDER_TYPES.SELL ? manager.assets?.assetA?.precision : manager.assets?.assetB?.precision;
+        for (const slotOrder of manager.orders.values()) {
+            if (!slotOrder || !slotOrder.id) continue;
+            // Refill only TRUE holes: an empty VIRTUAL slot without any
+            // orderId. A VIRTUAL slot carrying a stale orderId is a phantom
+            // (sync error) — never a refill target. A CANCELED slot may
+            // still have a cancel broadcast in flight (double-place risk),
+            // and ACTIVE/PARTIAL slots are placed by definition.
+            if (slotOrder.state !== ORDER_STATES.VIRTUAL) continue;
+            if (slotOrder.orderId) continue;
+            if (desiredSlotIds.has(slotOrder.id) || vacatedRefillPlanned.has(slotOrder.id)) continue;
+            if (slotOrder.type !== orderType) continue;
+            if (isOrderPlaced(slotOrder)) continue;
+            if (!isSlotInRail(boundary, gapSlots, orderType, slotOrder)) continue;
+            if (Number(slotOrder.size) <= 0) continue;
+            if (!priceSlotEqual(slotOrder.price, chainPrice, sidePrecision)) continue;
+            vacatedRefillPlanned.add(slotOrder.id);
+            refillCandidates.push(slotOrder);
+            logger?.log?.(
+                `Startup: Re-map of ${chainOrder.id} vacates rail slot ${slotOrder.id} ` +
+                `@${Format.formatPrice6(slotOrder.price)} — queuing refill create (vacate+create atomic)`,
+                'info'
+            );
+            return;
+        }
+    };
+
     logger?.log?.(
         `Startup ${sideUpper}: matchedOnGrid=${matchedOnGrid}, needSlots=${neededSlots}, unmatched=${sortedUnmatched.length}, updates=${updateCount}`,
         'info'
@@ -1719,6 +1765,11 @@ async function _reconcileStartupSide({
             continue;
         }
 
+        // Phase 4: record which rail level this re-map vacates — only once
+        // the update is definitely proceeding (a skipped update vacates
+        // nothing; queueing a refill then would double-place the level).
+        planVacatedRailRefill(chainOrder, parsedChain);
+
         logger?.log?.(
             `Startup: Updating chain ${sideUpper} ${chainOrder.id} -> grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatSizeByOrderType(gridOrder.size, orderType, manager.assets)})`,
             'info'
@@ -1752,6 +1803,26 @@ async function _reconcileStartupSide({
                 },
             });
         }
+    }
+
+    // Phase 4: queue refill creates for rail levels vacated by re-map updates.
+    // Follows the cancelInfo create precedent: execution-layer balance checks
+    // own the funding decision; planOnly passes collect the plans untouched.
+    for (const vacatedSlot of refillCandidates) {
+        logger?.log?.(
+            `Startup: Creating ${sideUpper} refill for vacated rail slot ${vacatedSlot.id} ` +
+            `(price=${Format.formatPrice6(vacatedSlot.price)}, size=${Format.formatSizeByOrderType(vacatedSlot.size, orderType, manager.assets)})`,
+            'info'
+        );
+        plannedCreates.push({
+            orderType,
+            gridOrder: { ...vacatedSlot },
+            orderLabel: `${sideUpper} refill for vacated rail slot`,
+            recovery: {
+                triggerMessage: `Startup: Triggering recovery sync after ${sideUpper} vacated-rail refill failure`,
+                source: 'startupVacatedRailRefill',
+            },
+        });
     }
 
     const processedUnmatched = sortedUnmatched.slice(updateCount);

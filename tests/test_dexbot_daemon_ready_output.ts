@@ -61,7 +61,7 @@ function installStubs() {
             config: {
                 bots: [
                     {
-                        name: 'XRP-BTS',
+                        name: 'AAA-BBB',
                         active: true,
                         assetA: 'XRP',
                         assetB: 'BTS',

@@ -26,6 +26,8 @@ import {
 } from './bot_supervisor.js';
 import { buildRuntimeScriptArgs, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry.js';
 import { getErrorMessage } from '../utils/errors.js';
+import { isSameBotName } from '../utils/sanitize_key.js';
+import { buildAdapterFingerprint } from './adapter_requirement.js';
 
 const MONOLITHIC_PID_FILE = PATHS.PROFILES.MONOLITHIC_PID;
 const MONOLITHIC_BOT_PID_FILE = PATHS.PROFILES.MONOLITHIC_BOT_PID;
@@ -342,11 +344,10 @@ function listConfiguredBots(botsFile?: any) {
 }
 
 function getActiveAmaBotFingerprint(botsFile?: any) {
-    return (botsFile ? listConfiguredBots(botsFile) : listConfiguredBots())
-        .filter((b: any) => b.active && usesAmaGridPrice(b))
-        .map((b: any) => `${b.name}:${b.gridPrice}`)
-        .sort()
-        .join('|');
+    // Canonical semantic fingerprint (see launcher/adapter_requirement.ts):
+    // identical to the per-bot snapshot fingerprint, so the wrapper watchdog
+    // and wrapper-less bot fallbacks agree on what "changed" means.
+    return buildAdapterFingerprint(listConfiguredBots(botsFile));
 }
 
 function getAllControlBotNames() {
@@ -374,19 +375,21 @@ function getControlBotNames(target: any, wholeRuntime: any = false) {
 
 function getControlActionLabel(cmd: any) {
     if (cmd === 'restart' || cmd === 'restart-all') return 'restarting';
+    if (cmd === 'reload' || cmd === 'reload-all') return 'reloading';
     if (cmd === 'shutdown' || cmd === 'delete') return 'shutting down';
     return 'stopping';
 }
 
 function getControlServiceNames(cmd: any, botNames: any) {
-    if (!['stop-all', 'restart-all', 'delete', 'shutdown'].includes(cmd)) return [];
+    if (!['stop-all', 'restart-all', 'reload-all', 'delete', 'shutdown'].includes(cmd)) return [];
     const serviceNames: string[] = [];
+    // reload-all mirrors restart-all but leaves the credential daemon untouched,
+    // so it must not list the daemon as an affected service.
     if (cmd === 'restart-all' || cmd === 'delete' || cmd === 'shutdown') {
         serviceNames.push('credential daemon');
     }
-    const botNameSet = new Set(botNames);
     const affectedAmaBots = listConfiguredBots().some((bot: any) => (
-        bot.active && usesAmaGridPrice(bot) && botNameSet.has(bot.name)
+        bot.active && usesAmaGridPrice(bot) && (botNames as any[]).some((n: any) => isSameBotName(n, bot.name))
     ));
     if (affectedAmaBots) {
         serviceNames.push('market adapter');

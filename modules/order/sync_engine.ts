@@ -109,8 +109,10 @@ import {
     calculatePriceTolerance,
     getAssetFees,
     getBtsSide,
+    getSellStartIdx,
     slotIndexForPrice,
     isSlotInRail,
+    isSlotIndexInGapBand,
     priceSlotEqual
 } from './utils/math.js';
 import {
@@ -126,6 +128,7 @@ import {
     resolveSpreadOrderSide,
     duplicateOrphanLogInfo
 } from './utils/order.js';
+import { parseSlotIndex } from './utils/slot.js';
 import {
     resolveProcessedFillPersistenceMode
 } from './processed_fill_store.js';
@@ -218,10 +221,19 @@ function describeNearestAdoptionCandidates(mgr: any, chainOrder: any, precision:
  * @param {Function} calcToleranceFn - calculatePriceTolerance function
  * @returns {{candidateSlotId: string, candidateSlotPrice: number, priceDiff: number, tolerance: number}|null}
  */
-async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, chainOrderId: string, rawChainOrders: Map<string, any>, matchedGridOrderIds: Set<string>, chainOrderIdsOnGrid: Set<string>, filledOrders: any[], updatedOrders: any[], skipAccounting: boolean) {
+async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, chainOrderId: string, rawChainOrders: Map<string, any>, matchedGridOrderIds: Set<string>, chainOrderIdsOnGrid: Set<string>, filledOrders: any[], updatedOrders: any[], skipAccounting: boolean): Promise<boolean> {
     let bestMatch: any = { ...slot };
     const wasVirtual = slot.state === ORDER_STATES.VIRTUAL;
     const wasPartial = slot.state === ORDER_STATES.PARTIAL;
+    // SPREAD slots are legitimate adoption targets (typeCompat allows them),
+    // but the slot must be re-typed to the real on-chain side BEFORE activation:
+    // validateOrder treats SPREAD + orderId/on-chain state as fatal
+    // ILLEGAL_SPREAD_STATE, and the size precision below depends on the
+    // resolved side. Every other activation path (COW rotation destinations,
+    // legacy fallback adoption, grid load) performs the same re-type.
+    if (bestMatch.type === ORDER_TYPES.SPREAD && (chainOrder.type === ORDER_TYPES.BUY || chainOrder.type === ORDER_TYPES.SELL)) {
+        bestMatch.type = chainOrder.type;
+    }
     bestMatch.orderId = chainOrderId;
     bestMatch.state = wasVirtual ? ORDER_STATES.ACTIVE : slot.state;
     const bestMatchRaw = rawChainOrders.get(chainOrderId);
@@ -248,8 +260,9 @@ async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, cha
             else bestMatch.state = ORDER_STATES.ACTIVE;
         } else {
             const spreadOrder = convertToSpreadPlaceholder(bestMatch);
+            const applied = await mgr._applyOrderUpdate(spreadOrder, 'sync-pass2-filled', { skipAccounting: skipAccounting, fee: 0 });
+            if (applied === false) return false;
             filledOrders.push({ ...bestMatch });
-            await mgr._applyOrderUpdate(spreadOrder, 'sync-pass2-filled', { skipAccounting: skipAccounting, fee: 0 });
             updatedOrders.push(spreadOrder);
             chainOrderIdsOnGrid.add(chainOrderId);
             return true; // filled path
@@ -257,10 +270,11 @@ async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, cha
     } else if (wasPartial) {
         bestMatch.state = ORDER_STATES.PARTIAL;
     }
-    await mgr._applyOrderUpdate(bestMatch, 'sync-pass2-orphan', { skipAccounting: skipAccounting, fee: 0 });
+    const applied = await mgr._applyOrderUpdate(bestMatch, 'sync-pass2-orphan', { skipAccounting: skipAccounting, fee: 0 });
+    if (applied === false) return false;
     updatedOrders.push(bestMatch);
     chainOrderIdsOnGrid.add(chainOrderId);
-    return false;
+    return true;
 }
 
 function computeOutOfToleranceDriftTag(mgr: any, chainOrder: any, calcToleranceFn: any) {
@@ -1046,7 +1060,14 @@ class SyncEngine {
                     unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot', candidateSlotId: slotId });
                     continue;
                 }
-                await adoptChainOrderIntoSlot(mgr, slot, chainOrder, chainOrderId, rawChainOrders, matchedGridOrderIds, chainOrderIdsOnGrid, filledOrders, updatedOrders, skipAccounting);
+                const adopted = await adoptChainOrderIntoSlot(mgr, slot, chainOrder, chainOrderId, rawChainOrders, matchedGridOrderIds, chainOrderIdsOnGrid, filledOrders, updatedOrders, skipAccounting);
+                if (!adopted) {
+                    // Order update was rejected (fatal validation) — the chain
+                    // order stays untracked and must not dangle on the book.
+                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'adoption-rejected', candidateSlotId: slotId });
+                    queueCorrection({ gridOrder: slot, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
+                    mgr.logger?.log?.(`[SYNC] Chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}) NOT adopted into slot ${slotId}: order update rejected — queued for cancellation`, 'error');
+                }
                 continue;
             }
 
@@ -1067,7 +1088,12 @@ class SyncEngine {
                 { orders: mgr.orders, assets: mgr.assets, calcToleranceFn: (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger, allowSmallerChainSize: true, requireAvailableSlot: true, excludeGridOrderIds: matchedGridOrderIds }
             );
             if (match && !matchedGridOrderIds.has(match.id)) {
-                await adoptChainOrderIntoSlot(mgr, match, chainOrder, chainOrderId, rawChainOrders, matchedGridOrderIds, chainOrderIdsOnGrid, filledOrders, updatedOrders, skipAccounting);
+                const adopted = await adoptChainOrderIntoSlot(mgr, match, chainOrder, chainOrderId, rawChainOrders, matchedGridOrderIds, chainOrderIdsOnGrid, filledOrders, updatedOrders, skipAccounting);
+                if (!adopted) {
+                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'adoption-rejected', candidateSlotId: match.id });
+                    queueCorrection({ gridOrder: match, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
+                    mgr.logger?.log?.(`[SYNC] Chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}) NOT adopted into slot ${match.id}: order update rejected — queued for cancellation`, 'error');
+                }
             } else if (match) {
                 mgr.logger?.log?.(`Warning: Orphan chain order ${chainOrderId} matched grid order ${match.id}, but grid order was already matched to another chain order. Queuing orphan for cancellation.`, 'warn');
                 queueCorrection({ gridOrder: match, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
@@ -1109,11 +1135,34 @@ class SyncEngine {
                         rawOnChain: adoptedRaw ? { ...adoptedRaw, fetchedAt: Date.now() } : adoptedRaw,
                         ...(adoptedBtsFeeState ? { btsFeeState: adoptedBtsFeeState } : {}),
                     };
+                    const applied = await mgr._applyOrderUpdate(adoptedOrder, 'sync-pass2-adopt-orphan', { skipAccounting: skipAccounting, fee: 0 });
+                    if (applied === false) {
+                        // Fatal rejection: parity with the genesis adoption path —
+                        // the slot must not be marked matched and the chain order
+                        // must not dangle untracked on the book.
+                        unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'adoption-rejected', candidateSlotId: adoptedSlot.id });
+                        queueCorrection({ gridOrder: adoptedSlot, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
+                        mgr.logger?.log?.(`[SYNC] Chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}) NOT adopted into slot ${adoptedSlot.id}: order update rejected — queued for cancellation`, 'error');
+                        continue;
+                    }
                     matchedGridOrderIds.add(adoptedSlot.id);
                     chainOrderIdsOnGrid.add(chainOrderId);
-                    await mgr._applyOrderUpdate(adoptedOrder, 'sync-pass2-adopt-orphan', { skipAccounting: skipAccounting, fee: 0 });
                     updatedOrders.push(adoptedOrder);
-                    mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) adopted into slot ${adoptedSlot.id} (was ${adoptedSlot.type})`, 'warn');
+                    // Phase 4 attribution: log the adoption slot's geometry
+                    // (idx vs frozen boundary/gap) so the next re-map incident
+                    // can tell an in-rail adoption from a gap-band re-map
+                    // without on-chain archaeology.
+                    let adoptGeo = '';
+                    try {
+                        const adoptIdx = parseSlotIndex(adoptedSlot.id);
+                        const adoptB = Number((mgr as any)?.boundaryIdx);
+                        const adoptG = Number((mgr as any)?._gapSlots);
+                        if (adoptIdx !== null && adoptIdx !== undefined && Number.isFinite(adoptB) && Number.isFinite(adoptG)) {
+                            const inBand = isSlotIndexInGapBand(adoptIdx, adoptB, adoptG);
+                            adoptGeo = ` geo(idx=${adoptIdx},boundary=${adoptB},gap=${adoptG},sellStart=${getSellStartIdx(adoptB, adoptG)},band=${inBand ? 'gap' : 'rail'})`;
+                        }
+                    } catch { /* geometry is diagnostic-only */ }
+                    mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) adopted into slot ${adoptedSlot.id} (was ${adoptedSlot.type})${adoptGeo}`, 'warn');
                 } else {
                     const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
                     const candidateDiagnostics = describeNearestAdoptionCandidates(mgr, chainOrder, precision, (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets), matchedGridOrderIds);
@@ -1703,7 +1752,7 @@ class SyncEngine {
                     // and the last update wins (`applyGridUpdateBatch` is last-wins
                     // per slot), leaving a phantom residual equal to the earlier
                     // fills' sum — exactly the fund-invariant CRITICAL seen in the
-                    // XRP-BTS log whenever a batch contained 2+ fills of one order.
+                    // AAA-BBB log whenever a batch contained 2+ fills of one order.
                     const gridUpdates: any[] = [];
                     const filledOrders: any[] = [];
                     const updatedOrders: any[] = [];

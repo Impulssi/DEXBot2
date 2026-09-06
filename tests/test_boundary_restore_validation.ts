@@ -249,12 +249,15 @@ async function testLoadGridRepairMapsToStoredOrder() {
     assert.ok(manager.logs.some(l => l.msg.includes('boundary repaired: 3 -> 4')), 'repair logged with mapped index');
 
     // Types follow loadGrid's standard reassignment over STORED positions
-    // (empty slots normalize to SPREAD; placed slots resolve per its retype
+    // (rail-typed holes: empty in-rail slots keep BUY/SELL by geometry, only
+    // true band slots are SPREAD; placed slots resolve per its retype
     // rules — e.g. an on-chain slot keeps its persisted rail type rather than
     // becoming SPREAD). What this test pins is the MAPPING: the derived
     // price-sorted index must land on the anchor slot's stored position.
-    assert.strictEqual(manager.orders.get('slot-7').type, ORDER_TYPES.SPREAD, 'empty normalized');
-    assert.strictEqual(manager.orders.get('slot-6').type, ORDER_TYPES.SPREAD, 'empty normalized');
+    // Repaired boundary 4, gap 2 → sellStart 7: slot-7 sits on the SELL rail,
+    // slot-6 sits in the band.
+    assert.strictEqual(manager.orders.get('slot-7').type, ORDER_TYPES.SELL, 'empty in-rail hole keeps rail type');
+    assert.strictEqual(manager.orders.get('slot-6').type, ORDER_TYPES.SPREAD, 'empty band slot normalized');
     assert.strictEqual(manager.orders.get('slot-5').type, ORDER_TYPES.BUY);
     assert.strictEqual(manager.orders.get('slot-4').type, ORDER_TYPES.BUY,
         'on-chain slot keeps persisted rail type instead of SPREAD');

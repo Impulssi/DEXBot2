@@ -24,7 +24,7 @@ Tools that inspect DEXBot trading behavior and the market data it operates on. O
 | [`grid_correction_check.ts`](#grid-correction-check-grid_correction_checkts) | "Is my grid placing orders monotonically?" — sell/buy price inversion detector | `npm run analysis:grid-check -- --bot-key <bot-key>` |
 | [`analyze_risk_profile.ts`](#risk-profile-analyzer-analyze_risk_profilets) | "How wide should my Safe Range clamps be?" | `node dist/analysis/analyze_risk_profile.js --bot-key <bot-key>` |
 | [`analyze_trade_heatmap.ts`](#trade-heatmap-analyze_trade_heatmapts) | "Where did trade volume cluster vs the AMA?" | `node dist/analysis/analyze_trade_heatmap.js --bot-key <bot-key>` |
-| [`tradingview/analyze_tradingview.ts`](#tradingview-chart-tradingviewanalyze_tradingviewts) | "Just give me a candle chart" | `npm run analysis:tradingview -- --source market_adapter --bot-key <bot-key>` |
+| [`tradingview/analyze_tradingview.ts`](#tradingview-chart-tradingviewanalyze_tradingviewts) | "Just give me a candle chart" | `dexbot tv <bot-key>` |
 | [`analyze_dynamic_weight.ts`](#dynamic-weight-research-analyze_dynamic_weightts) | "Are buy/sell weights tuned for this regime?" | `node dist/analysis/analyze_dynamic_weight.js --bot-key <bot-key>` |
 | [`analyze_volatility.ts`](#volatility-analyze_volatilityts) | "Both weights clipped too hard / not enough?" | `node dist/analysis/analyze_volatility.js --bot-key <bot-key>` |
 | [`analyze_regime.ts`](#supporting-sub-signals) | "Is the trend/chaos gate too aggressive?" | `node dist/analysis/analyze_regime.js --bot-key <bot-key>` |
@@ -138,8 +138,8 @@ Fetches `fill_order` operations for a BitShares account from Kibana within a spe
 # Account by ID, last 7 days (default)
 node dist/analysis/trade_profitability.js 1.2.123456
 
-# Account by name with on-chain resolution
-node dist/analysis/trade_profitability.js "my-account-name" --lookup --hours 720
+# Account by name (auto-resolved in the background)
+node dist/analysis/trade_profitability.js "my-account-name" --hours 720
 
 # Absolute window with asset filter
 node dist/analysis/trade_profitability.js 1.2.123456 \
@@ -162,7 +162,8 @@ node dist/analysis/trade_profitability.js 1.2.123456 \
 | `--end <iso>` | — | End time |
 | `--hours <n>` | `168` (7d) | Lookback hours (alternative to start/end) |
 | `--asset <id>` | all | Filter to one base asset ID |
-| `--lookup` | off | Resolve account name to 1.2.x ID via BitShares node |
+| `--lookup` | off | Legacy (no-op): account names always resolve automatically |
+| `--refresh-account` | off | Force re-resolution and update the stored `accountId` |
 | `--node <url>` | first healthy from built-in pool (10 nodes) | BitShares node for account + asset resolution |
 | `--csv <file>` | — | Export chronologically sorted trade list |
 | `--json <file>` | — | Export full analysis with per-pair PnL data |
@@ -240,7 +241,7 @@ npm run analysis:grid-check -- --bot-key <bot-key> --per-fill --hours 168
 npm run analysis:grid-check -- --bot-key <bot-key> --hours 168 --tolerance 0.1
 ```
 
-Exit code `0` = pass, `2` = violations found, `1` = fatal error. Bot keys resolve via `profiles/bots.json` (`--list-bots` to enumerate); the account defaults to the bot's `preferredAccount` and can be overridden with `--account <1.2.x|name>`.
+Exit code `0` = pass, `2` = violations found, `1` = fatal error. Bot keys resolve via `profiles/bots.json` (`--list-bots` to enumerate); the account defaults to the bot's stored `accountId` when present (no chain lookup — the ID is auto-saved next to `preferredAccount` after the first successful name resolution, re-verified with `--refresh-account`), otherwise `preferredAccount` is resolved on-chain, and can be overridden with `--account <1.2.x|name>`.
 
 <details><summary>Options (click to expand)</summary>
 
@@ -250,7 +251,8 @@ Exit code `0` = pass, `2` = violations found, `1` = fatal error. Bot keys resolv
 | `--hours <n>` | `168` | Lookback hours from now |
 | `--start <iso>` / `--end <iso>` | — | Absolute time window |
 | `--account <id>` | bot `preferredAccount` | Override account ID or name |
-| `--lookup` | off | Resolve account name to 1.2.x via BitShares node |
+| `--lookup` | off | Legacy (no-op): account names always resolve via BitShares node when no stored ID exists |
+| `--refresh-account` | off | Force re-resolution of `preferredAccount` and update the stored `accountId` when it changed |
 | `--node <url>` | first built-in node | Node for account/asset resolution |
 | `--per-fill` | off | Check at fill granularity instead of per-order aggregated |
 | `--include-cross-pair` | off | Also check consecutive fills across different pairs |
@@ -309,7 +311,12 @@ node dist/analysis/analyze_trade_heatmap.js \
 Generates a standalone TradingView-style HTML chart with candle OHLC, SMA, AMA, VWMA, and volume panel. See [tradingview/README.md](tradingview/README.md) for full documentation.
 
 ```bash
-# Bot-key (auto-resolves candle file and AMA settings)
+# Recommended one-step: bot, pool, or pair (fetches candles + renders, default 3 months)
+dexbot tv <bot-key>
+dexbot tv 133
+dexbot tv TOKENA/TOKENB
+
+# Manual: bot-key (auto-resolves candle file and AMA settings)
 npm run analysis:tradingview -- --source market_adapter --bot-key <bot-key>
 
 # From an explicit candle file

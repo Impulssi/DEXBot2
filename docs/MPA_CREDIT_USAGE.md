@@ -170,7 +170,8 @@ C_i             = C_total * weight_i / sum(all weights)
 
 - **MPA**: `feedPrice_i` is the current settlement feed price (collateral per debt asset), discovered from the chain and cached per position.
 - **Credit**: `conversionRate_i` is the offer's `acceptable_collateral` price (debt asset per collateral unit), discovered from existing deals or `allowedOfferIds`.
-- **Fallback**: If the price cannot be discovered, `weight = outputWeight * targetCR` and a warning is logged.
+- **Fallback chain** (every pair resolves a rate, so every CR is calculable): offer map → LP pool valuation (`pool-derived`) → universal DEX price (`market-direct`, else `market-bridge:<asset>` via bridge hops, default BTS). Only when all three fail does the group keep its existing budget with a warning and `weight = outputWeight * targetCR`.
+- All offer-price orientation, conversion-rate, and CR math lives in `modules/credit_pricing.ts`, shared by the runtime and `dexbot credit`.
 - `outputWeight` is the user's output proportion. Equal weights produce **equal economic debt value** across all lending items, regardless of price or CR differences.
 
 ### Examples
@@ -341,6 +342,7 @@ Treat this file as runtime state, not primary configuration. The source of truth
 <details><summary>Source files and tests (click to expand)</summary>
 
 - `modules/credit_runtime.ts`: debt workflow executor (Phase 0 oversized-deal splitter lives here)
+- `modules/credit_pricing.ts`: canonical credit-pricing math (offer orientation, conversion rates, CR, fees) shared by runtime and analyzer
 - `modules/cr_planner.ts`: MPA debt-first planner; clamps `debtDelta` by `maxBorrowAmountPerOperation`
 - `modules/cr_planner.ts`: `DebtFirstCrPlanOptions` — planner options carrying `maxBorrowAmountPerOperation`; lending-item shapes are validated inline in `bot_settings.ts`
 - `modules/dexbot_class.ts`: runtime startup and watchdog lifecycle

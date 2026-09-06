@@ -1918,8 +1918,14 @@ async function testUpdateToCreateFallbackOnNotFound() {
     bot.manager.applyGridUpdateBatch = async () => {};
     bot.manager.persistGrid = async () => ({ isValid: true });
     bot.manager._commitWorkingGrid = async () => true;
+    // Capture ALL warns: the batch-level LAST-FILL-GUARD summary also warns
+    // on a cold guard (intentional — disabled guard must say so) and fires
+    // after the recovery line. Last-wins capture would hide the recovery
+    // warning; assert on the full sequence instead (stub-class fix: the
+    // production summary behavior is correct, the stub's lens was too narrow).
+    const allWarns: string[] = [];
     bot.manager.logger.log = (msg, level) => {
-        if (level === 'warn') loggedWarn = msg;
+        if (level === 'warn') { loggedWarn = msg; allWarns.push(String(msg)); }
     };
 
     chainOrders.buildUpdateOrderOp = async () => { throw new Error('Order 1.7.999015 not found'); };
@@ -1948,7 +1954,7 @@ async function testUpdateToCreateFallbackOnNotFound() {
         const result = await bot._updateOrdersOnChainBatchCOW(cowResult);
         assert.strictEqual(result.executed, true, 'UPDATE→CREATE fallback should produce a valid CREATE op and execute it');
         assert(capturedCreateArgs, 'buildCreateOrderOp fallback must be called when UPDATE fails with "not found"');
-        assert(loggedWarn && loggedWarn.includes('Recovered "not found"'),
+        assert(allWarns.some((w) => w.includes('Recovered "not found"')),
             'should log the recovery warning');
     } finally {
         chainOrders.buildUpdateOrderOp = origBuildUpdate;
@@ -2029,9 +2035,12 @@ async function testUpdateToCreateFallbackCreateAlsoFails() {
     bot.manager.orders.set(slotId, { id: slotId, type: 'sell', price: 0.05, size: 100, orderId: actionOrderId });
     bot.manager.persistGrid = async () => ({ isValid: true });
     bot.manager._commitWorkingGrid = async () => true;
+    // Same last-wins hazard as UNC-015: the cold-guard batch summary warns
+    // after the fallback line. Assert on the full warn sequence.
+    const allWarns15c: string[] = [];
     bot.manager.logger.log = (msg, level) => {
         if (level === 'error') loggedError = msg;
-        if (level === 'warn') loggedWarn = msg;
+        if (level === 'warn') { loggedWarn = msg; allWarns15c.push(String(msg)); }
     };
 
     chainOrders.buildUpdateOrderOp = async () => { throw new Error('Order 1.7.999015c does not exist'); };
@@ -2050,7 +2059,7 @@ async function testUpdateToCreateFallbackCreateAlsoFails() {
     try {
         const result = await bot._updateOrdersOnChainBatchCOW(cowResult);
         assert.strictEqual(result.executed, false, 'no ops to broadcast when both UPDATE and CREATE fallback fail');
-        assert(loggedWarn && loggedWarn.includes('CREATE fallback also failed'), 'CREATE failure should warn');
+        assert(allWarns15c.some((w) => w.includes('CREATE fallback also failed')), 'CREATE failure should warn');
         assert(loggedError && loggedError.includes('Failed to prepare update op'), 'original error should also be logged');
     } finally {
         chainOrders.buildUpdateOrderOp = origBuildUpdate;

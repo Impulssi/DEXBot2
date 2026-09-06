@@ -8,6 +8,7 @@ import { ORDER_TYPES, TIMING } from './constants.js';
 import * as Format from './order/format.js';
 import * as grid from './order/grid.js';
 import { convertToSpreadPlaceholder, parseChainOrder } from './order/utils/order.js';
+import { restoreGapEvacStreaks } from './order/utils/system.js';
 import { blockchainToFloat, calculateGapSlots, validatePersistedBoundary } from './order/utils/math.js';
 import { hasExecutableActions } from './order/utils/validate.js';
 import { getErrorMessage } from './utils/errors.js';
@@ -360,6 +361,12 @@ async function recoverFromPersistedGrid(bot: any) {
 
         const persistedGenesis = bot.accountOrders.loadGenesis?.(true) ?? null;
         await grid.loadGrid(bot.manager, persistedGrid, boundaryIdx, persistedGenesis);
+        // Restart resilience: same pruning rules as the startup path — streaks
+        // only survive for slots that still exist in the reloaded grid.
+        const restoredStreaks = restoreGapEvacStreaks(bot.manager, bot.accountOrders.loadGapEvacStreaks?.(true) ?? null);
+        if (restoredStreaks > 0) {
+            bot.manager.logger.log(`[GAP-EVAC] Restored ${restoredStreaks} persisted in-band streak(s) during recovery reload`, 'info');
+        }
 
         if (await bot._rejectCorruptedGridSnapshot('recovery')) {
             // P4: rejected snapshot's boundary must not survive for rebuild.

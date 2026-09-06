@@ -21,13 +21,40 @@ const {
     extractBatchOperationResults,
     formatUnmatchedChainOrder,
     convertToSpreadPlaceholder,
+    toRailHolePlaceholder,
     buildOutsideInPairGroups,
     isOrderPlaced,
 } = orderUtils as any;
 import * as validate from './order/utils/validate.js';
-const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions } = validate as any;
+const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions, stampGapEvacuationRotation } = validate as any;
 import * as math from './order/utils/math.js';
-const { validateOrderSize, findCrossedOrder, priceSlotEqual } = math as any;
+const { validateOrderSize, findCrossedOrder, priceSlotEqual, isEvacuationRotationAllowed, getSellStartIdx, getPrecisionByOrderType, isSlotIndexInGapBand } = math as any;
+
+/**
+ * Re-verify a B-stamped gap-evacuation rotation against the LIVE committed
+ * geometry (boundaryIdx/_gapSlots at execution time). The stamp freezes
+ * plan-build geometry, but a boundary commit can land between plan-build and
+ * execution; when the live geometry is finite and the source is no longer
+ * in-band (or the dest no longer rail), the stamp is stale and the rotation
+ * must be re-proven by the unstamped live probe instead of bypassing the
+ * last-fill guard. Non-finite live geometry cannot disprove the stamp and
+ * keeps the plan-build authority (fail-open to the stamp, never to the guard).
+ */
+export function isEvacuationStampStillValid(liveBoundary: any, liveGapSlots: any, sourceId: any, destId: any, orderType: any): boolean {
+    const b = Number(liveBoundary);
+    const g = Number(liveGapSlots);
+    if (orderType !== ORDER_TYPES.BUY && orderType !== ORDER_TYPES.SELL) return false;
+    if (!Number.isFinite(b) || !Number.isFinite(g) || g < 0) return true;
+    const srcIdx = parseSlotIndex(sourceId);
+    const dstIdx = parseSlotIndex(destId);
+    if (srcIdx === null || srcIdx === undefined || dstIdx === null || dstIdx === undefined) return false;
+    if (!isSlotIndexInGapBand(srcIdx, b, g)) return false;
+    if (isSlotIndexInGapBand(dstIdx, b, g)) return false;
+    const sellStartIdx = getSellStartIdx(b, g);
+    const dstInRail = orderType === ORDER_TYPES.SELL ? Number(dstIdx) >= sellStartIdx : Number(dstIdx) <= b;
+    return dstInRail;
+}
+import { parseSlotIndex } from './order/utils/slot.js';
 function hasSlotPriceCollision(items: any[], targetPrice: number, precision: number, excludeId: string | null, predicate?: (it:any)=>boolean) {
     for (const it of items) {
         if (predicate && !predicate(it)) continue;
@@ -1622,7 +1649,14 @@ function validateOrderSizeForExecution(bot: any, size: any, type: any, orderLike
  * LAST-FILL-GUARD helper — pivot ± halfIncrement (replaces price-tolerance).
  *  last fill @x with increment i: BUY < x*(1 - i/2/100), SELL > x*(1 + i/2/100)
  *  e.g. x=1000, i=0.5% => BUY < 997.5, SELL > 1002.5
- * Cold (pivot null or lastType null) => disabled. Spread correction bypasses via cowResult.origin === 'spread-correction'.
+ * Cold (pivot null or lastType null) => disabled. Spread-correction CREATES
+ * bypass per-action (see broadcast sites); gap-evacuation rotation UPDATEs
+ * bypass only via the violation-reducing allowance (origin='gap-evacuation',
+ * UPDATE-only, frozen B-stamp or live-proven isEvacuationRotationAllowed) —
+ * see the UPDATE rotation guard block.
+ * The pivot is the latest fill of either side and is never expired: it stays
+ * the durable mark (last sold level floors new sells; buy fills pull it down
+ * and re-open the sell side, buy-below-sell is never gated).
  * @param {number} price - Target order price
  * @param {number} size - Order size (unused, kept for compat)
  * @param {string} type - ORDER_TYPES.BUY/SELL
@@ -1652,6 +1686,115 @@ function isLastFillGuardBlocked(price: any, _size: any, type: any, lastPrice: an
 }
 
 /**
+ * Refresh the LAST-FILL guard pivot from fills that arrived while the current
+ * batch was being planned or broadcast but have not been ingested yet.
+ *
+ * The pivot (_lastFilledPrice) is recorded per fill-processing batch, but a
+ * multi-chunk COW broadcast spans tens of seconds — fills detected mid-cycle
+ * sit in _incomingFillQueue until the cycle ends, so ops built for later
+ * chunks would be checked against a stale pivot (production incident: a chunk
+ * planned with a pre-crash pivot placed asks 0.6% below the true latest fill
+ * that was already queued). Peek-only: never drains the queue, the owning
+ * fill cycle still processes every entry. Best-effort: returns false when no
+ * queued fill yields a usable side + price.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @returns {boolean} True when the pivot was refreshed from queued fills
+ */
+function refreshLastFillPivotFromQueue(bot: any): boolean {
+    try {
+        const queue = (bot as any)?._incomingFillQueue;
+        if (!Array.isArray(queue) || queue.length === 0) return false;
+        const mgr = (bot as any)?.manager;
+        if (!mgr || !mgr.orders) return false;
+        const assets = mgr.assets;
+        const findSlotByOrderId = (orderId: any) => {
+            if (!orderId) return null;
+            try {
+                for (const o of mgr.orders.values()) {
+                    if ((o as any)?.orderId === orderId) return o as any;
+                }
+            } catch { /* ignore iteration errors */ }
+            return null;
+        };
+        let latest: { price: number; type: string } | null = null;
+        for (const fill of queue) {
+            const fillOp = (fill as any)?.op?.[1] || fill;
+            const orderId = fillOp?.order_id || (fill as any)?.orderId;
+            let type: any = null;
+            let price: number | null = null;
+            // Prefer the grid slot: a limit fill executes at (or better than)
+            // its slot price, which is exactly the guard's price convention.
+            const slot = findSlotByOrderId(orderId);
+            if (slot && (slot.type === ORDER_TYPES.BUY || slot.type === ORDER_TYPES.SELL)) {
+                type = slot.type;
+                const slotPrice = Number(slot.price);
+                if (Number.isFinite(slotPrice) && slotPrice > 0) price = slotPrice;
+            }
+            // Fall back to fill economics (B/A convention, mirroring
+            // _computeFillContext's pays-asset side resolution, including
+            // SPREAD slots carrying on-chain orders).
+            if ((type == null || price == null) && fillOp?.pays && fillOp?.receives && assets?.assetA && assets?.assetB) {
+                try {
+                    const paysId = fillOp.pays.asset_id;
+                    const paysAmt = Number(fillOp.pays.amount);
+                    const recvAmt = Number(fillOp.receives.amount);
+                    if (Number.isFinite(paysAmt) && paysAmt > 0 && Number.isFinite(recvAmt) && recvAmt > 0) {
+                        const paysFloat = (base: number, precision: number) => base / Math.pow(10, precision);
+                        if (paysId === assets.assetA.id) {
+                            type = ORDER_TYPES.SELL;
+                            price = paysFloat(recvAmt, assets.assetB.precision) / paysFloat(paysAmt, assets.assetA.precision);
+                        } else if (paysId === assets.assetB.id) {
+                            type = ORDER_TYPES.BUY;
+                            price = paysFloat(paysAmt, assets.assetB.precision) / paysFloat(recvAmt, assets.assetA.precision);
+                        }
+                    }
+                } catch { /* best-effort */ }
+            }
+            if ((type === ORDER_TYPES.BUY || type === ORDER_TYPES.SELL)
+                && Number.isFinite(price as number) && (price as number) > 0) {
+                latest = { price: price as number, type };
+            }
+        }
+        if (!latest) return false;
+        mgr._lastFilledPrice = (latest as { price: number; type: string }).price;
+        mgr._lastFilledType = (latest as { price: number; type: string }).type;
+        if ((latest as { price: number; type: string }).type === ORDER_TYPES.BUY) {
+            mgr._lastFilledBuyPrice = (latest as { price: number; type: string }).price;
+        } else {
+            mgr._lastFilledSellPrice = (latest as { price: number; type: string }).price;
+        }
+        try {
+            mgr.logger?.log?.(
+                `[LAST-FILL-GUARD] Pivot refreshed from ${queue.length} pending queued fill(s): ` +
+                `${(latest as { price: number; type: string }).type} @${Format.formatPrice6((latest as { price: number; type: string }).price)}`,
+                'debug'
+            );
+        } catch { /* ignore logging errors */ }
+        return true;
+    } catch { return false; }
+}
+
+/**
+ * Resolve the grid increment percent for the LAST-FILL guard in one place so
+ * every check site and the batch summary use (and print) the same value.
+ * Falls back to the default 0.5 when unset/invalid.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @returns {number} Positive increment percent
+ */
+function resolveLastFillGuardIncrement(bot: any): number {
+    const raw = Number(
+        (bot as any)?.manager?.config?.incrementPercent
+        ?? (bot as any)?.config?.incrementPercent
+        ?? (constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent
+        ?? 0.5
+    );
+    if (Number.isFinite(raw) && raw > 0) return raw;
+    return Number((constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent) > 0
+        ? Number((constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent)
+        : 0.5;
+}
+
+/**
  * Build COW actions array from a simple plan object.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object|Array} plan
@@ -1668,6 +1811,58 @@ function buildActionsFromPlan(_bot: any, plan: any) {
         ordersToUpdate = [],
         ordersToCancel = []
     } = normalizedPlan;
+
+    // Per-action origin: guard bypasses are scoped per action (not per batch),
+    // so a future rotation entry merged into a correction plan cannot silently
+    // inherit the spread-correction bypass. Actions built outside this helper
+    // carry no origin and default to guarded (safe default).
+    const planOrigin = (normalizedPlan as any)?.origin;
+    // B-stamp inputs: the plan-level boundary + gap width frozen AT
+    // PLAN-BUILD TIME. The stamp carries this geometry so the execution
+    // guard can bypass on it — and re-verifies it against the LIVE
+    // committed geometry at execution time (isEvacuationStampStillValid),
+    // downgrading stale stamps to the live probe.
+    const frozenBoundaryRaw = Number(
+        (normalizedPlan as any)?.boundaryIdx ?? (_bot as any)?.manager?.boundaryIdx
+    );
+    const frozenGapRaw = Number(
+        (normalizedPlan as any)?.gapSlots ?? (_bot as any)?.manager?._gapSlots
+    );
+    const hasFrozenGeometry = Number.isFinite(frozenBoundaryRaw) && Number.isFinite(frozenGapRaw) && frozenGapRaw >= 0;
+    const withOrigin = (action: any, sourceMaster: any = null) => {
+        if (!planOrigin) return action;
+        // Origin only rides UPDATEs (where the guard reads it). Gap-plan
+        // CREATEs carry a provably dead origin — the spread-correction
+        // CREATE check falls back to the batch origin, so dropping the
+        // per-action origin there is safe. Other plan origins keep riding
+        // non-UPDATE actions unchanged.
+        if (action?.type !== COW_ACTIONS.UPDATE) {
+            return planOrigin === 'gap-evacuation' ? { ...action } : { ...action, origin: planOrigin };
+        }
+        if (planOrigin !== 'gap-evacuation') return { ...action, origin: planOrigin };
+        if (!hasFrozenGeometry) return { ...action, origin: planOrigin };
+        // Route through the real stampler: geometry (source in-band, dest
+        // rail), bit-exact non-growing size (side precision) and outward
+        // repricing must all PROVE — a plan-level origin alone never grants
+        // the bypass. Without a source master the proof is impossible, so
+        // the action stays unstamped (the live probe at execution can still
+        // re-prove it from the master grid).
+        const base: any = { ...action, origin: planOrigin };
+        if (!sourceMaster) return { ...base, origin: undefined };
+        // The stampler wants the ORDER type (SELL/BUY), which rides on
+        // action.order.type — action.type is the COW action kind ('update').
+        const rotOrderType = action?.order?.type ?? action?.type;
+        const proved = stampGapEvacuationRotation(
+            base, sourceMaster, action.newPrice, action.newSize, rotOrderType,
+            frozenBoundaryRaw, frozenGapRaw, (_bot as any)?.manager?.assets
+        );
+        // Proof refused: strip the origin so the action is exactly an
+        // unstamped rotation (never an origin claim without a stamp).
+        if (!(proved as any)?.evacBoundary && !(proved as any)?.evacGapSlots) {
+            proved.origin = undefined;
+        }
+        return proved;
+    };
 
     const actions: any[] = [];
 
@@ -1692,7 +1887,7 @@ function buildActionsFromPlan(_bot: any, plan: any) {
 
         if (!id || !orderId || !newGridId || !orderType || !Number.isFinite(newPrice) || !(newSize > 0)) continue;
 
-        actions.push({
+        actions.push(withOrigin({
             type: COW_ACTIONS.UPDATE,
             id,
             orderId,
@@ -1705,7 +1900,7 @@ function buildActionsFromPlan(_bot: any, plan: any) {
                 price: newPrice,
                 size: newSize
             }
-        });
+        }, oldOrder));
     }
 
     for (const o of ordersToUpdate) {
@@ -1719,7 +1914,7 @@ function buildActionsFromPlan(_bot: any, plan: any) {
 
         if (!id || !orderId) continue;
 
-        actions.push({
+        actions.push(withOrigin({
             type: COW_ACTIONS.UPDATE,
             id,
             orderId,
@@ -1731,12 +1926,12 @@ function buildActionsFromPlan(_bot: any, plan: any) {
                 type: orderType,
                 size: newSize
             }
-        });
+        }));
     }
 
     for (const o of ordersToPlace) {
         if (!o?.id) continue;
-        actions.push({ type: COW_ACTIONS.CREATE, id: o.id, order: o });
+        actions.push(withOrigin({ type: COW_ACTIONS.CREATE, id: o.id, order: o }));
     }
 
     return actions;
@@ -1761,11 +1956,28 @@ function buildCowResultFromPlan(bot: any, plan: any) {
         : bot.manager.boundaryIdx;
     const actions = buildActionsFromPlan(bot, plan);
 
+    // Rail-aware hole projection (Phase 2): a cleared in-rail slot stays a
+    // rail-typed VIRTUAL hole with its booked size preserved (rotation
+    // sources keep the remainder the guard/plan must see); only true
+    // gap-band slots become side-neutral SPREAD holes.
+    const toWorkingHole = (slot: any) => {
+        try {
+            const idx = parseSlotIndex(slot?.id);
+            const b = Number(workingBoundary);
+            const gapSlots = Number((bot as any)?.manager?._gapSlots);
+            if (idx !== null && idx !== undefined && Number.isFinite(b) && Number.isFinite(gapSlots) && gapSlots >= 0) {
+                if (Number(idx) <= b) return toRailHolePlaceholder(slot, ORDER_TYPES.BUY);
+                if (Number(idx) >= getSellStartIdx(b, gapSlots)) return toRailHolePlaceholder(slot, ORDER_TYPES.SELL);
+            }
+        } catch { /* fall through to SPREAD */ }
+        return convertToSpreadPlaceholder(slot);
+    };
+
     for (const action of actions) {
         if (action.type === COW_ACTIONS.CANCEL) {
             const current = workingGrid.get(action.id);
             if (!current) continue;
-            workingGrid.set(action.id, convertToSpreadPlaceholder(current));
+            workingGrid.set(action.id, toWorkingHole(current));
         } else if (action.type === COW_ACTIONS.CREATE) {
             if (!action.id || !action.order) continue;
             const current = workingGrid.get(action.id) || { id: action.id };
@@ -1780,7 +1992,7 @@ function buildCowResultFromPlan(bot: any, plan: any) {
             if (action.newGridId && action.newGridId !== action.id) {
                 const current = workingGrid.get(action.id);
                 if (current) {
-                    workingGrid.set(action.id, convertToSpreadPlaceholder(current));
+                    workingGrid.set(action.id, toWorkingHole(current));
                 }
 
                 const targetId = action.newGridId;
@@ -1846,7 +2058,11 @@ function applyRotationTransitionsToWorkingGrid(bot: any, workingGrid: any, execu
         const { rotation } = ctx;
         const { oldOrder, newGridId, newPrice, newSize, type } = rotation;
 
-        // Source slot → VIRTUAL (if it's a different slot)
+        // Source slot → VIRTUAL (if it's a different slot). Phase 2: the
+        // source stays a RAIL-TYPED hole with its booked size preserved —
+        // only state/orderId/rawOnChain are cleared, never type or size
+        // (no SPREAD retype, no zeroing). In-rail sources must remain
+        // visible to candidate-selection and evacuation geometry.
         if (oldOrder?.id && oldOrder.id !== newGridId) {
             const sourceSlot = workingGrid.get(oldOrder.id);
             if (sourceSlot && sourceSlot.orderId) {
@@ -2674,6 +2890,14 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     const opContexts: any[] = [];
     const skippedUpdateSlotIds = new Set();
     let skippedUpdateCount = 0;
+    // Per-batch LAST-FILL-GUARD disposition counters. Per-action pass lines
+    // would spam big batches, so the guard emits one batch summary instead
+    // (see the summary after the action loop below).
+    const lastFillGuardStats = { checked: 0, passed: 0, skipped: 0, bypassed: 0 };
+    // Whether any guard check in this batch refreshed the pivot from
+    // still-queued fills — reported in the batch summary so a pivot change
+    // that altered a guard decision is visible at info, not just debug.
+    let lastFillGuardPivotRefreshed = false;
     // Slots whose size-update op was broadcast with a post-fill-clamped
     // target: the working grid still holds the planned (larger) size, so the
     // slots are re-synced from master before commit to keep the committed
@@ -2822,14 +3046,23 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     }
 
                     // LAST-FILL PRICE GUARD: pivot ± halfIncrement (BUY < pivot*(1-half), SELL > pivot*(1+half)).
-                    // Spread correction bypasses so gap repair can close. Cold (null) => disabled.
+                    // Bypass is per-action: only spread-correction CREATES skip so gap repair can close.
+                    // The batch-level origin is honored only for actions without their own origin stamp
+                    // (back-compat for plans that bypass buildActionsFromPlan). Cold (null) => disabled.
                     try {
-                        if ((cowResult as any)?.origin !== 'spread-correction') {
+                        const actionOrigin = (action as any)?.origin;
+                        const batchOrigin = (cowResult as any)?.origin;
+                        const isCorrectionCreate = actionOrigin === 'spread-correction'
+                            || (actionOrigin == null && batchOrigin === 'spread-correction');
+                        if (!isCorrectionCreate) {
+                            try { if (refreshLastFillPivotFromQueue(bot)) lastFillGuardPivotRefreshed = true; } catch { /* best-effort */ }
                             const lastPrice = (bot.manager as any)?._lastFilledPrice;
                             const lastType = (bot.manager as any)?._lastFilledType;
-                            const inc = Number(bot.manager?.config?.incrementPercent ?? (bot as any)?.config?.incrementPercent ?? (constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
+                            const inc = resolveLastFillGuardIncrement(bot);
                             const check = isLastFillGuardBlocked(createPrice, order.size, order.type, lastPrice, lastType, inc);
+                            lastFillGuardStats.checked++;
                             if (check.blocked) {
+                                lastFillGuardStats.skipped++;
                                 const dir = order.type === ORDER_TYPES.BUY ? 'above' : 'below';
                                 bot.manager.logger.log(
                                     `[LAST-FILL-GUARD] Skipping ${order.type} CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} (halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)}); re-planned after market moves`,
@@ -2837,6 +3070,9 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                 );
                                 continue;
                             }
+                            lastFillGuardStats.passed++;
+                        } else {
+                            lastFillGuardStats.bypassed++;
                         }
                     } catch (_e: any) { /* guard is best-effort */ }
 
@@ -2960,24 +3196,129 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             continue;
                         }
 
-                        // LAST-FILL PRICE GUARD (UPDATE rotation): pivot ± halfIncrement — same as CREATE.
+                        // LAST-FILL PRICE GUARD (UPDATE rotation): pivot ± halfIncrement — same as CREATE,
+                        // plus the GAP-EVACUATION ALLOWANCE (violation-reducing): a rotation stamped
+                        // origin='gap-evacuation' at plan-build moves a live order OUT of the gap band
+                        // onto its rail with bit-exact non-growing size — it shrinks the violation
+                        // surface instead of adding exposure, so it bypasses the guard. The bypass
+                        // is UPDATE-only (CREATEs carry no source slot and can never qualify) and
+                        // honors the frozen B-stamp (evacBoundary/evacGapSlots captured when the
+                        // plan was built — never re-derived here, since plans can validate against
+                        // a later-committed boundary):
+                        // - B-stamped: plan-build geometry already proved the evacuation; bypass
+                        //   outright (logged + counted as bypassed).
+                        // - Unstamped gap-evacuation: prove it live from oldPrice/oldSize read
+                        //   off the MASTER grid above (bot.manager.orders.get, before rotation
+                        //   pre-application virtualizes sources — after that the lookup lies);
+                        //   fail closed (block) when unresolvable; otherwise run the pure
+                        //   isEvacuationRotationAllowed decision and bypass only on allow.
+                        // Everything else obeys the guard (per-action scoping: a rotation entry
+                        // merged into another plan inherits no bypass).
+                        // The pivot is refreshed from still-queued fills first: fills detected mid-broadcast
+                        // sit in _incomingFillQueue until the fill cycle ends, and without this the later
+                        // chunks of a long broadcast would be checked against a stale pivot.
                         try {
-                            if ((cowResult as any)?.origin !== 'spread-correction') {
-                                const lastPrice = (bot.manager as any)?._lastFilledPrice;
-                                const lastType = (bot.manager as any)?._lastFilledType;
-                                const inc = Number(bot.manager?.config?.incrementPercent ?? (bot as any)?.config?.incrementPercent ?? (constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
-                                const check = isLastFillGuardBlocked(newPrice, newSize, orderType, lastPrice, lastType, inc);
-                                if (check.blocked) {
-                                    skippedUpdateCount++;
-                                    if (action.id) skippedUpdateSlotIds.add(action.id);
-                                    if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
-                                    const dir = orderType === ORDER_TYPES.BUY ? 'above' : 'below';
+                            let bypassedEvacuation = false;
+                            const rotationOrigin = (action as any)?.origin;
+                            if (rotationOrigin === 'gap-evacuation') {
+                                const frozenB = Number((action as any)?.evacBoundary);
+                                const frozenG = Number((action as any)?.evacGapSlots);
+                                let stampUsable = Number.isFinite(frozenB) && Number.isFinite(frozenG);
+                                if (stampUsable) {
+                                    // Stale-stamp check: the stamp froze PLAN-BUILD
+                                    // geometry; if a boundary commit landed between
+                                    // plan-build and execution and the source is no
+                                    // longer in-band (or dest no longer rail) under
+                                    // the LIVE geometry, re-prove via the unstamped
+                                    // live probe below instead of bypassing outright.
+                                    const stampValid = isEvacuationStampStillValid(
+                                        bot.manager?.boundaryIdx, (bot.manager as any)?._gapSlots,
+                                        action.id, action.newGridId, orderType
+                                    );
+                                    if (!stampValid) {
+                                        stampUsable = false;
+                                        bot.manager.logger.log(
+                                            `[LAST-FILL-GUARD] Stamped evacuation for ${action.id} -> ${action.newGridId} is stale under live ` +
+                                            `boundary ${(bot.manager as any)?.boundaryIdx}/gap ${(bot.manager as any)?._gapSlots} — re-proving live`,
+                                            'warn'
+                                        );
+                                    }
+                                }
+                                if (stampUsable) {
+                                    bypassedEvacuation = true;
                                     bot.manager.logger.log(
-                                        `[LAST-FILL-GUARD] Skipping ${orderType} UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} (halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)})`,
+                                        `[LAST-FILL-GUARD] Allowing ${orderType} evacuation UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: ` +
+                                        `gap-evacuation stamped at plan-build (boundary ${frozenB}, gap ${frozenG})`,
                                         'warn'
                                     );
-                                    continue;
+                                } else {
+                                    // Unstamped: prove violation-reducing live. masterOrder was
+                                    // captured from the master grid before any rotation
+                                    // pre-application — it must NOT be re-read afterwards.
+                                    const oldPrice = Number((masterOrder as any)?.price);
+                                    const oldSize = Number((masterOrder as any)?.size);
+                                    if (!Number.isFinite(oldPrice) || !(oldPrice > 0) || !Number.isFinite(oldSize) || !(oldSize > 0)) {
+                                        lastFillGuardStats.checked++;
+                                        lastFillGuardStats.skipped++;
+                                        skippedUpdateCount++;
+                                        if (action.id) skippedUpdateSlotIds.add(action.id);
+                                        if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
+                                        bot.manager.logger.log(
+                                            `[LAST-FILL-GUARD] Skipping ${orderType} UPDATE for ${action.id} -> ${action.newGridId}: ` +
+                                            `gap-evacuation source unresolvable from master grid (fail-closed)`,
+                                            'warn'
+                                        );
+                                        continue;
+                                    }
+                                    let sidePrecision: any = null;
+                                    try { sidePrecision = getPrecisionByOrderType(bot.manager.assets, orderType); } catch { sidePrecision = null; }
+                                    // Geometry re-proof under the LIVE boundary: if the
+                                    // source is no longer in-band (or dest no longer rail),
+                                    // this is not an evacuation anymore — fall through to
+                                    // the normal guard instead of bypassing via the probe.
+                                    // Non-finite live geometry cannot disprove; probe proceeds.
+                                    if (isEvacuationStampStillValid(bot.manager?.boundaryIdx, (bot.manager as any)?._gapSlots, action.id, action.newGridId, orderType)) {
+                                        const evacCheck = isEvacuationRotationAllowed(oldPrice, oldSize, newPrice, newSize, orderType, sidePrecision);
+                                        if (evacCheck.allowed) {
+                                            bypassedEvacuation = true;
+                                            bot.manager.logger.log(
+                                                `[LAST-FILL-GUARD] Allowing ${orderType} evacuation UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: ` +
+                                                `${evacCheck.reason} (probed live: ${Format.formatPrice6(oldPrice)} -> ${Format.formatPrice6(newPrice)})`,
+                                                'warn'
+                                            );
+                                        }
+                                    } else {
+                                        bot.manager.logger.log(
+                                            `[LAST-FILL-GUARD] Unstamped evacuation probe for ${action.id} -> ${action.newGridId} rejected: ` +
+                                            `source/dest no longer evacuation geometry under live boundary ${(bot.manager as any)?.boundaryIdx}/gap ${(bot.manager as any)?._gapSlots} — normal guard applies`,
+                                            'warn'
+                                        );
+                                    }
+                                    // Not allowed: fall through to the normal guard below.
                                 }
+                            }
+                            if (bypassedEvacuation) {
+                                lastFillGuardStats.bypassed++;
+                            } else {
+                            try { if (refreshLastFillPivotFromQueue(bot)) lastFillGuardPivotRefreshed = true; } catch { /* best-effort */ }
+                            const lastPrice = (bot.manager as any)?._lastFilledPrice;
+                            const lastType = (bot.manager as any)?._lastFilledType;
+                            const inc = resolveLastFillGuardIncrement(bot);
+                            const check = isLastFillGuardBlocked(newPrice, newSize, orderType, lastPrice, lastType, inc);
+                            lastFillGuardStats.checked++;
+                            if (check.blocked) {
+                                lastFillGuardStats.skipped++;
+                                skippedUpdateCount++;
+                                if (action.id) skippedUpdateSlotIds.add(action.id);
+                                if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
+                                const dir = orderType === ORDER_TYPES.BUY ? 'above' : 'below';
+                                bot.manager.logger.log(
+                                    `[LAST-FILL-GUARD] Skipping ${orderType} UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} (halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)})`,
+                                    'warn'
+                                );
+                                continue;
+                            }
+                            lastFillGuardStats.passed++;
                             }
                         } catch (_e: any) { /* best-effort */ }
 
@@ -3129,6 +3470,34 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                     );
                                     continue;
                                 }
+                                // LAST-FILL GUARD (fallback variant): this CREATE
+                                // replaces a rotation UPDATE at a repriced level,
+                                // so it obeys the same guard with a refreshed
+                                // pivot — no origin bypass, same as rotations.
+                                try { if (refreshLastFillPivotFromQueue(bot)) lastFillGuardPivotRefreshed = true; } catch { /* best-effort */ }
+                                try {
+                                    const fbInc = resolveLastFillGuardIncrement(bot);
+                                    const fbCheck = isLastFillGuardBlocked(
+                                        fbPrice, fbSize, fbType,
+                                        (bot.manager as any)?._lastFilledPrice,
+                                        (bot.manager as any)?._lastFilledType,
+                                        fbInc
+                                    );
+                                    lastFillGuardStats.checked++;
+                                    if (fbCheck.blocked) {
+                                        lastFillGuardStats.skipped++;
+                                        const fbDir = fbType === ORDER_TYPES.BUY ? 'above' : 'below';
+                                        bot.manager.logger.log(
+                                            `[LAST-FILL-GUARD] Skipping CREATE fallback for ${targetSlotId} at ` +
+                                            `${Format.formatPrice6(fbPrice)}: ${fbDir} last filled ` +
+                                            `${Format.formatPrice6(fbCheck.pivot)} (halfInc ${fbCheck.halfInc}% thr ` +
+                                            `${Format.formatPrice6(fbCheck.threshold)}); re-planned after market moves`,
+                                            'warn'
+                                        );
+                                        continue;
+                                    }
+                                    lastFillGuardStats.passed++;
+                                } catch (_fbGuardErr: any) { /* guard is best-effort */ }
                                 const fbArgs = buildCreateOrderArgs(
                                     { type: fbType, size: fbSize, price: fbPrice },
                                     assetA, assetB
@@ -3174,6 +3543,42 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 }
             }
         }
+
+        // Batch-level LAST-FILL-GUARD summary: per-action pass lines would spam
+        // big batches, so one line per batch records the mode, pivot, resolved
+        // increment, and pass/skip/bypass counts — the guard's pass decisions
+        // are what incident reconstruction needs. Origin folds in here as
+        // mode=bypassed(<origin>); there is no second source of truth.
+        // Cold (guard off) is warn, not info — a disabled guard must say so.
+        // pivotRefreshed surfaces whether a mid-broadcast queued fill moved the
+        // pivot under this batch's checks (the refresh itself stays debug).
+        // Note the printed pivot is end-of-batch state: when pivotRefreshed is
+        // true, early actions were checked against the older pivot.
+        try {
+            const totalGuarded = lastFillGuardStats.checked + lastFillGuardStats.bypassed;
+            if (totalGuarded > 0) {
+                const sumPivotRaw = (bot.manager as any)?._lastFilledPrice;
+                const sumType = (bot.manager as any)?._lastFilledType;
+                const sumInc = resolveLastFillGuardIncrement(bot);
+                const cold = sumPivotRaw == null || !Number.isFinite(Number(sumPivotRaw)) || sumType == null;
+                const batchOrigin = (cowResult as any)?.origin;
+                const mode = cold
+                    ? 'disabled(cold)'
+                    : (lastFillGuardStats.bypassed > 0 && lastFillGuardStats.checked === 0)
+                        ? `bypassed(${batchOrigin || 'unknown'})`
+                        : (lastFillGuardStats.bypassed > 0
+                            ? `active+bypassed(${batchOrigin || 'unknown'})`
+                            : 'active');
+                const pivotStr = cold ? 'none' : `${Format.formatPrice6(Number(sumPivotRaw))}(${sumType})`;
+                bot.manager.logger.log(
+                    `[LAST-FILL-GUARD] mode=${mode} pivot=${pivotStr} inc=${sumInc}% ` +
+                    `pivotRefreshed=${lastFillGuardPivotRefreshed} ` +
+                    `checked=${lastFillGuardStats.checked} passed=${lastFillGuardStats.passed} ` +
+                    `skipped=${lastFillGuardStats.skipped} bypassed=${lastFillGuardStats.bypassed}`,
+                    cold ? 'warn' : 'info'
+                );
+            }
+        } catch { /* summary is best-effort */ }
 
         if (skippedUpdateCount > 0) {
             restoreSkippedUpdateSlotsInWorkingGrid(bot, workingGrid, skippedUpdateSlotIds, skippedUpdateCount);
@@ -4052,7 +4457,15 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
                         });
                     }
                 }
-                bot.manager.logger.log(`Placed ${ctx.order.type} order ${ctx.order.id} -> ${chainOrderId}`, 'info');
+                // Success line mirrors the failure-path fingerprint below
+                // (type/price/size) so both are greppable by the same keys —
+                // this is what ties a fill back to the slot that placed it.
+                bot.manager.logger.log(
+                    `Placed ${ctx.order.type} order ${ctx.order.id} ` +
+                    `@${Format.formatPrice6(ctx.order.price)} x${Format.formatAmount(ctx.order.size)} ` +
+                    `-> ${chainOrderId}`,
+                    'info'
+                );
             } else {
                 const fingerprint = [
                     `type=${ctx.order.type || 'unknown'}`,
@@ -4184,7 +4597,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
         updateOperationCount
     };
 }
-export { isLastFillGuardBlocked, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain };
+export { isLastFillGuardBlocked, refreshLastFillPivotFromQueue, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain };
 
 
 export default {

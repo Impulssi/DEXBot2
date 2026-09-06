@@ -32,7 +32,7 @@ const controllerPath = require.resolve('../modules/launcher/credential_daemon');
 const supervisorControlPath = require.resolve('../modules/launcher/supervisor_control');
 
 const FIXTURE_BOTS = [
-    { name: 'XRP-BTS', active: true },
+    { name: 'AAA-BBB', active: true },
     { name: 'HONEST-BTS', active: true },
 ];
 
@@ -240,7 +240,7 @@ async function runAllBotsBackgroundDaemonizeTest() {
 // and the summary must list exactly that bot.
 async function runSingleBotBackgroundDaemonizeTest() {
     resetState();
-    await runMain(['node', 'unlock', 'XRP-BTS']);
+    await runMain(['node', 'unlock', 'AAA-BBB']);
 
     const { PATHS } = require('../modules/paths');
 
@@ -249,13 +249,13 @@ async function runSingleBotBackgroundDaemonizeTest() {
     assert.strictEqual(state.calls.length, 1, 'daemonizing startup should spawn exactly one wrapper child');
     assert.deepStrictEqual(
         state.calls[0].args,
-        [UNLOCK_JS, 'XRP-BTS'],
+        [UNLOCK_JS, 'AAA-BBB'],
         'single-bot unlock should pass the bot name through to the wrapper child'
     );
     assert.strictEqual(readStateFile(PATHS.PROFILES.MONOLITHIC_PID), '9999', 'wrapper pid should be recorded');
-    assert.ok(logsIncludePlain('Starting bot: XRP-BTS'), 'launcher should print the selected bot name');
+    assert.ok(logsIncludePlain('Starting bot: AAA-BBB'), 'launcher should print the selected bot name');
     assert.ok(logsIncludePlain('DEXBot2 started 1 bot in background'), 'launcher should print the single-bot count');
-    assert.ok(logsIncludePlain('- XRP-BTS'), 'launcher should list the launched bot');
+    assert.ok(logsIncludePlain('- AAA-BBB'), 'launcher should list the launched bot');
 }
 
 async function runClawOnlyTest() {
@@ -373,7 +373,7 @@ async function runMissingIsolatedBotFailsFastTest() {
 
 async function runHeadlessFlagPassthroughTest() {
     resetState();
-    await runMain(['node', 'unlock', '--headless', 'XRP-BTS']);
+    await runMain(['node', 'unlock', '--headless', 'AAA-BBB']);
 
     assert.strictEqual(state.ensureCount, 1, 'headless launcher should unlock the credential daemon once');
     assert.ok(state.ensureCalls.length >= 1, 'ensureCredentialDaemon should have been called');
@@ -383,10 +383,10 @@ async function runHeadlessFlagPassthroughTest() {
     assert.strictEqual(state.calls.length, 1, 'headless single-bot unlock should spawn exactly one wrapper child');
     assert.deepStrictEqual(
         state.calls[0].args,
-        [UNLOCK_JS, '--headless', 'XRP-BTS'],
+        [UNLOCK_JS, '--headless', 'AAA-BBB'],
         'headless flags and bot name should pass through to the wrapper child'
     );
-    assert.ok(logsIncludePlain('- XRP-BTS'), 'headless launcher should list the launched bot');
+    assert.ok(logsIncludePlain('- AAA-BBB'), 'headless launcher should list the launched bot');
 }
 
 runEsmMockStages(['unlock_main'], async () => {
@@ -399,7 +399,7 @@ runEsmMockStages(['unlock_main'], async () => {
         await runSingleBotBackgroundDaemonizeTest();
         await runClawOnlyTest();
         await runIsolatedDetachedSupervisorTest();
-        await runIsolatedDetachedSupervisorTest('XRP-BTS');
+        await runIsolatedDetachedSupervisorTest('AAA-BBB');
         await runMonolithicBgChildStartupFailureTest();
         await runMissingIsolatedBotFailsFastTest();
         await runHeadlessFlagPassthroughTest();

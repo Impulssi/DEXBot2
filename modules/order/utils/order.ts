@@ -889,6 +889,122 @@ function convertToSpreadPlaceholder(order: any) {
 }
 
 /**
+ * Convert an order to a rail-typed hole placeholder: VIRTUAL with the rail
+ * (BUY/SELL) type and the booked size preserved.
+ *
+ * Phase 2 counterpart to convertToSpreadPlaceholder. A consumed/in-rail
+ * source slot (e.g. a filled sell at slot-147, or a rotation source) must
+ * stay on its rail so candidate-selection and evacuation geometry keep
+ * working — only true gap-band slots become side-neutral SPREAD holes.
+ * validateOrder accepts sized BUY/SELL VIRTUAL slots (phantom/ILLEGAL checks
+ * only fire for on-chain states), so the size survives validation.
+ *
+ * @param {Object} order - Order to convert
+ * @param {string} railType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+ * @param {number} [sizeOverride] - Explicit size (defaults to booked size, 0 when non-finite)
+ * @returns {Object} Rail hole placeholder (VIRTUAL, rail type, preserved size)
+ */
+function toRailHolePlaceholder(order: any, railType: any, sizeOverride: any = null) {
+    const rail = (railType === ORDER_TYPES.BUY || railType === ORDER_TYPES.SELL) ? railType : order?.type;
+    const size = sizeOverride !== null && sizeOverride !== undefined
+        ? Math.max(0, toFiniteNumber(sizeOverride))
+        : Math.max(0, toFiniteNumber(order?.size));
+    return { ...virtualizeOrder(order), type: rail, size };
+}
+
+/**
+ * Geometry type for a slot index: BUY at/below the boundary, SELL at/above
+ * sellStart, SPREAD inside the gap band. Null-safe — returns null when the
+ * index, boundary, or gap width is unusable so callers fail closed.
+ */
+function geometryTypeForSlotIndex(idx: any, boundaryIdx: any, gapSlots: any) {
+    // Explicit null/undefined/'' guard: Number(null) === 0 would silently
+    // treat "no index" as slot 0 (BUY rail). Fail closed instead.
+    if (idx === null || idx === undefined || idx === '') return null;
+    if (boundaryIdx === null || boundaryIdx === undefined || boundaryIdx === '') return null;
+    const n = Number(idx);
+    const b = Number(boundaryIdx);
+    const g = Number(gapSlots);
+    if (!Number.isFinite(n) || !Number.isFinite(b) || !Number.isFinite(g) || g < 0) return null;
+    if (n <= b) return ORDER_TYPES.BUY;
+    if (n >= MathUtils.getSellStartIdx(b, g)) return ORDER_TYPES.SELL;
+    return ORDER_TYPES.SPREAD;
+}
+
+/**
+ * Detect gap-evacuation candidates by GEOMETRY ONLY: live on-chain orders
+ * whose parsed slot index sits strictly inside the gap band
+ * (boundary < idx < sellStartIdx). Never consults the stored slot type —
+ * Phase 2 retypes in-band actives to rail types, so type-based detection
+ * would go blind exactly when evacuation matters.
+ *
+ * @param {Map} masterGrid - Master grid (slotId -> order)
+ * @param {number} boundaryIdx - Last BUY slot index (frozen at plan-build)
+ * @param {number} gapSlots - Spread gap slot count (frozen at plan-build)
+ * @returns {Array} Candidates [{id, idx, type, price, size, orderId}]
+ */
+function detectGapEvacuationCandidates(masterGrid: any, boundaryIdx: any, gapSlots: any) {
+    const out: any[] = [];
+    if (!masterGrid || typeof masterGrid.values !== 'function') return out;
+    const b = Number(boundaryIdx);
+    const g = Number(gapSlots);
+    if (!Number.isFinite(b) || !Number.isFinite(g) || g < 0) return out;
+    const sellStartIdx = MathUtils.getSellStartIdx(b, g);
+    if (!Number.isFinite(sellStartIdx)) return out;
+    for (const slot of masterGrid.values()) {
+        if (!slot || !isOrderOnChain(slot) || !slot.orderId) continue;
+        const idx = parseSlotIndex(slot.id);
+        if (idx === null || idx === undefined) continue;
+        if (Number(idx) > b && Number(idx) < sellStartIdx) {
+            out.push({ id: slot.id, idx: Number(idx), type: slot.type, price: slot.price, size: slot.size, orderId: slot.orderId });
+        }
+    }
+    return out;
+}
+
+/**
+ * Tick the per-slot gap-evacuation streak counter. In-memory on the manager
+ * (resets on restart — acceptable; a restart re-plans evacuation anyway).
+ * Slots still in-band increment; resolved slots are dropped. Returns the ids
+ * whose streak reached the threshold (stuck candidates).
+ *
+ * @param {Map} streakMap - Mutable Map slotId -> consecutive-cycle count
+ * @param {Array} candidates - detectGapEvacuationCandidates output
+ * @param {number} [threshold] - GRID_LIMITS.GAP_EVACUATION_STREAK_THRESHOLD default
+ * @returns {{streaks: Object, ready: Array}}
+ */
+function updateGapEvacuationStreaks(streakMap: any, candidates: any, threshold: any = null) {
+    const thrRaw = threshold !== null && threshold !== undefined ? Number(threshold) : Number(GRID_LIMITS?.GAP_EVACUATION_STREAK_THRESHOLD);
+    const thr = Number.isFinite(thrRaw) && thrRaw > 0 ? Math.floor(thrRaw) : 2;
+    const seen = new Set<string>();
+    const list = Array.isArray(candidates) ? candidates : [];
+    for (const c of list) {
+        if (!c?.id || seen.has(c.id)) continue;
+        seen.add(c.id);
+        if (streakMap instanceof Map) {
+            streakMap.set(c.id, Number(streakMap.get(c.id) || 0) + 1);
+        }
+    }
+    if (streakMap instanceof Map) {
+        for (const id of Array.from(streakMap.keys())) {
+            if (!seen.has(id)) streakMap.delete(id);
+        }
+    }
+    const streaks: Record<string, number> = {};
+    const ready: any[] = [];
+    if (streakMap instanceof Map) {
+        for (const [id, count] of streakMap.entries()) {
+            streaks[id] = Number(count);
+            if (Number(count) >= thr) {
+                const cand = list.find((c: any) => c?.id === id) || { id };
+                ready.push(cand);
+            }
+        }
+    }
+    return { streaks, ready };
+}
+
+/**
  * Resolve the real BUY/SELL side of a SPREAD-typed grid slot from its price
  * relative to the configured start price. SPREAD slots never carry an
  * on-chain state (validateOrder rejects SPREAD+ACTIVE/PARTIAL as fatal), so
@@ -1260,10 +1376,13 @@ function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_T
     return allSlots.map((slot: any, i: any) => {
         const liveSlot = getCurrentSlot ? (getCurrentSlot(slot.id) || slot) : slot;
 
-        // Empty VIRTUAL slots (size 0, no orderId) are side-neutral SPREAD
-        // during grid load — a stale BUY/SELL type on an empty slot misleads
-        // candidate-selection code that picks by stored type.  Force SPREAD
-        // so the stored type never pre-biases which side reuses the slot.
+        // Empty VIRTUAL slots (size 0, no orderId) keep their RAIL type by
+        // geometry (Phase 2): an in-rail hole stays BUY/SELL VIRTUAL so
+        // candidate-selection and evacuation geometry keep working; only
+        // true gap-band slots are side-neutral SPREAD. The stored type never
+        // pre-biases reuse because every consumer filters by boundary
+        // geometry (getSlotCorrectType / isSlotInRail), and spread-correction
+        // accepts both rail and SPREAD stored types on the orphaned path.
         //
         // Only apply during non-assignOnChain paths (loadGrid, recalculateGrid
         // without boundary shift).  When assignOnChain is true, geometry must
@@ -1271,8 +1390,11 @@ function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_T
         // empty slots by position so they appear in the correct rail's budget
         // and can be activated on the correct side.
         if (!assignOnChain && isEmptyGridSlot(slot, liveSlot)) {
-            if (slot.type === ORDER_TYPES.SPREAD) return slot;
-            return { ...slot, type: ORDER_TYPES.SPREAD };
+            const parsed = parseSlotIndex(slot?.id);
+            const geoType = geometryTypeForSlotIndex(parsed !== null && parsed !== undefined ? parsed : i, boundaryIdx, gapSlots);
+            const wantType = geoType || ORDER_TYPES.SPREAD;
+            if (slot.type === wantType) return slot;
+            return { ...slot, type: wantType };
         }
 
         const newType = (i <= buyEndIdx) ? ORDER_TYPES.BUY : (i >= sellStartIdx) ? ORDER_TYPES.SELL : ORDER_TYPES.SPREAD;
@@ -1728,5 +1850,5 @@ function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: 
 }
 
 // ================================================================================
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isShiftEligibleFill, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo }
+            export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isShiftEligibleFill, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo }
 

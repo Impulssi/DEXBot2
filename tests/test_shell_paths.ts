@@ -270,8 +270,8 @@ function copyScripts(destScriptsDir: string): void {
     fs.mkdirSync(maDataDir, { recursive: true });
     fs.mkdirSync(maStateDir, { recursive: true });
     fs.mkdirSync(path.join(clawDir, 'memu'), { recursive: true });
-    fs.writeFileSync(path.join(ordersDir, 'XRP-BTS.orders.json'), '{}');
-    fs.writeFileSync(path.join(logsDir, 'XRP-BTS.log'), 'x');
+    fs.writeFileSync(path.join(ordersDir, 'AAA-BBB.orders.json'), '{}');
+    fs.writeFileSync(path.join(logsDir, 'AAA-BBB.log'), 'x');
     fs.writeFileSync(path.join(maDataDir, 'candles.json'), '{}');
     fs.writeFileSync(path.join(maStateDir, 'market_adapter_state.json'), '{}');
     fs.writeFileSync(path.join(clawDir, 'positions.json'), '{}');
@@ -281,8 +281,8 @@ function copyScripts(destScriptsDir: string): void {
     const out = runScript(path.join(npmRoot, 'scripts', 'clear-all.sh'), { env, input: 'y\n' });
     check('clear-all reports claw files deleted',
         /claw: [0-9]+/.test(out) && out.includes('All files cleared!'), out.split('\n').slice(-6).join(' '));
-    check('clear-all removed orders', !fs.existsSync(path.join(ordersDir, 'XRP-BTS.orders.json')));
-    check('clear-all removed logs', !fs.existsSync(path.join(logsDir, 'XRP-BTS.log')));
+    check('clear-all removed orders', !fs.existsSync(path.join(ordersDir, 'AAA-BBB.orders.json')));
+    check('clear-all removed logs', !fs.existsSync(path.join(logsDir, 'AAA-BBB.log')));
     check('clear-all removed MA data', !fs.existsSync(path.join(maDataDir, 'candles.json')));
     check('clear-all removed MA state', !fs.existsSync(path.join(maStateDir, 'market_adapter_state.json')));
     check('clear-all removed claw positions', !fs.existsSync(path.join(clawDir, 'positions.json')));
@@ -302,7 +302,7 @@ function copyScripts(destScriptsDir: string): void {
     copyScripts(path.join(npmRoot, 'scripts'));
     const homeProfiles = path.join(fakeHome, '.config', 'dexbot2', 'profiles');
     fs.mkdirSync(homeProfiles, { recursive: true });
-    fs.writeFileSync(path.join(homeProfiles, 'bots.json'), JSON.stringify({ bots: [{ name: 'XRP-BTS' }] }));
+    fs.writeFileSync(path.join(homeProfiles, 'bots.json'), JSON.stringify({ bots: [{ name: 'AAA-BBB' }] }));
     fs.writeFileSync(path.join(homeProfiles, 'ecosystem.config.cjs'), '');
 
     const env = { HOME: fakeHome };
@@ -312,7 +312,7 @@ function copyScripts(destScriptsDir: string): void {
         encoding: 'utf8',
     });
     check('create-bot-symlinks runs from npm layout', res.status === 0, `${res.status}: ${res.stderr || res.stdout}`);
-    const link = path.join(homeProfiles, 'XRP-BTS.config.cjs');
+    const link = path.join(homeProfiles, 'AAA-BBB.config.cjs');
     check('create-bot-symlinks targets home profiles',
         fs.existsSync(link) && fs.readlinkSync(link) === path.join(homeProfiles, 'ecosystem.config.cjs'));
     check('create-bot-symlinks does not write into package dir',

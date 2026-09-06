@@ -823,23 +823,28 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null,
                             ? ORDER_TYPES.SELL
                             : ORDER_TYPES.SPREAD;
 
-                    // DEFENSIVE BACKSTOP: a VIRTUAL slot with no orderId and
-                    // zero size is side-neutral — it is a reusable placeholder
-                    // that may be activated on either rail.  Storing a stale
-                    // BUY/SELL type here misleads candidate-selection code
-                    // (e.g. spread-correction orphaned filters and reconcile
-                    // activation), which pick by stored type instead of boundary
-                    // geometry.  Force SPREAD so the stored type can never
-                    // pre-bias which side reuses the slot.  The VIRTUAL +
-                    // !orderId + size-0 combination already implies not on-chain
-                    // (on-chain requires ACTIVE/PARTIAL and an orderId).  This is
-                    // a defensive backstop for legacy persisted grids; the
-                    // boundary-shift and strategy re-plan paths use
-                    // assignGridRoles (order.ts) with assignOnChain, where
-                    // geometry-based typing wins.
+                    // RAIL-TYPED HOLES (Phase 2): a VIRTUAL slot with no orderId and
+                    // zero size keeps its RAIL type by geometry — an in-rail
+                    // hole stays BUY/SELL VIRTUAL so candidate-selection and
+                    // gap-evacuation geometry keep working across fill/rotation
+                    // cycles; only true gap-band slots are side-neutral SPREAD.
+                    // The stored type cannot pre-bias reuse: every consumer
+                    // filters by boundary geometry (getSlotCorrectType /
+                    // isSlotInRail), and spread-correction accepts both rail
+                    // and SPREAD stored types on its orphaned-virtual path.
+                    // NOTE: first load of legacy persisted grids reassigns
+                    // every normalized empty slot once — expect a one-time
+                    // [GRID-TYPE-CORRECT] spike; it is the backfill, not a
+                    // regression. On-chain slots still never become SPREAD
+                    // (handled below — SPREAD+ACTIVE/PARTIAL is illegal).
                     if (isEmptyGridSlot(slot, slot, { allowNullType: true })) {
-                        if (slot.type !== ORDER_TYPES.SPREAD) reassignCount++;
-                        return { ...slot, type: ORDER_TYPES.SPREAD };
+                        // Unparseable ids have no geometry (idx fell back to
+                        // array position, which is not canonical): keep
+                        // side-neutral SPREAD, never fabricate rail membership
+                        // from a position that carries no price meaning.
+                        const wantType = parsedIdx === null ? ORDER_TYPES.SPREAD : correctType;
+                        if (slot.type !== wantType) reassignCount++;
+                        return { ...slot, type: wantType };
                     }
 
                     if (slot.type !== correctType) {
@@ -2184,6 +2189,12 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
             const limitSpread = nominalSpread + (manager.config.incrementPercent * toleranceSteps);
             manager.logger?.log?.(`Spread too wide (${Format.formatPercent(currentSpread)} > ${Format.formatPercent(limitSpread)}), correcting with ${manager.outOfSpread} extra slot(s)...`, 'warn');
 
+            // Refresh funds before the side decision below: the top-of-tick recalc may
+            // predate fills processed since, and determineOrderSideByFunds reads
+            // manager.funds/accountTotals directly (not via _getSizingContext). No-op
+            // while a fill cycle holds the recalc pause; funds that move after this
+            // point are covered by the TOCTOU re-plan before broadcast.
+            try { await manager.recalculateFunds(); } catch { /* best-effort */ }
             const decision = determineOrderSideByFunds(manager, lastPrice);
             if (!decision.side) return false;
 
@@ -2565,20 +2576,37 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         const sellViable = sellAvailable > sellMinUnit;
 
         let side: any = null;
+        let skipReason: string | null = null;
         if (buyViable && sellViable) {
             // Normalize sell (assetA) to assetB units using market price so both sides
             // are comparable. Without this, a raw number comparison (e.g. 2192 BTS vs
             // 0.12 XRP) always picks BUY even when the sell side is larger in value.
+            // When the market price is unavailable (non-finite, e.g. empty book after
+            // a crash wiped one side), raw-unit comparison across assets is meaningless
+            // and can arm the wrong side in exactly the scenario where price may be
+            // missing. Skip the correction and let the next cycle decide with a real
+            // price rather than guess.
             const marketPrice = Number(currentMarketPrice);
-            const sellInBuyUnits = (Number.isFinite(marketPrice) && marketPrice > 0)
-                ? sellAvailable * marketPrice
-                : sellAvailable;
-
-            side = buyAvailable >= sellInBuyUnits ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+            if (!Number.isFinite(marketPrice) || marketPrice <= 0) {
+                skipReason =
+                    `market price unavailable (${String(currentMarketPrice)}) with funds on both sides ` +
+                    `(buy=${Format.formatAmount8(buyAvailable)}, sell=${Format.formatAmount8(sellAvailable)})`;
+            } else {
+                const sellInBuyUnits = sellAvailable * marketPrice;
+                side = buyAvailable >= sellInBuyUnits ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+            }
         } else if (buyViable) {
             side = ORDER_TYPES.BUY;
         } else if (sellViable) {
             side = ORDER_TYPES.SELL;
+        }
+
+        if (skipReason) {
+            manager.logger?.log?.(
+                `Spread correction skipped: ${skipReason}; refusing to compare raw cross-asset units`,
+                'warn'
+            );
+            return { side: null, reason: skipReason };
         }
 
         if (!side) {
@@ -2597,28 +2625,39 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
                 } else if (committedSell > sellMinUnit && committedBuy <= buyMinUnit) {
                     side = ORDER_TYPES.SELL;
                 } else {
-                    // Deterministic fallback when both sides hold inventory but market valuation is unavailable.
-                    side = ORDER_TYPES.BUY;
+                    // Both sides hold committed inventory but market valuation is
+                    // unavailable — leave side null (skip) rather than default to
+                    // BUY. A deterministic cross-asset guess is exactly the
+                    // wrong-side risk above; the next cycle with a real price
+                    // decides. Carry the reason so the bottom skip log does not
+                    // misreport this branch as "no committed inventory".
+                    skipReason =
+                        `market price unavailable (${String(currentMarketPrice)}) with committed inventory on both sides ` +
+                        `(committed buy=${Format.formatAmount8(committedBuy)}, committed sell=${Format.formatAmount8(committedSell)})`;
                 }
 
-                manager.logger?.log?.(
-                    `Spread correction using redistribution fallback on ${side} ` +
-                    `(free buy=${Format.formatAmount8(buyAvailable)}, free sell=${Format.formatAmount8(sellAvailable)}, ` +
-                    `price=${hasValidPrice ? Format.formatAmount8(marketPrice) : 'unavailable'})`,
-                    'info'
-                );
+                if (side) {
+                    manager.logger?.log?.(
+                        `Spread correction using redistribution fallback on ${side} ` +
+                        `(free buy=${Format.formatAmount8(buyAvailable)}, free sell=${Format.formatAmount8(sellAvailable)}, ` +
+                        `price=${hasValidPrice ? Format.formatAmount8(marketPrice) : 'unavailable'})`,
+                        'info'
+                    );
+                }
             }
         }
 
         if (!side) {
             manager.logger?.log?.(
-                `Spread correction skipped: insufficient free funds and no committed inventory to redistribute ` +
-                `(buy=${Format.formatAmount8(buyAvailable)}, sell=${Format.formatAmount8(sellAvailable)})`,
+                skipReason
+                    ? `Spread correction skipped: ${skipReason}`
+                    : `Spread correction skipped: insufficient free funds and no committed inventory to redistribute ` +
+                      `(buy=${Format.formatAmount8(buyAvailable)}, sell=${Format.formatAmount8(sellAvailable)})`,
                 'warn'
             );
         }
 
-        return { side, reason: side ? `Choosing ${side}` : 'Insufficient funds or committed inventory' };
+        return { side, reason: side ? `Choosing ${side}` : (skipReason || 'Insufficient funds or committed inventory') };
     }
 
     /**

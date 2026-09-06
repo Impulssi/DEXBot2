@@ -380,7 +380,7 @@ async function testAggregatedGhostOrderIds() {
  * against the same stale pre-batch baseline and the last update won,
  * leaving a phantom PARTIAL residual equal to the earlier fills' sum —
  * exactly the "diff == earlier fills' size" fund-invariant CRITICAL in the
- * XRP-BTS log (08-07 10:21, 08-08 14:26, 08-08 14:37, 08-09 07:53).
+ * AAA-BBB log (08-07 10:21, 08-08 14:26, 08-08 14:37, 08-09 07:53).
  */
 async function testSameOrderMultiFillBatchAggregates() {
     console.log('\n - Same-order 2-fill batch aggregates and fully consumes the order...');

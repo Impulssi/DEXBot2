@@ -235,12 +235,13 @@ Defaults in [`modules/constants.ts`](modules/constants.ts) are overridable at gl
 
 ## 🎯 Zero-Dependency Process Management
 
-`dexbot start` is the recommended production runtime (global install). Repo-root users can run `./unlock` instead. It runs the selected bot set as one monolithic bot process, with the credential daemon and market adapter in separate helper processes. Monolithic start/stop/restart controls apply to the whole runtime, not to individual bots.
+`dexbot start` is the recommended production runtime (global install). Repo-root users can run `./unlock` instead. It runs the selected bot set as one monolithic bot process, with the credential daemon and market adapter in separate helper processes. Monolithic start/stop/reload/restart controls apply to the whole runtime, not to individual bots.
 
 ```bash
 dexbot start/stop          # Stop/start the monolithic runtime
 dexbot start --dryrun      # Dry-run (no transactions broadcast)
-dexbot restart             # Restart the monolithic runtime
+dexbot reload              # Reload the runtime (leaves credential daemon untouched)
+dexbot restart             # Restart the runtime (re-unlocks credential daemon)
 dexbot delete              # Shut down and clean up
 ```
 
@@ -260,6 +261,7 @@ dexbot enable {all|<bot>}  # Enable bot in config
 dexbot stat                # Runtime status (unlock or PM2)
 dexbot order [<bot>]       # Analyze order grids
 dexbot order --export      # Export as HTML to analysis/charts/
+dexbot tv <bot|pool|A/B>   # TradingView 1h chart with AMA overlay (default: 3 months)
 dexbot credit [<bot>]      # Live summed MPA + borrowed-credit positions per asset per bot
 
 dexbot update              # Update DEXBot2
@@ -273,6 +275,7 @@ PM2 is optional — `dexbot start` is the native solution.
 
 ```bash
 dexbot pm2 [<bot>]                         # Start with PM2
+dexbot pm2 reload {all|<bot>}              # Reload managed apps, dexbot-cred untouched
 dexbot pm2 restart {all|<bot>|dexbot-cred} # Safe restart
 dexbot pm2 stop {all|<bot>}                # Stop (via wrapper)
 dexbot pm2 delete {all|<bot>}              # Delete (via wrapper)

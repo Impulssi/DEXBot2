@@ -2,6 +2,31 @@
 
 This exporter generates a standalone HTML chart in the `analysis/charts/` folder using the local `uPlot`-based TradingView-style renderer.
 
+## Recommended: `dexbot tv` (One Step)
+
+`dexbot tv` fetches the candles itself (chunked Kibana scans for pools, order-book fallback for pairs) and then renders through this exporter — no manual fetch/export steps needed:
+
+```bash
+# Bot chart with AMA overlay (bot key from profiles/bots.json, default: 3 months)
+dexbot tv <bot>
+
+# Any pool by bare or full ID
+dexbot tv 133
+dexbot tv 1.19.133
+
+# Any pair (pool-first, order-book fallback)
+dexbot tv TOKENA/TOKENB
+
+# Options
+dexbot tv <bot> --month 6              # months of 1h candles (default: 3)
+dexbot tv <bot> --chart analysis/charts/custom.html
+dexbot tv <bot> --scale linear         # log (default) or linear
+```
+
+Output: `analysis/charts/tv_<bot|pool_<id>|<a>_<b>>_1h_<N>m.html`, with a clickable `file://` link printed on completion. Unknown targets fail fast with the list of known bot keys.
+
+The sections below cover manual usage (explicit candle files, direct runner flags).
+
 ## What It Produces
 
 - Log-scale price chart

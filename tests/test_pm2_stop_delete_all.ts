@@ -23,7 +23,7 @@ const originalConsoleWarn = console.warn;
 function writeBotsFixture(tempRoot) {
     fs.writeFileSync(path.join(tempRoot, 'bots.json'), JSON.stringify({
         bots: [
-            { name: 'XRP-BTS', active: true },
+            { name: 'AAA-BBB', active: true },
             { name: 'H-BTS', active: true },
             { name: 'T-BTS', active: true },
         ],
@@ -58,9 +58,9 @@ async function runOutputStage() {
                 action: 'stop',
                 targetIncludes: 'ecosystem.config.cjs',
                 stdout: [
-                    '[PM2] Applying action stopProcessId on app [XRP-BTS, H-BTS, T-BTS, dexbot-update](ids: [ 63, 64, 65, 66 ])',
+                    '[PM2] Applying action stopProcessId on app [AAA-BBB, H-BTS, T-BTS, dexbot-update](ids: [ 63, 64, 65, 66 ])',
                     '[PM2] [H-BTS](64) ✓',
-                    '[PM2] [XRP-BTS](63) ✓',
+                    '[PM2] [AAA-BBB](63) ✓',
                     '[PM2] [dexbot-update](66) ✓',
                     '[PM2] [T-BTS](65) ✓',
                     '┌────┬────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐',
@@ -72,9 +72,9 @@ async function runOutputStage() {
                 action: 'delete',
                 targetIncludes: 'ecosystem.config.cjs',
                 stdout: [
-                    '[PM2] Applying action deleteProcessId on app [XRP-BTS, H-BTS, T-BTS, dexbot-update](ids: [ 63, 64, 65, 66 ])',
+                    '[PM2] Applying action deleteProcessId on app [AAA-BBB, H-BTS, T-BTS, dexbot-update](ids: [ 63, 64, 65, 66 ])',
                     '[PM2] [H-BTS](64) ✓',
-                    '[PM2] [XRP-BTS](63) ✓',
+                    '[PM2] [AAA-BBB](63) ✓',
                     '[PM2] [dexbot-update](66) ✓',
                     '[PM2] [T-BTS](65) ✓',
                     '┌────┬────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐',
@@ -109,7 +109,7 @@ async function runOutputStage() {
                 'Stopping PM2 processes: all',
                 '',
                 '[PM2] [H-BTS](64) ✓',
-                '[PM2] [XRP-BTS](63) ✓',
+                '[PM2] [AAA-BBB](63) ✓',
                 '[PM2] [dexbot-update](66) ✓',
                 '[PM2] [T-BTS](65) ✓',
                 '',
@@ -135,7 +135,7 @@ async function runOutputStage() {
                 'Deleting PM2 processes: all',
                 '',
                 '[PM2] [H-BTS](64) ✓',
-                '[PM2] [XRP-BTS](63) ✓',
+                '[PM2] [AAA-BBB](63) ✓',
                 '[PM2] [dexbot-update](66) ✓',
                 '[PM2] [T-BTS](65) ✓',
                 '',

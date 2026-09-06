@@ -349,6 +349,50 @@ function resolveStashRef(message: string): string {
     return 'stash@{0}';
 }
 
+/**
+ * needsDepsInstall: post-pull check whether `npm install` is required.
+ *
+ * Only pre-state is the starting commit SHA (captured before
+ * checkout/pull, passed in); the decision itself happens after the pull:
+ * - `node_modules` missing or without npm's hidden lockfile (broken tree)
+ *   -> install.
+ * - `package.json`/`package-lock.json` changed since the pre-update
+ *   commit (covers branch switch + pull) -> install.
+ * - those files dirty in the worktree (e.g. stash-restored local edits)
+ *   -> install (fail-open).
+ * Fail-open (true) on any git error so a broken check never skips a
+ * needed install.
+ */
+function needsDepsInstall(preUpdateHead: string): boolean {
+    if (!fs.existsSync(path.join(PATHS.PROJECT_ROOT, 'node_modules'))
+        || !fs.existsSync(path.join(PATHS.PROJECT_ROOT, 'node_modules', '.package-lock.json'))) {
+        log('node_modules missing or incomplete — dependencies need install.');
+        return true;
+    }
+    // Diff since the pre-update commit: covers branch switch + pull.
+    // Falls back to HEAD@{1} when the SHA capture failed.
+    const baseRef = preUpdateHead || 'HEAD@{1}';
+    try {
+        const pulled = execSync(`git diff --name-only ${baseRef} HEAD -- package.json package-lock.json 2>/dev/null`, { stdio: 'pipe', cwd: PATHS.PROJECT_ROOT }).toString().trim();
+        if (pulled) {
+            log(`Dependency manifests changed in pull: ${pulled.split('\n').join(', ')}`);
+            return true;
+        }
+    } catch (_) {
+        return true;
+    }
+    try {
+        const dirty = execSync('git status --porcelain -- package.json package-lock.json 2>/dev/null', { stdio: 'pipe', cwd: PATHS.PROJECT_ROOT }).toString().trim();
+        if (dirty) {
+            log('Dependency manifests have local modifications — dependencies need install.');
+            return true;
+        }
+    } catch (_) {
+        return true;
+    }
+    return false;
+}
+
 async function detectIsolatedSupervisor(): Promise<Record<string, any> | null> {
     try {
         const resp: any = await sendControlCommand({ cmd: 'status' });
@@ -799,6 +843,13 @@ try {
     const monolithicWasRunning = snapshot.monolithicWasRunning;
     const hadMonolithicFiles = snapshot.hadMonolithicFiles;
 
+    // Starting commit for the post-pull dep check (covers both branch
+    // switch and pull — the decision itself still happens after).
+    let preUpdateHead = '';
+    try {
+        preUpdateHead = execSync('git rev-parse HEAD', { stdio: 'pipe', cwd: PATHS.PROJECT_ROOT }).toString().trim();
+    } catch (_) {}
+
     /**
      * STEP 6b: Prepare Working Directory
      * Stashes local changes to ensure a clean pull.
@@ -843,6 +894,7 @@ try {
      * remote content) and `--theirs` is the stashed content (the user's
      * local edits). Local changes take precedence over incoming remote.
      */
+    let lockRegenerated = false;
     if (stashed) {
         const stashRef = resolveStashRef(STASH_MESSAGE);
         log('Restoring stashed changes...');
@@ -873,20 +925,30 @@ try {
                 if (unmerged.includes('package-lock.json')) {
                     log('package-lock.json was conflicted — regenerating...');
                     execSync('npm install --prefer-offline --ignore-scripts 2>&1', { stdio: 'pipe', cwd: PATHS.PROJECT_ROOT });
+                    lockRegenerated = true;
                 }
             }
         } catch (_) {}
     }
 
     /**
-     * STEP 8: Reinstall Dependencies
-     * Updates npm packages to versions specified in package-lock.json.
+     * STEP 8: Reinstall Dependencies (only when needed)
+     * Runs `npm install` when the pull touched package.json/package-lock.json,
+     * when those files are dirty (stash-restored local edits), or when
+     * node_modules is missing/incomplete. Otherwise skips — the build below
+     * is what picks up pure .ts changes.
      * --ignore-scripts prevents npm from running the package `prepare` hook,
      * which would build once here before the explicit build step below.
      * --prefer-offline: Uses cached packages when possible
      */
-    log('Updating dependencies...');
-    run('npm install --prefer-offline --ignore-scripts');
+    if (lockRegenerated) {
+        log('Dependencies already regenerated after lockfile conflict — skipping npm install.');
+    } else if (needsDepsInstall(preUpdateHead)) {
+        log('Updating dependencies...');
+        run('npm install --prefer-offline --ignore-scripts');
+    } else {
+        log('Dependencies unchanged — skipping npm install.');
+    }
 
     /**
      * STEP 8b: Build TypeScript sources
@@ -894,8 +956,9 @@ try {
      * Do NOT rely on the npm `prepare` hook. The `prepare` script only re-fires
      * when package.json itself changes, not when only .ts source files are
      * updated. After a `git pull` that touches only .ts files, `npm install`
-     * is a no-op, `tsc` never runs, and the running bot process keeps loading
-     * the stale dist/ bundle — with no error surfaced to the operator.
+     * is skipped as a no-op (see STEP 8), so `tsc` would never run and the
+     * running bot process would keep loading the stale dist/ bundle — with
+     * no error surfaced to the operator.
      *
      * Always run the explicit build here so the next PM2 restart picks up
      * the new code. The staleness check at the end of this step is defense

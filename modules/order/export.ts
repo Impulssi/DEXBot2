@@ -300,7 +300,7 @@ async function writeSettingsJSON(botConfig: any, botName: any, outputPath: any) 
 
 /**
  * Export bot trades from PM2 log file to CSV
- * @param {string} botKey - Bot identifier (e.g., 'xrp-bts-0')
+ * @param {string} botKey - Bot identifier (e.g., 'aaa-bbb-0')
  * @param {Object} botConfig - Bot configuration object
  * @param {string} outputDir - Output directory for exports (default: './exports')
  * @returns {Promise<Object>} Export result status

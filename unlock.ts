@@ -27,7 +27,8 @@ const __dirname = _esmDirname(__filename);
  *   dexbot start --headless --password-file <path>
  *   dexbot stat, status        Runtime status
  *   dexbot stop                Stop the monolithic runtime
- *   dexbot restart             Restart the monolithic runtime
+ *   dexbot reload              Reload the monolithic runtime (leaves credential daemon untouched)
+ *   dexbot restart             Restart the monolithic runtime (re-unlocks credential daemon)
  *   dexbot delete              Shut down and clean up
  *
  * Repo-root users can run `./unlock` instead.
@@ -64,6 +65,7 @@ import { createMarketAdapterWatchdog } from './modules/launcher/market_adapter_w
 import { isLikelyMarketAdapterProcess } from './modules/launcher/market_adapter_runtime.js';
 import { Config } from './modules/config.js';
 import { getErrorMessage } from './modules/utils/errors.js';
+import { isSameBotName } from './modules/utils/sanitize_key.js';
 import { withTimeout } from './modules/order/utils/timeout.js';
 setUmask(0o077);
 
@@ -209,7 +211,7 @@ function waitForStableChildStartup(child: any, { label = 'child process', timeou
 function resolveBotEntryForName(botName: string) {
     const { config } = loadSettingsFile(BOTS_FILE);
     const raw = resolveRawBotEntries(config);
-    const match = raw.find((b: any) => b && b.name === botName);
+    const match = raw.find((b: any) => b && isSameBotName(b.name, botName));
     if (!match) return null;
     const entryCopy = JSON.parse(JSON.stringify(match));
     entryCopy.active = true;
@@ -543,6 +545,10 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
                 env: {
                     ...process.env,
                     DEXBOT_MONOLITHIC_BG: '1',
+                    // The wrapper watchdog below owns the market adapter
+                    // lifecycle; the bot child must not run its own adapter
+                    // sync/poll (see launcher/adapter_requirement.ts).
+                    DEXBOT_ADAPTER_OWNER: 'wrapper',
                     ...(credentialDaemonPid ? { DEXBOT_MANAGED_CRED_PID: String(credentialDaemonPid) } : {}),
                 },
                 stdio: ['ignore', stdoutFd, stderrFd],
@@ -617,7 +623,10 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
 
                 const botProcess = childProcess.spawn(Config.EXEC_PATH, dexbotArgs, {
                     cwd: PATHS.PROJECT_ROOT,
-                    env: process.env,
+                    // DEXBOT_ADAPTER_OWNER marks the wrapper watchdog as the
+                    // sole market-adapter spawner so the bot child skips its
+                    // own adapter sync/poll (both foreground and background).
+                    env: { ...process.env, DEXBOT_ADAPTER_OWNER: 'wrapper' },
                     stdio: isMonolithicBgChild ? 'pipe' : 'inherit',
                 });
                 botProcessRef.current = botProcess;
@@ -812,15 +821,15 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
     const effectiveCmd = cmd === 'shutdown' ? 'delete' : cmd === 'stat' ? 'status' : cmd;
     const actionLabel = getControlActionLabel(cmd);
 
-    if ((effectiveCmd === 'stop-all' || effectiveCmd === 'delete' || effectiveCmd === 'status' || effectiveCmd === 'restart-all') && !target) {
+    if ((effectiveCmd === 'stop-all' || effectiveCmd === 'delete' || effectiveCmd === 'status' || effectiveCmd === 'restart-all' || effectiveCmd === 'reload-all') && !target) {
         const { pid, stale } = readLiveMonolithicPid();
 
         if (pid > 0) {
             const summaryBotNames = getControlBotNames(undefined, true);
             const summaryServiceNames = getControlServiceNames(effectiveCmd, summaryBotNames);
 
-            if (effectiveCmd === 'restart-all') {
-                if (process.stdin.isTTY) {
+            if (effectiveCmd === 'restart-all' || effectiveCmd === 'reload-all') {
+                if (effectiveCmd === 'restart-all' && process.stdin.isTTY) {
                     const credResult = await stopCredentialDaemon();
                     if (credResult.signaled) {
                         console.log('Stop signal sent to credential daemon');
@@ -836,6 +845,9 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
                     }
                     controller.releaseManagedDaemon();
                 }
+                // reload-all intentionally skips the credential daemon
+                // stop/re-unlock above: bots keep their key access while the
+                // bot process + market adapter are recycled via SIGUSR2.
                 await stopMarketAdapterFromLock();
                 try {
                     runtime.kill(pid, 'SIGUSR2');
@@ -997,8 +1009,8 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
         if (resp.ok && resp.status) {
             printControlStatus(resp.status);
         } else {
-            if (target || effectiveCmd === 'stop-all' || effectiveCmd === 'restart-all' || effectiveCmd === 'delete') {
-                const summaryBotNames = getControlBotNames(target, !target && (effectiveCmd === 'stop-all' || effectiveCmd === 'restart-all' || effectiveCmd === 'delete'));
+            if (target || effectiveCmd === 'stop-all' || effectiveCmd === 'restart-all' || effectiveCmd === 'reload-all' || effectiveCmd === 'delete') {
+                const summaryBotNames = getControlBotNames(target, !target && (effectiveCmd === 'stop-all' || effectiveCmd === 'restart-all' || effectiveCmd === 'reload-all' || effectiveCmd === 'delete'));
                 const summaryServiceNames = getControlServiceNames(effectiveCmd, summaryBotNames);
                 printControlActionSummary(actionLabel, summaryBotNames, summaryServiceNames);
             }
