@@ -1135,9 +1135,18 @@ class SyncEngine {
                         rawOnChain: adoptedRaw ? { ...adoptedRaw, fetchedAt: Date.now() } : adoptedRaw,
                         ...(adoptedBtsFeeState ? { btsFeeState: adoptedBtsFeeState } : {}),
                     };
+                    const applied = await mgr._applyOrderUpdate(adoptedOrder, 'sync-pass2-adopt-orphan', { skipAccounting: skipAccounting, fee: 0 });
+                    if (applied === false) {
+                        // Fatal rejection: parity with the genesis adoption path —
+                        // the slot must not be marked matched and the chain order
+                        // must not dangle untracked on the book.
+                        unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'adoption-rejected', candidateSlotId: adoptedSlot.id });
+                        queueCorrection({ gridOrder: adoptedSlot, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
+                        mgr.logger?.log?.(`[SYNC] Chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}) NOT adopted into slot ${adoptedSlot.id}: order update rejected — queued for cancellation`, 'error');
+                        continue;
+                    }
                     matchedGridOrderIds.add(adoptedSlot.id);
                     chainOrderIdsOnGrid.add(chainOrderId);
-                    await mgr._applyOrderUpdate(adoptedOrder, 'sync-pass2-adopt-orphan', { skipAccounting: skipAccounting, fee: 0 });
                     updatedOrders.push(adoptedOrder);
                     // Phase 4 attribution: log the adoption slot's geometry
                     // (idx vs frozen boundary/gap) so the next re-map incident

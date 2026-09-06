@@ -26,9 +26,34 @@ const {
     isOrderPlaced,
 } = orderUtils as any;
 import * as validate from './order/utils/validate.js';
-const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions } = validate as any;
+const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions, stampGapEvacuationRotation } = validate as any;
 import * as math from './order/utils/math.js';
-const { validateOrderSize, findCrossedOrder, priceSlotEqual, isEvacuationRotationAllowed, getSellStartIdx, getPrecisionByOrderType } = math as any;
+const { validateOrderSize, findCrossedOrder, priceSlotEqual, isEvacuationRotationAllowed, getSellStartIdx, getPrecisionByOrderType, isSlotIndexInGapBand } = math as any;
+
+/**
+ * Re-verify a B-stamped gap-evacuation rotation against the LIVE committed
+ * geometry (boundaryIdx/_gapSlots at execution time). The stamp freezes
+ * plan-build geometry, but a boundary commit can land between plan-build and
+ * execution; when the live geometry is finite and the source is no longer
+ * in-band (or the dest no longer rail), the stamp is stale and the rotation
+ * must be re-proven by the unstamped live probe instead of bypassing the
+ * last-fill guard. Non-finite live geometry cannot disprove the stamp and
+ * keeps the plan-build authority (fail-open to the stamp, never to the guard).
+ */
+export function isEvacuationStampStillValid(liveBoundary: any, liveGapSlots: any, sourceId: any, destId: any, orderType: any): boolean {
+    const b = Number(liveBoundary);
+    const g = Number(liveGapSlots);
+    if (orderType !== ORDER_TYPES.BUY && orderType !== ORDER_TYPES.SELL) return false;
+    if (!Number.isFinite(b) || !Number.isFinite(g) || g < 0) return true;
+    const srcIdx = parseSlotIndex(sourceId);
+    const dstIdx = parseSlotIndex(destId);
+    if (srcIdx === null || srcIdx === undefined || dstIdx === null || dstIdx === undefined) return false;
+    if (!isSlotIndexInGapBand(srcIdx, b, g)) return false;
+    if (isSlotIndexInGapBand(dstIdx, b, g)) return false;
+    const sellStartIdx = getSellStartIdx(b, g);
+    const dstInRail = orderType === ORDER_TYPES.SELL ? Number(dstIdx) >= sellStartIdx : Number(dstIdx) <= b;
+    return dstInRail;
+}
 import { parseSlotIndex } from './order/utils/slot.js';
 function hasSlotPriceCollision(items: any[], targetPrice: number, precision: number, excludeId: string | null, predicate?: (it:any)=>boolean) {
     for (const it of items) {
@@ -1792,10 +1817,11 @@ function buildActionsFromPlan(_bot: any, plan: any) {
     // inherit the spread-correction bypass. Actions built outside this helper
     // carry no origin and default to guarded (safe default).
     const planOrigin = (normalizedPlan as any)?.origin;
-    // B-stamp: freeze the boundary + gap width AT PLAN-BUILD TIME. Plans can
-    // validate against a later-committed boundary, so the guard must judge
-    // evacuations against the geometry the plan was built for — never a
-    // re-derived live value at validation time.
+    // B-stamp inputs: the plan-level boundary + gap width frozen AT
+    // PLAN-BUILD TIME. The stamp carries this geometry so the execution
+    // guard can bypass on it — and re-verifies it against the LIVE
+    // committed geometry at execution time (isEvacuationStampStillValid),
+    // downgrading stale stamps to the live probe.
     const frozenBoundaryRaw = Number(
         (normalizedPlan as any)?.boundaryIdx ?? (_bot as any)?.manager?.boundaryIdx
     );
@@ -1803,16 +1829,39 @@ function buildActionsFromPlan(_bot: any, plan: any) {
         (normalizedPlan as any)?.gapSlots ?? (_bot as any)?.manager?._gapSlots
     );
     const hasFrozenGeometry = Number.isFinite(frozenBoundaryRaw) && Number.isFinite(frozenGapRaw) && frozenGapRaw >= 0;
-    const withOrigin = (action: any) => {
+    const withOrigin = (action: any, sourceMaster: any = null) => {
         if (!planOrigin) return action;
-        const stamped: any = { ...action, origin: planOrigin };
-        // The gap-evacuation B-stamp rides on UPDATE actions only — CREATEs
-        // carry no source slot and can never claim an evacuation bypass.
-        if (planOrigin === 'gap-evacuation' && action?.type === COW_ACTIONS.UPDATE && hasFrozenGeometry) {
-            stamped.evacBoundary = frozenBoundaryRaw;
-            stamped.evacGapSlots = Math.floor(frozenGapRaw);
+        // Origin only rides UPDATEs (where the guard reads it). Gap-plan
+        // CREATEs carry a provably dead origin — the spread-correction
+        // CREATE check falls back to the batch origin, so dropping the
+        // per-action origin there is safe. Other plan origins keep riding
+        // non-UPDATE actions unchanged.
+        if (action?.type !== COW_ACTIONS.UPDATE) {
+            return planOrigin === 'gap-evacuation' ? { ...action } : { ...action, origin: planOrigin };
         }
-        return stamped;
+        if (planOrigin !== 'gap-evacuation') return { ...action, origin: planOrigin };
+        if (!hasFrozenGeometry) return { ...action, origin: planOrigin };
+        // Route through the real stampler: geometry (source in-band, dest
+        // rail), bit-exact non-growing size (side precision) and outward
+        // repricing must all PROVE — a plan-level origin alone never grants
+        // the bypass. Without a source master the proof is impossible, so
+        // the action stays unstamped (the live probe at execution can still
+        // re-prove it from the master grid).
+        const base: any = { ...action, origin: planOrigin };
+        if (!sourceMaster) return { ...base, origin: undefined };
+        // The stampler wants the ORDER type (SELL/BUY), which rides on
+        // action.order.type — action.type is the COW action kind ('update').
+        const rotOrderType = action?.order?.type ?? action?.type;
+        const proved = stampGapEvacuationRotation(
+            base, sourceMaster, action.newPrice, action.newSize, rotOrderType,
+            frozenBoundaryRaw, frozenGapRaw, (_bot as any)?.manager?.assets
+        );
+        // Proof refused: strip the origin so the action is exactly an
+        // unstamped rotation (never an origin claim without a stamp).
+        if (!(proved as any)?.evacBoundary && !(proved as any)?.evacGapSlots) {
+            proved.origin = undefined;
+        }
+        return proved;
     };
 
     const actions: any[] = [];
@@ -1851,7 +1900,7 @@ function buildActionsFromPlan(_bot: any, plan: any) {
                 price: newPrice,
                 size: newSize
             }
-        }));
+        }, oldOrder));
     }
 
     for (const o of ordersToUpdate) {
@@ -3174,7 +3223,28 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             if (rotationOrigin === 'gap-evacuation') {
                                 const frozenB = Number((action as any)?.evacBoundary);
                                 const frozenG = Number((action as any)?.evacGapSlots);
-                                if (Number.isFinite(frozenB) && Number.isFinite(frozenG)) {
+                                let stampUsable = Number.isFinite(frozenB) && Number.isFinite(frozenG);
+                                if (stampUsable) {
+                                    // Stale-stamp check: the stamp froze PLAN-BUILD
+                                    // geometry; if a boundary commit landed between
+                                    // plan-build and execution and the source is no
+                                    // longer in-band (or dest no longer rail) under
+                                    // the LIVE geometry, re-prove via the unstamped
+                                    // live probe below instead of bypassing outright.
+                                    const stampValid = isEvacuationStampStillValid(
+                                        bot.manager?.boundaryIdx, (bot.manager as any)?._gapSlots,
+                                        action.id, action.newGridId, orderType
+                                    );
+                                    if (!stampValid) {
+                                        stampUsable = false;
+                                        bot.manager.logger.log(
+                                            `[LAST-FILL-GUARD] Stamped evacuation for ${action.id} -> ${action.newGridId} is stale under live ` +
+                                            `boundary ${(bot.manager as any)?.boundaryIdx}/gap ${(bot.manager as any)?._gapSlots} — re-proving live`,
+                                            'warn'
+                                        );
+                                    }
+                                }
+                                if (stampUsable) {
                                     bypassedEvacuation = true;
                                     bot.manager.logger.log(
                                         `[LAST-FILL-GUARD] Allowing ${orderType} evacuation UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: ` +
@@ -3202,12 +3272,25 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                     }
                                     let sidePrecision: any = null;
                                     try { sidePrecision = getPrecisionByOrderType(bot.manager.assets, orderType); } catch { sidePrecision = null; }
-                                    const evacCheck = isEvacuationRotationAllowed(oldPrice, oldSize, newPrice, newSize, orderType, sidePrecision);
-                                    if (evacCheck.allowed) {
-                                        bypassedEvacuation = true;
+                                    // Geometry re-proof under the LIVE boundary: if the
+                                    // source is no longer in-band (or dest no longer rail),
+                                    // this is not an evacuation anymore — fall through to
+                                    // the normal guard instead of bypassing via the probe.
+                                    // Non-finite live geometry cannot disprove; probe proceeds.
+                                    if (isEvacuationStampStillValid(bot.manager?.boundaryIdx, (bot.manager as any)?._gapSlots, action.id, action.newGridId, orderType)) {
+                                        const evacCheck = isEvacuationRotationAllowed(oldPrice, oldSize, newPrice, newSize, orderType, sidePrecision);
+                                        if (evacCheck.allowed) {
+                                            bypassedEvacuation = true;
+                                            bot.manager.logger.log(
+                                                `[LAST-FILL-GUARD] Allowing ${orderType} evacuation UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: ` +
+                                                `${evacCheck.reason} (probed live: ${Format.formatPrice6(oldPrice)} -> ${Format.formatPrice6(newPrice)})`,
+                                                'warn'
+                                            );
+                                        }
+                                    } else {
                                         bot.manager.logger.log(
-                                            `[LAST-FILL-GUARD] Allowing ${orderType} evacuation UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: ` +
-                                            `${evacCheck.reason} (probed live: ${Format.formatPrice6(oldPrice)} -> ${Format.formatPrice6(newPrice)})`,
+                                            `[LAST-FILL-GUARD] Unstamped evacuation probe for ${action.id} -> ${action.newGridId} rejected: ` +
+                                            `source/dest no longer evacuation geometry under live boundary ${(bot.manager as any)?.boundaryIdx}/gap ${(bot.manager as any)?._gapSlots} — normal guard applies`,
                                             'warn'
                                         );
                                     }

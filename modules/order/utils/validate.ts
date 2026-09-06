@@ -47,6 +47,7 @@ import {
     floatToBlockchainInt,
     blockchainToFloat,
     getPrecisionSlack,
+    getPrecisionByOrderType,
     getDoubleDustThreshold,
     getSellStartIdx,
     isSlotIndexInGapBand,
@@ -420,7 +421,7 @@ function clampRotationSizeForPartial(surplusMaster: any, holeSize: number, logge
  * @param {number} frozenGapSlots - Plan-build gap slot count
  * @returns {Object} The action, stamped when it qualifies
  */
-function stampGapEvacuationRotation(action: any, sourceMaster: any, destPrice: any, destSize: any, type: any, frozenBoundary: any, frozenGapSlots: any) {
+function stampGapEvacuationRotation(action: any, sourceMaster: any, destPrice: any, destSize: any, type: any, frozenBoundary: any, frozenGapSlots: any, assets: any = null) {
     const b = Number(frozenBoundary);
     const g = Number(frozenGapSlots);
     if (!Number.isFinite(b) || !Number.isFinite(g) || g < 0) return action;
@@ -432,7 +433,12 @@ function stampGapEvacuationRotation(action: any, sourceMaster: any, destPrice: a
     const sellStartIdx = getSellStartIdx(b, g);
     const dstInRail = type === ORDER_TYPES.SELL ? Number(dstIdx) >= sellStartIdx : Number(dstIdx) <= b;
     if (!dstInRail) return action;
-    const check = isEvacuationRotationAllowed(sourceMaster?.price, sourceMaster?.size, destPrice, destSize, type);
+    // Bit-exact size check with the side's on-chain precision (mirrors the
+    // live unstamped probe in dexbot_cow_runtime) — a 1-satoshi size growth
+    // must be refused at stamp time, not just at execution.
+    let stampPrecision: any = null;
+    try { stampPrecision = assets ? getPrecisionByOrderType(assets, type) : null; } catch { stampPrecision = null; }
+    const check = isEvacuationRotationAllowed(sourceMaster?.price, sourceMaster?.size, destPrice, destSize, type, stampPrecision);
     if (!check.allowed) return action;
     return { ...action, origin: 'gap-evacuation', evacBoundary: b, evacGapSlots: Math.floor(g) };
 }
@@ -453,6 +459,7 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
     // or non-finite => no stamping (guarded default, never fail-open).
     const planGapSlots = Number(options?.gapSlots);
     const hasPlanGeometry = Number.isFinite(planGapSlots) && planGapSlots >= 0;
+    const evacAssets = options?.assets ?? null;
     const actions: any[] = [];
     
     const surplusesBuy: any[] = [];
@@ -599,7 +606,7 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
             if (hasPlanGeometry) {
                 rotation = stampGapEvacuationRotation(
                     rotation, surplus.master, hole.order.price, clampedSize,
-                    surplus.master?.type, validatedBoundary, planGapSlots
+                    surplus.master?.type, validatedBoundary, planGapSlots, evacAssets
                 );
             }
             actions.push(rotation);
@@ -669,6 +676,7 @@ function optimizeRebalanceActions(actions: any, masterGrid: any, options: Record
     const optBoundary = Number(options?.boundaryIdx);
     const optGapSlots = Number(options?.gapSlots);
     const hasOptGeometry = Number.isFinite(optBoundary) && Number.isFinite(optGapSlots) && optGapSlots >= 0;
+    const optAssets = options?.assets ?? null;
 
     const creates: any[] = [];
     const cancels: any[] = [];
@@ -740,7 +748,7 @@ function optimizeRebalanceActions(actions: any, masterGrid: any, options: Record
         if (hasOptGeometry) {
             rotation = stampGapEvacuationRotation(
                 rotation, masterOrder, toFiniteNumber(createAction?.order?.price), clampedSize,
-                cancelType, optBoundary, optGapSlots
+                cancelType, optBoundary, optGapSlots, optAssets
             );
         }
         optimized.push(rotation);
@@ -908,7 +916,22 @@ function validateCreateTargetSlots(actions: any, orders: any, _assets: any = nul
         for (const entry of createEntries) {
             const priceNum = Number(entry.price);
             if (!Number.isFinite(priceNum)) continue;
-            const key = `${String(entry.type)}:${priceNum}`;
+            // Key on the on-chain integer repr when the side precision is
+            // known (bit-exact: prices that quantize to the same chain int
+            // ARE the same price on the DEX); float fallback preserves the
+            // old behavior for callers without assets context.
+            let key: string;
+            let sidePrecision: any = null;
+            try { sidePrecision = _assets ? getPrecisionByOrderType(_assets, entry.type) : null; } catch { sidePrecision = null; }
+            if (Number.isFinite(Number(sidePrecision)) && Number(sidePrecision) > 0) {
+                try {
+                    key = `${String(entry.type)}:i${floatToBlockchainInt(priceNum, Number(sidePrecision))}`;
+                } catch {
+                    key = `${String(entry.type)}:${priceNum}`;
+                }
+            } else {
+                key = `${String(entry.type)}:${priceNum}`;
+            }
             const owner = priceOwner.get(key);
             if (owner === undefined) {
                 priceOwner.set(key, entry.targetId);
@@ -1266,5 +1289,5 @@ function evaluateCommit(workingGrid: any, options: any = {}) {
 // EXPORTS
 // ===============================================================================
 
-export { validateOrder, validateGridForPersistence, validateWorkingGridFunds, checkFundDrift, reconcileGrid, optimizeRebalanceActions, hasExecutableActions, validateCreateTargetSlots, hasActionForOrder, removeActionsForOrder, projectTargetToWorkingGrid, buildStateUpdates, buildAbortedResult, buildSuccessResult, evaluateCommit }
+export { validateOrder, validateGridForPersistence, validateWorkingGridFunds, checkFundDrift, reconcileGrid, optimizeRebalanceActions, hasExecutableActions, validateCreateTargetSlots, hasActionForOrder, removeActionsForOrder, projectTargetToWorkingGrid, buildStateUpdates, buildAbortedResult, buildSuccessResult, evaluateCommit, stampGapEvacuationRotation }
 

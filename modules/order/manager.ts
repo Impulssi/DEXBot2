@@ -206,7 +206,8 @@ class COWRebalanceEngine {
                 logger: (msg: any, level: any) => this.logger?.log(msg, level),
                 dustThresholdPercent,
                 gapSlots,
-                evacStreaks
+                evacStreaks,
+                assets: this.assets
             }
         );
 
@@ -227,7 +228,8 @@ class COWRebalanceEngine {
         const optimizedActions = optimizeRebalanceActions(reconcileResult.actions, masterGrid, {
             logger: (msg: any, level: any) => this.logger?.log(msg, level),
             boundaryIdx: targetBoundary,
-            gapSlots
+            gapSlots,
+            assets: this.assets
         });
 
         // Stale-placement guard: drop placements crossing the plan's own
@@ -1928,7 +1930,8 @@ class OrderManager {
             logger: (msg: any, level: any) => this.logger.log(msg, level),
             dustThresholdPercent: this.config?.gridLimits?.PARTIAL_DUST_THRESHOLD_PERCENTAGE,
             gapSlots: this._gapSlots,
-            evacStreaks: this._gapEvacStreaks
+            evacStreaks: this._gapEvacStreaks,
+            assets: this.assets
         });
     }
 

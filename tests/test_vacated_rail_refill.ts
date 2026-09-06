@@ -185,6 +185,36 @@ async function testVRR5_VacatedSlotAlreadyDesiredGetsNoDouble() {
     console.log('✓ VRR-5 passed');
 }
 
+async function testVRR6_CanceledSlotNotRefilled() {
+    console.log('\n[VRR-6] CANCELED slot (cancel possibly in flight) is not a refill target...');
+    const manager = createManager();
+    manager.orders.set('slot-146', slot('slot-146', ORDER_TYPES.SELL, ORDER_STATES.ACTIVE, 99, 10, '1.7.146'));
+    manager.orders.set('slot-147', slot('slot-147', ORDER_TYPES.SELL, ORDER_STATES.VIRTUAL, 100, 10));
+    // slot-148: CANCELED with stale booked size — a cancel broadcast may
+    // still be in flight, so refilling it would double-place the level.
+    manager.orders.set('slot-148', slot('slot-148', ORDER_TYPES.SELL, ORDER_STATES.CANCELED, 101, 10));
+    const chain = chainSell('1.7.100', 101, 10);
+    const { plannedCreates, plannedUpdates } = await runSide(manager, chain);
+    assert.strictEqual(plannedUpdates.length, 1, 're-map onto slot-147 proceeds');
+    assert.strictEqual(plannedCreates.length, 0, 'CANCELED slot must not be refilled (only VIRTUAL holes)');
+    console.log('✓ VRR-6 passed');
+}
+
+async function testVRR7_PhantomOrderIdNotRefilled() {
+    console.log('\n[VRR-7] VIRTUAL slot with stale orderId (phantom) is not a refill target...');
+    const manager = createManager();
+    manager.orders.set('slot-146', slot('slot-146', ORDER_TYPES.SELL, ORDER_STATES.ACTIVE, 99, 10, '1.7.146'));
+    manager.orders.set('slot-147', slot('slot-147', ORDER_TYPES.SELL, ORDER_STATES.VIRTUAL, 100, 10));
+    // VIRTUAL with a stale orderId: isOrderPlaced is false for VIRTUAL state,
+    // so the phantom must be excluded by an explicit orderId check.
+    manager.orders.set('slot-148', slot('slot-148', ORDER_TYPES.SELL, ORDER_STATES.VIRTUAL, 101, 10, '1.7.999'));
+    const chain = chainSell('1.7.100', 101, 10);
+    const { plannedCreates, plannedUpdates } = await runSide(manager, chain);
+    assert.strictEqual(plannedUpdates.length, 1, 're-map onto slot-147 proceeds');
+    assert.strictEqual(plannedCreates.length, 0, 'phantom VIRTUAL+orderId slot must not be refilled');
+    console.log('✓ VRR-7 passed');
+}
+
 async function runAllTests() {
     console.log('=== Vacated-Rail Refill Test Suite ===\n');
     await testVRR1_RefillPlannedForVacatedRailSlot();
@@ -192,6 +222,8 @@ async function runAllTests() {
     await testVRR3_GhostPriceGetsNoRefill();
     await testVRR4_InBandVacateGetsNoRefill();
     await testVRR5_VacatedSlotAlreadyDesiredGetsNoDouble();
+    await testVRR6_CanceledSlotNotRefilled();
+    await testVRR7_PhantomOrderIdNotRefilled();
     console.log('\n=== All vacated-rail refill tests passed! ===');
 }
 

@@ -362,6 +362,121 @@ async function testEVAC015_TeethMarkerReleasesOnResolve() {
     console.log('✓ EVAC-015 passed');
 }
 
+async function testEVAC016_StampStillValidFreshGeometry() {
+    console.log('\n[EVAC-016] Stamped bypass survives when live geometry matches the stamp...');
+    const { isEvacuationStampStillValid } = require('../modules/dexbot_cow_runtime');
+    // Source 143 in band (142..145), dest 147 rail (>= 146): stamp valid.
+    assert.strictEqual(isEvacuationStampStillValid(BOUNDARY, GAP_SLOTS, 'slot-143', 'slot-147', ORDER_TYPES.SELL), true);
+    // Boundary shift that KEEPS the evacuation legal keeps the bypass:
+    // live boundary 142 -> sellStart 145 -> band 143..144 (143 in-band),
+    // dest 147 >= 145 rail.
+    assert.strictEqual(isEvacuationStampStillValid(142, GAP_SLOTS, 'slot-143', 'slot-147', ORDER_TYPES.SELL), true);
+    // Unparseable ids fail closed (re-prove live rather than bypass blind).
+    assert.strictEqual(isEvacuationStampStillValid(BOUNDARY, GAP_SLOTS, 'planned', 'slot-147', ORDER_TYPES.SELL), false);
+    // Non-rail types fail closed explicitly (never fall into the BUY branch).
+    assert.strictEqual(isEvacuationStampStillValid(BOUNDARY, GAP_SLOTS, 'slot-143', 'slot-147', ORDER_TYPES.SPREAD), false);
+    console.log('✓ EVAC-016 passed');
+}
+
+async function testEVAC017_StampStaleUnderLiveGeometry() {
+    console.log('\n[EVAC-017] Stamped bypass downgrades when live geometry moved past the stamp...');
+    const { isEvacuationStampStillValid } = require('../modules/dexbot_cow_runtime');
+    // Live boundary 144 -> sellStart 149 -> band 145..148: source 143 is no
+    // longer in-band AND dest 147 is no longer rail. The stamp is stale and
+    // the rotation must be re-proven by the live probe, not bypassed.
+    assert.strictEqual(isEvacuationStampStillValid(144, GAP_SLOTS, 'slot-143', 'slot-147', ORDER_TYPES.SELL), false);
+    // Dest fell into the widened band while source stayed in it:
+    // live boundary 138, gap 6 -> sellStart 145 -> band 139..144 (143 in-band),
+    // dest 147 >= 145 rail... widening the band the other way instead:
+    // live boundary 141, gap 8 -> sellStart 150 -> band 142..149: dest 147
+    // is inside the band -> stale.
+    assert.strictEqual(isEvacuationStampStillValid(141, 8, 'slot-143', 'slot-147', ORDER_TYPES.SELL), false);
+    // BUY variant: source 143 in band, dest 141 rail (<= 141) is valid.
+    assert.strictEqual(isEvacuationStampStillValid(BOUNDARY, GAP_SLOTS, 'slot-143', 'slot-141', ORDER_TYPES.BUY), true);
+    // BUY dest that fell into a widened band is stale:
+    // live boundary 137, gap 6 -> sellStart 144 -> band 138..143: source 143
+    // still in-band but dest 141 is inside the band now.
+    assert.strictEqual(isEvacuationStampStillValid(137, 6, 'slot-143', 'slot-141', ORDER_TYPES.BUY), false);
+    console.log('✓ EVAC-017 passed');
+}
+
+async function testEVAC018_StampUsesPrecisionBitExactSize() {
+    console.log('\n[EVAC-018] Stamping threads side precision: bit-exact on-chain size semantics...');
+    const assets = { assetA: { precision: 5 }, assetB: { precision: 5 } };
+    const baseTarget = (destSize: number) => paddedGrid([
+        ['slot-143', slot('slot-143', ORDER_TYPES.SELL, ORDER_STATES.VIRTUAL, 950, 0)],
+        ['slot-144', slot('slot-144', ORDER_TYPES.SELL, ORDER_STATES.ACTIVE, 955, 100, '1.7.144')],
+        ['slot-147', slot('slot-147', ORDER_TYPES.SELL, ORDER_STATES.ACTIVE, 960, destSize)],
+    ]);
+    const master = paddedGrid([
+        ['slot-143', slot('slot-143', ORDER_TYPES.SELL, ORDER_STATES.ACTIVE, 950, 100, '1.7.143')],
+        ['slot-144', slot('slot-144', ORDER_TYPES.SELL, ORDER_STATES.ACTIVE, 955, 100, '1.7.144')],
+    ]);
+    const run = (destSize: number, withAssets: boolean) => {
+        const res = reconcileGrid(master, baseTarget(destSize), BOUNDARY, {
+            logger: () => {},
+            gapSlots: GAP_SLOTS,
+            evacStreaks: new Map(),
+            assets: withAssets ? assets : null
+        });
+        const rot = res.actions.find((a: any) => a.type === COW_ACTIONS.UPDATE && a.newGridId === 'slot-147');
+        return rot?.origin;
+    };
+    // A full-quantum size growth (100 -> 100.00001 at precision 5) grows the
+    // on-chain int: the stamp must refuse it, with or without assets.
+    assert.strictEqual(run(100.00001, true), undefined, 'int growth must not stamp (assets present)');
+    assert.strictEqual(run(100.00001, false), undefined, 'int growth must not stamp (assets absent, float fallback)');
+    // Sub-quantum growth (100 -> 100.000000001) is invisible on chain: the
+    // precision-aware int check allows it, consistent with the live probe.
+    assert.strictEqual(run(100.000000001, true), 'gap-evacuation', 'sub-quantum delta stamps (int semantics, matches live probe)');
+    // Without assets the float fallback is stricter (any growth refused).
+    assert.strictEqual(run(100.000000001, false), undefined, 'sub-quantum delta refused under float fallback');
+    console.log('✓ EVAC-018 passed');
+}
+
+async function testEVAC019_PlanLevelOriginRoutesThroughProof() {
+    console.log('\n[EVAC-019] Plan-level gap-evacuation origin must PROVE, never stamp blind...');
+    const { buildActionsFromPlan } = require('../modules/dexbot_cow_runtime');
+    const bot = {
+        manager: {
+            orders: new Map(),
+            boundaryIdx: BOUNDARY,
+            _gapSlots: GAP_SLOTS,
+            assets: { assetA: { precision: 5 }, assetB: { precision: 5 } },
+            logger: { log: () => {} },
+        },
+    };
+    const qualifying = {
+        id: 'slot-143', orderId: '1.7.143', newGridId: 'slot-146',
+        newPrice: 960, newSize: 100, type: ORDER_TYPES.SELL,
+        oldOrder: slot('slot-143', ORDER_TYPES.SELL, ORDER_STATES.ACTIVE, 950, 100, '1.7.143'),
+    };
+    const growing = {
+        ...qualifying, id: 'slot-144', orderId: '1.7.144', newPrice: 962, newSize: 100.00001,
+        oldOrder: slot('slot-144', ORDER_TYPES.SELL, ORDER_STATES.ACTIVE, 955, 100, '1.7.144'),
+    };
+    const noSource = { id: 'slot-145', orderId: '1.7.145', newGridId: 'slot-148', newPrice: 964, newSize: 100, type: ORDER_TYPES.SELL };
+    const actions = buildActionsFromPlan(bot, {
+        origin: 'gap-evacuation', boundaryIdx: BOUNDARY, gapSlots: GAP_SLOTS,
+        ordersToRotate: [qualifying, growing, noSource],
+    });
+    const byId = new Map<string, any>(actions.filter((a: any) => a.type === COW_ACTIONS.UPDATE).map((a: any) => [a.id, a]));
+    const ok = byId.get('slot-143');
+    assert.strictEqual(ok.origin, 'gap-evacuation', 'proven rotation keeps the plan-level origin');
+    assert.strictEqual(ok.evacBoundary, BOUNDARY, 'stamped geometry rides the action');
+    const bad = byId.get('slot-144');
+    assert.ok(!bad.origin, 'size-growing rotation must lose the origin entirely (falsy)');
+    assert.strictEqual(bad.evacBoundary, undefined, 'no B-stamp without proof');
+    const missing = byId.get('slot-145');
+    assert.ok(!missing.origin, 'rotation without a source master cannot prove (falsy)');
+    assert.strictEqual(missing.evacBoundary, undefined, 'no B-stamp without a source');
+    // Gap-plan CREATEs carry no per-action origin (dead weight — the
+    // spread-correction fallback reads the batch origin instead).
+    const creates = actions.filter((a: any) => a.type === COW_ACTIONS.CREATE);
+    if (creates.length > 0) assert.ok(creates.every((c: any) => !c.origin), 'gap-plan CREATE origin is dead — not minted');
+    console.log('✓ EVAC-019 passed');
+}
+
 async function runAllTests() {
     console.log('=== Gap-Evacuation Test Suite ===\n');
     await testEVAC001_AllowsSellOutwardNonGrowing();
@@ -379,6 +494,10 @@ async function runAllTests() {
     await testEVAC013_TeethQueueOnceAtThreshold();
     await testEVAC014_TeethRecheckGeometryAndLiveSlot();
     await testEVAC015_TeethMarkerReleasesOnResolve();
+    await testEVAC016_StampStillValidFreshGeometry();
+    await testEVAC017_StampStaleUnderLiveGeometry();
+    await testEVAC018_StampUsesPrecisionBitExactSize();
+    await testEVAC019_PlanLevelOriginRoutesThroughProof();
     console.log('\n=== All gap-evacuation tests passed! ===');
 }
 

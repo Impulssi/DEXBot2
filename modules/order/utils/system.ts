@@ -1213,7 +1213,8 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         const optimizedActions = optimizeRebalanceActions(actions, manager.orders, {
             logger: (msg: any, level: any) => manager.logger?.log?.(msg, level),
             boundaryIdx: pendingBoundaryIdx,
-            gapSlots: manager._gapSlots
+            gapSlots: manager._gapSlots,
+            assets: manager.assets
         });
         if (optimizedActions !== actions) {
             actions.length = 0;
