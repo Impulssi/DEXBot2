@@ -318,7 +318,15 @@ async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, cha
         } else {
             const spreadOrder = convertToSpreadPlaceholder(bestMatch);
             const applied = await mgr._applyOrderUpdate(spreadOrder, 'sync-pass2-filled', { skipAccounting: skipAccounting, fee: 0 });
-            if (applied === false) return false;
+            if (applied === false) {
+                // Rejected adoption must not poison the slot for the next
+                // chain order: the slot was marked matched above, so release
+                // it — B's adoption re-fails the same validation and gets
+                // the existing cancelOnly handling if the rejection was
+                // slot-specific.
+                matchedGridOrderIds.delete(bestMatch.id);
+                return false;
+            }
             filledOrders.push({ ...bestMatch });
             updatedOrders.push(spreadOrder);
             chainOrderIdsOnGrid.add(chainOrderId);
@@ -328,7 +336,12 @@ async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, cha
         bestMatch.state = ORDER_STATES.PARTIAL;
     }
     const applied = await mgr._applyOrderUpdate(bestMatch, 'sync-pass2-orphan', { skipAccounting: skipAccounting, fee: 0 });
-    if (applied === false) return false;
+    if (applied === false) {
+        // Same un-poisoning as the filled path above: the slot counts as
+        // matched only once the update lands.
+        matchedGridOrderIds.delete(bestMatch.id);
+        return false;
+    }
     updatedOrders.push(bestMatch);
     chainOrderIdsOnGrid.add(chainOrderId);
     return true;
