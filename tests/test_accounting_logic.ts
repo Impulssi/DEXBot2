@@ -387,6 +387,54 @@ async function runCoreTests() {
         manager.accountant._performStateRecovery = originalRecovery;
     }
 
+    // Test: recalibration runs on an empty read (all-filled account)
+    console.log(' - Testing fund recalibration on empty chain read...');
+    {
+        const manager = await createManager();
+        await manager._updateOrder({
+            id: 'stuck-1',
+            state: ORDER_STATES.ACTIVE,
+            type: ORDER_TYPES.SELL,
+            size: 25,
+            price: 100,
+            orderId: '1.7.9'
+        });
+        // Stuck (not fresh): backdate the assign stamp past the lag-guard
+        // window — _updateOrder stamps _orderIdAssignedAt with now(), which
+        // would (correctly) protect a just-placed order.
+        manager._orderIdAssignedAt.set('1.7.9', Date.now() - TIMING.SYNC_LOCK_TIMEOUT_MS - 1000);
+        const result = await (manager.accountant as any)._recalibrateTrackedFundsFromChain(manager, []);
+        assert.strictEqual(result.virtualized, 1, 'Stale ACTIVE slot must be virtualized on an empty (all-filled) read');
+        const slot = manager.orders.get('stuck-1');
+        assert.strictEqual(slot.state, ORDER_STATES.VIRTUAL, 'Stale slot must become VIRTUAL');
+        assert.ok(!slot.orderId, 'Virtualized slot must clear its orderId');
+    }
+
+    // Test: recalibration never virtualizes an unparseable live order
+    console.log(' - Testing fund recalibration skips malformed live orders...');
+    {
+        const manager = await createManager();
+        await manager._updateOrder({
+            id: 'live-1',
+            state: ORDER_STATES.ACTIVE,
+            type: ORDER_TYPES.SELL,
+            size: 25,
+            price: 100,
+            orderId: '1.7.5'
+        });
+        // sell_price missing → parseChainOrder yields null: the order is live
+        // but unreadable (unknown ≠ absent). Backdate the assign stamp so the
+        // slot is NOT guard-protected — without the malformed-order skip it
+        // would be virtualized here.
+        manager._orderIdAssignedAt.set('1.7.5', Date.now() - TIMING.SYNC_LOCK_TIMEOUT_MS - 1000);
+        const malformed = [{ id: '1.7.5', for_sale: 100 }];
+        const result = await (manager.accountant as any)._recalibrateTrackedFundsFromChain(manager, malformed);
+        assert.strictEqual(result.virtualized, 0, 'Unparseable live order must never be virtualized');
+        const slot = manager.orders.get('live-1');
+        assert.strictEqual(slot.state, ORDER_STATES.ACTIVE, 'Slot with unparseable live order must stay ACTIVE');
+        assert.strictEqual(slot.orderId, '1.7.5', 'Slot must keep its orderId');
+    }
+
     console.log('✓ Accountant logic tests passed!');
 }
 
