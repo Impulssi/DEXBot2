@@ -12,7 +12,8 @@ import { ORDER_TYPES, ORDER_STATES, TIMING } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
 import { getAssetFeesSafe, priceSlotEqual } from './utils/math.js';
 import {
-    isOrderPlaced, parseChainOrder, isOrderOnChain, chainOrderMatchesSlot,
+    isOrderPlaced, parseChainOrder, isOrderOnChain,
+    chainOrderMatchesSlotWithTolerance,
     duplicateOrphanLogInfo,
 } from './utils/order.js';
 import * as Format from './format.js';
@@ -552,7 +553,11 @@ export async function reconcileGridOrders({
                     // it into grid slots (the group adoption sync only runs when the
                     // post-uncertain read returned orders). Targeted slot adoption
                     // only: match VIRTUAL/SPREAD slots without an orderId by
-                    // type+price+size (within tolerance). Full syncFromOpenOrders is
+                    // type+price+size within tolerance (clamped to ~2 quanta —
+                    // the just-broadcast create may have landed with
+                    // rounding-drifted price; the strict matcher would miss it
+                    // and the next cycle would re-broadcast a duplicate).
+                    // Full syncFromOpenOrders is
                     // deliberately NOT used here — its pass-1 virtualizes ACTIVE slots
                     // missing from the snapshot, and a lagging read right after the
                     // Phase-2 broadcast would destroy the confirmed grid.
@@ -564,7 +569,7 @@ export async function reconcileGridOrders({
                         if (gridOrderIds.has(co.id)) continue;
                         const candidate: any = Array.from(manager.orders.values()).find((o: any) => {
                             if (!o || o.orderId || o.state !== ORDER_STATES.VIRTUAL) return false;
-                            return chainOrderMatchesSlot(parsed, o, manager.assets);
+                            return chainOrderMatchesSlotWithTolerance(parsed, o, manager.assets);
                         });
                         if (!candidate) continue;
                         try {

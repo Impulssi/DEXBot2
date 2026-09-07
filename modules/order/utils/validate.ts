@@ -52,7 +52,8 @@ import {
     getSellStartIdx,
     isSlotIndexInGapBand,
     isEvacuationRotationAllowed,
-    clamp
+    clamp,
+    priceSlotEqual
 } from './math.js';
 import { parseSlotIndex } from './slot.js';
 import {
@@ -878,20 +879,28 @@ function validateCreateTargetSlots(actions: any, orders: any, _assets: any = nul
                     violations.push({ targetId: entry.targetId, currentOrderId: entry.targetId, currentType: entry.type, currentState: 'CHAIN_ORPHAN', reason: 'chain_orphan_collision' });
                 }
             }
-            // Price-based fallback when candidates have no slotId (legacy sync without genesis slot mapping)
-            if (chainSlotIds.size === 0 && _assets) {
-                try {
-                    const { priceSlotEqual } = require('./math.js');
-                    for (const entry of createEntries) {
-                        if (violations.some(v => v.targetId === entry.targetId)) continue;
-                        for (const u of validChainCandidates) {
-                            if (u.price == null || entry.price == null) continue;
-                            if (u.type && entry.type && u.type !== entry.type) continue;
-                            const precision = entry.type === 'sell' ? _assets.assetA?.precision : _assets.assetB?.precision;
-                            try { if (priceSlotEqual(u.price, entry.price, precision)) { violations.push({ targetId: entry.targetId, currentOrderId: u.chainOrderId, currentType: entry.type, currentState: 'CHAIN_ORPHAN', reason: 'chain_orphan_collision' }); break; } } catch {}
-                        }
+            // Price-based fallback, PER CANDIDATE: candidates WITH a slot id
+            // already matched by slot above; candidates WITHOUT one (e.g.
+            // slot-unknown-* cancelOnly orphans from sync_engine) can never
+            // match by slot, so price-check ONLY those — regardless of
+            // whether other candidates carry slot ids. Gating the fallback
+            // on chainSlotIds.size === 0 skipped the price check for a mixed
+            // set entirely, letting a CREATE collide with a slot-unknown
+            // chain order sitting at the same price level (duplicate order).
+            if (_assets) {
+                // priceSlotEqual is a top-level import (the old inline
+                // require('./math.js') threw under ESM and the catch-all
+                // below silently disabled the whole fallback).
+                const slotlessCandidates = validChainCandidates.filter((u: any) => !(u.chainSlotId || u.candidateSlotId));
+                for (const entry of createEntries) {
+                    if (violations.some(v => v.targetId === entry.targetId)) continue;
+                    for (const u of slotlessCandidates) {
+                        if (u.price == null || entry.price == null) continue;
+                        if (u.type && entry.type && u.type !== entry.type) continue;
+                        const precision = entry.type === 'sell' ? _assets.assetA?.precision : _assets.assetB?.precision;
+                        try { if (priceSlotEqual(u.price, entry.price, precision)) { violations.push({ targetId: entry.targetId, currentOrderId: u.chainOrderId, currentType: entry.type, currentState: 'CHAIN_ORPHAN', reason: 'chain_orphan_collision' }); break; } } catch {}
                     }
-                } catch {}
+                }
             }
         }
         // Same-batch duplicate slot

@@ -113,10 +113,12 @@ async function run() {
         assert.strictEqual(priceSlotEqual(1.000001, 1.000002, 5), true, 'within same sat truncates');
     }
 
-    // 7. isSlotInRail fail-closed (plan §2.1) — unparseable excluded
+    // 7. isSlotInRail fail-open for legacy ids — unparseable admitted, geometry intact
     {
-        assert.strictEqual(isSlotInRail(10, 3, ORDER_TYPES.BUY, { id: 'slot-x' }), false, 'unparseable excluded');
+        assert.strictEqual(isSlotInRail(10, 3, ORDER_TYPES.BUY, { id: 'slot-x' }), true, 'unparseable admitted (legacy fail-open)');
         assert.strictEqual(isSlotInRail(10, 3, ORDER_TYPES.SELL, { id: 'slot-11' }), false, 'gap excluded');
+        assert.strictEqual(isSlotInRail(10, 3, ORDER_TYPES.BUY, { id: 'slot-11' }), false, 'parseable out-of-rail still excluded');
+        assert.strictEqual(isSlotInRail(null, 3, ORDER_TYPES.SELL, { id: 'slot-11' }), true, 'boundary-null still admitted');
     }
 
     // 8. loadGrid log vs enforce mode for price mismatch — use actual genesis rail price

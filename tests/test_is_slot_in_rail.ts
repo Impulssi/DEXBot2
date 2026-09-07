@@ -6,8 +6,9 @@
  *
  * Covers the classification rules and the defensive fallbacks that make the
  * helper safe as a shared default: unknown boundary never excludes (fail-open for
- * boundary-unknown), while unparseable id always excludes (fail-closed per
- * plan §2.1). Degenerate gapSlots must not silently drop the whole SELL rail.
+ * boundary-unknown), and unparseable id never excludes either (fail-open for
+ * legacy ids — geometry cannot identify the gap, so windowing falls back to
+ * the stored slot type). Degenerate gapSlots must not silently drop the whole SELL rail.
  */
 
 const assert = require('assert');
@@ -57,14 +58,16 @@ function testIsSlotInRail() {
     assert.strictEqual(isSlotInRail(NaN, 3, ORDER_TYPES.BUY, { id: 'slot-0' }), true,
         'NaN boundary must not exclude');
 
-    // Unparseable / missing ids: excluded (fail-closed per plan §2.1)
-    console.log('  Unparseable ids → excluded (fail-closed)');
-    assert.strictEqual(isSlotInRail(10, 3, ORDER_TYPES.SELL, { id: 'slot-x' }), false,
-        'non-numeric slot id must be excluded');
-    assert.strictEqual(isSlotInRail(10, 3, ORDER_TYPES.SELL, {}), false,
-        'missing id must be excluded');
-    assert.strictEqual(isSlotInRail(10, 3, ORDER_TYPES.BUY, { id: 'anything' }), false,
-        'non slot-N id must be excluded');
+    // Unparseable / missing ids: admitted (fail-open for legacy grids — the
+    // parseable-geometry assertions above/below are the inverse guards:
+    // slot-11 BUY and slot-11/13 SELL stay excluded, boundary-null stays admitted).
+    console.log('  Unparseable ids → admitted (fail-open)');
+    assert.strictEqual(isSlotInRail(10, 3, ORDER_TYPES.SELL, { id: 'slot-x' }), true,
+        'non-numeric slot id must be admitted (legacy fail-open)');
+    assert.strictEqual(isSlotInRail(10, 3, ORDER_TYPES.SELL, {}), true,
+        'missing id must be admitted (legacy fail-open)');
+    assert.strictEqual(isSlotInRail(10, 3, ORDER_TYPES.BUY, { id: 'anything' }), true,
+        'non slot-N id must be admitted (legacy fail-open)');
 
     // Non BUY/SELL type (e.g. SPREAD): no rail constraint.
     console.log('  Non BUY/SELL type → no constraint');

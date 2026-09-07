@@ -1605,14 +1605,18 @@ function countGapBandSpread(manager: any, orders: Iterable<any>, resolveIndex: (
  *   the SELL start cannot be derived, so the slot is not excluded.
  * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL.
  * @param {any} slot - Grid slot (or any object exposing an id like `slot-3`);
- *   slots with an unparseable id are excluded (returns false).
- * @returns {boolean} true when the slot sits inside the requested rail, false
- *   when it sits outside the rail or its geometry cannot be determined (fail-closed).
+ *   slots with an unparseable id are admitted (returns true): geometry cannot
+ *   identify the gap for legacy ids, so windowing falls back to the stored
+ *   slot type exactly as pre-1.4.25 did (fail-open; consumers still reject
+ *   SPREAD-typed/empty slots via their type filters).
+ * @returns {boolean} true when the slot sits inside the requested rail or its
+ *   geometry cannot be determined (fail-open), false only when a parseable id
+ *   sits provably outside the rail.
  */
 function isSlotInRail(boundaryIdx: any, gapSlots: any, orderType: any, slot: any): boolean {
     if (boundaryIdx == null || !Number.isFinite(Number(boundaryIdx))) return true;
     const parsed = parseSlotIndex(slot?.id);
-    if (parsed === null) return false;
+    if (parsed === null) return true;
     const idx = parsed;
     if (orderType === ORDER_TYPES.BUY) return idx <= Number(boundaryIdx);
     if (orderType !== ORDER_TYPES.SELL) return true;

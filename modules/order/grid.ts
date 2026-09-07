@@ -813,7 +813,7 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null,
                             reassignCount++;
                             return { ...slot, state: ORDER_STATES.VIRTUAL, size: 0, orderId: '', type: ORDER_TYPES.SPREAD };
                         }
-                        manager.logger?.log?.(`[GENESIS] unparseable slot id ${slot?.id} at index ${i} → log-only, using index fallback ${i} for type`, 'warn');
+                        manager.logger?.log?.(`[GENESIS] unparseable slot id ${slot?.id} at index ${i} → log-only, using index fallback ${i} for type; rail filters admit it fail-open (legacy stored type applies)`, 'warn');
                         // fall through with idx = i so legacy sized VIRTUAL rail slots (e.g. 'planned') keep their size/type
                     }
                     const idx = parsedIdx !== null ? parsedIdx : i;

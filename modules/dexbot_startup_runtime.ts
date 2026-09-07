@@ -6,7 +6,7 @@ const require = createRequire(import.meta.url);
 import { path } from './path_api.js';
 import * as chainOrders from './chain_orders.js';
 import { readOpenOrdersGuarded } from './chain_orders.js';
-import { ORDER_STATES } from './constants.js';
+import { ORDER_STATES, TIMING } from './constants.js';
 import { PATHS } from './paths.js';
 import { getStorage } from './storage/index.js';
 import { normalizeBotEntry } from './bot_settings.js';
@@ -24,6 +24,7 @@ function buildFillKey(...args: any) { return require('./order/utils/order').buil
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
 function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
 function restoreGapEvacStreaks(...args: any) { return require('./order/utils/system').restoreGapEvacStreaks(...args); }
+function startupSleep(...args: any) { return require('./order/utils/system').sleep(...args); }
 const storage = getStorage();
 function attemptResumePersistedGridByPriceMatch(...args: any) { return require('./order/grid_reconcile').attemptResumePersistedGridByPriceMatch(...args); }
 function decideStartupGridAction(...args: any) { return require('./order/grid_reconcile').decideStartupGridAction(...args); }
@@ -436,8 +437,43 @@ async function finishStartupSequence(bot: any, startupState: any) {
         // Truncated reads defer all chain-touching steps below; the decision
         // function must never see the partial snapshot (it could wrongly
         // resume/regenerate on ambiguous data), so it gets the empty list.
-        const chainReadTruncated = guardedChainOrders === null;
-        const chainOpenOrders = guardedChainOrders === null ? [] : guardedChainOrders;
+        let chainReadTruncated = guardedChainOrders === null;
+        let chainOpenOrders = guardedChainOrders === null ? [] : guardedChainOrders;
+        // STARTUP EMPTY-READ CONFIRM: with a persisted grid, a 0-order
+        // snapshot is ambiguous — the node may be lagging behind the
+        // pre-restart state — and accepting it would regenerate/virtualize
+        // live orders (phantom wipe). Confirm with one re-read after
+        // SYNC_EMPTY_READ_CONFIRM_DELAY_MS before accepting the empty read.
+        // First launch (no persisted grid) legitimately has an empty account,
+        // so no confirm is needed there — and deferEmpty must NOT be used
+        // here, since it would treat that legitimate empty as ambiguous.
+        // A contradicted re-read (non-empty) replaces the snapshot; a
+        // truncated re-read defers like any truncated read.
+        if (!bot.config.dryRun && !chainReadTruncated && Array.isArray(chainOpenOrders) && chainOpenOrders.length === 0
+            && Array.isArray(persistedGrid) && persistedGrid.length > 0) {
+            try {
+                await startupSleep(Math.max(0, Number((TIMING as any).SYNC_EMPTY_READ_CONFIRM_DELAY_MS) || 0));
+                const confirmRead = await botGuardedOpenOrdersRead(bot, {
+                    log: (message: string, level: any) => bot._log(message, level),
+                    label: 'STARTUP-CONFIRM',
+                    detail: 'persisted-grid empty confirm re-read',
+                });
+                if (confirmRead === null) {
+                    bot._log('[STARTUP] Empty-read confirm re-read TRUNCATED — deferring chain-touching steps to the sync loop', 'warn');
+                    chainReadTruncated = true;
+                    chainOpenOrders = [];
+                } else if (Array.isArray(confirmRead) && confirmRead.length > 0) {
+                    bot._log(`[STARTUP] Empty open-order read contradicted by confirm re-read (${confirmRead.length} order(s) present) — using fresh non-empty snapshot`, 'warn');
+                    chainOpenOrders = confirmRead;
+                } else {
+                    bot._log('[STARTUP] Empty open-order read confirmed by re-read — accepting empty account', 'info');
+                }
+            } catch (confirmErr: any) {
+                bot._log(`[STARTUP] Empty-read confirm re-read failed (${getErrorMessage(confirmErr)}) — deferring chain-touching steps to the sync loop`, 'warn');
+                chainReadTruncated = true;
+                chainOpenOrders = [];
+            }
+        }
         // Seed LAST-FILL-GUARD from the live book so it survives restarts
         // (closes the in-memory-only window until the first fill arrives).
         if (!chainReadTruncated && Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {

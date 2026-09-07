@@ -467,16 +467,18 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
 
     // CROSSING-PLACEMENT GUARD: re-pricing the chain order to its slot's
     // committed price must not cross an opposite-side live order (only
-    // reachable when the grid geometry itself is broken). Drop the entry —
+    // reachable when the grid geometry itself is broken). Candidates are the
+    // shared master + pending-broadcast + orphan set so a re-price cannot
+    // cross a pending CREATE from an earlier uncertain batch. Drop the entry —
     // the next sync's price-mismatch detection re-queues the correction
     // once the crossed order is resolved (same lifecycle as a 'skipped'
     // update below).
     const crossed = MathUtils.findCrossedOrder(
-        manager.orders.values(),
+        buildCrossingCheckCandidates(manager),
         expectedPrice,
         type,
         manager.assets,
-        (o: any) => o && o.orderId && o.orderId !== chainOrderId
+        (o: any) => isCrossingCheckCandidate(o, chainOrderId)
     );
     if (crossed) {
         manager.logger?.log?.(
@@ -1029,10 +1031,14 @@ function parseSlotIndex(id: any): number | null {
     return parseSlotIndexShared(id);
 }
 /**
- * Whether a parsed chain order matches a grid slot within tolerance:
- * type-compatible (slot may be SPREAD), price within tolerance, size within
- * 1% quantum tolerance (floor 2 units). Shared by the startup adoption paths
- * that match an uncertain-landed chain order to the slot it was created for.
+ * Whether a parsed chain order matches a grid slot exactly:
+ * type-compatible (slot may be SPREAD), price strictly equal via integer
+ * round-trip (single epsilon), size within 1% quantum tolerance (floor 2
+ * units). STRICT genesis-slot-mapping matcher — use only where the slot is
+ * derived from the price (nearest-slot authority). Uncertain-landed
+ * adoption (a broadcast whose on-chain price may have drifted by dust)
+ * must use chainOrderMatchesSlotWithTolerance instead, or the drifted
+ * order is never adopted and gets re-broadcast as a duplicate.
  * @param {Object} parsed - parseChainOrder output ({type, price, size, ...})
  * @param {Object} slot - Grid slot order object
  * @param {Object} assets - Manager assets ({assetA, assetB} with precision)
@@ -1050,6 +1056,117 @@ function chainOrderMatchesSlot(parsed: any, slot: any, assets: any): boolean {
     const sizeTolerance = Math.max(2, Math.floor(floatToBlockchainInt(slot.size, precision) * 0.01));
     if (Math.abs(floatToBlockchainInt(parsed.size, precision) - floatToBlockchainInt(slot.size, precision)) > sizeTolerance) return false;
     return true;
+}
+/**
+ * Whether a parsed chain order matches a grid slot within price tolerance:
+ * type-compatible (slot may be SPREAD), price within calculatePriceTolerance
+ * (clamped to ~2 price quanta so dust-inflated tolerances cannot adopt a
+ * wrong order), size within the same 1% quantum tolerance as the strict
+ * matcher. For the UNCERTAIN-ADOPT paths only (a just-broadcast create whose
+ * on-chain price may have drifted by rounding dust): the strict
+ * chainOrderMatchesSlot would miss the drifted order, the slot would stay
+ * VIRTUAL, and the next cycle would re-broadcast it as a duplicate.
+ * Genesis slot mapping keeps the strict matcher (nearest-slot authority).
+ * @param {Object} parsed - parseChainOrder output ({type, price, size, ...})
+ * @param {Object} slot - Grid slot order object
+ * @param {Object} assets - Manager assets ({assetA, assetB} with precision)
+ * @returns {boolean}
+ */
+function chainOrderMatchesSlotWithTolerance(parsed: any, slot: any, assets: any): boolean {
+    if (!parsed || !slot || !assets) return false;
+    if (parsed.type !== slot.type && slot.type !== ORDER_TYPES.SPREAD) return false;
+    const precision = parsed.type === ORDER_TYPES.SELL ? assets.assetA.precision : assets.assetB.precision;
+    let tolerance: number | null = null;
+    try {
+        tolerance = MathUtils.calculatePriceTolerance(
+            Math.min(parsed.price, slot.price),
+            Math.max(parsed.size, slot.size),
+            parsed.type,
+            assets
+        );
+    } catch {
+        tolerance = null;
+    }
+    // Clamp to ~2 price quanta (relative): dust-sized orders inflate the
+    // tolerance past the grid increment, which would adopt a wrong order.
+    // A null tolerance (invalid inputs) falls back to the clamp itself.
+    const quantumCap = 2 * MathUtils.quantumForPrecision(precision) * Math.max(1, Math.max(parsed.price, slot.price));
+    if (tolerance == null || !Number.isFinite(tolerance)) tolerance = quantumCap;
+    else tolerance = Math.min(tolerance, quantumCap);
+    if (Math.abs(parsed.price - slot.price) > tolerance) return false;
+    const sizeTolerance = Math.max(2, Math.floor(floatToBlockchainInt(slot.size, precision) * 0.01));
+    if (Math.abs(floatToBlockchainInt(parsed.size, precision) - floatToBlockchainInt(slot.size, precision)) > sizeTolerance) return false;
+    return true;
+}
+/**
+ * Identity of a crossing-check candidate. Master orders carry orderId,
+ * unmatched chain orders carry chainOrderId, pending-broadcast wrappers
+ * carry slotId + order (their inner order has no chain id yet — it may not
+ * even be on chain). All three classes must be visible to crossing guards:
+ * an UPDATE-only rotation batch can otherwise re-price across a pending
+ * CREATE from an earlier uncertain batch and self-trade (BitShares has no
+ * self-trade prevention).
+ * @param {Object} o - Candidate order or pending-broadcast wrapper entry
+ * @returns {string|null} Chain/slot identity, or null when not placeable
+ */
+function crossingCandidateChainId(o: any): string | null {
+    if (!o) return null;
+    if (o.orderId) return o.orderId;
+    if (o.chainOrderId) return o.chainOrderId;
+    if (o.slotId && o.order) return o.slotId;
+    return null;
+}
+/**
+ * Shared predicate for every crossing-placement guard (COW create/rotation/
+ * fallback, startup reconcile placement, price-correction re-queue). Accepts
+ * master orders (orderId), unmatched chain orders (chainOrderId), AND
+ * pending-broadcast wrappers (slotId + order) — pending entries can never be
+ * in cancelOpIndexByOrderId (keyed by chain ids; wrapper orderIds are slot
+ * ids in a disjoint namespace), so the exclusion check is harmless for them.
+ * VIRTUAL slots (no orderId) are rejected: they have no chain presence and
+ * must never block placements.
+ * @param {Object} o - Candidate order or pending-broadcast wrapper entry
+ * @param {string|null} [excludeChainOrderId=null] - Chain id to exempt (the order being relocated itself)
+ * @param {Map|null} [cancelOpIndexByOrderId=null] - orderId -> op index of its already-queued cancel
+ * @returns {boolean} True when the candidate participates in crossing checks
+ */
+function isCrossingCheckCandidate(o: any, excludeChainOrderId: any = null, cancelOpIndexByOrderId: any = null): boolean {
+    if (!o) return false;
+    const oid = crossingCandidateChainId(o);
+    if (!oid) return false;
+    if (excludeChainOrderId && oid === excludeChainOrderId) return false;
+    if (cancelOpIndexByOrderId instanceof Map && cancelOpIndexByOrderId.has(oid)) return false;
+    const price = o.price ?? o.order?.price;
+    if (price == null || !Number.isFinite(Number(price))) return false;
+    return true;
+}
+/**
+ * Shared candidate set for crossing-placement checks: master orders plus
+ * chain-side orders that may exist on chain but are not (yet) adopted into
+ * the master grid — pending-broadcast wrappers from earlier uncertain
+ * batches (pushed as wrappers so the predicate can see their slotId; their
+ * inner order carries type/price via findCrossedOrder's item.order fallback)
+ * and unmatched chain orders (orphans). Without these, an UPDATE-only
+ * rotation batch can re-price across an un-adopted chain order that
+ * master-grid-only checks cannot see (the pending/unmatched batch guards
+ * fire only for CREATE batches).
+ * @param {Object} manager - OrderManager instance (orders Map, _pendingBroadcasts, _lastUnmatchedChainOrders)
+ * @returns {any[]} Candidate orders/wrappers for findCrossedOrder
+ */
+function buildCrossingCheckCandidates(manager: any): any[] {
+    if (!manager) return [];
+    const candidates: any[] = manager.orders instanceof Map ? [...manager.orders.values()] : [];
+    if (manager._pendingBroadcasts instanceof Map) {
+        for (const entry of manager._pendingBroadcasts.values()) {
+            if (entry && entry.slotId && entry.order) candidates.push(entry);
+        }
+    }
+    if (Array.isArray(manager._lastUnmatchedChainOrders)) {
+        for (const o of manager._lastUnmatchedChainOrders) {
+            if (o && o.type != null && o.price != null) candidates.push(o);
+        }
+    }
+    return candidates;
 }
 
 // ================================================================================
@@ -1850,5 +1967,5 @@ function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: 
 }
 
 // ================================================================================
-            export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isShiftEligibleFill, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo }
+            export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isShiftEligibleFill, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo }
 

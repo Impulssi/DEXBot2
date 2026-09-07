@@ -482,6 +482,50 @@ async function runTests() {
         assert.strictEqual(result.unmatchedChainOrders.length, 0, 'Adjacent orphan should not be pushed to unmatchedChainOrders');
     }
 
+    console.log(' - Testing Pre-Boundary Sync Defers Nearest-Slot Adoption (L2)...');
+    {
+        // Genesis-frozen pass 2 with an UNKNOWN boundary (pre-commit): the
+        // gap is unclassifiable, so nearest-slot adoption must be deferred —
+        // the orphan is recorded unmatched (visible to crossing guards and
+        // the validate orphan layer), the slot stays VIRTUAL, and nothing is
+        // queued for cancellation. Once the boundary commits, the same sync
+        // adopts the in-rail orphan normally.
+        const { buildGenesisFromPriceLevels } = require('../modules/order/utils/math');
+        const manager = await createManager();
+        manager._genesis = buildGenesisFromPriceLevels(100, 1, 0, [100, 101]);
+        manager.boundaryIdx = null; // pre-boundary: gap geometry unknown
+        await manager._updateOrder({
+            id: 'slot-1',
+            state: ORDER_STATES.VIRTUAL,
+            type: ORDER_TYPES.SELL,
+            price: 101,
+            size: 0
+        });
+
+        const chainOrders = [makeSellChainOrder('c-l2-orphan', 10, 101)];
+
+        // Sync 1 — boundary unknown: defer, touch nothing.
+        const result1 = await manager.sync.syncFromOpenOrders(chainOrders);
+        const deferred = result1.unmatchedChainOrders.find(u => u.chainOrderId === 'c-l2-orphan');
+        assert(deferred, 'Pre-boundary orphan must be recorded in unmatchedChainOrders');
+        assert.strictEqual(deferred.reason, 'boundary-unknown-deferred', 'Defer reason must be explicit');
+        assert.strictEqual(deferred.candidateSlotId, 'slot-1', 'Defer entry must carry candidateSlotId (validate layer-3 visibility)');
+        assert.strictEqual(deferred.type, ORDER_TYPES.SELL, 'Defer entry must carry type (crossing-guard visibility)');
+        assert.strictEqual(deferred.price, 101, 'Defer entry must carry price (crossing-guard visibility)');
+        const slotAfterDefer = manager.orders.get('slot-1');
+        assert.strictEqual(slotAfterDefer.state, ORDER_STATES.VIRTUAL, 'Slot must stay VIRTUAL on pre-boundary defer');
+        assert(!slotAfterDefer.orderId, 'Slot must not be adopted on pre-boundary defer');
+        assert.strictEqual(result1.ordersNeedingCorrection.length, 0, 'Pre-boundary defer must not queue any correction (no cancelOnly)');
+
+        // Sync 2 — boundary committed: the same orphan adopts normally.
+        manager.boundaryIdx = 0; // slot-1 is SELL-side of boundary 0 → in-rail
+        const result2 = await manager.sync.syncFromOpenOrders(chainOrders);
+        const slotAfterCommit = manager.orders.get('slot-1');
+        assert.strictEqual(slotAfterCommit.orderId, 'c-l2-orphan', 'Post-boundary sync must adopt the in-rail orphan into its nearest slot');
+        assert(slotAfterCommit.state === ORDER_STATES.ACTIVE || slotAfterCommit.state === ORDER_STATES.PARTIAL, 'Adopted slot must be tracked (ACTIVE/PARTIAL)');
+        assert(!result2.unmatchedChainOrders.some(u => u.chainOrderId === 'c-l2-orphan'), 'Adopted orphan must not remain unmatched');
+    }
+
     console.log('✓ Sync logic tests passed!');
 }
 
