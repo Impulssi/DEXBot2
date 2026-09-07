@@ -236,6 +236,46 @@ async function runTests() {
         assert.ok(resIdentical.violations.some(v => v.reason === 'same_batch_price_duplicate'), 'exact duplicates still flagged with assets');
     }
 
+    // ── 12. Broadcast-price keying (layer-5 guards the batch) ────
+    console.log(' - 11. Layer-5 keys on the broadcast price, not the live slot price...');
+    {
+        // Live slots sit at divergent prices (100 vs 200); both CREATEs
+        // broadcast 150. Keying on the live price would see {100, 200} (no
+        // collision); keying on the broadcast price sees {150, 150}.
+        const orders = mapToOrders([
+            makeOrder('slot-a', ORDER_TYPES.SELL, 100, 30, ORDER_STATES.VIRTUAL, null),
+            makeOrder('slot-b', ORDER_TYPES.SELL, 200, 30, ORDER_STATES.VIRTUAL, null)
+        ]);
+        // makeOrder defaults orderId to `${id}-oid` when falsy — VIRTUAL
+        // slots are never on-chain, so clear them explicitly.
+        (orders.get('slot-a') as any).orderId = null;
+        (orders.get('slot-b') as any).orderId = null;
+        const actions = [
+            makeCreateAction('slot-a', 150, ORDER_TYPES.SELL),
+            makeCreateAction('slot-b', 150, ORDER_TYPES.SELL)
+        ];
+        const result = validateCreateTargetSlots(actions, orders, dummyAssets);
+        assert.strictEqual(result.isValid, false, 'two CREATEs broadcasting the same price must collide');
+        const dup = result.violations.find(v => v.reason === 'same_batch_price_duplicate');
+        assert.ok(dup, 'violation reason is same_batch_price_duplicate');
+        assert.strictEqual(dup.targetId, 'slot-b', 'first target wins, later duplicate flagged');
+    }
+
+    // ── 13. NaN broadcast price fails closed ────
+    console.log(' - 12. NaN broadcast price fails closed...');
+    {
+        const orders = mapToOrders([
+            makeOrder('slot-n', ORDER_TYPES.SELL, 150, 30, ORDER_STATES.VIRTUAL, null)
+        ]);
+        (orders.get('slot-n') as any).orderId = null;
+        const actions = [makeCreateAction('slot-n', NaN, ORDER_TYPES.SELL)];
+        const result = validateCreateTargetSlots(actions, orders, dummyAssets);
+        assert.strictEqual(result.isValid, false, 'unpriceable CREATE must be invalid');
+        const bad = result.violations.find(v => v.reason === 'create_price_invalid');
+        assert.ok(bad, 'violation reason is create_price_invalid');
+        assert.strictEqual(bad.targetId, 'slot-n', 'violation targets the unpriceable CREATE slot');
+    }
+
     console.log('\n✓ validateCreateTargetSlots tests PASSED!');
 }
 

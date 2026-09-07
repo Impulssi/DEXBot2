@@ -2639,6 +2639,12 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 case 'chain_orphan_collision':
                     reason = `unmatched on-chain order ${violation.currentOrderId} at same price`;
                     break;
+                case 'same_batch_price_duplicate':
+                    reason = `another CREATE in the same batch at same broadcast price (duplicate of ${violation.duplicateOf})`;
+                    break;
+                case 'create_price_invalid':
+                    reason = `broadcast price is not a finite number`;
+                    break;
                 default:
                     reason = `existing orderId=${violation.currentOrderId}`;
             }
