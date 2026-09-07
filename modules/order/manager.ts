@@ -1803,7 +1803,7 @@ class OrderManager {
             // _lastFilledType null by design, and that hole is otherwise only
             // inferable by the absence of any log line.
             if (this._lastFilledPrice == null || this._lastFilledType == null) {
-                try { this.logger?.log?.(`[LAST-FILL-GUARD] Book seed left guard DISABLED (cold): lastBuy=${maxBuy} lastSell=${minSell} lastPrice=${this._lastFilledPrice} lastType=${this._lastFilledType}; guard arms on the first fill`, 'warn'); } catch {}
+                try { this.logger?.log?.(`[LAST-FILL-GUARD] Book seed left guard DISABLED (cold): lastBuy=${maxBuy} lastSell=${minSell} lastPrice=${this._lastFilledPrice} lastType=${this._lastFilledType}; guard arms on the first fill`, 'info'); } catch {}
             }
         } catch {}
     }
