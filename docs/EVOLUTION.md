@@ -110,12 +110,12 @@ Compact, era-level view; per-release commit detail lives in [CHANGELOG.md](../CH
 | v1.4.23 → v1.4.24 | 3 | Native fill gap recovery with eager coalesced retry, LP collateral offer-first pricing |
 | v1.4.24 → v1.4.25 | 26 | Genesis-frozen price-slots, self-trade & fill-guard hardening, orphan & gap-band fixes, trigger/shutdown hardening, bot poll, grid monotonicity gate, whitelist scoped overwrite, Range legend |
 | v1.4.25 → v1.5.0 | 13 | Credit overview CLI + whitelist-scoped CR on shared pricing math, one-step TradingView chart, daemon-safe reload, offline account-ID cache, case-insensitive bot identity, stale-pivot guard fix, partial-surplus rotation clamp, adapter ownership centralization, op-77 bot discovery split |
-| v1.5.0 → v1.5.1 | 1 | Gap-evacuation guard allowance (pure helper, frozen B-stamp, UPDATE-only), rail-typed holes across load/fill/rotation/divergence paths, geometry-only detection + streak counter, orphan-adoption geometry diagnostics, cold-guard stub hardening |
+| v1.5.0 → v1.5.1 | 11 | Gap-evacuation guard allowance + rail-typed holes, persisted streaks with cancel-only teeth, vacated-rail refill, adoption/accounting/duplicate-guard hardening |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: September 05, 2026
-**Total Commits**: 2,146
-**Date Range**: December 2, 2025 – September 05, 2026
+**Last Updated**: September 06, 2026
+**Total Commits**: 2,153
+**Date Range**: December 2, 2025 – September 06, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

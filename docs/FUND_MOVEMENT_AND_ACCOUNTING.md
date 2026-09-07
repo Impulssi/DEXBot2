@@ -787,6 +787,8 @@ To prevent "Time-of-Check to Time-of-Use" errors:
 
 **Stale `accountTotals` does not abort COW commit.** Transient staleness (e.g., the periodic balance fetch overlaps with a COW commit) logs a `WARN` and schedules recovery instead of throwing `ACCOUNTING_COMMITMENT_FAILED`. Totals are also refreshed after bootstrap to prevent a spurious full recovery on the first maintenance cycle.
 
+**Recovery verifies the fetch before trusting balances.** State recovery checks that the chain read actually refreshed (`_lastFetchedAt` advanced) and defers the attempt otherwise, so drift is never re-measured against stale/optimistic numbers. When drift persists after sync, `_recalibrateTrackedFundsFromChain` rebuilds the tracked commitment from the fresh chain read (matched slots forced to chain size, fully-consumed and stale-absent slots virtualized under the sync orphan pass's recent-commit lag guards; free balances never derived from totals), then re-runs `recalculateFunds` and re-checks drift.
+
 **Fee-deduction failure logs at `error`.** When `getAssetFees` throws during fill processing (e.g., network blip), `_deductFeesFromProceeds` skips the deduction and logs at `error` with explicit "fund tracking will over-credit" language so operators can detect the drift source in production logs.
 
 **TOCTOU protection in `processFillAccounting`.** `_buildBtsDeferredRefundAdjustment` reads `btsFeeState` from `mgr.orders` while the order lock is held — the lock is acquired before accounting runs, and the POST-RESET and BOOTSTRAP tracked-fill accounting paths follow the same locking pattern.

@@ -74,7 +74,7 @@ const __dirname = _esmDirname(__filename);
  *   dexbot reload                 - Reload the monolithic runtime (leaves credential daemon untouched)
  *   dexbot restart                - Restart the monolithic runtime (re-unlocks credential daemon)
  *   dexbot delete                 - Stop/delete all runtime processes
- *   dexbot export <bot>           - Export trading history to CSV/JSON for QTradeX
+  *   dexbot export <bot>           - Export trading history to CSV/JSON for local analysis/
  *   dexbot order                  - Analyze persisted order grids in profiles/orders/
  *   dexbot order [<bot>]          - Analyze only the specified bot's order grid
  *   dexbot order --export         - Export order analysis as standalone HTML report
@@ -194,7 +194,7 @@ const CLI_EXAMPLES = [
     { title: 'Edit bot definitions', command: 'dexbot bot', notes: 'Launches the interactive modules/account_bots.ts helper for the JSON config.' },
     { title: 'Start bots with PM2', command: 'dexbot pm2', notes: 'Generates ecosystem config, authenticates, and starts PM2.' },
     { title: 'Update DEXBot2', command: 'dexbot update', notes: 'Fetches latest code, updates dependencies, and restarts PM2.' },
-    { title: 'Export bot trades for QTradeX', command: 'dexbot export <bot>', notes: 'Exports trading history and settings to CSV/JSON for backtesting.' },
+    { title: 'Export bot trades for local analysis', command: 'dexbot export <bot>', notes: 'Exports trading history and settings to CSV/JSON (see analysis/).' },
     { title: 'Analyze persisted order grids', command: 'dexbot order', notes: 'Runs the order analyzer across the orders directory (<profiles>/orders) and prints spread/increment/funds/distribution metrics. Add a bot key to render only that bot, and --export for an HTML report.' },
     { title: 'Show live credit/MPA positions', command: 'dexbot credit', notes: 'Queries get_margin_positions + get_credit_deals_by_borrower per preferredAccount and prints debt/collateral sums plus one Curr. CR line per whitelisted pair (active CR, else borrow-now CR vs funds avail. on the offer) and one Avar. CR line per bot. CR covers only pairs whitelisted in bots.json and listed on the current credit offer. Add a bot key to render only that bot.' },
     { title: 'TradingView chart for a bot, pool, or pair', command: 'dexbot tv <bot|pool-id|AssetA/AssetB> --month 3', notes: 'Fetches 1h candles for N months (default 3, pool-first with orderbook fallback for pairs) and writes an auto-named HTML chart.' },
@@ -243,7 +243,7 @@ function printCLIUsage() {
     console.log('  disable <bot>     Mark the bot inactive in config.');
     console.log('  enable all        Mark all bots active in config.');
     console.log('  enable <bot>      Mark the bot active in config.');
-    console.log('  export <bot>      Export bot trades and settings for QTradeX backtesting.');
+    console.log('  export <bot>      Export bot trades and settings to CSV/JSON for local analysis/.');
     console.log('  key               Launch the chain key helper (modules/chain_keys.ts).');
     console.log('  bot               Launch the interactive bot configurator (modules/account_bots.ts).');
     console.log('  pm2               Start all active bots with PM2 (authenticate + generate config + start).');
@@ -847,7 +847,7 @@ async function resetBotByName(botName: string | null | undefined) {
 }
 
 /**
- * Export bot trading history and settings for QTradeX
+ * Export bot trading history and settings to CSV/JSON for local analysis/
  * @param {string|undefined} botName - Bot name; may be undefined from CLI when no target provided to export
  */
 async function exportBotTrades(botName: string | undefined) {
@@ -888,7 +888,7 @@ async function exportBotTrades(botName: string | undefined) {
             console.log(`Settings file:    ${result.settings_path}`);
             console.log(`Output directory: ${result.output_dir}`);
             console.log(`Timestamp:        ${result.timestamp}`);
-            console.log(`\nYou can now use these files with QTradeX for backtesting.\n`);
+            console.log(`\nYou can now inspect these files locally (see analysis/ for trade tooling).\n`);
         } else {
             console.error(startupError(`\n✗ Export failed: ${result.error || 'Unknown error'}\n`));
             process.exit(1);

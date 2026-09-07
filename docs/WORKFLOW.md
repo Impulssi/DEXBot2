@@ -248,7 +248,7 @@ the canonical name is preferred in scripts and docs.
 | `dexbot bot` | `bot` | Launch the interactive bot configurator |
 | `dexbot pm2` | — | Start all active bots via PM2 |
 | `dexbot update` | — | Update DEXBot2 from the repository and restart active bots |
-| `dexbot export <bot>` | — | Export bot trades/settings for QTradeX backtesting |
+| `dexbot export <bot>` | — | Export bot trades/settings to CSV/JSON for local analysis/ |
 | `dexbot order` | `orders` | Analyze persisted order grids (spread, increment, funds) |
 | `dexbot order [<bot>]` | — | Analyze only the specified bot's order grid |
 | `dexbot credit` | — | Live summed MPA + borrowed-credit positions per asset per bot (`[<bot>]`) |

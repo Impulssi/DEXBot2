@@ -243,6 +243,9 @@ Prefix tags used in log messages to help operators identify event types. To find
 | `[SPREAD-CORRECTION]` | `order/grid.ts` | Partial order spread correction |
 | `[STRATEGY]` | `order/strategy.ts` | Fee event cache and strategy decisions |
 | `[RECONCILE]` | `order/utils/validate.ts` | Grid reconciliation ([GRID_RECONCILE.md](GRID_RECONCILE.md)) |
+| `[GAP-EVAC]` | `order/utils/validate.ts`, `order/manager.ts`, `dexbot_startup_runtime.ts`, `dexbot_state_recovery.ts` | Stuck in-band (gap-band) order streak warnings, cancel-only evacuation teeth, persisted-streak restore counts |
+| `[GRID-TYPE-CORRECT]` | `order/grid.ts` | One-time backfill retype of legacy empty slots to rail-typed holes on load |
+| `[LAST-FILL-GUARD]` | `dexbot_cow_runtime.ts` | Last-fill-guard blocks plus gap-evacuation bypass allows/stale-stamp downgrades |
 | `[TRANSPORT]` | `bitshares-native/transport.ts` | WebSocket keep-alive and reconnect |
 
 ## 1.4.8 Markers

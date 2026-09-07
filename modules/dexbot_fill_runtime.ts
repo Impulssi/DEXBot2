@@ -770,9 +770,15 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
 
                         const paysAmount = fillOp.pays ? fillOp.pays.amount : '?';
                         const receivesAmount = fillOp.receives ? fillOp.receives.amount : '?';
+                        // Asset IDs are logged alongside the raw satoshi amounts so
+                        // offline consumers (e.g. `dexbot export`, which resolves
+                        // precisions from profiles/orders/<bot>.json) can derive
+                        // side/price without chain access. See issue #22.
+                        const paysAssetId = fillOp.pays ? fillOp.pays.asset_id : '?';
+                        const receivesAssetId = fillOp.receives ? fillOp.receives.asset_id : '?';
                         bot._log(`\n===== FILL DETECTED =====`);
                         bot._log(`Order ID: ${fillOp.order_id}`);
-                        bot._log(`Pays: ${paysAmount}, Receives: ${receivesAmount}`);
+                        bot._log(`Pays: ${paysAmount} (${paysAssetId}), Receives: ${receivesAmount} (${receivesAssetId})`);
                         bot._log(`Block: ${fill.block_num} (History ID: ${fill.id || 'N/A'})`);
                         bot._log(`=========================\n`);
                     }
