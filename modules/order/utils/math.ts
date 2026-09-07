@@ -1650,6 +1650,41 @@ function isSlotIndexInGapBand(idx: any, boundaryIdx: any, gapSlots: any): boolea
 }
 
 /**
+ * Pure stamped-evacuation size re-proof: a B-stamped (plan-build-proven)
+ * evacuation bypasses the live probe, but the plan was built against the
+ * booked size at plan time. An unprocessed fill landing between plan-build
+ * and execution shrinks the booked remaining below the planned size — the
+ * PARTIAL-only growth guard at the execution site misses it when the slot
+ * is not (yet) PARTIAL. Re-prove the size against the LIVE booked
+ * remaining (masterOrder.size) before honoring the stamp: fail closed
+ * (false → live probe) when the booked remaining is non-finite or <= 0.
+ *
+ * Int-compare via floatToBlockchainInt when a finite precision is supplied
+ * (bit-exact on-chain semantics, consistent with
+ * isEvacuationRotationAllowed), else a strict numeric <= (never a float
+ * epsilon).
+ *
+ * @param {number} newSize - Rotation destination size (planned)
+ * @param {number} bookedRemaining - Live booked remaining (master grid)
+ * @param {number} [precision] - Asset precision for bit-exact int compare
+ * @returns {boolean} True when the planned size is still covered by the booking
+ */
+function isEvacuationSizeStillValid(newSize: any, bookedRemaining: any, precision: any = null): boolean {
+    const nS = Number(newSize);
+    const bR = Number(bookedRemaining);
+    if (!Number.isFinite(nS) || nS <= 0) return false;
+    if (!Number.isFinite(bR) || bR <= 0) return false;
+    if (precision != null && Number.isFinite(Number(precision))) {
+        try {
+            return floatToBlockchainInt(nS, Number(precision)) <= floatToBlockchainInt(bR, Number(precision));
+        } catch {
+            return nS <= bR;
+        }
+    }
+    return nS <= bR;
+}
+
+/**
  * Pure gap-evacuation rotation allowance: decides whether a slot-to-slot
  * rotation (UPDATE with newGridId) reduces the violation surface enough to
  * bypass the LAST-FILL guard. Unit-testable in isolation — the guard block
@@ -1810,7 +1845,7 @@ function buildGenesisFromPriceLevels(startPrice: number, incrementPercent: numbe
     };
 }
 
-export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, isSlotIndexInGapBand, isEvacuationRotationAllowed, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals, priceLevelsForGenesis, priceForSlot, slotIndexForPrice, slotIdForPrice, assertSlotPriceInvariant, priceSlotEqual, buildGenesisFromPriceLevels, hashPriceLevels }
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, isSlotIndexInGapBand, isEvacuationRotationAllowed, isEvacuationSizeStillValid, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals, priceLevelsForGenesis, priceForSlot, slotIndexForPrice, slotIdForPrice, assertSlotPriceInvariant, priceSlotEqual, buildGenesisFromPriceLevels, hashPriceLevels }
 
 /**
  * Round a value to a given factor.

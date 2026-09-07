@@ -28,7 +28,7 @@ const {
 import * as validate from './order/utils/validate.js';
 const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions, stampGapEvacuationRotation } = validate as any;
 import * as math from './order/utils/math.js';
-const { validateOrderSize, findCrossedOrder, priceSlotEqual, isEvacuationRotationAllowed, getSellStartIdx, getPrecisionByOrderType, isSlotIndexInGapBand } = math as any;
+const { validateOrderSize, findCrossedOrder, priceSlotEqual, isEvacuationRotationAllowed, isEvacuationSizeStillValid, getSellStartIdx, getPrecisionByOrderType, isSlotIndexInGapBand } = math as any;
 
 /**
  * Re-verify a B-stamped gap-evacuation rotation against the LIVE committed
@@ -3236,6 +3236,30 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                         bot.manager.logger.log(
                                             `[LAST-FILL-GUARD] Stamped evacuation for ${action.id} -> ${action.newGridId} is stale under live ` +
                                             `boundary ${(bot.manager as any)?.boundaryIdx}/gap ${(bot.manager as any)?._gapSlots} — re-proving live`,
+                                            'warn'
+                                        );
+                                    }
+                                }
+                                if (stampUsable) {
+                                    // Stamped-size re-proof: the stamp proved the
+                                    // plan-time size, but an unprocessed fill can
+                                    // land between plan-build and execution and
+                                    // shrink the booked remaining below the
+                                    // planned size (the PARTIAL-only growth guard
+                                    // above misses it when the slot is not yet
+                                    // PARTIAL). Re-prove against the LIVE master
+                                    // size; invalidating the stamp routes into
+                                    // the unstamped probe below, whose
+                                    // isEvacuationRotationAllowed also rejects
+                                    // growth and then falls through to the
+                                    // normal last-fill guard.
+                                    let stampPrecision: any = null;
+                                    try { stampPrecision = getPrecisionByOrderType(bot.manager.assets, orderType); } catch { stampPrecision = null; }
+                                    if (!isEvacuationSizeStillValid(newSize, Number((masterOrder as any)?.size), stampPrecision)) {
+                                        stampUsable = false;
+                                        bot.manager.logger.log(
+                                            `[LAST-FILL-GUARD] Stamped evacuation for ${action.id} -> ${action.newGridId} lost its size cover: ` +
+                                            `planned ${Format.formatAmount(newSize)} exceeds booked remaining ${Format.formatAmount(Number((masterOrder as any)?.size))} — re-proving live`,
                                             'warn'
                                         );
                                     }
