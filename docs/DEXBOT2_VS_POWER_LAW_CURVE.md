@@ -12,7 +12,22 @@
 > on the **high-price tail** of the curve; the low-price tail decays at a
 > *different* rate, and the grid's own law is single-sided (sell sizes decay
 > outward, buy sizes grow inward), so reproducing it exactly needs a per-side
-> exponent (§3).
+> exponent (§3). When the market price `p` moves, the curve's anchor shifts
+> automatically (reserves rebalance along the invariant), but `ρ` stays fixed
+> unless a keeper updates it — a **dynamic `ρ`** that adapts to price
+> deviations is the bridge between the passive curve's capital efficiency and
+> the bot's adaptivity.
+>
+> **Companion doc:** the pegged-pair half of the two-curve plan is StableSwap —
+> Curve's stable-swap invariant with amplification `A`, designed for BitShares
+> in
+> [STABLESWAP-DESIGN](https://github.com/pi314x/bitshares-core/blob/stableswap/STABLESWAP-DESIGN.md).
+> It is the more general and more operationally complete *protocol* —
+> n-asset-capable invariant, imbalanced-deposit and single-sided-withdrawal
+> fees, an explicit rounding policy — and the preferred deployment for
+> stablecoin pairs (§2, §7). The CES curve below is the more flexible
+> *shape*: concentration around a moving market price, optionally dynamic.
+> This doc covers the *volatile-pair* half.
 
 ---
 
@@ -125,7 +140,7 @@ x^ρ + y^ρ = k,      ρ ∈ (0, 1]
 where `x`, `y` are the base/quote reserves and `k` scales total capital.
 
 ### Why this family
-The user's existing pool is `x·y = k` (constant product, `ρ → 0`), which spreads
+The existing BitShares pool is `x·y = k` (constant product, `ρ → 0`), which spreads
 its **sqrt-liquidity** `√(xy)` uniformly in log-price space — but as a
 quote-capital density it actually *grows* with price (`dy/du ∝ e^(u/2)`, see
 below), so capital is neither concentrated around the market nor balanced across
@@ -136,9 +151,58 @@ current price*:
 
 | `ρ` | Behaviour |
 |---|---|
-| `ρ → 0` | constant product `x·y = k` — uniform sqrt-liquidity `√(xy)` (your current pool) |
+| `ρ → 0` | constant product `x·y = k` — uniform sqrt-liquidity `√(xy)` (the existing BitShares pool) |
 | `0 < ρ < 1` | **concentrated** — liquidity peaks in the interior, decays in both tails |
 | `ρ → 1` | constant sum `x + y = k` — all capital at a single price (degenerate) |
+
+### Relation to the StableSwap protocol
+The StableSwap design
+([STABLESWAP-DESIGN](https://github.com/pi314x/bitshares-core/blob/stableswap/STABLESWAP-DESIGN.md))
+is a second curve designed for BitShares, aimed at *pegged* pairs. Its
+amplification coefficient `A` walks the same interpolation axis as `ρ`
+(`A → 0` → constant product, `A → ∞` → constant sum), but the protocol around
+it is more general and more operationally complete than the bare CES invariant
+proposed here:
+
+- the invariant is defined for `n` assets, with `D` replacing `k` as the stored quantity;
+- imbalanced deposits and single-sided withdrawals are explicitly priced and fee'd;
+- the rounding rules are fully specified and fuzz-tested;
+- `A` has a policy path (Curve ramps it over time), whereas dynamic `ρ` here is still an open question (§8).
+
+Note the direction of each claim: the StableSwap *protocol* is the more
+finished design, but the CES *curve* is the more flexible *shape*. Only CES
+can concentrate capital around a moving market price and re-tune that
+concentration (dynamic `ρ`, per-side exponents); StableSwap's `A` only
+controls how long the flat region survives imbalance, and is fixed at pool
+creation. Which one is "more flexible" depends on whether you mean the
+protocol or the shape.
+
+The two curves are complements, not competitors — they answer different questions:
+
+| | CES (this doc) | StableSwap |
+|---|---|---|
+| Answers | *where is the market price?* | *is the price even supposed to move?* |
+| Intended pair | volatile — price free to move | pegged — both assets meant to hold the same value |
+| Knob | `ρ` ∈ (0, 1] | `A` > 0 |
+| Knob interpolates | constant product (`ρ → 0`) ↔ constant sum (`ρ → 1`) | constant product (`A → 0`) ↔ constant sum (`A → ∞`) |
+| Anchor of capital | the **current market price** — the concentrated region slides along the curve as reserves shift | **balance (the peg)** — flatness is a property of the pair, not of the market |
+| Off-anchor behaviour | tails decay exponentially with price deviation — *thinner than constant product* far off-anchor | degrades *toward constant product* — flat region holds to roughly 80–90% imbalance, then falls back to the existing pool's curve |
+| Adaptation | optional dynamic `ρ` keeper tracking the market regime | none needed — the peg defines the anchor (Curve ramps `A` only for re-tuning) |
+
+For a **stablecoin pair**, prefer a StableSwap pool over a high-`ρ` CES pool —
+and note that this is the one regime where CES cannot simply *replace* the
+dedicated protocol. The reason is the off-anchor tail behaviour:
+StableSwap degrades toward constant product when the pool becomes lopsided,
+so its liquidity floor is the existing pool's curve; a high-`ρ` CES curve's
+tails decay exponentially — *thinner than constant product* at exactly the
+price deviations a depeg produces, when depth is needed most. Recovering
+that floor dynamically means a keeper lowering `ρ` on deviation (§3.2),
+which is an open design problem (§8); StableSwap gets the graceful
+degradation for free, from the invariant itself. The CES curve is the
+*complement*: concentration for volatile pairs, where StableSwap's flat
+region would be wasted capital — and for almost-stable pairs that drift and
+re-anchor, dynamic `ρ` offers an adaptability that StableSwap's
+creation-fixed `A` does not.
 
 ### Derived quantities
 **Marginal price** (slope of the invariant):
@@ -191,6 +255,37 @@ For constant product (`ρ → 0`) the same density is `dy/du = y/2 ∝ e^(u/2)` 
 So `ρ` is a single knob that sets the whole shape — but only one tail's decay
 rate can match a given DEXBot `weight`; matching both sides requires a per-side
 exponent (§3).
+
+### The variable price `p`
+
+The curve's marginal price `p = (y/x)^(1-ρ)` is **not fixed at 1** — it is a
+function of the pool's current reserve ratio. At perfect balance (`x = y`), `p = 1`
+regardless of `ρ`. But as the pool trades, `x` and `y` shift and `p` slides along
+the invariant automatically:
+
+- **Price drifts up** (`p > 1`): the pool sells base into the rising market,
+  accumulating quote. The active point moves up the curve, and the concentrated
+  region follows the new price automatically.
+- **Price drifts down** (`p < 1`): the pool buys base as the market falls,
+  accumulating base. The active point moves down, concentration follows.
+- **Price moves significantly**: if the deviation is large enough that the
+  concentrated region is no longer near the active price, liquidity thins out
+  and slippage grows — the same trade-off a DEXBot grid faces when levels run
+  dry.
+
+For a **stablecoin pair** (`p ≈ 1` always), a high `ρ` (e.g. 0.95) keeps the
+curve flat across the entire realistic price range — the StableSwap regime,
+which the StableSwap protocol
+([STABLESWAP-DESIGN](https://github.com/pi314x/bitshares-core/blob/stableswap/STABLESWAP-DESIGN.md))
+implements natively with amplification `A`, no keeper required.
+For a **volatile pair** (`p` swings 2× or more), a lower `ρ` (e.g. 0.5)
+concentrates capital near the current price but extends the tails to cover
+the wider range. The problem is that a **fixed `ρ` is a bet on the market**:
+a flat `ρ = 0.95` pool is optimal until the price moves 5%, then it's in the
+steep part of the curve; a `ρ = 0.5` pool handles large moves but wastes
+capital near the peg. This is where **dynamic `ρ`** enters — the keeper
+updates `ρ` based on the same signal stack that currently drives the
+AMA, so the curve's concentration always matches the market regime.
 
 ---
 
@@ -246,26 +341,30 @@ difference in the two weight values.
 A CES curve cannot make a tail *grow*: even with two exponents,
 
 ```
-x^ρ_buy + y^ρ_sell = k
+x^ρ_high + y^ρ_low = k
 ```
 
 the quote-liquidity decays to zero in **both** tails — high-price rate
-`ρ_buy/(1-ρ_buy)`, low-price rate `1/(1-ρ_sell)` — for any `ρ_buy, ρ_sell > 0`.
-What two exponents *can* do is set the two tail rates independently:
+`ρ_high/(1-ρ_high)`, low-price rate `1/(1-ρ_low)` — for any
+`ρ_high, ρ_low > 0`. What two exponents *can* do is set the two tail rates
+independently. (Naming is by tail, not by weight: `ρ_high` sits on the base
+reserve `x` and is derived from the *sell* weight, because the sell rail lives
+above the anchor; `ρ_low` sits on the quote reserve `y` and comes from the
+*buy* weight.)
 
 ```
-ρ_buy  = w_sell / (1 + w_sell)   (high-price tail rate = w_sell)
-ρ_sell = 1 - 1 / w_buy           (low-price tail rate = w_buy)
+ρ_high = w_sell / (1 + w_sell)   (high-price tail rate = w_sell)
+ρ_low  = 1 - 1 / w_buy           (low-price tail rate = w_buy)
 ```
 
 Note the boundary case: matching the low tail to the default `w_buy = 1` would
-require `ρ_sell = 0`, which degenerates the invariant (`y^ρ_sell → 1` pins the
-quote reserve). So an exact two-exponent match of the symmetric default is not
-available — `ρ_buy = 0.5` matches the high tail, and the low tail can only
-approach rate `1` from above. The exponent pair is really a way to bias the
-pool *toward* one side (e.g. `w_buy = 2, w_sell = 1` gives `ρ_buy = 0.5`,
-`ρ_sell = 0.5`), mirroring the grid's decay *directions* rather than its exact
-quote density.
+require `ρ_low = 0`, which degenerates the invariant (`y^ρ_low → 1` drops the
+quote term, leaving the quote side unconstrained). So an exact two-exponent
+match of the symmetric default is not available — `ρ_high = 0.5` matches the
+high tail, and the low tail can only approach rate `1` from above. The
+exponent pair is really a way to bias the pool *toward* one side (e.g.
+`w_buy = 2, w_sell = 1` gives `ρ_high = 0.5`, `ρ_low = 0.5`), mirroring the
+grid's decay *directions* rather than its exact quote density.
 
 ### Center / range equivalence
 | DEXBot2 concept | Curve equivalent |
@@ -277,6 +376,37 @@ quote density.
 | refill loop | none needed — liquidity is continuous, always in the market |
 | boundary crawl / reconcile | none needed — price just moves the active point along the curve |
 | dynamic weight offsets | static `ρ` or time-varying `ρ(t)` driven by the same signals |
+
+### Dynamic `ρ`: adapting concentration to price
+
+When the market price `p` deviates from the pool's anchor, a **fixed** `ρ`
+creates a mismatch — the concentrated region is no longer where the price
+is, and liquidity thins in the wrong place. Dynamic `ρ` solves this:
+
+| Market condition | Price deviation | `ρ` | Effect |
+|---|---|---|---|
+| Pegged / flat | `\|p - 1\| < 2%` | 0.90–0.95 | Wide flat region near current price, StableSwap-like |
+| Mild drift | `2%–10%` | 0.7–0.85 | Moderate concentration, curve extends to cover drift |
+| Trending regime | `>10%` or Hurst > 0.5 | 0.5–0.6 | Concentrated but tails extend to follow the trend |
+| Depeg risk | Large deviation + regime shift | 0.3–0.45 | Maximum tail spread, pool won't run dry |
+
+The keeper computes `ρ` from the same signals that currently drive the AMA
+(ATR for deviation magnitude, Kalman velocity for trend speed, Hurst/PE
+for regime classification):
+
+```
+p_deviation = |p_market - p_pool| / p_pool
+if p_deviation < 0.02:        ρ = 0.95   // flat near peg
+else if p_deviation > 0.10 && Hurst > 0.5:
+                              ρ = 0.40   // depeg risk: max tail spread
+else if p_deviation > 0.10 || Hurst > 0.5:
+                              ρ = 0.55   // trending regime, extend tails
+else:                         ρ = 0.70   // default
+```
+
+This is the **fusion option** from §7 — the DEXBot2 brain pointed at the curve
+instead of the book. The keeper is not a new process; it is the existing
+signal stack with one additional output.
 
 ---
 
@@ -293,19 +423,21 @@ quote density.
 | **Maintenance** | reconcile, RMS divergence, COW snapshots | none on-chain |
 | **Gas / ops cost** | per-order placements, cancels, refills, recalcs | one deposit, then trades only |
 | **Latency/MEV surface** | order book exposure, stale quotes between refreshes | no stale quotes; slippage always visible in the curve |
-| **Adaptivity** | rich: AMA, Kalman/Hurst/PE regime, dynamic weight, asymmetric bounds | only what you encode into `ρ` (static or updated by a keeper) |
+| **Adaptivity** | rich: AMA, Kalman/Hurst/PE regime, dynamic weight, asymmetric bounds | static `ρ`, or dynamic `ρ(t)` updated by a keeper from the same signal stack |
 | **Who controls it** | bot process (needs to run, watch, reconnect) | the curve (liquidity providers just deposit) |
 | **Revenue model** | spread capture from order fills | fee on every swap (proportional to activity) |
 
 ### Where DEXBot2 wins
 1. **Adaptivity** — the signal stack (AMA center, dynamic weight, regime
-   detection) changes *where and how much* capital sits in the market. A passive
-   curve needs a keeper to update `ρ` to do any of that.
+    detection) changes *where and how much* capital sits in the market. A
+    passive curve with static `ρ` needs a keeper to update it to do any of
+    that — but with **dynamic `ρ`**, the same signal stack drives the curve,
+    and this gap closes.
 2. **Asymmetric, intent-driven sizing** — buying more cheaply deep while selling
-   the most near price is a *strategy*; the curve only expresses it as static
-   `ρ_buy/ρ_sell`.
+    the most near price is a *strategy*; the curve only expresses it as static
+    `ρ_high/ρ_low`.
 3. **Granular control of spread** — `targetSpreadPercent` and `gridLimits` give
-   exact, per-level control that a single exponent can only approximate.
+    exact, per-level control that a single exponent can only approximate.
 
 ### Where the curve wins
 1. **Zero gaps / always in the market** — a grid leaves price ranges with no
@@ -378,7 +510,24 @@ law, *one side at a time*, written as an invariant.
   gap-free, zero-maintenance concentration. Start from `ρ = 0.5` (the
   weight=1 equivalent on the high side; the low side then behaves like
   `weight = 2`), and re-tune per side if you want the grid's exact shape.
-- **Fusion option:** a keeper that updates `ρ_buy`/`ρ_sell` from the same
+- **For stablecoin pairs**: prefer the StableSwap pool
+  ([STABLESWAP-DESIGN](https://github.com/pi314x/bitshares-core/blob/stableswap/STABLESWAP-DESIGN.md)) —
+  its amplification `A` gives the same flat-near-peg behaviour (near-zero
+  slippage across the realistic range), and on a depeg it degrades *toward*
+  constant product — a liquidity floor — while a high-`ρ` CES curve thins
+  *below* constant product exactly when depth is needed (§2). Its protocol is
+  also more general and more operationally complete: n-asset invariant,
+  imbalance and single-sided-withdrawal fees, no keeper required. A high
+  fixed `ρ` (0.90–0.95) CES pool is the fallback where StableSwap is not
+  available.
+- **For volatile / almost-stable pairs**: deploy CES with **dynamic `ρ`** —
+  the keeper updates the exponent from the same signal stack (AMA, ATR,
+  Kalman velocity, Hurst/PE regime) that the bot already computes. When the
+  price is flat, `ρ` stays high (flat near peg); when the market moves, `ρ`
+  drops and the curve extends its tails to follow the price. This is the CES
+  analogue of Curve's ramped `A` — in the StableSwap design `A` is fixed at
+  creation, and changing it is listed as unsettled.
+- **Fusion option:** a keeper that updates `ρ_high`/`ρ_low` from the same
   signal stack (`AMA`, `ATR`, Kalman velocity, Hurst/PE regime) that the bot
   already computes. That keeper is *exactly* the DEXBot2 brain pointed at the
   curve instead of the book — the "second protocol" then shares both the
@@ -389,19 +538,37 @@ law, *one side at a time*, written as an invariant.
 ## 8. Open questions / next steps
 
 1. **Exact `ρ` calibration** — verify the *high-tail* mapping
-   `ρ = weight/(1+weight)` against backtests. The low tail has no direct grid
-   counterpart at `ρ = 0.5` (rate 2; the default grid is flat in quote terms on
-   both rails), so calibrate it from desired downside behavior and the
-   ~`1:2 center/outer split` comment in `modules/constants.ts`.
-2. **Asymmetric `ρ_buy`, `ρ_sell`** — derive the per-side exponents from the
-   curve's verified tail rates (`ρ_buy = w_sell/(1+w_sell)`,
-   `ρ_sell = 1 - 1/w_buy`) and quantify the DEXBot-side decay *directions* from
-   `allocateFundsByWeights`'s `reverse` flag, which are the actual asymmetry
-   (the default weights are symmetric `{sell: 1, buy: 1}`).
+    `ρ = weight/(1+weight)` against backtests. The low tail has no direct grid
+    counterpart at `ρ = 0.5` (rate 2; the default grid is flat in quote terms on
+    both rails), so calibrate it from desired downside behavior and the
+    ~`1:2 center/outer split` comment in `modules/constants.ts`.
+2. **Asymmetric `ρ_high`, `ρ_low`** — derive the per-side exponents from the
+    curve's verified tail rates (`ρ_high = w_sell/(1+w_sell)`,
+    `ρ_low = 1 - 1/w_buy`) and quantify the DEXBot-side decay *directions* from
+    `allocateFundsByWeights`'s `reverse` flag, which are the actual asymmetry
+    (the default weights are symmetric `{sell: 1, buy: 1}`).
 3. **Dynamic `ρ`** — which of the market-adapter signals should re-parametrize
-   the curve, and on what cadence (avoid turning a passive protocol into a
-   churn machine).
-4. **Fees** — set fee rate so it clears the IL cost of the concentrated region;
-   this is the single most important tuning knob.
-5. **On-chain deployment shape** — single deposit with `ρ` frozen, or a
-   rate-limit-reweightable pool.
+    the curve, and on what cadence (avoid turning a passive protocol into a
+    churn machine). Key design decisions:
+    - **Deviation threshold**: at what `|p_market - p_pool|` does `ρ` start
+      updating? Too sensitive → churn; too insensitive → liquidity thins
+      before the keeper reacts.
+    - **Smoothing**: should `ρ` update immediately or with a moving average
+      to avoid oscillation around thresholds?
+    - **Bounds**: what are the min/max `ρ` values? `ρ_min` protects against
+      pool-dry on extreme moves; `ρ_max` preserves the flat-region benefit
+      for stable pairs.
+    - **On-chain vs off-chain**: does the keeper submit `ρ` as a tx (one
+      operation per update), or is `ρ` embedded in the pool's state
+      machine updated by any participant?
+4. **Variable `p` on-chain**: the pool must expose its current price `p =
+    (y/x)^(1-ρ)` so the keeper can compute deviations without syncing
+    reserves externally. Is this a new operation, a view function, or
+    derived from the pool's stored `D` and reserve ratio?
+5. **Fees** — set fee rate so it clears the IL cost of the concentrated region;
+    this is the single most important tuning knob. Dynamic `ρ` adds another
+    dimension — fees must cover IL across the full range of `ρ` values, not
+    just one.
+6. **On-chain deployment shape** — single deposit with `ρ` frozen, or a
+    rate-limit-reweightable pool where the keeper can update `ρ` within
+    bounds without a full pool migration.
