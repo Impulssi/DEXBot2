@@ -1651,11 +1651,12 @@ async function _reconcileStartupSide({
         const sidePrecision = orderType === ORDER_TYPES.SELL ? manager.assets?.assetA?.precision : manager.assets?.assetB?.precision;
         for (const slotOrder of manager.orders.values()) {
             if (!slotOrder || !slotOrder.id) continue;
-            // Refill only TRUE holes: an empty VIRTUAL slot without any
-            // orderId. A VIRTUAL slot carrying a stale orderId is a phantom
-            // (sync error) — never a refill target. A CANCELED slot may
-            // still have a cancel broadcast in flight (double-place risk),
-            // and ACTIVE/PARTIAL slots are placed by definition.
+            // Refill only TRUE holes: VIRTUAL without orderId. A VIRTUAL
+            // slot carrying a stale orderId is a phantom (sync error) —
+            // never a refill target. A slot whose cancel is in flight is
+            // still ACTIVE/PARTIAL — excluded by the state check, and
+            // counted as matched on-grid (_countActiveOnGrid), so it never
+            // reaches this scan as a candidate.
             if (slotOrder.state !== ORDER_STATES.VIRTUAL) continue;
             if (slotOrder.orderId) continue;
             if (desiredSlotIds.has(slotOrder.id) || vacatedRefillPlanned.has(slotOrder.id)) continue;
