@@ -1000,9 +1000,20 @@ class SyncEngine {
                             && toFiniteNumber(reboundOrder.rawOnChain?.for_sale, 0) > 0) {
                             reboundOrder.state = ORDER_STATES.PARTIAL;
                         }
+                        const applied = await mgr._applyOrderUpdate(reboundOrder, 'sync-pass1-duplicate-swap', { skipAccounting: skipAccounting, fee: 0 });
+                        if (applied === false) {
+                            // Rejected rebind: the slot keeps its old binding
+                            // (set ops must run only after the apply lands), so
+                            // the old orderId stays matched on-grid and the swap
+                            // candidate stays unmatched → pass 2 cancels it.
+                            mgr.logger?.log?.(
+                                `[SYNC] Size tiebreak for ${gridOrder.id}: rebind to ${swapMatch.id} rejected — slot keeps ${gridOrder.orderId}; duplicate falls to pass 2`,
+                                'warn'
+                            );
+                            continue;
+                        }
                         chainOrderIdsOnGrid.delete(gridOrder.orderId);
                         chainOrderIdsOnGrid.add(swapMatch.id);
-                        await mgr._applyOrderUpdate(reboundOrder, 'sync-pass1-duplicate-swap', { skipAccounting: skipAccounting, fee: 0 });
                         updatedOrders.push(reboundOrder);
                         mgr.logger?.log?.(
                             `[SYNC] Size tiebreak for ${gridOrder.id}: tracked order ${gridOrder.orderId} ` +
@@ -1030,10 +1041,28 @@ class SyncEngine {
                         updatedOrder.state = (chainSizeInt < currentSizeInt)
                             ? ORDER_STATES.PARTIAL
                             : gridOrder.state;
-                        await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', { skipAccounting: skipAccounting, fee: 0 });
+                        const partialApplied = await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', { skipAccounting: skipAccounting, fee: 0 });
+                        if (partialApplied === false) {
+                            // Rejected resize: the slot keeps its booked size;
+                            // divergence re-detects on the next sync.
+                            mgr.logger?.log?.(
+                                `[SYNC] Partial-size update for ${gridOrder.id} rejected — slot keeps booked size ${gridOrder.size}`,
+                                'warn'
+                            );
+                        }
                     } else {
                         const spreadOrder = convertToSpreadPlaceholder(gridOrder);
-                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass1-filled', { skipAccounting: skipAccounting, fee: 0 });
+                        const filledApplied = await mgr._applyOrderUpdate(spreadOrder, 'sync-pass1-filled', { skipAccounting: skipAccounting, fee: 0 });
+                        if (filledApplied === false) {
+                            // Rejected virtualization must not book a fill:
+                            // neither the filled order nor the placeholder
+                            // update leaves this path.
+                            mgr.logger?.log?.(
+                                `[SYNC] Filled virtualization for ${gridOrder.id} rejected — fill NOT booked`,
+                                'error'
+                            );
+                            continue;
+                        }
                         // Push the filled order with its REAL side (chain order
                         // type), not the SPREAD placeholder: downstream fill
                         // processing (deriveTargetBoundary) derives boundary
@@ -1086,7 +1115,17 @@ class SyncEngine {
                 const currentGridOrder = mgr.orders.get(gridOrder.id) || gridOrder;
                 const hadOrderId = Boolean(currentGridOrder?.orderId);
                 const spreadOrder = convertToSpreadPlaceholder(currentGridOrder);
-                await mgr._applyOrderUpdate(spreadOrder, 'sync-cleanup-phantom', { skipAccounting: skipAccounting, fee: 0 });
+                const phantomApplied = await mgr._applyOrderUpdate(spreadOrder, 'sync-cleanup-phantom', { skipAccounting: skipAccounting, fee: 0 });
+                if (phantomApplied === false) {
+                    // Rejected virtualization books no phantom fill: the slot
+                    // keeps its order and the disappearance re-detects next
+                    // sync.
+                    mgr.logger?.log?.(
+                        `[SYNC] Phantom cleanup for ${gridOrder.id} rejected — fill NOT booked`,
+                        'warn'
+                    );
+                    continue;
+                }
 
                 // Only genuine disappearances (had orderId) count as fills.
                 if (hadOrderId) {
