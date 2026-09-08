@@ -1798,6 +1798,26 @@ async function _reconcileStartupSide({
         const gridSize = Number(gridOrder.size) || 0;
         const parsedChain = parseChainOrder(chainOrder, manager.assets);
         const currentSize = parsedChain ? (parsedChain.size ?? 0) : 0;
+        // GAP GUARD: positional remap must never reprice across a large gap.
+        // After a grid reset (or a dropped master entry) an unmatched chain
+        // order — e.g. a floor-anchored deep-shelf BUY — can land on a rail
+        // slot tens of percent away. Repricing it there destroys the pin and
+        // drags the order into the wrong zone. Skip such pairs (they stay
+        // unmatched for orphan/adoption handling) instead of dragging them.
+        // Legit rail remaps move ~1 increment step and always pass.
+        const chainPx = Number(parsedChain?.price);
+        const gridPx = Number(gridOrder?.price);
+        if (Number.isFinite(chainPx) && Number.isFinite(gridPx) && gridPx > 0) {
+            const gapTol = Math.max(3 * (Number(manager.config?.incrementPercent) || 0) / 100, 0.05);
+            if (Math.abs(chainPx - gridPx) / gridPx > gapTol) {
+                logger?.log?.(
+                    `Startup: Skipping ${sideUpper} update ${chainOrder.id} - price gap ${(Math.abs(chainPx - gridPx) / gridPx * 100).toFixed(1)}% ` +
+                    `chain ${Format.formatPrice6(chainPx)} vs grid ${gridOrder.id} ${Format.formatPrice6(gridPx)} exceeds ${(gapTol * 100).toFixed(1)}% (leaving unmatched)`,
+                    'warn'
+                );
+                continue;
+            }
+        }
         const sizeIncrease = Math.max(0, gridSize - currentSize);
         const currentAssetBalance = projectedSideBalance;
 

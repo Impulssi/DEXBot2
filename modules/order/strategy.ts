@@ -443,6 +443,13 @@ class StrategyEngine {
                 }
                 gated.push(d);
             }
+            if (gated.length > 0) {
+                this.manager.logger.log(
+                    `[STRATEGY] Deep shelf active (${gated.length}): ` +
+                    gated.map((g: any) => `${g.id} @${Number(g.price).toPrecision(4)} x${(deepFinal.sizes.get(g.id) || 0).toFixed(2)}${deepFinal.manualIds.has(g.id) ? ' (manual)' : ''}`).join(', '),
+                    'info'
+                );
+            }
             return gated;
         })()];
         const buySizes = buySlotsToUse.map((slot: any) => isDeepShelfId(slot.id) ? (deepFinal.sizes.get(slot.id) || 0) : (buySizeById.get(slot.id) || 0));
