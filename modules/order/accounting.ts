@@ -814,15 +814,26 @@ class Accountant {
      */
     async _recalibrateTrackedFundsFromChain(mgr: any, openOrders: any[]) {
         const result = { attempted: 0, resized: 0, virtualized: 0, rejected: 0 };
-        if (!mgr?.orders || !Array.isArray(openOrders) || openOrders.length === 0) return result;
+        if (!mgr?.orders || !Array.isArray(openOrders)) return result;
+        // An empty read is meaningful (all-filled account): the absent
+        // branch's recent-commit/assign guards protect fresh orders while
+        // stale slots get virtualized. Unknown ≠ absent, so unparseable
+        // live orders are tracked separately and never virtualized.
 
+        const malformedOrderIds = new Set<string>();
         const parsedChainOrders = new Map();
         for (const order of openOrders) {
             try {
                 const parsed = parseChainOrder(order, mgr.assets);
-                if (!parsed) continue;
+                if (!parsed) {
+                    if (order?.id != null) malformedOrderIds.add(String(order.id));
+                    continue;
+                }
                 parsedChainOrders.set(order.id, parsed);
-            } catch { continue; }
+            } catch {
+                if (order?.id != null) malformedOrderIds.add(String(order.id));
+                continue;
+            }
         }
 
         const applyUpdate = async (nextOrder: any, context: string): Promise<boolean> => {
@@ -869,6 +880,13 @@ class Accountant {
                 } else {
                     // Absent from the fresh read — same lag guards as pass 1's
                     // committed-order escape hatches.
+                    //
+                    // Unknown ≠ absent: an order that failed to parse is live
+                    // but unreadable — never virtualize it on that basis.
+                    if (gridOrder.orderId != null && malformedOrderIds.has(String(gridOrder.orderId))) {
+                        mgr.logger?.log?.(`[RECOVERY] Skipping recalibration for ${gridOrder.id}: live order ${gridOrder.orderId} is unparseable (unknown, not absent)`, 'debug');
+                        continue;
+                    }
                     const commitAge = Date.now() - (mgr._committedOrderIdsBuiltAt || 0);
                     const recentCommit = mgr._committedOrderIds?.has?.(gridOrder.orderId) && commitAge < TIMING.SYNC_LOCK_TIMEOUT_MS;
                     const assignedAt = mgr._orderIdAssignedAt?.get?.(gridOrder.orderId) || 0;

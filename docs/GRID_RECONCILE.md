@@ -94,6 +94,7 @@ Phase 2 and 3 both respect the `dryRun` flag: when true, no on-chain mutations a
    - Detect grid-edge lock and plan a largest-order cancel
    - Plan creates for remaining slots
    - Plan excess cancellations (guarded by `matchedOnGrid > 0`)
+   - **Vacated-rail refill**: each PROCEEDING update whose vacated price exactly matches (`priceSlotEqual`) an empty, sized, in-rail slot of the same side queues a refill CREATE in the same plan (`source startupVacatedRailRefill`) — skipped updates, ghost prices (lattice moved), in-band slots, and already-desired slots never refill; refill targets require VIRTUAL state with no `orderId`
 
 Returns `{ plannedCreates, plannedUpdates, plannedCancels, chainSellCount, chainBuyCount }`.
 

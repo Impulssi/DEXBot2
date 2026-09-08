@@ -13,17 +13,18 @@
  * - JSON: Sanitized bot settings (excludes private keys)
  *
  * ===============================================================================
- * TABLE OF CONTENTS (4 exported functions + 3 internal helpers)
+ * TABLE OF CONTENTS (6 exported functions + internal helpers)
  * ===============================================================================
  *
- * PUBLIC EXPORTS (4 functions)
+ * PUBLIC EXPORTS (6 functions)
  *   1. exportBotTrades(botKey, botConfig, outputDir) - Main export function (async)
  *      Orchestrates trade extraction and writing CSV/JSON exports
  *      Returns: { success, trades_exported, csv_path, settings_path, output_dir, timestamp }
  *
- *   2. parseLogFile(logFilePath) - Parse PM2 log file to extract trades (async)
- *      Reads line-by-line, extracts FILL entries, links with fee information
- *      Returns: Array of trade objects with { timestamp, side, amount, price, proceeds, fee_asset, fee_amount }
+ *   2. parseLogFile(logFilePath, assetContext?) - Parse PM2 log file to extract trades (async)
+ *      Reads line-by-line, extracts legacy FILL entries AND multi-line
+ *      FILL DETECTED blocks, links with fee information
+ *      Returns: Array of trade objects with { timestamp, side, amount, price, proceeds, fee_asset, fee_amount, order_id }
  *
  *   3. writeTradesCSV(trades, outputPath) - Write trades to CSV file (async)
  *      Generates standardized CSV with proper escaping and formatting
@@ -33,24 +34,44 @@
  *      Exports bot parameters and configuration (excludes private keys)
  *      Returns: { success } or { success: false, error }
  *
- * INTERNAL HELPERS (3 functions)
- *   5. parseFillLine(line) - Parse fill entry from log line
- *      Expected format: [TIMESTAMP] [DEBUG] [FILL] side fill: size=X, price=Y, proceeds=Z
- *      Returns: { timestamp, side, amount, price, proceeds } or null
+ *   5. parseFillLine(line) - Parse legacy fill entry from a single log line
+ *      Expected format: [TIMESTAMP] [DEBUG] [FILL] side fill: size=X, price=Y, proceeds=Z [order=1.7.N]
+ *      Returns: { timestamp, side, amount, price, proceeds, order_id? } or null
  *
  *   6. parseFeeLine(line) - Parse fee information from log line
  *      Expected format: [TIMESTAMP] [INFO] [FEES] N maker fills @ FEE ASSET = TOTAL
  *      Returns: { timestamp, count, fee_per_fill, fee_asset, total_fee } or null
  *
- *   7. linkFillWithFee(fills, fees) - Match and link most recent fill with fee
- *      Checks timestamp proximity (within 5 seconds) to associate fill with fee
- *      Modifies fills array in-place
+ * INTERNAL HELPERS
+ *   - isoToUnixSeconds(iso) - Shared ISO-timestamp to unix-seconds conversion
+ *   - extractLogTimestamp(line) - Pull unix-seconds timestamp from a log line prefix
+ *   - rawToHuman(raw, precision) - Scale satoshi amounts (soft variant of
+ *     blockchainToFloat that returns NaN instead of throwing; kept local so
+ *     the offline exporter avoids pulling in utils/math's dependency tree)
+ *   - buildOrientationHypothesis(...) - Trade fields for one pays-asset orientation
+ *   - deriveTradeFromFillBlock(block, assetContext) - Derive a trade from a
+ *     parsed FILL DETECTED block (side from pays-asset orientation, price from
+ *     human-scaled amounts). Bare pre-#22 blocks without asset IDs are
+ *     disambiguated via log-distance to the grid median price.
+ *     Returns: FillEntry or null (with reason logged by caller)
+ *   - resolveExportAssetContext(botKey, botConfig) - Resolve offline asset metadata
+ *     Reads profiles/orders/<botKey>.json for assetA/assetB ids+precisions and
+ *     grid price stats. No chain access (export stays offline/browser-safe).
+ *     Returns: { assetA, assetB, gridMedianPrice?, ... } or null
  *
  * ===============================================================================
  *
  * LOG FORMAT PATTERNS:
- * Fill line: [2026-01-15T15:29:06.185Z] [DEBUG] [FILL] sell fill: size=0.0316, price=1791.30065898866, proceeds=56.60510082 BTS
- * Fee line:  [2026-01-15T15:29:06.185Z] [INFO] [FEES] BTS fees calculated: 1 maker fills @ 0.04826000 BTS = 0.04826000 BTS
+ * Legacy fill line (kept for backward compat; may carry an order= suffix):
+ *   [2026-01-15T15:29:06.185Z] [DEBUG] [FILL] sell fill: size=0.0316, price=1791.30065898866, proceeds=56.60510082 BTS
+ * Legacy fee line:
+ *   [2026-01-15T15:29:06.185Z] [INFO] [FEES] BTS fees calculated: 1 maker fills @ 0.04826000 BTS = 0.04826000 BTS
+ * Current fill block (emitted by dexbot_fill_runtime.ts; asset IDs in parens
+ * present on logs written after the issue-#22 fix, absent on older logs):
+ *   [2026-08-28T18:19:51.192Z] [INFO] [DEXBot] ===== FILL DETECTED =====
+ *   [2026-08-28T18:19:51.192Z] [INFO] [DEXBot] Order ID: 1.7.573895253
+ *   [2026-08-28T18:19:51.192Z] [INFO] [DEXBot] Pays: 1036496 (1.3.5537), Receives: 74071699 (1.3.0)
+ *   [2026-08-28T18:19:51.192Z] [INFO] [DEXBot] Block: 113873892 (History ID: 1.11.1395319063)
  *
  * CSV HEADER:
  * unix, price, amount, side, fee_asset, fee_amount, order_id
@@ -78,17 +99,21 @@ function getReadline() {
 const exportLogger = new Logger('Export');
 
 /**
- * Parse a fill line from PM2 log file
+ * Parse a legacy fill line from PM2 log file
  * Expected format: [2026-01-15T15:29:06.185Z] [DEBUG] [FILL] sell fill: size=0.0316, price=1791.30065898866, proceeds=56.60510082 BTS
+ * An optional trailing `order=1.7.123` suffix is captured when present.
  * @param {string} line - Raw log line
  * @returns {Object|null} Parsed fill object or null on no match
  */
-interface FillEntry {
-    timestamp: number;
+interface FillCore {
     side: any;
     amount: number;
     price: number;
     proceeds: number;
+}
+
+interface FillEntry extends FillCore {
+    timestamp: number;
     fee_asset: string;
     fee_amount: number;
     order_id?: string;
@@ -102,19 +127,25 @@ interface FeeEntry {
     timestamp: number;
 }
 
+/** Shared ISO-8601 to unix-seconds conversion for all log parsers. */
+function isoToUnixSeconds(iso: string): number {
+    return new Date(iso).getTime() / TIMING.MILLISECONDS_PER_SECOND;
+}
+
 function parseFillLine(line: string): FillEntry | null {
-    const fillMatch = line.match(/\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)\].*\[FILL\]\s+(\w+)\s+fill:\s+size=([\d.]+),\s+price=([\d.]+),\s+proceeds=([\d.]+)/);
+    const fillMatch = line.match(/\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)\].*\[FILL\]\s+(\w+)\s+fill:\s+size=([\d.]+),\s+price=([\d.]+),\s+proceeds=([\d.]+)(?:\s+[A-Za-z.]+)?(?:\s+order=(1\.7\.\d+))?/);
 
     if (!fillMatch) return null;
 
     return {
-        timestamp: new Date(fillMatch[1]).getTime() / TIMING.MILLISECONDS_PER_SECOND,  // Unix timestamp in seconds
+        timestamp: isoToUnixSeconds(fillMatch[1]),               // Unix timestamp in seconds
         side: fillMatch[2],                                   // 'buy' or 'sell'
         amount: parseFloat(fillMatch[3]),                     // Size in base asset
         price: parseFloat(fillMatch[4]),                      // Execution price
         proceeds: parseFloat(fillMatch[5]),                    // Proceeds/cost
         fee_asset: 'BTS',
-        fee_amount: 0
+        fee_amount: 0,
+        order_id: fillMatch[6] || ''
     };
 }
 
@@ -134,38 +165,221 @@ function parseFeeLine(line: string): FeeEntry | null {
         fee_per_fill: parseFloat(feeMatch[3]),
         fee_asset: feeMatch[4],
         total_fee: parseFloat(feeMatch[5]),
-        timestamp: new Date(feeMatch[1]).getTime() / TIMING.MILLISECONDS_PER_SECOND
+        timestamp: isoToUnixSeconds(feeMatch[1])
     };
 }
 
 /**
- * Link fill with its corresponding fee information
- * @param {Array} fills - Array of parsed fill objects
- * @param {Array} fees - Array of parsed fee objects
- * @returns {void}
+ * Offline asset metadata for trade derivation (no chain access — export stays
+ * offline/browser-safe). Resolved from the bot's persisted grid file.
  */
-function linkFillWithFee(fills: any, fees: any) {
-    // Match most recent fill with most recent fee
-    if (fills.length > 0 && fees.length > 0) {
-        const lastFill = fills[fills.length - 1];
-        const lastFee = fees[fees.length - 1];
+interface ExportAsset {
+    id: string;
+    precision: number;
+    symbol?: string;
+}
 
-        // Only link if they're close in time (within 5 seconds)
-        if (Math.abs(lastFill.timestamp - lastFee.timestamp) < 5) {
-            lastFill.fee_asset = lastFee.fee_asset;
-            lastFill.fee_amount = lastFee.total_fee;
+interface ExportAssetContext {
+    assetA: ExportAsset;
+    assetB: ExportAsset;
+    /** Median grid price (assetB per assetA), used to disambiguate bare pre-#22 blocks. */
+    gridMedianPrice?: number;
+}
+
+interface FillBlock {
+    timestamp?: number;
+    orderId?: string;
+    paysRaw?: number;
+    paysAssetId?: string;
+    receivesRaw?: number;
+    receivesAssetId?: string;
+    blockNum?: number;
+    historyId?: string;
+}
+
+const FILL_BLOCK_HEADER_RE = /=+\s*FILL DETECTED\s*=+/;
+const LOG_TIMESTAMP_RE = /\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)\]/;
+const FILL_BLOCK_ORDER_RE = /Order ID:\s*(1\.7\.\d+)/;
+// Matches both variants (asset IDs in parens were added by the issue-#22 fix):
+//   Pays: 1036496 (1.3.5537), Receives: 74071699 (1.3.0)   (new)
+//   Pays: 1036496, Receives: 74071699                        (old/bare)
+const FILL_BLOCK_AMOUNTS_RE = /Pays:\s*(\S+?)(?:\s*\(\s*([\d.]+)\s*\))?\s*,?\s*Receives:\s*(\S+?)(?:\s*\(\s*([\d.]+)\s*\))?\s*$/;
+const FILL_BLOCK_HEIGHT_RE = /Block:\s*(\d+)\s*\(History ID:\s*([^)]+)\)/;
+
+/** Extract a unix-seconds timestamp from a log line prefix, or undefined. */
+function extractLogTimestamp(line: string): number | undefined {
+    const m = line.match(LOG_TIMESTAMP_RE);
+    return m ? isoToUnixSeconds(m[1]) : undefined;
+}
+
+function rawToHuman(raw: number, precision: number): number {
+    return raw / Math.pow(10, precision);
+}
+
+/**
+ * Build a trade hypothesis for one pays-asset orientation.
+ * @param {boolean} paysIsA - True when the pays asset is assetA (a SELL)
+ * @returns Trade fields or null when amounts are not positive finite numbers
+ */
+function buildOrientationHypothesis(paysRaw: number, receivesRaw: number, paysIsA: boolean, ctx: ExportAssetContext): FillCore | null {
+    const paysHuman = rawToHuman(paysRaw, paysIsA ? ctx.assetA.precision : ctx.assetB.precision);
+    const receivesHuman = rawToHuman(receivesRaw, paysIsA ? ctx.assetB.precision : ctx.assetA.precision);
+    if (!Number.isFinite(paysHuman) || paysHuman <= 0 || !Number.isFinite(receivesHuman) || receivesHuman <= 0) return null;
+    // Price convention (assetB per assetA), mirroring parseChainOrder:
+    // SELL pays A and receives B, BUY pays B and receives A.
+    const price = paysIsA ? receivesHuman / paysHuman : paysHuman / receivesHuman;
+    if (!Number.isFinite(price) || price <= 0) return null;
+    return {
+        side: paysIsA ? 'sell' : 'buy',
+        amount: paysIsA ? paysHuman : receivesHuman,  // base-asset (A) quantity traded
+        price,
+        proceeds: paysIsA ? receivesHuman : paysHuman  // quote-asset (B) value: BTS proceeds on SELL, BTS cost on BUY
+    };
+}
+
+/**
+ * Derive a trade from a parsed FILL DETECTED block.
+ * Side comes from the pays/receives asset orientation, price from
+ * precision-scaled amounts. Bare pre-#22 blocks carry no asset IDs; they are
+ * disambiguated by log-distance to the grid median price (the two hypotheses
+ * sit symmetric around 10^(precA-precB) on a log scale, so the grid median —
+ * which tracks the market — picks the right one decisively; near-ties are
+ * treated as ambiguous and skipped).
+ * @returns FillEntry or null when the block cannot be derived exactly
+ */
+function deriveTradeFromFillBlock(block: FillBlock, ctx: ExportAssetContext | null): FillEntry | null {
+    if (!ctx) return null;
+    if (block.timestamp == null) return null;
+    if (block.paysRaw == null || block.receivesRaw == null) return null;
+
+    let hypothesis: FillCore | null = null;
+
+    if (block.paysAssetId && block.receivesAssetId) {
+        const sellOrientation = block.paysAssetId === ctx.assetA.id && block.receivesAssetId === ctx.assetB.id;
+        const buyOrientation = block.paysAssetId === ctx.assetB.id && block.receivesAssetId === ctx.assetA.id;
+        if (!sellOrientation && !buyOrientation) return null;  // foreign-market fill, not ours
+        hypothesis = buildOrientationHypothesis(block.paysRaw, block.receivesRaw, sellOrientation, ctx);
+    } else if (block.paysAssetId || block.receivesAssetId) {
+        // Half-present block (truncated log line): exactly one side survived.
+        // Pays present orients directly; receives present inverts
+        // (receives A => pays B => BUY; receives B => pays A => SELL).
+        // A present side matching neither local asset is a foreign-market fill.
+        let paysIsA: boolean;
+        if (block.paysAssetId) {
+            if (block.paysAssetId !== ctx.assetA.id && block.paysAssetId !== ctx.assetB.id) return null;
+            paysIsA = block.paysAssetId === ctx.assetA.id;
+        } else {
+            if (block.receivesAssetId !== ctx.assetA.id && block.receivesAssetId !== ctx.assetB.id) return null;
+            paysIsA = block.receivesAssetId === ctx.assetB.id;
+        }
+        hypothesis = buildOrientationHypothesis(block.paysRaw, block.receivesRaw, paysIsA, ctx);
+    } else {
+        // Bare pre-#22 block: no asset orientation logged.
+        const sellHyp = buildOrientationHypothesis(block.paysRaw, block.receivesRaw, true, ctx);
+        const buyHyp = buildOrientationHypothesis(block.paysRaw, block.receivesRaw, false, ctx);
+        if (sellHyp && !buyHyp) hypothesis = sellHyp;
+        else if (buyHyp && !sellHyp) hypothesis = buyHyp;
+        else if (sellHyp && buyHyp && ctx.gridMedianPrice && ctx.gridMedianPrice > 0) {
+            const sellDist = Math.abs(Math.log(sellHyp.price) - Math.log(ctx.gridMedianPrice));
+            const buyDist = Math.abs(Math.log(buyHyp.price) - Math.log(ctx.gridMedianPrice));
+            if (Math.abs(sellDist - buyDist) < 0.5) return null;  // ambiguous, skip
+            hypothesis = sellDist < buyDist ? sellHyp : buyHyp;
+        } else return null;
+    }
+
+    if (!hypothesis) return null;
+    return {
+        timestamp: block.timestamp,
+        ...hypothesis,
+        fee_asset: 'BTS',
+        fee_amount: 0,
+        order_id: block.orderId || ''
+    };
+}
+
+/**
+ * Resolve offline asset metadata + grid price stats for a bot from its
+ * persisted grid file (profiles/orders/<botKey>.json). Falls back to scanning
+ * all persisted grids for a matching meta.key/meta.name. No chain access.
+ * @returns ExportAssetContext or null when nothing usable was found
+ */
+function resolveExportAssetContext(botKey: string, botConfig: any): ExportAssetContext | null {
+    const readGridFile = (fileName: string): any | null => {
+        try {
+            return JSON.parse(storage.readFile(path.join(PATHS.ORDERS_DIR, fileName), 'utf8'));
+        } catch {
+            return null;
+        }
+    };
+
+    // Exact bot file first, then a meta.key/meta.name scan over all grids.
+    let dirFiles: string[] = [];
+    try {
+        dirFiles = storage.readdir(PATHS.ORDERS_DIR).filter((f: any) => f.endsWith('.json'));
+    } catch { /* no orders dir */ }
+    const exactName = `${botKey}.json`;
+    const ordered = [exactName, ...dirFiles.filter((f) => f !== exactName)];
+    const wantKey = String(botKey).toLowerCase();
+    const wantName = String(botConfig?.name || botKey).toLowerCase();
+
+    let doc: any | null = null;
+    for (const fileName of ordered) {
+        const candidate = readGridFile(fileName);
+        if (!candidate || !candidate.assets) continue;
+        if (fileName === exactName) {
+            doc = candidate;
+            break;
+        }
+        const metaKey = candidate.meta?.key ? String(candidate.meta.key).toLowerCase() : '';
+        const metaName = candidate.meta?.name ? String(candidate.meta.name).toLowerCase() : '';
+        if ((metaKey && metaKey === wantKey) || (metaName && metaName === wantName)) {
+            doc = candidate;
+            break;
         }
     }
+    if (!doc) return null;
+    const assetA = doc.assets?.assetA;
+    const assetB = doc.assets?.assetB;
+    if (!assetA?.id || !assetB?.id) return null;
+    if (!Number.isFinite(assetA.precision) || !Number.isFinite(assetB.precision)) return null;
+
+    const ctx: ExportAssetContext = {
+        assetA: { id: String(assetA.id), precision: assetA.precision, symbol: assetA.symbol },
+        assetB: { id: String(assetB.id), precision: assetB.precision, symbol: assetB.symbol }
+    };
+
+    try {
+        const grid = Array.isArray(doc.grid) ? doc.grid : Object.values(doc.grid || {});
+        const prices = grid
+            .map((o: any) => Number(o?.price))
+            .filter((p: number) => Number.isFinite(p) && p > 0)
+            .sort((a: number, b: number) => a - b);
+        if (prices.length > 0) ctx.gridMedianPrice = prices[Math.floor(prices.length / 2)];
+    } catch { /* grid stats are best-effort */ }
+
+    return ctx;
 }
 
 /**
  * Parse PM2 log file to extract trades
+ * Handles legacy single-line [FILL] entries AND multi-line FILL DETECTED
+ * blocks (current fill-runtime format, see issue #22).
  * @param {string} logFilePath - Path to PM2 log file
+ * @param {ExportAssetContext|null} [assetContext] - Offline asset metadata for block derivation
  * @returns {Promise<Array>} Array of trade objects
  */
-async function parseLogFile(logFilePath: any) {
+async function parseLogFile(logFilePath: any, assetContext: ExportAssetContext | null = null) {
     const fills: any[] = [];
     const fees: any[] = [];
+    let pendingBlock: FillBlock | null = null;
+    let skippedBlocks = 0;
+
+    const finalizeBlock = (block: FillBlock) => {
+        // Fee defaults already set by deriveTradeFromFillBlock.
+        const trade = deriveTradeFromFillBlock(block, assetContext);
+        if (trade) fills.push(trade);
+        else skippedBlocks++;
+    };
 
     try {
         const fileStream = storage.createReadStream(logFilePath);
@@ -175,31 +389,89 @@ async function parseLogFile(logFilePath: any) {
         });
 
         for await (const line of rl) {
-            // Parse fill lines
+            // Parse legacy fill lines (fee defaults already set by the parser)
             const fill = parseFillLine(line);
             if (fill) {
-                fill.fee_asset = 'BTS';  // Default, will be overwritten if found
-                fill.fee_amount = 0;
                 fills.push(fill);
                 continue;
             }
 
-            // Parse fee lines
+            // Collect fee lines; linked to fills in one pass after the loop
             const fee = parseFeeLine(line);
             if (fee) {
                 fees.push(fee);
-                linkFillWithFee(fills, fees);
                 continue;
+            }
+
+            // FILL DETECTED block header starts a new block (a missing Block
+            // line in the previous block finalizes it best-effort).
+            if (FILL_BLOCK_HEADER_RE.test(line)) {
+                if (pendingBlock) finalizeBlock(pendingBlock);
+                pendingBlock = { timestamp: extractLogTimestamp(line) };
+                continue;
+            }
+
+            if (pendingBlock) {
+                const ts = extractLogTimestamp(line);
+                if (ts !== undefined && pendingBlock.timestamp === undefined) pendingBlock.timestamp = ts;
+
+                const orderMatch = line.match(FILL_BLOCK_ORDER_RE);
+                if (orderMatch) {
+                    pendingBlock.orderId = orderMatch[1];
+                    continue;
+                }
+
+                const amountsMatch = line.match(FILL_BLOCK_AMOUNTS_RE);
+                if (amountsMatch) {
+                    const pays = Number(amountsMatch[1]);
+                    const receives = Number(amountsMatch[3]);
+                    if (Number.isFinite(pays)) pendingBlock.paysRaw = pays;
+                    if (Number.isFinite(receives)) pendingBlock.receivesRaw = receives;
+                    if (amountsMatch[2]) pendingBlock.paysAssetId = amountsMatch[2];
+                    if (amountsMatch[4]) pendingBlock.receivesAssetId = amountsMatch[4];
+                    continue;
+                }
+
+                const blockMatch = line.match(FILL_BLOCK_HEIGHT_RE);
+                if (blockMatch) {
+                    pendingBlock.blockNum = parseInt(blockMatch[1], 10);
+                    pendingBlock.historyId = blockMatch[2].trim();
+                    // Block line is the last line the emitter writes per fill.
+                    finalizeBlock(pendingBlock);
+                    pendingBlock = null;
+                    continue;
+                }
             }
         }
 
-        // Link any remaining fills with fees
+        // Best-effort: close a trailing block whose Block line never arrived.
+        if (pendingBlock) finalizeBlock(pendingBlock);
+
+        if (skippedBlocks > 0) {
+            exportLogger.warn(`Skipped ${skippedBlocks} fill block(s) that could not be derived (missing asset context or ambiguous orientation)`);
+        }
+
+        // Link any remaining fills with fees. A FEES line aggregates N fills
+        // ("N maker fills @ per_fill = total"), so each fill in the window gets
+        // the per-fill share (== total when N == 1, preserving legacy behavior
+        // for the single-fill case); the closest fee line in the window wins.
         for (const fill of fills) {
             if (fill.fee_amount === 0 && fees.length > 0) {
-                const relevantFee = fees.find((f: any) => Math.abs(f.timestamp - fill.timestamp) < 5);
-                if (relevantFee) {
-                    fill.fee_asset = relevantFee.fee_asset;
-                    fill.fee_amount = relevantFee.total_fee;
+                let best: any = null;
+                let bestDist = Infinity;
+                for (const f of fees) {
+                    const dist = Math.abs((f as any).timestamp - fill.timestamp);
+                    if (dist < 5 && dist < bestDist) {
+                        best = f;
+                        bestDist = dist;
+                    }
+                }
+                if (best) {
+                    fill.fee_asset = best.fee_asset;
+                    const perFill = Number.isFinite(best.fee_per_fill)
+                        ? best.fee_per_fill
+                        : (best.count > 0 ? best.total_fee / best.count : best.total_fee);
+                    fill.fee_amount = perFill;
                 }
             }
         }
@@ -212,7 +484,7 @@ async function parseLogFile(logFilePath: any) {
 }
 
 /**
- * Write trades to CSV file in QTradeX format
+ * Write trades to CSV file for local analysis/ tooling
  * @param {Array} trades - Array of trade objects
  * @param {string} outputPath - Path to output CSV file
  * @returns {Promise<Object>} { success: boolean, count: number } or { success: false, error: string }
@@ -316,8 +588,15 @@ async function exportBotTrades(botKey: any, botConfig: any, outputDir: any = './
 
         try {
             const logFiles = storage.readdir(logsDir);
-            const matchingLog = logFiles.find((f: any) =>
-                f.includes(botKey) && f.endsWith('.log') && !f.includes('error')
+            const want = String(botKey).toLowerCase();
+            // Case-insensitive: log files use the display name (XRP-BTS.log)
+            // while bot keys are lowercase (xrp-bts). Prefer the exact
+            // "<key>.log" hit, fall back to any non-error log containing the key.
+            const exactLog = logFiles.find((f: any) =>
+                f.toLowerCase() === `${want}.log`
+            );
+            const matchingLog = exactLog || logFiles.find((f: any) =>
+                f.toLowerCase().includes(want) && f.endsWith('.log') && !f.toLowerCase().includes('error')
             );
 
             if (matchingLog) {
@@ -327,8 +606,15 @@ async function exportBotTrades(botKey: any, botConfig: any, outputDir: any = './
             exportLogger.warn(`Could not read logs directory: ${getErrorMessage(err)}`);
         }
 
+        // Resolve offline asset metadata so FILL DETECTED blocks can be
+        // derived to side/price/amount (issue #22). Pure file reads, no chain.
+        const assetContext = resolveExportAssetContext(botKey, botConfig);
+        if (!assetContext) {
+            exportLogger.warn(`No persisted asset metadata found for ${botKey}; fill blocks without asset IDs will be skipped`);
+        }
+
         // Parse trades from log file
-        const trades = logFilePath ? await parseLogFile(logFilePath) : [];
+        const trades = logFilePath ? await parseLogFile(logFilePath, assetContext) : [];
 
         if (trades.length === 0) {
             exportLogger.warn(`No trades found in log file for ${botKey}`);
@@ -360,5 +646,5 @@ async function exportBotTrades(botKey: any, botConfig: any, outputDir: any = './
     }
 }
 
-export { exportBotTrades }
+export { exportBotTrades, parseLogFile, parseFillLine, parseFeeLine, deriveTradeFromFillBlock, resolveExportAssetContext }
 

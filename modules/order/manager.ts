@@ -1758,9 +1758,13 @@ class OrderManager {
     }
 
     /**
-     * Record last filled price for side-gated guard: only the side of the most recent fill is gated
-     * (BUY after BUY must be lower, SELL after SELL must be higher). Spread-correction bypasses.
-     * Cold start (null) => disabled. Per-type fields kept for observability/back-compat.
+     * Record last filled price for the single-pivot guard: when armed, BOTH
+     * sides are gated against the most recent fill price (BUY blocked above
+     * pivot*(1-halfInc), SELL blocked below pivot*(1+halfInc); see
+     * isLastFillGuardBlocked). Spread-correction bypasses. _lastFilledType is
+     * purely the cold/armed discriminator (null => disabled). The per-side
+     * fields are not read by the guard itself; they feed the book-seed
+     * cold-check and per-side seeding in seedLastFilledPricesFromBook.
      * @param {Array} fills
      */
     recordLastFilledPrices(fills: any): void {
@@ -1808,8 +1812,10 @@ class OrderManager {
     /**
      * Seed last-filled guard from the live book at startup. Book-derived
      * (survives restart), analogous to the deleted MarketAnchor book-seed.
-     * Closes the in-memory-only window where LAST-FILL-GUARD would be
-     * disabled until the first fill arrives.
+     * A single-sided book arms the guard immediately; a two-sided book
+     * deliberately stays cold (type null) until the first real fill, because
+     * book quotes are not fills and the latest-fill side is unknowable from
+     * the book alone.
      * @param {Array} chainOpenOrders - raw chain open orders (from readOpenOrdersGuarded)
      */
     seedLastFilledPricesFromBook(chainOpenOrders: any): void {
@@ -1858,7 +1864,7 @@ class OrderManager {
             // _lastFilledType null by design, and that hole is otherwise only
             // inferable by the absence of any log line.
             if (this._lastFilledPrice == null || this._lastFilledType == null) {
-                try { this.logger?.log?.(`[LAST-FILL-GUARD] Book seed left guard DISABLED (cold): lastBuy=${maxBuy} lastSell=${minSell} lastPrice=${this._lastFilledPrice} lastType=${this._lastFilledType}; guard arms on the first fill`, 'warn'); } catch {}
+                try { this.logger?.log?.(`[LAST-FILL-GUARD] Book seed left guard DISABLED (cold): lastBuy=${maxBuy} lastSell=${minSell} lastPrice=${this._lastFilledPrice} lastType=${this._lastFilledType}; guard arms on the first fill`, 'info'); } catch {}
             }
         } catch {}
     }

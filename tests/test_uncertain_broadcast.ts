@@ -2751,6 +2751,7 @@ async function testPollConfirmationAdoptsPlacedBatch() {
     const origBuildCreate = chainOrders.buildCreateOrderOp;
     const origExecuteBatch = chainOrders.executeBatch;
     const origReadMeta = chainOrders.readOpenOrdersWithMeta;
+    const origBatchRead = chainOrders.batchReadOrders;
 
     bot.manager.getChainFundsSnapshot = () => ({ chainFreeSell: 1000, chainFreeBuy: 1000 });
     bot.manager.synchronizeWithChain = async () => {};
@@ -2793,11 +2794,22 @@ async function testPollConfirmationAdoptsPlacedBatch() {
         throw new BroadcastUncertainError('uncertain', { batchId: 'unc-018', timeoutMs: 30000 });
     };
     // The create landed on chain: the retry-verification read, the poll read
-    // and the adoption read all see the batch's own order.
+    // and the adoption read all see the batch's own order. Adoption re-reads
+    // the poll-confirmed create BY ID (batchReadOrders) — the mock node is
+    // consistent, so the by-id read sees the same landed order.
     chainOrders.readOpenOrdersWithMeta = async () => ({
         orders: [makeChainOrder('1.7.802', 'sell', landedFinalInts.sell, landedFinalInts.receive)],
         truncated: false
     });
+    chainOrders.batchReadOrders = async (orderIds: string[]) => {
+        const resultMap = new Map();
+        for (const id of orderIds || []) {
+            resultMap.set(id, id === '1.7.802'
+                ? makeChainOrder('1.7.802', 'sell', landedFinalInts.sell, landedFinalInts.receive)
+                : null);
+        }
+        return resultMap;
+    };
 
     const cowResult = {
         workingGrid: new WorkingGrid(bot.manager.orders, { baseVersion: 0 }),
@@ -2829,6 +2841,7 @@ async function testPollConfirmationAdoptsPlacedBatch() {
         chainOrders.buildCreateOrderOp = origBuildCreate;
         chainOrders.executeBatch = origExecuteBatch;
         chainOrders.readOpenOrdersWithMeta = origReadMeta;
+        chainOrders.batchReadOrders = origBatchRead;
     }
     console.log('✓ UNC-018 passed');
 }

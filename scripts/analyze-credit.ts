@@ -70,6 +70,19 @@ function formatAmount(value: number): string {
   return formatted + suffix;
 }
 
+function formatExpiryDate(ms: number | null | undefined): string | null {
+  if (ms == null || !Number.isFinite(ms)) return null;
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(2, 10);
+}
+
+function parseExpiryMs(raw: unknown): number | null {
+  if (raw == null || raw === '') return null;
+  const ms = new Date(String(raw)).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
 function hasLending(bot: any): boolean {
   return Boolean(bot && bot.debtPolicy && Array.isArray(bot.debtPolicy.lending) && bot.debtPolicy.lending.length > 0);
 }
@@ -392,9 +405,11 @@ async function main() {
 
     // Sum per asset: debt totals keyed by debt asset, collateral totals keyed
     // by collateral asset. Debt entries also track the biggest single
-    // position for the "(×N, ▲ …)" display.
+    // position for the "(×N, ▲ …)" display plus the earliest
+    // latest_repay_time per debt asset (next credit expiry).
+    type DebtEntry = { total: number; count: number; max: number; earliest?: number | null };
     async function sumPositions(kind: 'mpa' | 'credit', items: any[]) {
-      const debt = new Map<string, { total: number; count: number; max: number }>();
+      const debt = new Map<string, DebtEntry>();
       const coll = new Map<string, { total: number; count: number; max: number }>();
       for (const it of items) {
         if (kind === 'mpa') {
@@ -424,8 +439,11 @@ async function main() {
           if (dId && Number.isFinite(dRaw)) {
             const f = await toFloat(dRaw, dId);
             if (f != null) {
-              const e = debt.get(dId) || { total: 0, count: 0, max: 0 };
-              e.total += f; e.count += 1; e.max = Math.max(e.max, f); debt.set(dId, e);
+              const e = debt.get(dId) || { total: 0, count: 0, max: 0, earliest: null as number | null };
+              e.total += f; e.count += 1; e.max = Math.max(e.max, f);
+              const ms = parseExpiryMs((it as any)?.latest_repay_time ?? (it as any)?.latestRepayTime);
+              if (ms !== null && (e.earliest == null || ms < e.earliest)) e.earliest = ms;
+              debt.set(dId, e);
             }
           }
           if (cId && Number.isFinite(cRaw)) {
@@ -440,8 +458,12 @@ async function main() {
       return { debt, coll };
     }
 
-    const mpaSum = await sumPositions('mpa', mpaOrders);
-    const creditSum = await sumPositions('credit', creditDeals);
+    // Display sums are deliberately UNFILTERED (account truth): every live
+    // MPA position and credit deal on the account counts, including strays
+    // outside this bot's debtPolicy. CR rows, pair logic, the offer fetch,
+    // and the summary totals stay on the policy-filtered lists.
+    const mpaSumAll = await sumPositions('mpa', callOrders);
+    const creditSumAll = await sumPositions('credit', deals);
     totalMpa += mpaOrders.length;
     totalDeals += creditDeals.length;
     analyzed++;
@@ -539,15 +561,20 @@ async function main() {
     const unpricedSupported = supportedRows.filter((r) => r.cr === null);
     const avgCr = averageCreditCr(pricedSupported.map((r) => ({ debt: r.debtFloat as number, value: r.value as number })));
 
-    async function fmtParts(m: Map<string, { total: number; count: number; max?: number }>, showBiggest = false): Promise<string[]> {
+    async function fmtParts(m: Map<string, { total: number; count: number; max?: number; earliest?: number | null }>, showBiggest = false): Promise<string[]> {
       if (m.size === 0) return [];
       const parts: string[] = [];
       for (const [id, e] of [...m.entries()].sort((a, b) => b[1].total - a[1].total)) {
         const sym = await symbolOf(id);
-        const biggest = showBiggest && e.count > 1 && Number.isFinite(e.max) && (e.max as number) > 0
-          ? `, ▲ ${formatAmount(e.max as number)}`
-          : '';
-        parts.push(`${formatAmount(e.total)} ${sym}${e.count > 1 ? ` ${colors.gray}(×${e.count}${biggest})${colors.reset}` : ''}`);
+        const inner: string[] = [];
+        const expiry = formatExpiryDate(e.earliest);
+        if (expiry) inner.push(`${colors.yellowBold}${expiry}${colors.gray}`);
+        if (showBiggest && e.count > 1 && Number.isFinite(e.max) && (e.max as number) > 0) {
+          inner.push(`▲ ${formatAmount(e.max as number)}`);
+        }
+        if (e.count > 1) inner.push(`×${e.count}`);
+        const suffix = inner.length > 0 ? ` ${colors.gray}(${inner.join(', ')})${colors.reset}` : '';
+        parts.push(`${formatAmount(e.total)} ${sym}${suffix}`);
       }
       return parts;
     }
@@ -556,7 +583,7 @@ async function main() {
     // (labels are all 11 chars wide, so `   <label>: ` is 16 chars).
     // Debt labels print red (money owed), collateral labels green (backing
     // locked) — same buy-green/sell-red semantics as `dexbot order`.
-    async function printAssetLines(label: string, m: Map<string, { total: number; count: number; max?: number }>, showBiggest = false, labelColor: string = colors.yellowBold): Promise<void> {
+    async function printAssetLines(label: string, m: Map<string, { total: number; count: number; max?: number; earliest?: number | null }>, showBiggest = false, labelColor: string = colors.yellowBold): Promise<void> {
       const plainPrefix = `   ${label}: `;
       const prefix = `   ${labelColor}${colors.bold}${label}:${colors.reset} `;
       const cont = ' '.repeat(plainPrefix.length);
@@ -568,16 +595,16 @@ async function main() {
 
     console.log(`\n${colors.yellowBold}📊 ${botName}${colors.reset} ${colors.gray}(${account})${colors.reset}${shared ? ` ${colors.gray}[shared account]${colors.reset}` : ''}`);
     // Only list sections with active positions — empty sides stay hidden.
-    if (mpaOrders.length > 0) {
-      await printAssetLines('MPA    debt', mpaSum.debt, false, colors.sell);
+    if (callOrders.length > 0) {
+      await printAssetLines('MPA    debt', mpaSumAll.debt, false, colors.sell);
       console.log('');
-      await printAssetLines('MPA    coll', mpaSum.coll, false, colors.buy);
+      await printAssetLines('MPA    coll', mpaSumAll.coll, false, colors.buy);
     }
-    if (creditDeals.length > 0) {
-      if (mpaOrders.length > 0) console.log('');
-      await printAssetLines('Credit debt', creditSum.debt, true, colors.sell);
+    if (deals.length > 0) {
+      if (callOrders.length > 0) console.log('');
+      await printAssetLines('Credit debt', creditSumAll.debt, true, colors.sell);
       console.log('');
-      await printAssetLines('Credit coll', creditSum.coll, true, colors.buy);
+      await printAssetLines('Credit coll', creditSumAll.coll, true, colors.buy);
       if (creditPairs.length > 0) console.log('');
       // Compact CR summary: one Avar. CR line per bot, then one Curr. CR
       // line per whitelisted pair. A CR exists only for pairs both whitelisted
@@ -614,6 +641,14 @@ async function main() {
         console.log(`   ${colors.orange}${colors.bold}Avar. CR:${colors.reset} ${avgColor}${formatAmount(avgCr)}${colors.reset}, ${segments} ${colors.gray}(x${pricedSupported.length})${colors.reset}`);
       } else if (supportedRows.length > 0) {
         console.log(`   ${colors.orange}${colors.bold}Avar. CR:${colors.reset} n/a (no priced, available credit)`);
+      }
+      const ignored = ignoredRows.length;
+      const unpriced = unpricedSupported.length;
+      if (ignored + unpriced > 0) {
+        const reasons: string[] = [];
+        if (ignored > 0) reasons.push(`${ignored} not whitelisted`);
+        if (unpriced > 0) reasons.push(`${unpriced} no offer price`);
+        console.log(`   ${colors.gray}Excluded: ${ignored + unpriced} deal${ignored + unpriced === 1 ? '' : 's'} (${reasons.join(', ')})${colors.reset}`);
       }
       if ((avgCr !== null || supportedRows.length > 0) && creditPairs.length > 0) console.log('');
       for (const pair of creditPairs) {
@@ -676,21 +711,8 @@ async function main() {
           : 'no funds avail.';
         console.log(`   ${colors.white}${colors.bold}Curr. CR:${colors.reset} ${crColor}${crText}${colors.reset}, ${pair.debtSym}←${pair.collSym} | ${availText}`);
       }
-      // Split by reason so the runtime/analyzer asymmetry is visible:
-      // "not whitelisted" never counts anywhere; "no offer price" is
-      // whitelisted but absent from the current offer (the live runtime
-      // still prices these via its pool/market fallback, the analyzer
-      // deliberately does not).
-      const ignored = ignoredRows.length;
-      const unpriced = unpricedSupported.length;
-      if (ignored + unpriced > 0) {
-        const reasons: string[] = [];
-        if (ignored > 0) reasons.push(`${ignored} not whitelisted`);
-        if (unpriced > 0) reasons.push(`${unpriced} no offer price`);
-        console.log(`   ${colors.gray}Excluded: ${ignored + unpriced} deal${ignored + unpriced === 1 ? '' : 's'} (${reasons.join(', ')})${colors.reset}`);
-      }
     }
-    if (mpaOrders.length === 0 && creditDeals.length === 0) {
+    if (callOrders.length === 0 && deals.length === 0) {
       console.log(`   ${colors.gray}no active MPA/credit positions${colors.reset}`);
     }
   }

@@ -28,7 +28,7 @@ const {
 import * as validate from './order/utils/validate.js';
 const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions, stampGapEvacuationRotation } = validate as any;
 import * as math from './order/utils/math.js';
-const { validateOrderSize, findCrossedOrder, priceSlotEqual, isEvacuationRotationAllowed, getSellStartIdx, getPrecisionByOrderType, isSlotIndexInGapBand } = math as any;
+const { validateOrderSize, findCrossedOrder, priceSlotEqual, isEvacuationRotationAllowed, isEvacuationSizeStillValid, getSellStartIdx, getPrecisionByOrderType, isSlotIndexInGapBand } = math as any;
 
 /**
  * Re-verify a B-stamped gap-evacuation rotation against the LIVE committed
@@ -301,25 +301,18 @@ function crossedOrderLabel(crossed: any): string {
  * an UPDATE-only rotation batch can re-price across an un-adopted chain
  * order that master-grid-only checks cannot see (the pending/unmatched
  * batch guards fire only for CREATE batches).
+ *
+ * Delegates to the shared order-utils builder so every crossing guard (COW
+ * create/rotation/fallback, startup reconcile placement, price-correction)
+ * sees the same set. Pending entries are pushed as wrappers (slotId +
+ * order): their inner order has no chain id yet, so orderId-only
+ * predicates would blind the guard to them — the shared
+ * isCrossingCheckCandidate predicate accepts slot-id-only wrappers.
  * @param {Object} bot
  * @returns {any[]}
  */
 function buildCrossingCandidates(bot: any): any[] {
-    const mgr = bot?.manager;
-    if (!mgr) return [];
-    const candidates: any[] = mgr.orders instanceof Map ? [...mgr.orders.values()] : [];
-    if (mgr._pendingBroadcasts instanceof Map) {
-        for (const entry of mgr._pendingBroadcasts.values()) {
-            const o = entry?.order;
-            if (o && o.type != null && o.price != null) candidates.push(o);
-        }
-    }
-    if (Array.isArray(mgr._lastUnmatchedChainOrders)) {
-        for (const o of mgr._lastUnmatchedChainOrders) {
-            if (o && o.type != null && o.price != null) candidates.push(o);
-        }
-    }
-    return candidates;
+    return (orderUtils as any).buildCrossingCheckCandidates(bot?.manager);
 }
 
 /**
@@ -2121,6 +2114,7 @@ async function pollChainForConfirmation(bot: any, opContexts: any, options: any 
     allConfirmed: boolean;
     confirmed: any[];
     unconfirmed: any[];
+    confirmedChainIds: string[];
 }> {
     const maxPollRetries = options.maxPollRetries || 4;
     const pollIntervalMs = options.pollIntervalMs || 1500;
@@ -2128,11 +2122,15 @@ async function pollChainForConfirmation(bot: any, opContexts: any, options: any 
     // Only CREATE operations can be confirmed by polling (they appear as new orders on chain)
     const createContexts = opContexts.filter((ctx: any) => ctx && ctx.kind === 'create' && ctx.finalInts && ctx.order);
     if (createContexts.length === 0) {
-        return { allConfirmed: false, confirmed: [], unconfirmed: [...opContexts] };
+        return { allConfirmed: false, confirmed: [], unconfirmed: [...opContexts], confirmedChainIds: [] };
     }
 
     const accountRef = bot.accountId || bot.account?.id || bot.account;
     let remaining: any[] = [...createContexts];
+    // Chain ids of the poll-matched fresh creates. Retained (not just
+    // logged) so the poll-confirmed adoption path can re-read them BY ID —
+    // the window fallback cannot prove a lagging node has them yet.
+    const matchedChainIds: string[] = [];
 
     for (let attempt = 1; attempt <= maxPollRetries; attempt++) {
         try {
@@ -2181,6 +2179,7 @@ async function pollChainForConfirmation(bot: any, opContexts: any, options: any 
                         `[COW][POLL] Confirmed CREATE for slot ${ctx.order.id} on chain as ${match.id}`,
                         'debug'
                     );
+                    if (match.id && /^1\.7\.\d+$/.test(String(match.id))) matchedChainIds.push(String(match.id));
                 } else {
                     stillUnconfirmed.push(ctx);
                 }
@@ -2192,7 +2191,7 @@ async function pollChainForConfirmation(bot: any, opContexts: any, options: any 
                     `[COW][POLL] All ${confirmed.length} CREATE(s) confirmed on chain after ${attempt} poll(s)`,
                     'info'
                 );
-                return { allConfirmed: true, confirmed, unconfirmed: [] };
+                return { allConfirmed: true, confirmed, unconfirmed: [], confirmedChainIds: [...matchedChainIds] };
             }
 
             remaining = stillUnconfirmed;
@@ -2216,7 +2215,7 @@ async function pollChainForConfirmation(bot: any, opContexts: any, options: any 
         `${remaining.length} unconfirmed. Falling back to reconciliation.`,
         'warn'
     );
-    return { allConfirmed: false, confirmed, unconfirmed: remaining };
+    return { allConfirmed: false, confirmed, unconfirmed: remaining, confirmedChainIds: [...matchedChainIds] };
 }
 
 /**
@@ -2640,6 +2639,12 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 case 'chain_orphan_collision':
                     reason = `unmatched on-chain order ${violation.currentOrderId} at same price`;
                     break;
+                case 'same_batch_price_duplicate':
+                    reason = `another CREATE in the same batch at same broadcast price (duplicate of ${violation.duplicateOf})`;
+                    break;
+                case 'create_price_invalid':
+                    reason = `broadcast price is not a finite number`;
+                    break;
                 default:
                     reason = `existing orderId=${violation.currentOrderId}`;
             }
@@ -3023,10 +3028,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         createPrice,
                         order.type,
                         bot.manager.assets,
-                        (o: any) => {
-                            const oid = o?.orderId || o?.chainOrderId;
-                            return o && oid && !cancelOpIndexByOrderId.has(oid);
-                        }
+                        (o: any) => (orderUtils as any).isCrossingCheckCandidate(o, null, cancelOpIndexByOrderId)
                     );
                     const intraBatchCrossed = createCrossed ? null : findCrossedOrder(
                         intraBatchCandidates,
@@ -3175,13 +3177,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             newPrice,
                             orderType,
                             bot.manager.assets,
-                            (o: any) => {
-                                const oid = o?.orderId || o?.chainOrderId;
-                                return o
-                                    && oid
-                                    && oid !== action.orderId
-                                    && !cancelOpIndexByOrderId.has(oid);
-                            }
+                            (o: any) => (orderUtils as any).isCrossingCheckCandidate(o, action.orderId, cancelOpIndexByOrderId)
                         );
                         if (crossedOrder) {
                             skippedUpdateCount++;
@@ -3240,6 +3236,30 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                         bot.manager.logger.log(
                                             `[LAST-FILL-GUARD] Stamped evacuation for ${action.id} -> ${action.newGridId} is stale under live ` +
                                             `boundary ${(bot.manager as any)?.boundaryIdx}/gap ${(bot.manager as any)?._gapSlots} — re-proving live`,
+                                            'warn'
+                                        );
+                                    }
+                                }
+                                if (stampUsable) {
+                                    // Stamped-size re-proof: the stamp proved the
+                                    // plan-time size, but an unprocessed fill can
+                                    // land between plan-build and execution and
+                                    // shrink the booked remaining below the
+                                    // planned size (the PARTIAL-only growth guard
+                                    // above misses it when the slot is not yet
+                                    // PARTIAL). Re-prove against the LIVE master
+                                    // size; invalidating the stamp routes into
+                                    // the unstamped probe below, whose
+                                    // isEvacuationRotationAllowed also rejects
+                                    // growth and then falls through to the
+                                    // normal last-fill guard.
+                                    let stampPrecision: any = null;
+                                    try { stampPrecision = getPrecisionByOrderType(bot.manager.assets, orderType); } catch { stampPrecision = null; }
+                                    if (!isEvacuationSizeStillValid(newSize, Number((masterOrder as any)?.size), stampPrecision)) {
+                                        stampUsable = false;
+                                        bot.manager.logger.log(
+                                            `[LAST-FILL-GUARD] Stamped evacuation for ${action.id} -> ${action.newGridId} lost its size cover: ` +
+                                            `planned ${Format.formatAmount(newSize)} exceeds booked remaining ${Format.formatAmount(Number((masterOrder as any)?.size))} — re-proving live`,
                                             'warn'
                                         );
                                     }
@@ -3456,10 +3476,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                     fbPrice,
                                     fbType,
                                     bot.manager.assets,
-                                    (o: any) => {
-                                        const oid = o?.orderId || o?.chainOrderId;
-                                        return o && oid && !cancelOpIndexByOrderId.has(oid);
-                                    }
+                                    (o: any) => (orderUtils as any).isCrossingCheckCandidate(o, null, cancelOpIndexByOrderId)
                                 );
                                 if (fbCrossed) {
                                     bot.manager.logger.log(
@@ -3912,7 +3929,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             `[COW][UNCERTAIN] Poll-confirmed commit refused; adopting placed orders from chain`,
                             'warn'
                         );
-                        const pollAdopted = await adoptPlacedBatchFromChain(bot, chainOrders, '[COW][UNCERTAIN]');
+                        const pollAdopted = await adoptPlacedBatchFromChain(bot, chainOrders, '[COW][UNCERTAIN]', { placedContexts: opContexts, polledCreateIds: confirmation.confirmedChainIds });
                         if (!pollAdopted) {
                             bot.manager.logger.log(
                                 '[COW][UNCERTAIN] Poll-refused commit with unavailable chain adoption; keeping pending protection pending structural resync',
@@ -3939,7 +3956,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     // on a failed adoption would let the next cycle re-create the
                     // VIRTUAL slots as duplicate on-chain orders. Keep the
                     // protection and defer to a structural resync instead.
-                    const pollAdoptedOk = await adoptPlacedBatchFromChain(bot, chainOrders, '[COW][UNCERTAIN]');
+                    const pollAdoptedOk = await adoptPlacedBatchFromChain(bot, chainOrders, '[COW][UNCERTAIN]', { placedContexts: opContexts, polledCreateIds: confirmation.confirmedChainIds });
                     if (!pollAdoptedOk) {
                         bot.manager.logger.log(
                             '[COW][UNCERTAIN] Poll-confirmed commit with unavailable chain adoption; keeping pending protection pending structural resync',
@@ -4054,15 +4071,30 @@ async function requestStructuralResync(bot: any, reason: string, details: any = 
  * @param {any} mgr - bot.manager
  * @param {any} placedResults - broadcast result (has operation_results); null when unavailable
  * @param {any[]} placedContexts - opContexts (aligned with operation_results); null when unavailable
+ * @param {string[]|null} [extraCreateIds=null] - fresh CREATE chain ids from another
+ *   authoritative source (e.g. the uncertain-broadcast poll confirmation) when
+ *   no broadcast result exists; merged into createIds so the lagging-create
+ *   retry guards them
  * @returns {string[]} Unique, well-formed 1.7.x order ids
  */
-function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContexts: any): { masterIds: string[]; createIds: string[]; all: string[] } {
+function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContexts: any, extraCreateIds: any = null): { masterIds: string[]; createIds: string[]; all: string[] } {
     const masterIds = new Set<string>();
     const grid = mgr && mgr.grid;
     if (Array.isArray(grid)) {
         for (const slot of grid) {
             if (slot && slot.orderId && /^1\.7\.\d+$/.test(String(slot.orderId))) {
                 masterIds.add(String(slot.orderId));
+            }
+        }
+    }
+    // Master tracked ids live in the orders Map (mgr.grid is legacy and
+    // unset on OrderManager — without this the by-id set omits every
+    // pre-existing ACTIVE order and pass-1 phantom cleanup would virtualize
+    // them as fills on a partial snapshot).
+    if (mgr && mgr.orders instanceof Map) {
+        for (const slot of mgr.orders.values()) {
+            if (slot && (slot as any).orderId && /^1\.7\.\d+$/.test(String((slot as any).orderId))) {
+                masterIds.add(String((slot as any).orderId));
             }
         }
     }
@@ -4077,6 +4109,27 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
                 if (opResult && /^1\.7\.\d+$/.test(String(opResult))) {
                     createIds.add(String(opResult));
                 }
+            }
+        }
+    }
+    if (Array.isArray(extraCreateIds)) {
+        for (const id of extraCreateIds) {
+            if (id && /^1\.7\.\d+$/.test(String(id))) createIds.add(String(id));
+        }
+    }
+    // Existing chain ids referenced by non-create op contexts (cancel /
+    // rotation / size-update). Pre-existing orders whose absence is expected
+    // (cancels/fills in this batch), so they join the by-id set but never
+    // the lagging-create guard.
+    if (Array.isArray(placedContexts)) {
+        for (const ctx of placedContexts) {
+            if (!ctx || ctx.kind === 'create') continue;
+            const refs: any[] = [];
+            if (ctx.kind === 'cancel' && ctx.order) refs.push(ctx.order.orderId);
+            else if (ctx.kind === 'rotation' && ctx.rotation?.oldOrder) refs.push(ctx.rotation.oldOrder.orderId);
+            else if (ctx.kind === 'size-update' && ctx.updateInfo?.partialOrder) refs.push(ctx.updateInfo.partialOrder.orderId);
+            for (const id of refs) {
+                if (id && /^1\.7\.\d+$/.test(String(id))) masterIds.add(String(id));
             }
         }
     }
@@ -4107,6 +4160,10 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
  * @param {Object} [opts]
  * @param {any} [opts.placedResults] - broadcast result carrying operation_results
  * @param {any[]} [opts.placedContexts] - opContexts aligned with operation_results
+ * @param {string[]} [opts.polledCreateIds] - fresh CREATE chain ids confirmed by
+ *   the uncertain-broadcast poll (no broadcast result exists on that path);
+ *   routes the poll call sites through the by-id path with its lagging-create
+ *   retry instead of the unguarded window fallback
  * @returns {Promise<boolean>} true if master was adopted from the chain
  */
 /**
@@ -4140,17 +4197,21 @@ async function restoreBoundaryAfterAdoption(bot: any, workingBoundary: any): Pro
 }
 
 async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: string, opts: any = {}): Promise<boolean> {
-    const { placedResults = null, placedContexts = null } = opts || {};
+    const { placedResults = null, placedContexts = null, polledCreateIds = null } = opts || {};
     try {
         const mgr = bot.manager;
         const accountRef = bot.accountId || bot.account?.id || bot.account;
 
-        // PREFERRED: re-read the exact placed/existing orders by id. Only when we
-        // have the broadcast result (so the set includes the freshest CREATE ids);
-        // without it the by-id set would be incomplete and would wrongly sync
-        // master against a partial picture.
-        const { all: knownIds, createIds } = placedResults
-            ? collectKnownOnChainOrderIds(mgr, placedResults, placedContexts)
+        // PREFERRED: re-read the exact placed/existing orders by id. The by-id
+        // set needs the broadcast result (freshest CREATE ids), the
+        // poll-confirmed CREATE ids, or at minimum the contexts referencing
+        // existing chain orders — without any id hints the set would be
+        // incomplete and would wrongly sync master against a partial picture.
+        const haveIdHints = Boolean(placedResults)
+            || (Array.isArray(placedContexts) && placedContexts.length > 0)
+            || (Array.isArray(polledCreateIds) && polledCreateIds.length > 0);
+        const { all: knownIds, createIds } = haveIdHints
+            ? collectKnownOnChainOrderIds(mgr, placedResults, placedContexts, polledCreateIds)
             : { all: [], createIds: [] as string[] };
         if (knownIds.length > 0 && typeof chainOrders.batchReadOrders === 'function') {
             // Retry/backoff (fix #6): a fresh CREATE absent from the first read

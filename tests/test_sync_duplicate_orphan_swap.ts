@@ -60,6 +60,7 @@ function makeMgr(opts = {}) {
         shadowOrderIds: new Map(),
         _applyOrderUpdate: async (order: any, reason: string, _opts2: any) => {
             updateReasons.push(reason);
+            if ((opts as any).rejectReasons?.has(reason)) return false;
             orders.set(order.id, { ...(orders.get(order.id) || {}), ...order });
             return orders.get(order.id);
         }
@@ -216,13 +217,82 @@ async function testNoSwapOnLegitPartialFill() {
     console.log('\u2713 DUP-SWAP-004 passed');
 }
 
+async function testSwapRejectionKeepsOldBinding() {
+    console.log(' - Swap rejection: slot keeps old orderId, updatedOrders empty, swap candidate falls to pass 2...');
+    const mgr = makeMgr({
+        orders: [makeIncidentSlot()],
+        rejectReasons: new Set(['sync-pass1-duplicate-swap'])
+    });
+    const engine = new SyncEngine(mgr);
+
+    const chain = [
+        makeChainOrder('1.7.573974047', ORDER_TYPES.SELL, CHAIN_PRICE, FULL_SIZE, '3600000'),
+        makeChainOrder('1.7.573974029', ORDER_TYPES.SELL, CHAIN_PRICE, BOOKED_SIZE, '0')
+    ];
+    const result = await engine.syncFromOpenOrders(chain, { skipAccounting: true });
+
+    assert.ok(
+        mgr._updateReasons.includes('sync-pass1-duplicate-swap'),
+        'Swap must be attempted via sync-pass1-duplicate-swap'
+    );
+    const slot = mgr.orders.get('slot-140');
+    assert.strictEqual(slot.orderId, '1.7.573974047', 'Rejected rebind must keep the old orderId on the slot');
+    assert.strictEqual(slot.size, BOOKED_SIZE, 'Booked remaining size must be untouched');
+    assert.strictEqual(result.updatedOrders.length, 0, 'Rejected swap must not record any order update');
+    assert.ok(
+        !result.updatedOrders.some((o: any) => o.orderId === '1.7.573974029'),
+        'Swap candidate must not be marked matched'
+    );
+    // The swap candidate stays unmatched → pass 2 queues it for cancellation.
+    const cancel029 = mgr.ordersNeedingPriceCorrection.find((c: any) => c.chainOrderId === '1.7.573974029');
+    assert.ok(cancel029, 'Swap candidate must fall to pass 2 as an unmatched orphan');
+    assert.strictEqual(cancel029.cancelOnly, true, 'Pass-2 orphan handling must be cancel-only');
+    console.log('✓ DUP-SWAP-REJ-001 passed');
+}
+
+async function testFilledRejectionBooksNoFill() {
+    console.log(' - Filled rejection: ACTIVE slot fully consumed on chain, fill NOT booked, slot unchanged...');
+    const mgr = makeMgr({
+        orders: [{
+            id: 'slot-141',
+            type: ORDER_TYPES.SELL,
+            state: ORDER_STATES.ACTIVE,
+            price: SLOT_PRICE,
+            size: FULL_SIZE,
+            orderId: '1.7.573974111'
+        }],
+        rejectReasons: new Set(['sync-pass1-filled'])
+    });
+    const engine = new SyncEngine(mgr);
+
+    // Fully consumed on chain: nothing left for sale, but the order record is
+    // still (briefly) readable — parsed size 0 at the slot price.
+    const consumed = makeChainOrder('1.7.573974111', ORDER_TYPES.SELL, CHAIN_PRICE, FULL_SIZE, '3600000');
+    consumed.for_sale = '0';
+    const result = await engine.syncFromOpenOrders([consumed], { skipAccounting: true });
+
+    assert.ok(
+        mgr._updateReasons.includes('sync-pass1-filled'),
+        'Filled virtualization must be attempted via sync-pass1-filled'
+    );
+    assert.strictEqual(result.filledOrders.length, 0, 'Rejected virtualization must NOT book a fill');
+    assert.strictEqual(result.updatedOrders.length, 0, 'Rejected virtualization must NOT record an update');
+    const slot = mgr.orders.get('slot-141');
+    assert.strictEqual(slot.orderId, '1.7.573974111', 'Slot must keep its orderId');
+    assert.strictEqual(slot.size, FULL_SIZE, 'Slot must keep its booked size');
+    assert.strictEqual(slot.state, ORDER_STATES.ACTIVE, 'Slot must stay ACTIVE');
+    console.log('✓ DUP-SWAP-REJ-002 passed');
+}
+
 async function runTests() {
     console.log('Running Sync Engine Duplicate-Orphan Swap Tests...');
     await testMisTrackedDuplicateSwapsToSizeMatchingOrder();
     await testNoSwapWhenAlternativeSizeDiffers();
     await testNoSwapWhenTrackedOrderAbsentFromRead();
     await testNoSwapOnLegitPartialFill();
-    console.log('\u2713 Sync engine duplicate-orphan swap tests passed!');
+    await testSwapRejectionKeepsOldBinding();
+    await testFilledRejectionBooksNoFill();
+    console.log('✓ Sync engine duplicate-orphan swap tests passed!');
 }
 
 runTests().then(() => {

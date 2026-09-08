@@ -19,6 +19,7 @@
 const assert = require('assert');
 const {
     isEvacuationRotationAllowed,
+    isEvacuationSizeStillValid,
     isSlotIndexInGapBand,
     getSellStartIdx
 } = require('../modules/order/utils/math');
@@ -477,6 +478,27 @@ async function testEVAC019_PlanLevelOriginRoutesThroughProof() {
     console.log('✓ EVAC-019 passed');
 }
 
+async function testEVAC020_StampedSizeReproof() {
+    console.log('\n[EVAC-020] Stamped-size re-proof covers the plan-vs-booked TOCTOU...');
+    // Grown int size (an unprocessed fill shrank the booking below the plan)
+    // invalidates the stamp → live probe.
+    assert.strictEqual(isEvacuationSizeStillValid(100.00001, 100, 5), false, 'grown int size must re-prove live');
+    // Equal and shrunken sizes keep the stamp usable.
+    assert.strictEqual(isEvacuationSizeStillValid(100, 100, 5), true, 'equal size keeps the stamp');
+    assert.strictEqual(isEvacuationSizeStillValid(99.5, 100, 5), true, 'shrunken size keeps the stamp');
+    // Sub-quantum delta is invisible on chain: int-equal keeps the stamp
+    // (consistent with the live probe), while the float fallback stays strict.
+    assert.strictEqual(isEvacuationSizeStillValid(100.000000001, 100, 5), true, 'sub-quantum delta keeps the stamp (int semantics)');
+    assert.strictEqual(isEvacuationSizeStillValid(100.000000001, 100, null), false, 'sub-quantum delta refused under float fallback');
+    // Fail closed: a non-finite (or non-positive) booked remaining can never
+    // cover the plan → live probe.
+    assert.strictEqual(isEvacuationSizeStillValid(100, NaN, 5), false, 'non-finite booked must re-prove live');
+    assert.strictEqual(isEvacuationSizeStillValid(100, 0, 5), false, 'zero booked must re-prove live');
+    assert.strictEqual(isEvacuationSizeStillValid(100, -5, 5), false, 'negative booked must re-prove live');
+    assert.strictEqual(isEvacuationSizeStillValid(NaN, 100, 5), false, 'non-finite planned size fails closed');
+    console.log('✓ EVAC-020 passed');
+}
+
 async function runAllTests() {
     console.log('=== Gap-Evacuation Test Suite ===\n');
     await testEVAC001_AllowsSellOutwardNonGrowing();
@@ -498,6 +520,7 @@ async function runAllTests() {
     await testEVAC017_StampStaleUnderLiveGeometry();
     await testEVAC018_StampUsesPrecisionBitExactSize();
     await testEVAC019_PlanLevelOriginRoutesThroughProof();
+    await testEVAC020_StampedSizeReproof();
     console.log('\n=== All gap-evacuation tests passed! ===');
 }
 

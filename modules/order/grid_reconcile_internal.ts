@@ -10,7 +10,7 @@
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
 import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findCrossedOrder, resolveGapBand, isSlotInRail, priceSlotEqual, resolveBuyFloorUsdt, resolveBuyWindowMode } from './utils/math.js';
-import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlot, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection } from './utils/order.js';
+import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection } from './utils/order.js';
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -27,12 +27,15 @@ function computePlacementPriceCollision(manager: any, gridOrder: any): any {
 /**
  * Crossing-placement guard for startup reconcile placements (relocations
  * and creates): a placement at gridOrder.price must not cross an
- * opposite-side live order — either a master order or a still-unmatched
- * chain order (orphan). Phase-2's cancels-first ordering removes most
- * straddlers, but a FAILED cancel stays live on the chain AND in
- * manager.orders, so this check refuses to re-price or create across it
- * (incident class: a re-priced order self-traded against a live
- * opposite-side order during the broadcast window).
+ * opposite-side live order — a master order, a still-unmatched chain order
+ * (orphan), or a pending broadcast from an earlier uncertain batch.
+ * Phase-2's cancels-first ordering removes most straddlers, but a FAILED
+ * cancel stays live on the chain AND in manager.orders, so this check
+ * refuses to re-price or create across it (incident class: a re-priced
+ * order self-traded against a live opposite-side order during the
+ * broadcast window). Pending entries are visible via the shared candidate
+ * builder (slotId + order wrappers); their slot-id-only identity is
+ * accepted by the shared predicate.
  *
  * @param {Object} manager - OrderManager instance (orders Map, assets).
  * @param {Object} gridOrder - Target grid slot (price, type).
@@ -45,22 +48,13 @@ function computePlacementCrossing(manager: any, gridOrder: any, excludeChainOrde
     const price = gridOrder?.price;
     const type = gridOrder?.type;
     if (price == null || type == null) return null;
-    const candidates: any[] = manager.orders instanceof Map ? [...manager.orders.values()] : [];
-    if (Array.isArray(manager._lastUnmatchedChainOrders)) {
-        for (const o of manager._lastUnmatchedChainOrders) {
-            if (o && o.type != null && o.price != null) candidates.push(o);
-        }
-    }
+    const candidates: any[] = buildCrossingCheckCandidates(manager);
     return findCrossedOrder(
         candidates,
         price,
         type,
         manager.assets,
-        (o: any) => {
-            const oid = o?.orderId || o?.chainOrderId;
-            return o && oid && o.price != null
-                && (!excludeChainOrderId || oid !== excludeChainOrderId);
-        }
+        (o: any) => isCrossingCheckCandidate(o, excludeChainOrderId)
     );
 }
 
@@ -467,16 +461,16 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
     const createPrice = gridOrder.price;
 
     // CROSSING-PLACEMENT GUARD: a create must not cross an opposite-side
-    // live order (master or unmatched orphan) — see computePlacementCrossing.
+    // live order (master, unmatched orphan, or pending broadcast) — see computePlacementCrossing.
     // Checked BEFORE the same-price collision guard so a near-equal
     // opposite-side order is reported as a crossing, not a collision.
     const crossed = computePlacementCrossing(manager, gridOrder, null);
     if (crossed) {
         manager.logger?.log?.(
             `[_createOrderFromGrid] SKIP (STARTUP-CROSS-GUARD): Create for ${gridOrder.id} at ` +
-            `${Format.formatPrice6(createPrice)} crosses live ${crossed.type} ` +
-            `${crossed.id || crossed.chainOrderId || 'chain'} (${crossed.orderId || crossed.chainOrderId}) ` +
-            `@${Format.formatPrice6(crossed.price)}`,
+            `${Format.formatPrice6(createPrice)} crosses live ${crossed.type || crossed.order?.type} ` +
+            `${crossed.id || crossed.chainOrderId || crossed.slotId || 'chain'} (${crossed.orderId || crossed.chainOrderId || crossed.slotId}) ` +
+            `@${Format.formatPrice6(crossed.price ?? crossed.order?.price)}`,
             'warn'
         );
         return null;
@@ -1080,7 +1074,11 @@ async function _adoptPossiblyLandedCreate({
             const parsed = parseChainOrder(o, assets);
             if (!parsed || parsed.type !== gridOrder.type) continue;
             if (parsed.orderId && Array.from(manager.orders.values()).some((g: any) => g.orderId === parsed.orderId)) continue;
-            if (!chainOrderMatchesSlot(parsed, gridOrder, assets)) continue;
+            // Uncertain-adopt: the just-broadcast create may have landed with
+            // rounding-drifted price, so match within tolerance (clamped to
+            // ~2 quanta) — the strict matcher would miss it, leave the slot
+            // VIRTUAL, and cause a duplicate re-broadcast.
+            if (!chainOrderMatchesSlotWithTolerance(parsed, gridOrder, assets)) continue;
             matched = o;
             break;
         }
@@ -1297,14 +1295,14 @@ async function _executeStartupCreateGroupBatch({
         }
 
         // CROSSING-PLACEMENT GUARD: a create must not cross an opposite-side
-        // live order (master or unmatched orphan) — see computePlacementCrossing.
+        // live order (master, unmatched orphan, or pending broadcast) — see computePlacementCrossing.
         const crossed = computePlacementCrossing(manager, gridOrder, null);
         if (crossed) {
             logger?.log?.(
                 `Startup: Skip create ${plan.orderLabel} (STARTUP-CROSS-GUARD) - price ` +
-                `${Format.formatPrice6(createPrice)} crosses live ${crossed.type} ` +
-                `${crossed.id || crossed.chainOrderId || 'chain'} (${crossed.orderId || crossed.chainOrderId}) ` +
-                `@${Format.formatPrice6(crossed.price)}`,
+                `${Format.formatPrice6(createPrice)} crosses live ${crossed.type || crossed.order?.type} ` +
+                `${crossed.id || crossed.chainOrderId || crossed.slotId || 'chain'} (${crossed.orderId || crossed.chainOrderId || crossed.slotId}) ` +
+                `@${Format.formatPrice6(crossed.price ?? crossed.order?.price)}`,
                 'warn'
             );
             continue;
@@ -1692,11 +1690,12 @@ async function _reconcileStartupSide({
         const sidePrecision = orderType === ORDER_TYPES.SELL ? manager.assets?.assetA?.precision : manager.assets?.assetB?.precision;
         for (const slotOrder of manager.orders.values()) {
             if (!slotOrder || !slotOrder.id) continue;
-            // Refill only TRUE holes: an empty VIRTUAL slot without any
-            // orderId. A VIRTUAL slot carrying a stale orderId is a phantom
-            // (sync error) — never a refill target. A CANCELED slot may
-            // still have a cancel broadcast in flight (double-place risk),
-            // and ACTIVE/PARTIAL slots are placed by definition.
+            // Refill only TRUE holes: VIRTUAL without orderId. A VIRTUAL
+            // slot carrying a stale orderId is a phantom (sync error) —
+            // never a refill target. A slot whose cancel is in flight is
+            // still ACTIVE/PARTIAL — excluded by the state check, and
+            // counted as matched on-grid (_countActiveOnGrid), so it never
+            // reaches this scan as a candidate.
             if (slotOrder.state !== ORDER_STATES.VIRTUAL) continue;
             if (slotOrder.orderId) continue;
             if (desiredSlotIds.has(slotOrder.id) || vacatedRefillPlanned.has(slotOrder.id)) continue;

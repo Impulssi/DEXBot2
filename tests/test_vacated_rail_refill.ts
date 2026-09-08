@@ -1,5 +1,5 @@
 /**
- * Vacated-rail refill test suite (Phase 4, vacate+create atomic) — VRR-1..5.
+ * Vacated-rail refill test suite (Phase 4, vacate+create atomic) — VRR-1..7.
  *
  * Incident class: a startup reconcile re-map UPDATE points an unmatched
  * chain order onto a chosen rail slot, vacating the price level the order
@@ -185,18 +185,23 @@ async function testVRR5_VacatedSlotAlreadyDesiredGetsNoDouble() {
     console.log('✓ VRR-5 passed');
 }
 
-async function testVRR6_CanceledSlotNotRefilled() {
-    console.log('\n[VRR-6] CANCELED slot (cancel possibly in flight) is not a refill target...');
+async function testVRR6_CancelInFlightSlotStaysMatched() {
+    console.log('\n[VRR-6] Cancel-in-flight slot (ACTIVE + orderId) stays matched — no re-map, no refill...');
     const manager = createManager();
     manager.orders.set('slot-146', slot('slot-146', ORDER_TYPES.SELL, ORDER_STATES.ACTIVE, 99, 10, '1.7.146'));
     manager.orders.set('slot-147', slot('slot-147', ORDER_TYPES.SELL, ORDER_STATES.VIRTUAL, 100, 10));
-    // slot-148: CANCELED with stale booked size — a cancel broadcast may
-    // still be in flight, so refilling it would double-place the level.
-    manager.orders.set('slot-148', slot('slot-148', ORDER_TYPES.SELL, ORDER_STATES.CANCELED, 101, 10));
+    // slot-148: ACTIVE with an orderId whose cancel is still in flight — the
+    // level is occupied, so the chain order at 101 must NOT trigger a re-map
+    // onto slot-147 plus a refill CREATE (that would double-place 101).
+    // Reachable mechanics: _countActiveOnGrid counts slot-148 (ACTIVE with
+    // orderId) → matchedOnGrid=2 → neededSlots=0 → no re-map → the refill
+    // scan never runs.
+    manager.orders.set('slot-148', slot('slot-148', ORDER_TYPES.SELL, ORDER_STATES.ACTIVE, 101, 10, '1.7.148'));
     const chain = chainSell('1.7.100', 101, 10);
     const { plannedCreates, plannedUpdates } = await runSide(manager, chain);
-    assert.strictEqual(plannedUpdates.length, 1, 're-map onto slot-147 proceeds');
-    assert.strictEqual(plannedCreates.length, 0, 'CANCELED slot must not be refilled (only VIRTUAL holes)');
+    assert.strictEqual(plannedUpdates.length, 0, 'level still occupied → no re-map');
+    const refillCreates = plannedCreates.filter((c: any) => c.recovery?.source === 'startupVacatedRailRefill');
+    assert.strictEqual(refillCreates.length, 0, 'no startupVacatedRailRefill create (no double-place at 101)');
     console.log('✓ VRR-6 passed');
 }
 
@@ -222,7 +227,7 @@ async function runAllTests() {
     await testVRR3_GhostPriceGetsNoRefill();
     await testVRR4_InBandVacateGetsNoRefill();
     await testVRR5_VacatedSlotAlreadyDesiredGetsNoDouble();
-    await testVRR6_CanceledSlotNotRefilled();
+    await testVRR6_CancelInFlightSlotStaysMatched();
     await testVRR7_PhantomOrderIdNotRefilled();
     console.log('\n=== All vacated-rail refill tests passed! ===');
 }

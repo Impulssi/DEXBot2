@@ -52,7 +52,8 @@ import {
     getSellStartIdx,
     isSlotIndexInGapBand,
     isEvacuationRotationAllowed,
-    clamp
+    clamp,
+    priceSlotEqual
 } from './math.js';
 import { parseSlotIndex } from './slot.js';
 import {
@@ -853,15 +854,15 @@ function validateCreateTargetSlots(actions: any, orders: any, _assets: any = nul
         }
 
         if (action.order?.price != null && action.order?.type != null) {
-            const liveSlot = orderMap.get(targetId);
-            const livePrice = liveSlot && Number.isFinite(Number(liveSlot.price))
-                ? Number(liveSlot.price)
-                : null;
-            const effectivePrice = livePrice !== null ? livePrice : Number(action.order.price);
+            // Key on the BROADCAST price (action.order.price — the price
+            // actually placed on chain), never the live slot price: layer-5
+            // guards the batch being broadcast, and the chain-orphan price
+            // fallback below compares the same broadcast price against the
+            // orphan's chain price (correct collision semantics there too).
             createEntries.push({
                 targetId,
                 action,
-                price: effectivePrice,
+                price: Number(action.order.price),
                 size: Number(action.order.size || 0),
                 type: action.order.type,
             });
@@ -878,20 +879,28 @@ function validateCreateTargetSlots(actions: any, orders: any, _assets: any = nul
                     violations.push({ targetId: entry.targetId, currentOrderId: entry.targetId, currentType: entry.type, currentState: 'CHAIN_ORPHAN', reason: 'chain_orphan_collision' });
                 }
             }
-            // Price-based fallback when candidates have no slotId (legacy sync without genesis slot mapping)
-            if (chainSlotIds.size === 0 && _assets) {
-                try {
-                    const { priceSlotEqual } = require('./math.js');
-                    for (const entry of createEntries) {
-                        if (violations.some(v => v.targetId === entry.targetId)) continue;
-                        for (const u of validChainCandidates) {
-                            if (u.price == null || entry.price == null) continue;
-                            if (u.type && entry.type && u.type !== entry.type) continue;
-                            const precision = entry.type === 'sell' ? _assets.assetA?.precision : _assets.assetB?.precision;
-                            try { if (priceSlotEqual(u.price, entry.price, precision)) { violations.push({ targetId: entry.targetId, currentOrderId: u.chainOrderId, currentType: entry.type, currentState: 'CHAIN_ORPHAN', reason: 'chain_orphan_collision' }); break; } } catch {}
-                        }
+            // Price-based fallback, PER CANDIDATE: candidates WITH a slot id
+            // already matched by slot above; candidates WITHOUT one (e.g.
+            // slot-unknown-* cancelOnly orphans from sync_engine) can never
+            // match by slot, so price-check ONLY those — regardless of
+            // whether other candidates carry slot ids. Gating the fallback
+            // on chainSlotIds.size === 0 skipped the price check for a mixed
+            // set entirely, letting a CREATE collide with a slot-unknown
+            // chain order sitting at the same price level (duplicate order).
+            if (_assets) {
+                // priceSlotEqual is a top-level import (the old inline
+                // require('./math.js') threw under ESM and the catch-all
+                // below silently disabled the whole fallback).
+                const slotlessCandidates = validChainCandidates.filter((u: any) => !(u.chainSlotId || u.candidateSlotId));
+                for (const entry of createEntries) {
+                    if (violations.some(v => v.targetId === entry.targetId)) continue;
+                    for (const u of slotlessCandidates) {
+                        if (u.price == null || entry.price == null) continue;
+                        if (u.type && entry.type && u.type !== entry.type) continue;
+                        const precision = entry.type === 'sell' ? _assets.assetA?.precision : _assets.assetB?.precision;
+                        try { if (priceSlotEqual(u.price, entry.price, precision)) { violations.push({ targetId: entry.targetId, currentOrderId: u.chainOrderId, currentType: entry.type, currentState: 'CHAIN_ORPHAN', reason: 'chain_orphan_collision' }); break; } } catch {}
                     }
-                } catch {}
+                }
             }
         }
         // Same-batch duplicate slot
@@ -915,7 +924,18 @@ function validateCreateTargetSlots(actions: any, orders: any, _assets: any = nul
         const priceOwner = new Map<string, string>();
         for (const entry of createEntries) {
             const priceNum = Number(entry.price);
-            if (!Number.isFinite(priceNum)) continue;
+            if (!Number.isFinite(priceNum)) {
+                // Fail closed: an unpriceable CREATE cannot be proven
+                // collision-free, so it is rejected, not skipped.
+                violations.push({
+                    targetId: entry.targetId,
+                    currentOrderId: null,
+                    currentType: entry.type,
+                    currentState: 'CREATE',
+                    reason: 'create_price_invalid',
+                });
+                continue;
+            }
             // Key on the on-chain integer repr when the side precision is
             // known (bit-exact: prices that quantize to the same chain int
             // ARE the same price on the DEX); float fallback preserves the

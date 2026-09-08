@@ -97,7 +97,7 @@
 
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
 import * as Format from './format.js';
-import { lookupAsset } from './utils/system.js';
+import { lookupAsset, sleep, resolveAccountRef } from './utils/system.js';
 import * as chainOrders from '../chain_orders.js';
 import * as client from '../bitshares_client.js';
 const { BitShares } = client;
@@ -133,6 +133,63 @@ import {
     resolveProcessedFillPersistenceMode
 } from './processed_fill_store.js';
 import { getErrorMessage } from '../utils/errors.js';
+
+/**
+ * Confirming re-read for the suspect-empty-read guard: after
+ * SYNC_SUSPECT_EMPTY_READ_LIMIT consecutive 0-order snapshots with placed
+ * grid orders still present, one more read after
+ * SYNC_EMPTY_READ_CONFIRM_DELAY_MS decides whether the account is genuinely
+ * empty. A lagging node serves consecutive empties, so the count alone is
+ * not authoritative.
+ *
+ * Test seam: when manager._confirmEmptyReadFn is a function it is used
+ * instead of the chain read (must resolve to a raw order array, or null
+ * when the re-read itself is ambiguous). A throwing seam is 'ambiguous'.
+ *
+ * @param {Object} mgr - OrderManager instance (accountId, config, logger).
+ * @returns {Promise<string>} 'confirmed' (still empty — accept),
+ *   'contradicted' (non-empty — reset counter, refuse this round),
+ *   'ambiguous' (truncated/read-error — refuse, re-confirm next round), or
+ *   'unavailable' (no chain identity or dry-run — caller falls back to the
+ *   legacy count-based acceptance, preserving unit-test semantics).
+ */
+async function confirmSuspectEmptyRead(mgr: any): Promise<string> {
+    try {
+        if (mgr?.config?.dryRun) return 'unavailable';
+        const seam = (mgr as any)?._confirmEmptyReadFn;
+        const delay = Math.max(0, Number(TIMING.SYNC_EMPTY_READ_CONFIRM_DELAY_MS) || 0);
+        if (typeof seam === 'function') {
+            if (delay > 0) await sleep(delay);
+            let fresh: any = null;
+            try {
+                fresh = await seam();
+            } catch {
+                return 'ambiguous';
+            }
+            if (fresh === null || fresh === undefined) return 'ambiguous';
+            if (Array.isArray(fresh) && fresh.length > 0) return 'contradicted';
+            return 'confirmed';
+        }
+        let accountRef: string | null = null;
+        try {
+            accountRef = resolveAccountRef(mgr, null as any);
+        } catch {
+            return 'unavailable';
+        }
+        if (!accountRef) return 'unavailable';
+        if (delay > 0) await sleep(delay);
+        const fresh = await (chainOrders as any).readOpenOrdersGuarded(chainOrders, accountRef, {
+            log: (message: string, level: any) => mgr?.logger?.log?.(message, level),
+            label: 'SYNC-CONFIRM',
+            detail: 'suspect-empty confirm re-read',
+        });
+        if (fresh === null) return 'ambiguous';
+        if (Array.isArray(fresh) && fresh.length > 0) return 'contradicted';
+        return 'confirmed';
+    } catch {
+        return 'ambiguous';
+    }
+}
 
 function describeNearestAdoptionCandidates(mgr: any, chainOrder: any, precision: any, calcTolerance: any, matchedGridOrderIds: Set<string> | null = null) {
     if (!mgr?.orders || !chainOrder || typeof precision !== 'number') return 'candidate diagnostics unavailable';
@@ -261,7 +318,15 @@ async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, cha
         } else {
             const spreadOrder = convertToSpreadPlaceholder(bestMatch);
             const applied = await mgr._applyOrderUpdate(spreadOrder, 'sync-pass2-filled', { skipAccounting: skipAccounting, fee: 0 });
-            if (applied === false) return false;
+            if (applied === false) {
+                // Rejected adoption must not poison the slot for the next
+                // chain order: the slot was marked matched above, so release
+                // it — B's adoption re-fails the same validation and gets
+                // the existing cancelOnly handling if the rejection was
+                // slot-specific.
+                matchedGridOrderIds.delete(bestMatch.id);
+                return false;
+            }
             filledOrders.push({ ...bestMatch });
             updatedOrders.push(spreadOrder);
             chainOrderIdsOnGrid.add(chainOrderId);
@@ -271,7 +336,12 @@ async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, cha
         bestMatch.state = ORDER_STATES.PARTIAL;
     }
     const applied = await mgr._applyOrderUpdate(bestMatch, 'sync-pass2-orphan', { skipAccounting: skipAccounting, fee: 0 });
-    if (applied === false) return false;
+    if (applied === false) {
+        // Same un-poisoning as the filled path above: the slot counts as
+        // matched only once the update lands.
+        matchedGridOrderIds.delete(bestMatch.id);
+        return false;
+    }
     updatedOrders.push(bestMatch);
     chainOrderIdsOnGrid.add(chainOrderId);
     return true;
@@ -616,7 +686,8 @@ class SyncEngine {
         // ("phantom" resets). Refuse to reconcile on a
         // suspect empty; the guard is self-expiring: after
         // TIMING.SYNC_SUSPECT_EMPTY_READ_LIMIT consecutive empty reads the
-        // account really is empty and the sync accepts it. Any non-empty read
+        // account really is empty and the sync accepts it — but only after one
+        // confirming re-read (see below). Any non-empty read
         // resets the counter.
         if (parsedChainOrders.size === 0) {
             const gridOrderIds = Array.from(mgr.orders.values() as any[]).filter((o: any) => o?.orderId).length;
@@ -634,8 +705,40 @@ class SyncEngine {
                     );
                     return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
                 }
+                // Limit reached: a lagging node serves CONSECUTIVE 0-order
+                // snapshots, so the count alone is not authoritative. Require
+                // one confirming re-read after SYNC_EMPTY_READ_CONFIRM_DELAY_MS
+                // before reconciling to empty; a contradicted re-read
+                // (non-empty) resets the counter and refuses this round (the
+                // next sync reconciles against the fresh snapshot), while an
+                // ambiguous re-read (truncated/read-error) refuses and retries
+                // the confirm on the next empty round.
+                const confirm = await confirmSuspectEmptyRead(mgr);
+                if (confirm === 'contradicted') {
+                    mgr.logger?.log?.(
+                        `[SYNC] Suspect empty read contradicted by confirm re-read with ${gridOrderIds} grid orderIds — ` +
+                        `resetting empty-read counter; reconciling on the next non-empty sync`,
+                        'warn'
+                    );
+                    (mgr as any)._suspectEmptyReads = { count: 0, firstAt: 0 };
+                    return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
+                }
+                if (confirm === 'ambiguous') {
+                    mgr.logger?.log?.(
+                        `[SYNC] Suspect empty read confirm re-read ambiguous with ${gridOrderIds} grid orderIds — ` +
+                        `refusing reconciliation; re-confirming on the next empty read`,
+                        'warn'
+                    );
+                    (mgr as any)._suspectEmptyReads = { count: limit, firstAt: suspect.firstAt || Date.now() };
+                    return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
+                }
+                // 'confirmed' (still empty on re-read) or 'unavailable' (no
+                // chain identity / dry-run — legacy count-based acceptance,
+                // preserving unit-test semantics): reconcile to empty.
                 mgr.logger?.log?.(
-                    `[SYNC] Empty read confirmed after ${suspect.count} consecutive attempts — reconciling to empty account`,
+                    `[SYNC] Empty read confirmed after ${suspect.count} consecutive attempts` +
+                    (confirm === 'unavailable' ? ' (no chain identity for confirm re-read)' : ' (+ confirming re-read)') +
+                    ` — reconciling to empty account`,
                     'warn'
                 );
                 (mgr as any)._suspectEmptyReads = { count: 0, firstAt: 0 };
@@ -897,9 +1000,20 @@ class SyncEngine {
                             && toFiniteNumber(reboundOrder.rawOnChain?.for_sale, 0) > 0) {
                             reboundOrder.state = ORDER_STATES.PARTIAL;
                         }
+                        const applied = await mgr._applyOrderUpdate(reboundOrder, 'sync-pass1-duplicate-swap', { skipAccounting: skipAccounting, fee: 0 });
+                        if (applied === false) {
+                            // Rejected rebind: the slot keeps its old binding
+                            // (set ops must run only after the apply lands), so
+                            // the old orderId stays matched on-grid and the swap
+                            // candidate stays unmatched → pass 2 cancels it.
+                            mgr.logger?.log?.(
+                                `[SYNC] Size tiebreak for ${gridOrder.id}: rebind to ${swapMatch.id} rejected — slot keeps ${gridOrder.orderId}; duplicate falls to pass 2`,
+                                'warn'
+                            );
+                            continue;
+                        }
                         chainOrderIdsOnGrid.delete(gridOrder.orderId);
                         chainOrderIdsOnGrid.add(swapMatch.id);
-                        await mgr._applyOrderUpdate(reboundOrder, 'sync-pass1-duplicate-swap', { skipAccounting: skipAccounting, fee: 0 });
                         updatedOrders.push(reboundOrder);
                         mgr.logger?.log?.(
                             `[SYNC] Size tiebreak for ${gridOrder.id}: tracked order ${gridOrder.orderId} ` +
@@ -927,10 +1041,28 @@ class SyncEngine {
                         updatedOrder.state = (chainSizeInt < currentSizeInt)
                             ? ORDER_STATES.PARTIAL
                             : gridOrder.state;
-                        await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', { skipAccounting: skipAccounting, fee: 0 });
+                        const partialApplied = await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', { skipAccounting: skipAccounting, fee: 0 });
+                        if (partialApplied === false) {
+                            // Rejected resize: the slot keeps its booked size;
+                            // divergence re-detects on the next sync.
+                            mgr.logger?.log?.(
+                                `[SYNC] Partial-size update for ${gridOrder.id} rejected — slot keeps booked size ${gridOrder.size}`,
+                                'warn'
+                            );
+                        }
                     } else {
                         const spreadOrder = convertToSpreadPlaceholder(gridOrder);
-                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass1-filled', { skipAccounting: skipAccounting, fee: 0 });
+                        const filledApplied = await mgr._applyOrderUpdate(spreadOrder, 'sync-pass1-filled', { skipAccounting: skipAccounting, fee: 0 });
+                        if (filledApplied === false) {
+                            // Rejected virtualization must not book a fill:
+                            // neither the filled order nor the placeholder
+                            // update leaves this path.
+                            mgr.logger?.log?.(
+                                `[SYNC] Filled virtualization for ${gridOrder.id} rejected — fill NOT booked`,
+                                'error'
+                            );
+                            continue;
+                        }
                         // Push the filled order with its REAL side (chain order
                         // type), not the SPREAD placeholder: downstream fill
                         // processing (deriveTargetBoundary) derives boundary
@@ -983,7 +1115,17 @@ class SyncEngine {
                 const currentGridOrder = mgr.orders.get(gridOrder.id) || gridOrder;
                 const hadOrderId = Boolean(currentGridOrder?.orderId);
                 const spreadOrder = convertToSpreadPlaceholder(currentGridOrder);
-                await mgr._applyOrderUpdate(spreadOrder, 'sync-cleanup-phantom', { skipAccounting: skipAccounting, fee: 0 });
+                const phantomApplied = await mgr._applyOrderUpdate(spreadOrder, 'sync-cleanup-phantom', { skipAccounting: skipAccounting, fee: 0 });
+                if (phantomApplied === false) {
+                    // Rejected virtualization books no phantom fill: the slot
+                    // keeps its order and the disappearance re-detects next
+                    // sync.
+                    mgr.logger?.log?.(
+                        `[SYNC] Phantom cleanup for ${gridOrder.id} rejected — fill NOT booked`,
+                        'warn'
+                    );
+                    continue;
+                }
 
                 // Only genuine disappearances (had orderId) count as fills.
                 if (hadOrderId) {
@@ -1030,6 +1172,19 @@ class SyncEngine {
                 const slotId = `slot-${idx}`;
                 const gapSlots = genesis.gapSlots ?? (mgr as any)._gapSlots ?? 0;
                 const boundaryIdx = (mgr as any).boundaryIdx;
+                // Pre-boundary sync: gap geometry is unknown, so adoption is
+                // deferred entirely — touch nothing (no adopt, no cancelOnly).
+                // The orphan stays visible to the crossing guards and the
+                // validate orphan layer via _lastUnmatchedChainOrders and is
+                // re-evaluated once the boundary commits. Accepted cost: a
+                // legitimate in-rail orphan waits one sync cycle
+                // post-boundary-commit before adoption. Strictly better than
+                // adopting a gap stray into the wrong slot.
+                if (boundaryIdx == null || !Number.isFinite(Number(boundaryIdx))) {
+                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'boundary-unknown-deferred', candidateSlotId: slotId });
+                    mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: boundary unknown, deferred until boundary commits (nearest slot ${slotId})`, 'warn');
+                    continue;
+                }
                 // Duplicate-price guard becomes slotId equality: if placed order already occupies this slot
                 const occupying = mgr.orders.get(slotId);
                 if (occupying && isOrderPlaced(occupying) && occupying.type === chainOrder.type) {
@@ -1039,8 +1194,9 @@ class SyncEngine {
                     queueCorrection({ gridOrder: occupying, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
                     continue;
                 }
-                // Gap exclusion: nearest slot in SPREAD gap → no adopt. When boundaryIdx == null (pre-boundary sync) the gap is unknown so we allow adoption — the next reconcile will relocate gap stray per §10 table's cancelOnly intent (documented hole).
-                if (boundaryIdx != null && Number.isFinite(Number(boundaryIdx))) {
+                // Gap exclusion: nearest slot in SPREAD gap → no adopt (boundary
+                // is known here — the pre-boundary case continued above).
+                {
                     const inRail = isSlotInRail(boundaryIdx, gapSlots, chainOrder.type, { id: slotId } as any);
                     if (!inRail) {
                         unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot', candidateSlotId: slotId });
