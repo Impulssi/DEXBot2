@@ -20,6 +20,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { formatCurrency } from '../modules/order/format.js';
+import { isDeepShelfId } from '../modules/order/utils/math.js';
 import { resolveConfiguredPriceBound } from '../modules/order/utils/order.js';
 import { ORDER_TYPES, ORDER_STATES, MARKET_ADAPTER } from '../modules/constants.js';
 import { applyAsymmetricBounds } from '../market_adapter/core/asymmetric_bounds.js';
@@ -453,7 +454,11 @@ function analyzeOrder(botData: any, config: any, botKey: string): any {
    * and optional spread slots. Separation enables independent analysis.
    */
   const boundaryIdx = botData.boundaryIdx;
-  const buySlots = grid.filter((s: any, i: any) => i <= boundaryIdx && s.type === ORDER_TYPES.BUY);
+  // Deep shelf ids live outside the slot-N index scheme (below slot-0), so
+  // index-based rail slices miss them — include explicitly everywhere buys
+  // are collected, otherwise the shelf is invisible in this report.
+  const isDeep = (s: any) => isDeepShelfId(s?.id);
+  const buySlots = grid.filter((s: any, i: any) => (i <= boundaryIdx || isDeep(s)) && s.type === ORDER_TYPES.BUY);
   const sellSlots = grid.filter((s: any, i: any) => i > boundaryIdx && s.type === ORDER_TYPES.SELL);
   const spreadSlots = grid.filter((s: any) => s.type === ORDER_TYPES.SPREAD);
 
@@ -481,10 +486,13 @@ function analyzeOrder(botData: any, config: any, botKey: string): any {
   // design (a partially-placed grid IS partially masked); it is not a bug, but
   // the output should be read with that caveat in mind.
   const hasOrderId = (s: any) => !!(s && s.orderId);
-  const placedBuys = grid.slice(0, boundaryIdx + 1).filter((s: any) => s.type === ORDER_TYPES.BUY && hasOrderId(s));
-  const placedSells = grid.slice(boundaryIdx + 1).filter((s: any) => s.type === ORDER_TYPES.SELL && hasOrderId(s));
-  const geoBuy = grid.slice(0, boundaryIdx + 1).filter((s: any) => s.type === ORDER_TYPES.BUY);
-  const geoSell = grid.slice(boundaryIdx + 1).filter((s: any) => s.type === ORDER_TYPES.SELL);
+  const railBuys = grid.slice(0, boundaryIdx + 1);
+  const railSells = grid.slice(boundaryIdx + 1);
+  const deepBuys = grid.filter((s: any) => isDeep(s));
+  const placedBuys = [...railBuys, ...deepBuys].filter((s: any) => s.type === ORDER_TYPES.BUY && hasOrderId(s));
+  const placedSells = railSells.filter((s: any) => s.type === ORDER_TYPES.SELL && hasOrderId(s));
+  const geoBuy = [...railBuys, ...deepBuys].filter((s: any) => s.type === ORDER_TYPES.BUY);
+  const geoSell = railSells.filter((s: any) => s.type === ORDER_TYPES.SELL);
   const bestBuySlot = placedBuys.length
     ? placedBuys.reduce((a: any, b: any) => (b.price > a.price ? b : a))
     : (geoBuy.length ? geoBuy.reduce((a: any, b: any) => (b.price > a.price ? b : a)) : (grid[boundaryIdx] || null));
@@ -596,6 +604,12 @@ function analyzeOrder(botData: any, config: any, botKey: string): any {
       buy: buySlots,
       sell: sellSlots
     },
+    // Deep shelf (dip-insurance BUYs above the reserve floor), top-first.
+    // Carried separately so the report can render its own row.
+    deepShelf: deepBuys
+        .slice()
+        .sort((a: any, b: any) => Number(b.price) - Number(a.price))
+        .map((s: any) => ({ id: s.id, price: Number(s.price), size: Number(s.size) || 0, state: s.state, orderId: s.orderId || null })),
     // Target active orders from config
     activeOrdersTarget: config ? config.activeOrders : null,
     // Bot fund allocation settings from config (normalized to strings for
@@ -1359,6 +1373,15 @@ function formatAnalysis(analysis: any): string {
   lines.push(
     `${slotsPrefix}${colors.buy}${buyLabel}${colors.reset}${' '.repeat(spreadLabelSpacing1)}${spreadLabel}${' '.repeat(Math.max(1, sellLabelSpacing2))}${colors.sell}${sellLabel}${colors.reset}`
   );
+
+  // Deep shelf row (dip-insurance BUYs above the reserve floor). Shown only
+  // when the shelf exists in the analyzed grid.
+  if (Array.isArray(analysis.deepShelf) && analysis.deepShelf.length > 0) {
+    const deepTxt = analysis.deepShelf
+        .map((d: any) => `${d.id} @${formatCurrency(d.price)} x${Number(d.size).toFixed(2)}${d.orderId ? '' : ' (virtual)'}`)
+        .join(', ');
+    lines.push(`    Deep:  ${colors.buy}${deepTxt}${colors.reset}`);
+  }
 
   /**
    * Fund Allocation Breakdown
