@@ -604,6 +604,10 @@ function analyzeOrder(botData: any, config: any, botKey: string): any {
       buy: buySlots,
       sell: sellSlots
     },
+    // Deep shelf summary for the Active block (target from config, actual
+    // from the analyzed grid). Shown as its own "Deep: x/y" row.
+    deepActive: deepBuys.filter((s: any) => s.type === ORDER_TYPES.BUY && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL)).length,
+    deepTarget: Math.max(0, Math.floor(Number(config?.buyDeepCount) || 0)),
     // Deep shelf (dip-insurance BUYs above the reserve floor), top-first.
     // Carried separately so the report can render its own row.
     deepShelf: deepBuys
@@ -1281,6 +1285,11 @@ function formatAnalysis(analysis: any): string {
     const maxSellWidth = Math.max(...sellValues.map((v: any) => stripColorCodes(v).length));
 
     lines.push(`   Active: ${(buyActual + '/' + buyTarget).padEnd(maxBuyWidth)} ${colors.buy}buy${colors.reset} | ${(sellActual + '/' + sellTarget).padEnd(maxSellWidth)} ${colors.sell}sell${colors.reset}`);
+    // Deep shelf summary directly under Active (shown when configured or
+    // present, so "0/3" is visible before first placement too).
+    if (Number(analysis.deepTarget) > 0 || Number(analysis.deepActive) > 0) {
+      lines.push(`   Deep:   ${(analysis.deepActive + '/' + analysis.deepTarget).padEnd(maxBuyWidth)} ${colors.buy}buy${colors.reset}`);
+    }
     lines.push(``);
     const weightLine = formatWeightLine(analysis.weightDistribution, analysis.dynamicWeight, maxBuyWidth, maxSellWidth);
     if (weightLine) {
