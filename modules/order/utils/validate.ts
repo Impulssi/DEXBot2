@@ -50,6 +50,7 @@ import {
     getPrecisionByOrderType,
     getDoubleDustThreshold,
     getSellStartIdx,
+    isDeepShelfId,
     isSlotIndexInGapBand,
     isEvacuationRotationAllowed,
     clamp,
@@ -208,6 +209,7 @@ function calculateRequiredFunds(grid: any, precisions: Record<string, any> = {})
 
     let buyRequiredInt = 0;
     let sellRequiredInt = 0;
+    let deepBuyRequiredInt = 0;
 
     for (const order of grid.values()) {
         const size = toFiniteNumber(order.size ?? order.amount);
@@ -217,7 +219,14 @@ function calculateRequiredFunds(grid: any, precisions: Record<string, any> = {})
 
         if (isActive && isOrderOnChain(order)) {
             if (order.type === ORDER_TYPES.BUY) {
-                buyRequiredInt += floatToBlockchainInt(size, buyPrecision);
+                // Deep shelf is dip insurance outside the allocation: tracked
+                // separately so manual sizes may exceed the Buy-funds level
+                // (the wallet total still caps everything below).
+                if (isDeepShelfId(order.id)) {
+                    deepBuyRequiredInt += floatToBlockchainInt(size, buyPrecision);
+                } else {
+                    buyRequiredInt += floatToBlockchainInt(size, buyPrecision);
+                }
             } else if (order.type === ORDER_TYPES.SELL) {
                 sellRequiredInt += floatToBlockchainInt(size, sellPrecision);
             }
@@ -227,6 +236,7 @@ function calculateRequiredFunds(grid: any, precisions: Record<string, any> = {})
     return {
         buyInt: buyRequiredInt,
         sellInt: sellRequiredInt,
+        deepBuyInt: deepBuyRequiredInt,
         buy: blockchainToFloat(buyRequiredInt, buyPrecision),
         sell: blockchainToFloat(sellRequiredInt, sellPrecision)
     };
@@ -263,6 +273,7 @@ function validateWorkingGridFunds(workingGrid: any, projectedFunds: any, precisi
     const availableBuyInt = floatToBlockchainInt(availableBuy, buyPrecision);
     const availableSellInt = floatToBlockchainInt(availableSell, sellPrecision);
 
+    // Rail protection is unchanged: non-shelf BUYs must fit the allocation.
     if (required.buyInt > availableBuyInt) {
         const requiredBuyFloat = blockchainToFloat(required.buyInt, buyPrecision);
         const availableBuyFloat = blockchainToFloat(availableBuyInt, buyPrecision);
@@ -272,6 +283,24 @@ function validateWorkingGridFunds(workingGrid: any, projectedFunds: any, precisi
             available: availableBuyFloat,
             deficit: blockchainToFloat(required.buyInt - availableBuyInt, buyPrecision)
         });
+    }
+
+    // Deep shelf may exceed the allocation (manual sizes), but never the
+    // wallet total — beyond that the chain could not fund the orders anyway.
+    const deepBuyInt = Number(required.deepBuyInt) || 0;
+    if (deepBuyInt > 0) {
+        const chainTotalBuy = toFiniteNumber(projectedFunds?.chainTotalBuy);
+        const totalCapInt = Number.isFinite(chainTotalBuy)
+            ? floatToBlockchainInt(chainTotalBuy, buyPrecision)
+            : availableBuyInt;
+        if (required.buyInt + deepBuyInt > totalCapInt) {
+            shortfalls.push({
+                asset: assets?.assetB?.symbol || 'buyAsset',
+                required: blockchainToFloat(required.buyInt + deepBuyInt, buyPrecision),
+                available: blockchainToFloat(totalCapInt, buyPrecision),
+                deficit: blockchainToFloat(required.buyInt + deepBuyInt - totalCapInt, buyPrecision)
+            });
+        }
     }
 
     if (required.sellInt > availableSellInt) {

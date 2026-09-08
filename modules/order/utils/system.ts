@@ -1141,6 +1141,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                             railSlotsAsc: railAscDiv,
                             deepShelf: shelfDiv,
                         });
+                        const deepFinalDiv = OrderUtils.applyDeepManualSizes(manager.config, shelfDiv, deepSizesDiv);
                         for (const d of shelfDiv) {
                             if (!d || desiredSlotIds.has(d.id)) continue;
                             if (d.orderId) {
@@ -1149,9 +1150,9 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                                 continue;
                             }
                             if (d.state !== ORDER_STATES.VIRTUAL) continue;
-                            const szDiv = deepSizesDiv.get(d.id) || 0;
+                            const szDiv = deepFinalDiv.sizes.get(d.id) || 0;
                             if (!(szDiv > 0)) continue;
-                            desiredSlots.push({ ...d, size: szDiv });
+                            desiredSlots.push({ ...d, size: szDiv, __deepManual: deepFinalDiv.manualIds.has(d.id) });
                             desiredSlotIds.add(d.id);
                         }
                     }
@@ -1253,7 +1254,8 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                             continue;
                         }
                         // BUY size is in quote (USDT) — the size IS the notional.
-                        if (buyFloorUsdtDiv > 0 && Number(slot.size) < buyFloorUsdtDiv) {
+                        // Manual deep sizes bypass the floor (explicit intent).
+                        if (buyFloorUsdtDiv > 0 && !(slot as any).__deepManual && Number(slot.size) < buyFloorUsdtDiv) {
                             manager.logger.log(`[DIVERGENCE-COW] Skipping BUY create for ${slot.id} — size ${Number(slot.size).toFixed(3)} USDT < ${buyFloorUsdtDiv}`, 'info');
                             continue;
                         }

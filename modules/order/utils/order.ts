@@ -1974,6 +1974,35 @@ function deriveDeepShelfSizes(params: any): Map<string, number> {
     return out;
 }
 
+/**
+ * Merge manual deep-shelf sizes over curve sizes. Manual entries (> 0,
+ * top-first aligned with deepShelf order) win for that level and are
+ * reported in manualIds so planners skip the buyFloorUSDT filter for them
+ * (explicit intent) while keeping chain-minimum and delay gates. Levels
+ * without a manual entry keep the curve size.
+ *
+ * @param {any} config - Bot config (may carry buyDeepSizes)
+ * @param {any[]} deepShelf - Top-first shelf descriptors
+ * @param {Map<string, number>} curveSizes - Curve sizes by shelf id
+ * @returns {{ sizes: Map<string, number>, manualIds: Set<string> }}
+ */
+function applyDeepManualSizes(config: any, deepShelf: any[], curveSizes: Map<string, number>): { sizes: Map<string, number>; manualIds: Set<string> } {
+    const sizes = new Map<string, number>();
+    const manualIds = new Set<string>();
+    const manual = MathUtils.resolveBuyDeepSizes(config);
+    (Array.isArray(deepShelf) ? deepShelf : []).forEach((d: any, i: number) => {
+        if (!d) return;
+        const m = i < manual.length ? Number(manual[i]) : 0;
+        if (m > 0) {
+            sizes.set(d.id, m);
+            manualIds.add(d.id);
+        } else {
+            sizes.set(d.id, Number(curveSizes?.get(d.id)) || 0);
+        }
+    });
+    return { sizes, manualIds };
+}
+
 // ================================================================================
 // SECTION 10: STRATEGY CALCULATIONS
 // ================================================================================
@@ -2131,5 +2160,5 @@ function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: 
 }
 
 // ================================================================================
-            export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isDeepShelfFillOrder, resolveDeepShelfFloor, ensureDeepShelfEntries, deriveDeepShelfSizes, isShiftEligibleFill, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo }
+            export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isDeepShelfFillOrder, resolveDeepShelfFloor, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, isShiftEligibleFill, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo }
 

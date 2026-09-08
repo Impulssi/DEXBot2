@@ -197,6 +197,7 @@ let DEFAULT_CONFIG = {
     buyDelayMinutes: 15,      // Pause after a BUY fill before new buys (0 = off)
     buyWindowMode: 'low',     // BUY placement window: 'low' (rail bottom) or 'closest' (market)
     buyDeepCount: 0,          // Extra dip-insurance BUYs pinned above the reserve floor (0 = off)
+    buyDeepSizes: [],         // Manual dip-insurance sizes in quote, top-first (empty = curve sizes)
 
     // BTS fee management for non-BTS pairs
     min_BTS_value: null,          // Minimum BTS balance to maintain (null = auto from activeOrders × fees × multiplier)

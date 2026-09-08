@@ -7,8 +7,9 @@
  */
 
 const assert = require('assert');
-const { resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, resolveBuyDeepCount, isDeepShelfId, deepShelfPrices, BUY_WINDOW_DEFAULTS } = require('../modules/order/utils/math');
-const { ensureDeepShelfEntries, isDeepShelfFillOrder, resolveDeepShelfFloor } = require('../modules/order/utils/order');
+const { resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, resolveBuyDeepCount, resolveBuyDeepSizes, isDeepShelfId, deepShelfPrices, BUY_WINDOW_DEFAULTS } = require('../modules/order/utils/math');
+const { ensureDeepShelfEntries, isDeepShelfFillOrder, resolveDeepShelfFloor, applyDeepManualSizes } = require('../modules/order/utils/order');
+const { validateWorkingGridFunds } = require('../modules/order/utils/validate');
 
 let passed = 0;
 function check(name, actual, expected) {
@@ -135,6 +136,59 @@ check('ladder unit step is empty', deepShelfPrices(0.001154, 1.0, 3).length, 0);
     check('plain orderId form works', isDeepShelfFillOrder(mgr, { orderId: '1.7.111' }), true);
     check('other order is not', isDeepShelfFillOrder(mgr, { op: [null, { order_id: '1.7.222' }] }), false);
     check('missing set is not', isDeepShelfFillOrder({}, { op: [null, { order_id: '1.7.111' }] }), false);
+}
+
+// --- resolveBuyDeepSizes (manual dip-insurance notionals, top-first) ---
+check('manual default is empty', resolveBuyDeepSizes({}).length, 0);
+check('manual array passthrough', resolveBuyDeepSizes({ buyDeepSizes: [2.5, 2, 1.5] }).join(','), '2.5,2,1.5');
+check('manual comma string parses', resolveBuyDeepSizes({ buyDeepSizes: '2.5, 2,1.5' }).join(','), '2.5,2,1.5');
+check('manual negatives become curve fallback', resolveBuyDeepSizes({ buyDeepSizes: [2.5, -1, 'x'] }).join(','), '2.5,0,0');
+check('manual garbage is empty', resolveBuyDeepSizes({ buyDeepSizes: 42 }).length, 0);
+check('manual empty string is empty', resolveBuyDeepSizes({ buyDeepSizes: '   ' }).length, 0);
+check('manual caps at 12', resolveBuyDeepSizes({ buyDeepSizes: new Array(15).fill(1) }).length, 12);
+
+// --- applyDeepManualSizes ---
+{
+    const shelf = [
+        { id: 'deep-0', price: 0.00119 },
+        { id: 'deep-1', price: 0.001172 },
+        { id: 'deep-2', price: 0.001154 },
+    ];
+    const curve = new Map([['deep-0', 2.1], ['deep-1', 2.05], ['deep-2', 2.0]]);
+    const r1 = applyDeepManualSizes({ buyDeepSizes: [5, 0, 3] }, shelf, curve);
+    check('manual wins level 0', r1.sizes.get('deep-0'), 5);
+    check('zero falls back to curve', r1.sizes.get('deep-1'), 2.05);
+    check('manual wins level 2', r1.sizes.get('deep-2'), 3);
+    check('manual ids tracked', [...r1.manualIds].sort().join(','), 'deep-0,deep-2');
+    const r2 = applyDeepManualSizes({}, shelf, curve);
+    check('no manual keeps curve', r2.sizes.get('deep-0'), 2.1);
+    check('no manual ids', r2.manualIds.size, 0);
+    const r3 = applyDeepManualSizes({ buyDeepSizes: [7] }, shelf, curve);
+    check('short array covers head only', r3.sizes.get('deep-0'), 7);
+    check('short array tail uses curve', r3.sizes.get('deep-2'), 2.0);
+}
+
+// --- validateWorkingGridFunds: deep excess over allocation is allowed ---
+{
+    const mkGrid = (orders) => ({ values: () => orders.values(), [Symbol.iterator]: function* () { yield* orders.values(); } });
+    const asMap = (arr) => new Map(arr.map((o) => [o.id, o]));
+    const funds = { allocatedBuy: 35, chainTotalBuy: 50 };
+    const prec = { buyPrecision: 6, sellPrecision: 5 };
+    const assets = { assetB: { symbol: 'XBTSX.USDT' }, assetA: { symbol: 'BTS' } };
+    const rail = (size) => ({ id: 'slot-0', type: 'buy', state: 'active', price: 0.00134, size, orderId: '1.7.1' });
+    const deep = (size) => ({ id: 'deep-2', type: 'buy', state: 'active', price: 0.001154, size, orderId: '1.7.2' });
+    // Rail 30 + deep 10 = 40 > allocation 35 but < wallet 50 → VALID (new).
+    const v1 = validateWorkingGridFunds(mkGrid(asMap([rail(30), deep(10)])), funds, prec, assets);
+    check('deep over-allocation allowed under wallet total', v1.isValid, true);
+    // Rail alone over allocation → still blocked (protection kept).
+    const v2 = validateWorkingGridFunds(mkGrid(asMap([rail(40)])), funds, prec, assets);
+    check('rail over-allocation still blocked', v2.isValid, false);
+    // Deep pushing the total over the wallet → blocked (physical cap).
+    const v3 = validateWorkingGridFunds(mkGrid(asMap([rail(30), deep(25)])), funds, prec, assets);
+    check('over-wallet total still blocked', v3.isValid, false);
+    // No shelf: old behavior identical (rail fits → valid).
+    const v4 = validateWorkingGridFunds(mkGrid(asMap([rail(30)])), funds, prec, assets);
+    check('plain rail still valid', v4.isValid, true);
 }
 
 console.log(`✓ Buy window config tests passed! (${passed} assertions)`);

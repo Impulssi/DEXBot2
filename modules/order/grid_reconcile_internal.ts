@@ -10,7 +10,7 @@
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
 import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findCrossedOrder, resolveGapBand, isSlotInRail, priceSlotEqual, resolveBuyFloorUsdt, resolveBuyWindowMode, isDeepShelfId } from './utils/math.js';
-import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection, ensureDeepShelfEntries, deriveDeepShelfSizes } from './utils/order.js';
+import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes } from './utils/order.js';
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -292,11 +292,12 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
                     railSlotsAsc: railAsc,
                     deepShelf: shelf,
                 });
+                const deepFinal = applyDeepManualSizes(manager.config, shelf, deepSizes);
                 for (const d of shelf) {
                     if (!d || d.orderId || d.state !== ORDER_STATES.VIRTUAL) continue;
-                    const sz = deepSizes.get(d.id) || 0;
+                    const sz = deepFinal.sizes.get(d.id) || 0;
                     if (!(sz >= effectiveMin)) continue;
-                    if (buyFloorUsdt > 0 && Number(sz) < buyFloorUsdt) {
+                    if (!deepFinal.manualIds.has(d.id) && buyFloorUsdt > 0 && Number(sz) < buyFloorUsdt) {
                         manager.logger?.log?.(
                             `[ACTIVATE] skip ${d.id} @${Number(d.price).toPrecision(4)} ` +
                             `size=${Number(sz).toFixed(3)} USDT < ${buyFloorUsdt}`,

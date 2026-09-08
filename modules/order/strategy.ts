@@ -52,7 +52,7 @@ import { ORDER_TYPES, ORDER_STATES } from '../constants.js';
 
 import { calculateGapSlots } from './grid.js';
 import { isSlotInRail, resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, isDeepShelfId } from './utils/math.js';
-import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, ensureDeepShelfEntries, isDeepShelfFillOrder, deriveDeepShelfSizes } from './utils/order.js';
+import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, ensureDeepShelfEntries, isDeepShelfFillOrder, deriveDeepShelfSizes, applyDeepManualSizes } from './utils/order.js';
 import { assignGridRoles } from './utils/order.js';
 import {
     convertToSpreadPlaceholder,
@@ -423,22 +423,29 @@ class StrategyEngine {
                 this.manager.logger.log(`[STRATEGY] Skipping buy ${slot.id} @${Number(slot.price).toPrecision(4)} size ${sz.toFixed(3)} USDT < ${buyFloorUsdt} USDT minimum`, 'info');
             }
         });
+        // Manual deep sizes (config buyDeepSizes, top-first) override the curve
+        // for their level and bypass the floor filter (explicit intent) and
+        // the Buy-funds allocation (never the wallet total — enforced in
+        // fund validation). Delay gate still applies to all shelf levels.
+        const deepFinal = applyDeepManualSizes(config, deepShelf, deepSizeById);
         const buySlotsToUse = [...filteredBuySlots, ...(() => {
-            // Deep shelf append: same floor as the rail, same delay deadline.
-            // Unsized (0) shelf slots are skipped in place — never walked up.
+            // Deep shelf append: same floor as the rail (unless manual), same
+            // delay deadline. Unsized (0) shelf slots are skipped in place —
+            // never walked up.
             const gated: any[] = [];
             if (deepShelf.length === 0 || buyDelayActive) return gated;
             for (const d of deepShelf) {
-                const sz = deepSizeById.get(d.id) || 0;
-                if (!(buyFloorUsdt > 0) || sz >= buyFloorUsdt) {
-                    if (sz > 0) gated.push(d);
-                } else if (sz > 0) {
+                const sz = deepFinal.sizes.get(d.id) || 0;
+                if (sz <= 0) continue;
+                if (!deepFinal.manualIds.has(d.id) && buyFloorUsdt > 0 && sz < buyFloorUsdt) {
                     this.manager.logger.log(`[STRATEGY] Skipping deep buy ${d.id} @${Number(d.price).toPrecision(4)} size ${sz.toFixed(3)} USDT < ${buyFloorUsdt} USDT minimum`, 'info');
+                    continue;
                 }
+                gated.push(d);
             }
             return gated;
         })()];
-        const buySizes = buySlotsToUse.map((slot: any) => isDeepShelfId(slot.id) ? (deepSizeById.get(slot.id) || 0) : (buySizeById.get(slot.id) || 0));
+        const buySizes = buySlotsToUse.map((slot: any) => isDeepShelfId(slot.id) ? (deepFinal.sizes.get(slot.id) || 0) : (buySizeById.get(slot.id) || 0));
         const sellSizes = sellSlots.map((slot: any) => sellSizeById.get(slot.id) || 0);
 
         // Apply sizes to target grid map

@@ -102,6 +102,22 @@ function validateBotEntry(b: any, i: number, src: string): string | null {
         const v = Number(b.buyDeepCount);
         if (!Number.isInteger(v) || v < 0 || v > 12) problems.push("'buyDeepCount' must be an integer 0-12 (0 = off)");
     }
+    if ('buyDeepSizes' in b && b.buyDeepSizes !== null && b.buyDeepSizes !== undefined && !(typeof b.buyDeepSizes === 'string' && b.buyDeepSizes.trim() === '')) {
+        const parts = Array.isArray(b.buyDeepSizes) ? b.buyDeepSizes : String(b.buyDeepSizes).split(',');
+        if (!Array.isArray(b.buyDeepSizes) && typeof b.buyDeepSizes !== 'string') {
+            problems.push("'buyDeepSizes' must be an array of numbers or a comma-separated string");
+        } else if (parts.length > 12) {
+            problems.push("'buyDeepSizes' must have at most 12 entries (top-first: deep-0, deep-1, ...)");
+        } else {
+            for (const p of parts) {
+                const v = Number(typeof p === 'string' ? p.trim() : p);
+                if (!(Number.isFinite(v) && v >= 0)) {
+                    problems.push("'buyDeepSizes' entries must be non-negative numbers (0 = curve size for that level)");
+                    break;
+                }
+            }
+        }
+    }
 
     if ('botFunds' in b) {
         if (typeof b.botFunds !== 'object' || b.botFunds === null) problems.push("'botFunds' must be an object");

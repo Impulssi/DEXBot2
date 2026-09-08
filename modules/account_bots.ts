@@ -1020,6 +1020,40 @@ async function askBuyWindowMode(promptText: string, defaultValue?: any): Promise
 }
 
 /**
+ * Prompts for manual deep-shelf sizes (quote USDT, top-first: deep-0,
+ * deep-1, ...). Empty = curve sizes. Returned as a validated number array
+ * (0 entries = none); 0/blank entries fall back to the curve per level.
+ */
+async function askBuyDeepSizes(promptText: string, defaultValue?: any): Promise<any> {
+    const defArr = Array.isArray(defaultValue) ? defaultValue : [];
+    const def = defArr.length > 0 ? defArr.join(',') : '';
+    while (true) {
+        const raw = (await readInput(`${promptText}${def !== '' ? ` [${def}]` : ''}: `)).trim();
+        if (raw === '\x1b') return '\x1b';
+        const text = raw === '' ? def : raw;
+        if (text === '') return [];
+        const parts = text.split(',');
+        if (parts.length > 12) {
+            console.log('Please enter at most 12 comma-separated amounts.');
+            continue;
+        }
+        const out: number[] = [];
+        let ok = true;
+        for (const p of parts) {
+            const v = Number(p.trim());
+            if (p.trim() === '' || !Number.isFinite(v) || v < 0) {
+                console.log(`Invalid amount '${p.trim()}': use non-negative numbers (0 = curve size).`);
+                ok = false;
+                break;
+            }
+            out.push(v);
+        }
+        if (!ok) continue;
+        return out;
+    }
+}
+
+/**
  * Normalizes a bot draft for editing or saving.
  * Preserves existing fields and strips unsupported runtime-managed fields.
  * @param {Object} [base={}] - The initial bot data to edit.
@@ -1042,6 +1076,7 @@ function normalizeBotDraft(base = {}) {
     if (data.buyDelayMinutes === undefined) data.buyDelayMinutes = DEFAULT_CONFIG.buyDelayMinutes;
     if (data.buyWindowMode === undefined) data.buyWindowMode = DEFAULT_CONFIG.buyWindowMode;
     if (data.buyDeepCount === undefined) data.buyDeepCount = DEFAULT_CONFIG.buyDeepCount;
+    if (data.buyDeepSizes === undefined) data.buyDeepSizes = DEFAULT_CONFIG.buyDeepSizes;
     if (data.startPrice === undefined) data.startPrice = data.startPrice || DEFAULT_CONFIG.startPrice || 'pool';
     if (data.gridPrice === undefined) data.gridPrice = null;
     delete data.gridPriceOffsetPct;
@@ -1168,7 +1203,7 @@ async function promptBotData(base = {}) {
              console.log(`${COLORS.yellowBold}1) Pair:${COLORS.reset}       ${COLORS.cyan}${data.assetA || '?'} / ${data.assetB || '?'}${COLORS.reset}`);
              console.log(`${COLORS.yellowBold}2) Identity:${COLORS.reset}   ${COLORS.orange}Name:${COLORS.reset} ${data.name || '?'} , ${COLORS.orange}Account:${COLORS.reset} ${data.preferredAccount || '?'} , ${COLORS.orange}Active:${COLORS.reset} ${colorBooleanFlag(data.active, true)}, ${COLORS.orange}DryRun:${COLORS.reset} ${colorBooleanFlag(data.dryRun, false)}`);
              console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}      ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}], ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${data.poolRef || 'none'}, ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice, data.startPrice)}`);
-              console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%, ${COLORS.orange}Floor:${COLORS.reset} ${data.buyFloorUSDT ?? '?'}, ${COLORS.orange}Delay:${COLORS.reset} ${data.buyDelayMinutes ?? '?'}m, ${COLORS.orange}Win:${COLORS.reset} ${data.buyWindowMode ?? '?'}${Number(data.buyDeepCount) > 0 ? `+${data.buyDeepCount}deep` : ''}`);
+              console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%, ${COLORS.orange}Floor:${COLORS.reset} ${data.buyFloorUSDT ?? '?'}, ${COLORS.orange}Delay:${COLORS.reset} ${data.buyDelayMinutes ?? '?'}m, ${COLORS.orange}Win:${COLORS.reset} ${data.buyWindowMode ?? '?'}${Number(data.buyDeepCount) > 0 ? `+${data.buyDeepCount}deep${(Array.isArray(data.buyDeepSizes) && data.buyDeepSizes.some((v: any) => Number(v) > 0)) ? '(manual)' : ''}` : ''}`);
              console.log(`${COLORS.yellowBold}5) Funding:${COLORS.reset}    ${COLORS.orange}Sell:${COLORS.reset} ${colorPercentageInput(data.botFunds.sell)}, ${COLORS.orange}Buy:${COLORS.reset} ${colorPercentageInput(data.botFunds.buy)} | ${COLORS.orange}Orders:${COLORS.reset} (S:${data.activeOrders.sell}, B:${data.activeOrders.buy})`);
              console.log('--------------------------------------------------');
              console.log(`${COLORS.greenBold}S) Save & Exit${COLORS.reset}`);
@@ -1272,6 +1307,14 @@ async function promptBotData(base = {}) {
                 if (buyWin === '\x1b') break;
                 const buyDeep = await askIntegerInRange('buy deep count, dip-insurance BUYs above floor (0 = off)', data.buyDeepCount ?? 0, 0, 12);
                 if (buyDeep === '\x1b') break;
+                let buyDeepSizes: any[] = Array.isArray(data.buyDeepSizes) ? data.buyDeepSizes : [];
+                if (Number(buyDeep) > 0) {
+                    const sizes = await askBuyDeepSizes('buy deep sizes USDT top-first, comma-separated (empty = curve)', buyDeepSizes);
+                    if (sizes === '\x1b') break;
+                    buyDeepSizes = sizes;
+                } else {
+                    buyDeepSizes = [];
+                }
                 data.weightDistribution.sell = wSell;
                 data.weightDistribution.buy = wBuy;
                 data.incrementPercent = incrP;
@@ -1280,6 +1323,7 @@ async function promptBotData(base = {}) {
                 data.buyDelayMinutes = buyDelay;
                 data.buyWindowMode = buyWin;
                 data.buyDeepCount = buyDeep;
+                data.buyDeepSizes = buyDeepSizes;
                 showMenu = true;
                 break;
             case '5':

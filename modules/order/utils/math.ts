@@ -688,6 +688,28 @@ function resolveBuyDeepCount(config: any): number {
 }
 
 /**
+ * Resolve the manual deep-shelf sizes (quote USDT notionals, top-first:
+ * index 0 = deep-0). Entries > 0 override the curve size for that level and
+ * bypass the buyFloorUSDT filter + the Buy-funds allocation (never the
+ * wallet total). Entry 0 / missing = fall back to the curve size.
+ * Accepts an array or a comma-separated string (editor form).
+ *
+ * @param {any} config - Bot config (may carry buyDeepSizes)
+ * @returns {number[]} Validated sizes (0 = curve fallback), max 12 entries
+ */
+function resolveBuyDeepSizes(config: any): number[] {
+    const raw = config?.buyDeepSizes;
+    let parts: any[] = [];
+    if (Array.isArray(raw)) parts = raw;
+    else if (typeof raw === 'string' && raw.trim() !== '') parts = raw.split(',');
+    else return [];
+    return parts.slice(0, 12).map((p: any) => {
+        const v = Number(typeof p === 'string' ? p.trim() : p);
+        return Number.isFinite(v) && v > 0 ? v : 0;
+    });
+}
+
+/**
  * Deep-shelf slot id predicate. Shelf ids live outside the slot-N scheme
  * (the master grid cannot grow downward without reindexing every slot),
  * so index-based geometry must treat them as rail members, never as gap.
@@ -1949,7 +1971,7 @@ function buildGenesisFromPriceLevels(startPrice: number, incrementPercent: numbe
     };
 }
 
-export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, isSlotIndexInGapBand, isEvacuationRotationAllowed, isEvacuationSizeStillValid, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, resolveBuyDeepCount, isDeepShelfId, deepShelfPrices, BUY_WINDOW_DEFAULTS, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals, priceLevelsForGenesis, priceForSlot, slotIndexForPrice, slotIdForPrice, assertSlotPriceInvariant, priceSlotEqual, buildGenesisFromPriceLevels, hashPriceLevels }
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, isSlotIndexInGapBand, isEvacuationRotationAllowed, isEvacuationSizeStillValid, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, resolveBuyDeepCount, resolveBuyDeepSizes, isDeepShelfId, deepShelfPrices, BUY_WINDOW_DEFAULTS, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals, priceLevelsForGenesis, priceForSlot, slotIndexForPrice, slotIdForPrice, assertSlotPriceInvariant, priceSlotEqual, buildGenesisFromPriceLevels, hashPriceLevels }
 
 /**
  * Round a value to a given factor.

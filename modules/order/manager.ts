@@ -67,7 +67,7 @@ import {
     buildSuccessResult,
     evaluateCommit
 } from './utils/validate.js';
-import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, ensureDeepShelfEntries, deriveDeepShelfSizes, getSideBudget, getActiveOrdersTotal } from './utils/order.js';
+import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, getSideBudget, getActiveOrdersTotal } from './utils/order.js';
 import { getErrorMessage } from '../utils/errors.js';
 const { toFiniteNumber } = Format;
 
@@ -1688,12 +1688,13 @@ class OrderManager {
                     railSlotsAsc: railAsc,
                     deepShelf: shelf,
                 });
+                const deepFinal = applyDeepManualSizes(this.config, shelf, deepSizes);
                 for (const d of shelf) {
                     if (!d || d.orderId || d.state !== ORDER_STATES.VIRTUAL) continue;
-                    const sz = deepSizes.get(d.id) || 0;
+                    const sz = deepFinal.sizes.get(d.id) || 0;
                     if (!(sz > 0)) continue;
                     if (floatToBlockchainInt(sz, buyPrecision) < minBuySizeInt) continue;
-                    if (buyFloorUsdt > 0 && Number(sz) < buyFloorUsdt) continue;
+                    if (!deepFinal.manualIds.has(d.id) && buyFloorUsdt > 0 && Number(sz) < buyFloorUsdt) continue;
                     validBuys.push({ ...d, size: sz });
                 }
             }
