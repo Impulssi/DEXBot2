@@ -70,11 +70,11 @@
  */
 
 
-import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT, COW_PERFORMANCE } from '../../constants.js';
+import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT, COW_PERFORMANCE, DEFAULT_CONFIG } from '../../constants.js';
 import * as Format from '../format.js';
 import * as MathUtils from './math.js';
 import Logger from '../../order/logger.js';
-import { sleep } from './system.js';
+import { sleep, loadAmaCenterPrice } from './system.js';
 import { getErrorMessage } from '../../utils/errors.js';
 import { parseSlotIndex as parseSlotIndexShared } from './slot.js';
 const { isValidNumber, toFiniteNumber } = Format;
@@ -887,6 +887,11 @@ function virtualizeOrder(order: any) {
  * @returns {Object} Spread placeholder order (VIRTUAL, SPREAD type, zero size)
  */
 function convertToSpreadPlaceholder(order: any) {
+    // Deep shelf keeps its rail type: a filled/cleared deep order is a BUY
+    // hole to refill, never side-neutral gap state.
+    if (order && MathUtils.isDeepShelfId(order.id)) {
+        return { ...virtualizeOrder(order), type: ORDER_TYPES.BUY, size: 0 };
+    }
     return { ...virtualizeOrder(order), type: ORDER_TYPES.SPREAD, size: 0 };
 }
 
@@ -1507,6 +1512,12 @@ function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_T
         // empty slots by position so they appear in the correct rail's budget
         // and can be activated on the correct side.
         if (!assignOnChain && isEmptyGridSlot(slot, liveSlot)) {
+            // Deep shelf has no slot-N index for geometry — preserve its BUY
+            // rail type explicitly so empties are never retyped SPREAD.
+            if (MathUtils.isDeepShelfId(slot?.id) || MathUtils.isDeepShelfId(liveSlot?.id)) {
+                if (slot.type === ORDER_TYPES.BUY) return slot;
+                return { ...slot, type: ORDER_TYPES.BUY };
+            }
             const parsed = parseSlotIndex(slot?.id);
             const geoType = geometryTypeForSlotIndex(parsed !== null && parsed !== undefined ? parsed : i, boundaryIdx, gapSlots);
             const wantType = geoType || ORDER_TYPES.SPREAD;
@@ -1811,6 +1822,159 @@ function buildDelta(masterGrid: any, workingGrid: any, options: any = {}) {
 }
 
 // ================================================================================
+// DEEP SHELF (dip-insurance BUYs above the reserve floor)
+// ================================================================================
+// The master slot-N grid cannot grow downward without reindexing every slot
+// (slot-N <-> price invariant + genesis hash), so the shelf lives on synthetic
+// `deep-N` ids: top-first (deep-0 highest, deep-{n-1} pinned on the floor).
+// Index-based geometry must treat them as rail members (never gap); the
+// upstream fail-open in isSlotInRail already admits unparseable ids.
+
+/**
+ * Resolve the live reserve floor for deep-shelf anchoring: the same
+ * minPrice bound the grid uses, resolved against the CURRENT grid center
+ * (AMA snapshot for ama* modes, numeric startPrice otherwise). 'pool' mode
+ * has no synchronous reference — returns null so the shelf stays put
+ * (fail static) instead of inventing prices.
+ *
+ * @param {any} manager - OrderManager instance (config, botKey)
+ * @returns {number|null} Absolute floor price or null when unresolvable
+ */
+function resolveDeepShelfFloor(manager: any): number | null {
+    const cfg = manager?.config;
+    if (!cfg) return null;
+    const gpMode = String(cfg.gridPrice ?? '');
+    let ref: any = null;
+    try {
+        if (/^ama(?:[1-4])?$/.test(gpMode)) {
+            ref = loadAmaCenterPrice(cfg.botKey);
+        } else if (Number.isFinite(Number(cfg.startPrice))) {
+            ref = Number(cfg.startPrice);
+        }
+    } catch {
+        ref = null;
+    }
+    if (!Number.isFinite(Number(ref)) || Number(ref) <= 0) return null;
+    try {
+        const floor = resolveConfiguredPriceBound(cfg.minPrice, DEFAULT_CONFIG.minPrice, Number(ref), 'min');
+        return Number.isFinite(Number(floor)) && Number(floor) > 0 ? Number(floor) : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Upsert deep-shelf descriptors for planners. Pure with respect to the
+ * passed collection (never mutates): live shelf orders are pinned (price +
+ * orderId kept, type forced BUY), empty virtuals are (re-)anchored to the
+ * live floor. When the floor is unresolvable the shelf stays put.
+ * Also tracks live deep chain orderIds on the manager so planning can
+ * exempt deep fills from boundary-shift accounting.
+ *
+ * @param {any} orders - Map or array of slot/order objects
+ * @param {any} manager - OrderManager instance
+ * @returns {any[]} Top-first deep descriptors (deep-0 highest)
+ */
+function ensureDeepShelfEntries(orders: any, manager: any): any[] {
+    const count = MathUtils.resolveBuyDeepCount(manager?.config);
+    const list: any[] = Array.isArray(orders)
+        ? orders
+        : (orders && typeof orders.values === 'function' ? Array.from(orders.values()) : []);
+    if (!(count > 0)) return [];
+    const floor = resolveDeepShelfFloor(manager);
+    const step = 1 + Number(manager?.config?.incrementPercent) / 100;
+    const haveFloor = Number.isFinite(Number(floor)) && Number(floor) > 0
+        && Number.isFinite(step) && step > 1;
+    const prices = haveFloor ? MathUtils.deepShelfPrices(Number(floor), step, count) : [];
+    try {
+        const seen = manager._deepShelfOrderIds instanceof Set ? manager._deepShelfOrderIds : new Set<string>();
+        for (const o of list) {
+            if (o && MathUtils.isDeepShelfId(o.id) && o.orderId) seen.add(String(o.orderId));
+        }
+        while (seen.size > 300) {
+            const first = seen.values().next().value;
+            seen.delete(first);
+        }
+        manager._deepShelfOrderIds = seen;
+    } catch { /* bookkeeping only — shelf still works */ }
+    const byId = new Map(list.map((o: any) => [o?.id, o]));
+    const out: any[] = [];
+    for (let i = 0; i < count; i++) {
+        const id = `deep-${i}`;
+        const cur = byId.get(id);
+        if (cur && cur.orderId) {
+            out.push({ ...cur, type: ORDER_TYPES.BUY });
+            continue;
+        }
+        if (!haveFloor || prices.length !== count) {
+            if (cur) out.push({ ...cur, type: ORDER_TYPES.BUY });
+            continue;
+        }
+        const curPrice = Number(cur?.price);
+        const anchored = Number(prices[i]);
+        const drifted = !Number.isFinite(curPrice)
+            || Math.abs(curPrice - anchored) / Math.max(1e-12, Math.abs(anchored)) > 1e-6;
+        if (cur && !drifted) {
+            out.push({ ...cur, type: ORDER_TYPES.BUY });
+            continue;
+        }
+        out.push({
+            ...(cur || {}),
+            id,
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.VIRTUAL,
+            price: anchored,
+            size: 0,
+            orderId: null,
+        });
+    }
+    return out;
+}
+
+/**
+ * True when a fill belongs to a deep-shelf order (by tracked chain orderId).
+ * Deep fills must not shift the rail boundary — the rail stays, the shelf
+ * absorbs.
+ *
+ * @param {any} manager - OrderManager instance
+ * @param {any} fill - Fill event (chain history entry or { orderId })
+ * @returns {boolean}
+ */
+function isDeepShelfFillOrder(manager: any, fill: any): boolean {
+    const oid = fill?.op?.[1]?.order_id ?? fill?.orderId ?? fill?.orderID;
+    if (!oid) return false;
+    try {
+        return manager?._deepShelfOrderIds instanceof Set
+            && manager._deepShelfOrderIds.has(String(oid));
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Deep-shelf sizes ("full sizes" model): the rail distribution is computed
+ * elsewhere WITHOUT shelf ids (rail keeps exact sizes); here the same curve
+ * is extended with the shelf prepended below the rail (ascending) and only
+ * shelf results are returned. Empty map = skip shelf downstream.
+ */
+function deriveDeepShelfSizes(params: any): Map<string, number> {
+    const out = new Map<string, number>();
+    const { budgetBuy, weightBuy, incrementPercent, assets, railSlotsAsc, deepShelf } = params || {};
+    if (!Array.isArray(deepShelf) || deepShelf.length === 0) return out;
+    if (!Array.isArray(railSlotsAsc) || railSlotsAsc.length === 0) return out;
+    if (!(Number(budgetBuy) > 0)) return out;
+    try {
+        const deepAsc = [...deepShelf].sort((a: any, b: any) => Number(a.price) - Number(b.price));
+        const combined = [...deepAsc, ...railSlotsAsc];
+        const sizes = calculateBudgetedSizes(combined, 'buy', Number(budgetBuy), weightBuy, incrementPercent, assets);
+        combined.forEach((slot: any, i: number) => {
+            if (slot && MathUtils.isDeepShelfId(slot.id)) out.set(slot.id, Number(sizes?.[i]) || 0);
+        });
+    } catch { /* unsized deeps are skipped downstream */ }
+    return out;
+}
+
+// ================================================================================
 // SECTION 10: STRATEGY CALCULATIONS
 // ================================================================================
 
@@ -1967,5 +2131,5 @@ function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: 
 }
 
 // ================================================================================
-            export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isShiftEligibleFill, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo }
+            export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isDeepShelfFillOrder, resolveDeepShelfFloor, ensureDeepShelfEntries, deriveDeepShelfSizes, isShiftEligibleFill, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo }
 

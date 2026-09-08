@@ -55,7 +55,7 @@ const require = createRequire(import.meta.url);
 import { path } from '../../path_api.js';
 import { getStorage } from '../../storage/index.js';
 const storage = getStorage();
-import { API_LIMITS, ORDER_TYPES, COW_ACTIONS, FEE_PARAMETERS, BTS_PRECISION, PIPELINE_TIMING, NATIVE_CLIENT } from '../../constants.js';
+import { API_LIMITS, ORDER_TYPES, ORDER_STATES, COW_ACTIONS, FEE_PARAMETERS, BTS_PRECISION, PIPELINE_TIMING, NATIVE_CLIENT } from '../../constants.js';
 import { PATHS } from '../../paths.js';
 import { toFiniteNumber, isValidNumber } from '../format.js';
 import * as MathUtils from './math.js';
@@ -1105,6 +1105,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
             const allSideSlots = (Array.from(workingGrid.values()) as any[])
                 .filter((o: any) => o.type === orderType)
                 .filter(inRailByType(orderType))
+                .filter((o: any) => !MathUtils.isDeepShelfId(o?.id))
                 .sort((a: any, b: any) => (orderType === ORDER_TYPES.BUY && !windowLowDiv) ? b.price - a.price : a.price - b.price);
 
             // Calculate target count
@@ -1116,6 +1117,46 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
             // Determine desired slots (closest to market)
             const desiredSlots = allSideSlots.slice(0, targetCount);
             const desiredSlotIds = new Set(desiredSlots.map((s: any) => s.id));
+            // Deep shelf (dip insurance above the reserve floor): live shelf
+            // orders join the desired set so the surplus sweep below never
+            // cancels them; virtuals are appended for the CREATE loop with
+            // derived sizes (floor + delay guards apply there as usual).
+            if (orderType === ORDER_TYPES.BUY) {
+                try {
+                    const shelfDiv = OrderUtils.ensureDeepShelfEntries(manager.orders, manager);
+                    if (shelfDiv.length > 0) {
+                        const railAscDiv = (Array.from(workingGrid.values()) as any[])
+                            .filter((o: any) => o && o.type === ORDER_TYPES.BUY && !MathUtils.isDeepShelfId(o.id) && Number.isFinite(Number(o.price)))
+                            .sort((a: any, b: any) => Number(a.price) - Number(b.price));
+                        let budgetBuyDiv = 0;
+                        try {
+                            const snapDiv = typeof manager.getChainFundsSnapshot === 'function' ? manager.getChainFundsSnapshot() : null;
+                            if (snapDiv) budgetBuyDiv = OrderUtils.getSideBudget('buy', snapDiv, manager.config, OrderUtils.getActiveOrdersTotal(manager.config));
+                        } catch { budgetBuyDiv = 0; }
+                        const deepSizesDiv = OrderUtils.deriveDeepShelfSizes({
+                            budgetBuy: budgetBuyDiv,
+                            weightBuy: manager.config?.weightDistribution?.buy,
+                            incrementPercent: manager.config?.incrementPercent,
+                            assets: manager.assets,
+                            railSlotsAsc: railAscDiv,
+                            deepShelf: shelfDiv,
+                        });
+                        for (const d of shelfDiv) {
+                            if (!d || desiredSlotIds.has(d.id)) continue;
+                            if (d.orderId) {
+                                desiredSlots.push(d);
+                                desiredSlotIds.add(d.id);
+                                continue;
+                            }
+                            if (d.state !== ORDER_STATES.VIRTUAL) continue;
+                            const szDiv = deepSizesDiv.get(d.id) || 0;
+                            if (!(szDiv > 0)) continue;
+                            desiredSlots.push({ ...d, size: szDiv });
+                            desiredSlotIds.add(d.id);
+                        }
+                    }
+                } catch { /* shelf stays off when funds are unavailable */ }
+            }
             const onChainBySlotId = new Map(currentOnChainOrders.map((o: any) => [o.id, o]));
 
             // Process on-chain orders:

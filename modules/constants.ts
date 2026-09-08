@@ -196,6 +196,7 @@ let DEFAULT_CONFIG = {
     buyFloorUSDT: 1.0,        // Minimum BUY order size in quote currency (0 = off)
     buyDelayMinutes: 15,      // Pause after a BUY fill before new buys (0 = off)
     buyWindowMode: 'low',     // BUY placement window: 'low' (rail bottom) or 'closest' (market)
+    buyDeepCount: 0,          // Extra dip-insurance BUYs pinned above the reserve floor (0 = off)
 
     // BTS fee management for non-BTS pairs
     min_BTS_value: null,          // Minimum BTS balance to maintain (null = auto from activeOrders × fees × multiplier)

@@ -629,6 +629,7 @@ const BUY_WINDOW_DEFAULTS = {
     floorUsdt: 1.0,       // buyFloorUSDT: minimum BUY order size in quote currency
     delayMinutes: 15,     // buyDelayMinutes: pause after a BUY fill before new buys
     windowMode: 'low',    // buyWindowMode: 'low' (rail bottom) or 'closest' (market)
+    deepCount: 0,         // buyDeepCount: extra dip-insurance BUYs above the reserve floor
 };
 
 /**
@@ -670,6 +671,54 @@ function resolveBuyDelayMs(config: any): number {
 function resolveBuyWindowMode(config: any): string {
     const v = String(config?.buyWindowMode || '').trim().toLowerCase();
     return v === 'closest' ? 'closest' : BUY_WINDOW_DEFAULTS.windowMode;
+}
+
+/**
+ * Resolve the deep-shelf dip-insurance BUY count from config.
+ *
+ * @param {any} config - Bot config (may carry buyDeepCount)
+ * @returns {number} 0 disables the shelf; otherwise a 1..12 integer
+ */
+function resolveBuyDeepCount(config: any): number {
+    const raw = config?.buyDeepCount;
+    if (raw === null || raw === undefined || raw === '') return BUY_WINDOW_DEFAULTS.deepCount;
+    const v = Math.floor(Number(raw));
+    if (!Number.isFinite(v) || v <= 0) return 0;
+    return Math.min(v, 12);
+}
+
+/**
+ * Deep-shelf slot id predicate. Shelf ids live outside the slot-N scheme
+ * (the master grid cannot grow downward without reindexing every slot),
+ * so index-based geometry must treat them as rail members, never as gap.
+ *
+ * @param {any} id - Slot/order id
+ * @returns {boolean} True for `deep-N` shelf ids
+ */
+function isDeepShelfId(id: any): boolean {
+    return typeof id === 'string' && /^deep-\d+$/.test(id);
+}
+
+/**
+ * Deep-shelf price ladder anchored at the reserve floor, normal grid steps
+ * upward: the deepest order sits right on the floor, the rest above it.
+ * Never prices below the floor (clamped).
+ *
+ * @param {number} floorPrice - Reserve floor (absolute, e.g. minPrice)
+ * @param {number} stepUp - Multiplicative grid step (> 1)
+ * @param {number} count - Shelf depth (already clamped)
+ * @returns {number[]} Top-first prices: [floor*step^(n-1), ..., floor]
+ */
+function deepShelfPrices(floorPrice: any, stepUp: any, count: any): number[] {
+    const f = Number(floorPrice);
+    const s = Number(stepUp);
+    const n = Math.floor(Number(count));
+    if (!Number.isFinite(f) || f <= 0 || !Number.isFinite(s) || s <= 1 || !Number.isFinite(n) || n <= 0) return [];
+    const out: number[] = [];
+    for (let i = 0; i < n; i++) {
+        out.push(f * Math.pow(s, n - 1 - i));
+    }
+    return out;
 }
 
 /**
@@ -1860,6 +1909,8 @@ function slotIdForPrice(price: number, genesis: GridGenesis): string {
 }
 
 function assertSlotPriceInvariant(slot: any, genesis: GridGenesis): void {
+    // Deep shelf ids are outside the slot-N scheme — nothing to prove.
+    if (typeof slot?.id === 'string' && /^deep-\d+$/.test(slot.id)) return;
     const idx = parseSlotIndex(slot?.id);
     if (idx === null) throw new Error(`assertSlotPriceInvariant: unparseable slot id ${slot?.id}`);
     const expected = priceForSlot(idx, genesis);
@@ -1898,7 +1949,7 @@ function buildGenesisFromPriceLevels(startPrice: number, incrementPercent: numbe
     };
 }
 
-export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, isSlotIndexInGapBand, isEvacuationRotationAllowed, isEvacuationSizeStillValid, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, BUY_WINDOW_DEFAULTS, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals, priceLevelsForGenesis, priceForSlot, slotIndexForPrice, slotIdForPrice, assertSlotPriceInvariant, priceSlotEqual, buildGenesisFromPriceLevels, hashPriceLevels }
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, isSlotIndexInGapBand, isEvacuationRotationAllowed, isEvacuationSizeStillValid, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, resolveBuyDeepCount, isDeepShelfId, deepShelfPrices, BUY_WINDOW_DEFAULTS, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals, priceLevelsForGenesis, priceForSlot, slotIndexForPrice, slotIdForPrice, assertSlotPriceInvariant, priceSlotEqual, buildGenesisFromPriceLevels, hashPriceLevels }
 
 /**
  * Round a value to a given factor.

@@ -51,7 +51,8 @@ import {
     validateBoundaryCommit,
     resolveGapSlots,
     resolveBuyFloorUsdt,
-    resolveBuyWindowMode
+    resolveBuyWindowMode,
+    isDeepShelfId
 } from './utils/math.js';
 import {
     validateOrder,
@@ -66,7 +67,7 @@ import {
     buildSuccessResult,
     evaluateCommit
 } from './utils/validate.js';
-import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain } from './utils/order.js';
+import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, ensureDeepShelfEntries, deriveDeepShelfSizes, getSideBudget, getActiveOrdersTotal } from './utils/order.js';
 import { getErrorMessage } from '../utils/errors.js';
 const { toFiniteNumber } = Format;
 
@@ -1654,6 +1655,7 @@ class OrderManager {
         const windowLow = resolveBuyWindowMode(this.config) !== 'closest';
         const buyFloorUsdt = resolveBuyFloorUsdt(this.config);
         const buysSorted = this.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.VIRTUAL)
+            .filter((o: any) => !isDeepShelfId(o?.id))
             .sort((a: any, b: any) => windowLow ? a.price - b.price : b.price - a.price);
         const buysFarthestFirst = windowLow ? buysSorted.slice(0, buyCount) : buysSorted;
         const validBuys: any[] = [];
@@ -1664,6 +1666,38 @@ class OrderManager {
             if (buyFloorUsdt > 0 && Number(o.size || 0) < buyFloorUsdt) continue;
             validBuys.push(o);
         }
+        // Deep shelf append (dip insurance above the reserve floor): excluded
+        // from the rail window above, appended here gated by the same
+        // min-size + floor rules. No delay gate on this path (matches rail).
+        try {
+            const shelf = ensureDeepShelfEntries(this.orders, this);
+            if (shelf.length > 0) {
+                const railAsc = Array.from(this.orders.values())
+                    .filter((o: any) => o && o.type === ORDER_TYPES.BUY && !isDeepShelfId(o.id) && Number.isFinite(Number(o.price)))
+                    .sort((a: any, b: any) => Number(a.price) - Number(b.price));
+                let budgetBuy = 0;
+                try {
+                    const snap = typeof this.getChainFundsSnapshot === 'function' ? this.getChainFundsSnapshot() : null;
+                    if (snap) budgetBuy = getSideBudget('buy', snap, this.config, getActiveOrdersTotal(this.config));
+                } catch { budgetBuy = 0; }
+                const deepSizes = deriveDeepShelfSizes({
+                    budgetBuy,
+                    weightBuy: this.config?.weightDistribution?.buy,
+                    incrementPercent: this.config?.incrementPercent,
+                    assets: this.assets,
+                    railSlotsAsc: railAsc,
+                    deepShelf: shelf,
+                });
+                for (const d of shelf) {
+                    if (!d || d.orderId || d.state !== ORDER_STATES.VIRTUAL) continue;
+                    const sz = deepSizes.get(d.id) || 0;
+                    if (!(sz > 0)) continue;
+                    if (floatToBlockchainInt(sz, buyPrecision) < minBuySizeInt) continue;
+                    if (buyFloorUsdt > 0 && Number(sz) < buyFloorUsdt) continue;
+                    validBuys.push({ ...d, size: sz });
+                }
+            }
+        } catch { /* shelf stays off on bootstrap when funds are unavailable */ }
         // Reverse for placement order (lowest first)
         validBuys.sort((a: any, b: any) => a.price - b.price);
 

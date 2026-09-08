@@ -9,8 +9,8 @@
 
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
-import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findCrossedOrder, resolveGapBand, isSlotInRail, priceSlotEqual, resolveBuyFloorUsdt, resolveBuyWindowMode } from './utils/math.js';
-import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection } from './utils/order.js';
+import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findCrossedOrder, resolveGapBand, isSlotInRail, priceSlotEqual, resolveBuyFloorUsdt, resolveBuyWindowMode, isDeepShelfId } from './utils/math.js';
+import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection, ensureDeepShelfEntries, deriveDeepShelfSizes } from './utils/order.js';
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -132,6 +132,7 @@ function _deriveBudgetedSideSizes(manager: any, type: any): Map<string, number> 
     const allSideSlots = (Array.from(manager.orders.values()) as any[])
         .filter(typeFilter)
         .filter(inSideRail)
+        .filter((o: any) => !isDeepShelfId(o?.id))
         .sort((a: any, b: any) => a.price - b.price);
     if (allSideSlots.length === 0) return derived;
 
@@ -204,6 +205,7 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
     const slotsOfType = (Array.from(manager.orders.values()) as any[])
         .filter(typeFilter)
         .filter(inRail)
+        .filter((s: any) => !isDeepShelfId(s?.id))
         .sort((a: any, b: any) => (type === ORDER_TYPES.BUY && windowLow) || type !== ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
     const candidates = type === ORDER_TYPES.BUY && windowLow
         ? slotsOfType.slice(0, count)
@@ -264,6 +266,48 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
                 });
             }
         }
+    }
+
+    // Deep shelf append (dip insurance above the reserve floor): excluded
+    // from the rail window above, appended here gated by the same
+    // effective-min + floor rules. Live shelf orders are already placed
+    // (skipped); virtuals are (re-)anchored by ensure each cycle.
+    if (type === ORDER_TYPES.BUY) {
+        try {
+            const shelf = ensureDeepShelfEntries(manager.orders, manager);
+            if (shelf.length > 0) {
+                const railAsc = (Array.from(manager.orders.values()) as any[])
+                    .filter((o: any) => o && o.type === ORDER_TYPES.BUY && !isDeepShelfId(o.id) && Number.isFinite(Number(o.price)))
+                    .sort((a: any, b: any) => Number(a.price) - Number(b.price));
+                let budgetBuy = 0;
+                try {
+                    const snap = typeof manager.getChainFundsSnapshot === 'function' ? manager.getChainFundsSnapshot() : null;
+                    if (snap) budgetBuy = getSideBudget('buy', snap, manager.config, getActiveOrdersTotal(manager.config));
+                } catch { budgetBuy = 0; }
+                const deepSizes = deriveDeepShelfSizes({
+                    budgetBuy,
+                    weightBuy: manager.config?.weightDistribution?.buy,
+                    incrementPercent: manager.config?.incrementPercent,
+                    assets: manager.assets,
+                    railSlotsAsc: railAsc,
+                    deepShelf: shelf,
+                });
+                for (const d of shelf) {
+                    if (!d || d.orderId || d.state !== ORDER_STATES.VIRTUAL) continue;
+                    const sz = deepSizes.get(d.id) || 0;
+                    if (!(sz >= effectiveMin)) continue;
+                    if (buyFloorUsdt > 0 && Number(sz) < buyFloorUsdt) {
+                        manager.logger?.log?.(
+                            `[ACTIVATE] skip ${d.id} @${Number(d.price).toPrecision(4)} ` +
+                            `size=${Number(sz).toFixed(3)} USDT < ${buyFloorUsdt}`,
+                            'info'
+                        );
+                        continue;
+                    }
+                    valid.push({ ...d, size: sz, type });
+                }
+            }
+        } catch { /* shelf stays off when funds are unavailable */ }
     }
 
     if (type === ORDER_TYPES.BUY) {

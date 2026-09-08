@@ -2,11 +2,13 @@
  * tests/test_buy_window_config.ts
  *
  * Unit tests for buy-window behavior resolvers (bots.json: buyFloorUSDT,
- * buyDelayMinutes, buyWindowMode). Uses native assert to avoid Jest dependency.
+ * buyDelayMinutes, buyWindowMode, buyDeepCount) and the deep-shelf
+ * dip-insurance ladder. Uses native assert to avoid Jest dependency.
  */
 
 const assert = require('assert');
-const { resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, BUY_WINDOW_DEFAULTS } = require('../modules/order/utils/math');
+const { resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, resolveBuyDeepCount, isDeepShelfId, deepShelfPrices, BUY_WINDOW_DEFAULTS } = require('../modules/order/utils/math');
+const { ensureDeepShelfEntries, isDeepShelfFillOrder, resolveDeepShelfFloor } = require('../modules/order/utils/order');
 
 let passed = 0;
 function check(name, actual, expected) {
@@ -41,5 +43,98 @@ check('window explicit closest', resolveBuyWindowMode({ buyWindowMode: 'closest'
 check('window case-insensitive', resolveBuyWindowMode({ buyWindowMode: 'Closest' }), 'closest');
 check('window invalid falls back', resolveBuyWindowMode({ buyWindowMode: 'moon' }), 'low');
 check('window null falls back', resolveBuyWindowMode({ buyWindowMode: null }), 'low');
+
+// --- resolveBuyDeepCount ---
+check('deep default (missing)', resolveBuyDeepCount({}), 0);
+check('deep default value is 0', BUY_WINDOW_DEFAULTS.deepCount, 0);
+check('deep explicit 3', resolveBuyDeepCount({ buyDeepCount: 3 }), 3);
+check('deep explicit string "3"', resolveBuyDeepCount({ buyDeepCount: '3' }), 3);
+check('deep 0 disables', resolveBuyDeepCount({ buyDeepCount: 0 }), 0);
+check('deep negative disables', resolveBuyDeepCount({ buyDeepCount: -2 }), 0);
+check('deep fractional floors', resolveBuyDeepCount({ buyDeepCount: 2.9 }), 2);
+check('deep NaN disables', resolveBuyDeepCount({ buyDeepCount: 'lots' }), 0);
+check('deep null disables', resolveBuyDeepCount({ buyDeepCount: null }), 0);
+check('deep caps at 12', resolveBuyDeepCount({ buyDeepCount: 99 }), 12);
+
+// --- isDeepShelfId ---
+check('deep id deep-0', isDeepShelfId('deep-0'), true);
+check('deep id deep-12', isDeepShelfId('deep-12'), true);
+check('slot id is not deep', isDeepShelfId('slot-0'), false);
+check('bare prefix is not deep', isDeepShelfId('deep-'), false);
+check('non-numeric suffix is not deep', isDeepShelfId('deep-x'), false);
+check('null is not deep', isDeepShelfId(null), false);
+check('number is not deep', isDeepShelfId(3), false);
+
+// --- deepShelfPrices (floor-anchored, normal grid steps upward) ---
+{
+    const floor = 0.001154, step = 1.0158;
+    const prices = deepShelfPrices(floor, step, 3);
+    check('ladder length', prices.length, 3);
+    check('deepest sits exactly on the floor', prices[2], floor);
+    check('top-first order', prices[0] > prices[1] && prices[1] > prices[2], true);
+    check('normal step up (1)', Math.abs(prices[1] / prices[2] - step) < 1e-12, true);
+    check('normal step up (2)', Math.abs(prices[0] / prices[1] - step) < 1e-12, true);
+    check('never below floor', Math.min(...prices) >= floor, true);
+}
+check('ladder count 0 is empty', deepShelfPrices(0.001154, 1.0158, 0).length, 0);
+check('ladder bad floor is empty', deepShelfPrices(0, 1.0158, 3).length, 0);
+check('ladder unit step is empty', deepShelfPrices(0.001154, 1.0, 3).length, 0);
+
+// --- resolveDeepShelfFloor ---
+{
+    // Numeric startPrice reference: floor resolves like the grid bound.
+    const m1 = { config: { minPrice: '1.15x', startPrice: 0.0017725, gridPrice: 'fixed' } };
+    const f1 = resolveDeepShelfFloor(m1);
+    check('numeric floor resolves (0.0017725/1.15)', Math.abs(f1 - 0.0017725 / 1.15) < 1e-12, true);
+    // Pool mode has no synchronous reference: fail static (null).
+    const m2 = { config: { minPrice: '1.15x', gridPrice: 'pool' } };
+    check('pool mode floor is null', resolveDeepShelfFloor(m2), null);
+    // Unknown AMA bot: no snapshot, no floor.
+    const m3 = { config: { minPrice: '1.15x', gridPrice: 'ama4', botKey: 'no-such-bot-xyz' } };
+    check('unknown bot floor is null', resolveDeepShelfFloor(m3), null);
+}
+
+// --- ensureDeepShelfEntries ---
+{
+    const mkMgr = (deep, extra = {}) => ({
+        config: { buyDeepCount: deep, incrementPercent: 1.5, minPrice: 0.001154, startPrice: 0.0015, gridPrice: 'fixed', ...extra },
+    });
+    const base = new Map([
+        ['slot-0', { id: 'slot-0', type: 'buy', state: 'virtual', price: 0.0013408, size: 2.26, orderId: null }],
+    ]);
+    const shelf = ensureDeepShelfEntries(base, mkMgr(3));
+    check('shelf length', shelf.length, 3);
+    check('shelf ids top-first', shelf.map((s) => s.id).join(','), 'deep-0,deep-1,deep-2');
+    check('shelf type is BUY', shelf.every((s) => s.type === 'buy'), true);
+    check('shelf virtual when unplaced', shelf.every((s) => s.state === 'virtual' && s.orderId === null), true);
+    check('shelf deepest on floor', shelf[2].price, 0.001154);
+    check('shelf steps match grid', Math.abs(shelf[0].price / shelf[1].price - 1.015) < 1e-9, true);
+    // Live shelf orders are pinned (price + orderId kept).
+    const live = new Map([
+        ['deep-1', { id: 'deep-1', type: 'buy', state: 'active', price: 0.00117, size: 2.1, orderId: '1.7.999' }],
+    ]);
+    const shelf2 = ensureDeepShelfEntries(live, mkMgr(3));
+    const pinned = shelf2.find((s) => s.id === 'deep-1');
+    check('live shelf keeps price', pinned.price, 0.00117);
+    check('live shelf keeps orderId', pinned.orderId, '1.7.999');
+    // Disabled shelf: no descriptors.
+    check('disabled shelf is empty', ensureDeepShelfEntries(base, mkMgr(0)).length, 0);
+    // Unresolvable floor: existing virtuals kept as-is (no invention).
+    const stale = new Map([
+        ['deep-0', { id: 'deep-0', type: 'buy', state: 'virtual', price: 0.00119, size: 0, orderId: null }],
+    ]);
+    const poolMgr = { config: { buyDeepCount: 3, incrementPercent: 1.5, minPrice: '1.15x', gridPrice: 'pool' } };
+    const shelf3 = ensureDeepShelfEntries(stale, poolMgr);
+    check('static fallback keeps price', shelf3[0].price, 0.00119);
+}
+
+// --- isDeepShelfFillOrder ---
+{
+    const mgr = { _deepShelfOrderIds: new Set(['1.7.111']) };
+    check('tracked order is deep fill', isDeepShelfFillOrder(mgr, { op: [null, { order_id: '1.7.111' }] }), true);
+    check('plain orderId form works', isDeepShelfFillOrder(mgr, { orderId: '1.7.111' }), true);
+    check('other order is not', isDeepShelfFillOrder(mgr, { op: [null, { order_id: '1.7.222' }] }), false);
+    check('missing set is not', isDeepShelfFillOrder({}, { op: [null, { order_id: '1.7.111' }] }), false);
+}
 
 console.log(`✓ Buy window config tests passed! (${passed} assertions)`);

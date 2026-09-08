@@ -98,6 +98,10 @@ function validateBotEntry(b: any, i: number, src: string): string | null {
         const v = String(b.buyWindowMode).trim().toLowerCase();
         if (v !== 'low' && v !== 'closest') problems.push("'buyWindowMode' must be 'low' or 'closest'");
     }
+    if ('buyDeepCount' in b && b.buyDeepCount !== null && b.buyDeepCount !== undefined) {
+        const v = Number(b.buyDeepCount);
+        if (!Number.isInteger(v) || v < 0 || v > 12) problems.push("'buyDeepCount' must be an integer 0-12 (0 = off)");
+    }
 
     if ('botFunds' in b) {
         if (typeof b.botFunds !== 'object' || b.botFunds === null) problems.push("'botFunds' must be an object");

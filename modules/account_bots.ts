@@ -1041,6 +1041,7 @@ function normalizeBotDraft(base = {}) {
     if (data.buyFloorUSDT === undefined) data.buyFloorUSDT = DEFAULT_CONFIG.buyFloorUSDT;
     if (data.buyDelayMinutes === undefined) data.buyDelayMinutes = DEFAULT_CONFIG.buyDelayMinutes;
     if (data.buyWindowMode === undefined) data.buyWindowMode = DEFAULT_CONFIG.buyWindowMode;
+    if (data.buyDeepCount === undefined) data.buyDeepCount = DEFAULT_CONFIG.buyDeepCount;
     if (data.startPrice === undefined) data.startPrice = data.startPrice || DEFAULT_CONFIG.startPrice || 'pool';
     if (data.gridPrice === undefined) data.gridPrice = null;
     delete data.gridPriceOffsetPct;
@@ -1167,7 +1168,7 @@ async function promptBotData(base = {}) {
              console.log(`${COLORS.yellowBold}1) Pair:${COLORS.reset}       ${COLORS.cyan}${data.assetA || '?'} / ${data.assetB || '?'}${COLORS.reset}`);
              console.log(`${COLORS.yellowBold}2) Identity:${COLORS.reset}   ${COLORS.orange}Name:${COLORS.reset} ${data.name || '?'} , ${COLORS.orange}Account:${COLORS.reset} ${data.preferredAccount || '?'} , ${COLORS.orange}Active:${COLORS.reset} ${colorBooleanFlag(data.active, true)}, ${COLORS.orange}DryRun:${COLORS.reset} ${colorBooleanFlag(data.dryRun, false)}`);
              console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}      ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}], ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${data.poolRef || 'none'}, ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice, data.startPrice)}`);
-              console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%, ${COLORS.orange}Floor:${COLORS.reset} ${data.buyFloorUSDT ?? '?'}, ${COLORS.orange}Delay:${COLORS.reset} ${data.buyDelayMinutes ?? '?'}m, ${COLORS.orange}Win:${COLORS.reset} ${data.buyWindowMode ?? '?'}`);
+              console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%, ${COLORS.orange}Floor:${COLORS.reset} ${data.buyFloorUSDT ?? '?'}, ${COLORS.orange}Delay:${COLORS.reset} ${data.buyDelayMinutes ?? '?'}m, ${COLORS.orange}Win:${COLORS.reset} ${data.buyWindowMode ?? '?'}${Number(data.buyDeepCount) > 0 ? `+${data.buyDeepCount}deep` : ''}`);
              console.log(`${COLORS.yellowBold}5) Funding:${COLORS.reset}    ${COLORS.orange}Sell:${COLORS.reset} ${colorPercentageInput(data.botFunds.sell)}, ${COLORS.orange}Buy:${COLORS.reset} ${colorPercentageInput(data.botFunds.buy)} | ${COLORS.orange}Orders:${COLORS.reset} (S:${data.activeOrders.sell}, B:${data.activeOrders.buy})`);
              console.log('--------------------------------------------------');
              console.log(`${COLORS.greenBold}S) Save & Exit${COLORS.reset}`);
@@ -1269,6 +1270,8 @@ async function promptBotData(base = {}) {
                 if (buyDelay === '\x1b') break;
                 const buyWin = await askBuyWindowMode('buy window (low = rail bottom, closest = market)', data.buyWindowMode ?? 'low');
                 if (buyWin === '\x1b') break;
+                const buyDeep = await askIntegerInRange('buy deep count, dip-insurance BUYs above floor (0 = off)', data.buyDeepCount ?? 0, 0, 12);
+                if (buyDeep === '\x1b') break;
                 data.weightDistribution.sell = wSell;
                 data.weightDistribution.buy = wBuy;
                 data.incrementPercent = incrP;
@@ -1276,6 +1279,7 @@ async function promptBotData(base = {}) {
                 data.buyFloorUSDT = buyFloor;
                 data.buyDelayMinutes = buyDelay;
                 data.buyWindowMode = buyWin;
+                data.buyDeepCount = buyDeep;
                 showMenu = true;
                 break;
             case '5':

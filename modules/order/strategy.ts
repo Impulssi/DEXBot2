@@ -51,8 +51,8 @@
 import { ORDER_TYPES, ORDER_STATES } from '../constants.js';
 
 import { calculateGapSlots } from './grid.js';
-import { isSlotInRail, resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode } from './utils/math.js';
-import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal } from './utils/order.js';
+import { isSlotInRail, resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, isDeepShelfId } from './utils/math.js';
+import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, ensureDeepShelfEntries, isDeepShelfFillOrder, deriveDeepShelfSizes } from './utils/order.js';
 import { assignGridRoles } from './utils/order.js';
 import {
     convertToSpreadPlaceholder,
@@ -263,13 +263,24 @@ class StrategyEngine {
 
         if (allSlots.length === 0) return { targetGrid: new Map(), boundaryIdx: currentBoundaryIdx };
 
+        // Deep shelf (dip-insurance BUYs above the reserve floor): descriptors
+        // are upserted from the frozen master each cycle (live pins kept,
+        // virtuals re-anchored to the live floor). They ride the normal
+        // CREATE/commit pipeline via targetGrid, so the master learns them.
+        const deepShelf = ensureDeepShelfEntries(allSlots, this.manager);
+        // Deep fills must not shift the rail boundary — the rail stays put,
+        // the shelf absorbs. (Tracked chain orderIds, incl. pre-sync fills.)
+        const fillsForBoundary = Array.isArray(fills)
+            ? fills.filter((f: any) => !isDeepShelfFillOrder(this.manager, f))
+            : fills;
+
         // 1. Determine new boundary based on fills (Boundary Crawl)
         // Use the stored gapSlots from grid creation (always consistent with
         // the grid geometry) instead of recomputing from live config which may
         // have drifted if targetSpreadPercent or gridLimits changed.
         const gapSlots = (this.manager as any)._genesis?.gapSlots ?? this.manager._gapSlots ?? calculateGapSlots(config.incrementPercent, config.targetSpreadPercent, config.gridLimits);
         const crossChunkBudget = (this.manager as any)._boundaryShiftBudget;
-        const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget);
+        const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fillsForBoundary, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget);
         if (crossChunkBudget != null) {
             (this.manager as any)._boundaryShiftBudget = remainingBudget;
         }
@@ -285,8 +296,10 @@ class StrategyEngine {
         const budgetBuy = getSideBudget('buy', funds, config, totalTarget);
         const budgetSell = getSideBudget('sell', funds, config, totalTarget);
         
-        // Filter slots into BUY/SELL
-        const allBuySlots = updatedSlots.filter((o: any) => o.type === ORDER_TYPES.BUY);
+        // Filter slots into BUY/SELL. Deep shelf ids are excluded from the
+        // rail sizing run (their sizes come from a dedicated run below) so
+        // the rail keeps its exact current sizes ("full sizes" model).
+        const allBuySlots = updatedSlots.filter((o: any) => o.type === ORDER_TYPES.BUY && !isDeepShelfId(o.id));
         const allSellSlots = updatedSlots.filter((o: any) => o.type === ORDER_TYPES.SELL);
 
         // Apply Window Discipline (activeOrders count)
@@ -324,8 +337,11 @@ class StrategyEngine {
         // re-typing), but anchored at the RAIL BOTTOM so the ladder never
         // crawls to the boundary. SELL keeps upstream closest-first.
         const windowLow = resolveBuyWindowMode(config) !== 'closest';
+        // Rail window never contains shelf ids: they sit below the rail and
+        // would otherwise displace the window upward (slice takes lowest).
         const buyCandidates = allBuySlots
             .filter(inBuyRail)
+            .filter((o: any) => !isDeepShelfId(o.id))
             .sort((a: any, b: any) => windowLow ? a.price - b.price : b.price - a.price);
         const sellCandidates = allSellSlots
             .filter(inSellRail)
@@ -379,6 +395,18 @@ class StrategyEngine {
         const buySizeById = new Map(allBuySortedForSizing.map((slot: any, i: any) => [slot.id, fullBuySizes[i] || 0]));
         const sellSizeById = new Map(allSellSortedForSizing.map((slot: any, i: any) => [slot.id, fullSellSizes[i] || 0]));
 
+        // Deep-shelf sizing ("full sizes" model): the rail run above is
+        // untouched; shelf sizes come from the same curve extended below
+        // the rail. Only shelf results are used — rail sizes stay exact.
+        const deepSizeById = deriveDeepShelfSizes({
+            budgetBuy,
+            weightBuy: config.weightDistribution?.buy,
+            incrementPercent: config.incrementPercent,
+            assets: accountAssets,
+            railSlotsAsc: allBuySortedForSizing,
+            deepShelf,
+        });
+
         // Minimum BUY size (config buyFloorUSDT, default 1.0, 0 = off): skip
         // buys below the floor. Keeps remaining funds as free
         // (virtualReservation not locked) instead of shrinking all orders
@@ -395,8 +423,22 @@ class StrategyEngine {
                 this.manager.logger.log(`[STRATEGY] Skipping buy ${slot.id} @${Number(slot.price).toPrecision(4)} size ${sz.toFixed(3)} USDT < ${buyFloorUsdt} USDT minimum`, 'info');
             }
         });
-        const buySlotsToUse = filteredBuySlots;
-        const buySizes = buySlotsToUse.map((slot: any) => buySizeById.get(slot.id) || 0);
+        const buySlotsToUse = [...filteredBuySlots, ...(() => {
+            // Deep shelf append: same floor as the rail, same delay deadline.
+            // Unsized (0) shelf slots are skipped in place — never walked up.
+            const gated: any[] = [];
+            if (deepShelf.length === 0 || buyDelayActive) return gated;
+            for (const d of deepShelf) {
+                const sz = deepSizeById.get(d.id) || 0;
+                if (!(buyFloorUsdt > 0) || sz >= buyFloorUsdt) {
+                    if (sz > 0) gated.push(d);
+                } else if (sz > 0) {
+                    this.manager.logger.log(`[STRATEGY] Skipping deep buy ${d.id} @${Number(d.price).toPrecision(4)} size ${sz.toFixed(3)} USDT < ${buyFloorUsdt} USDT minimum`, 'info');
+                }
+            }
+            return gated;
+        })()];
+        const buySizes = buySlotsToUse.map((slot: any) => isDeepShelfId(slot.id) ? (deepSizeById.get(slot.id) || 0) : (buySizeById.get(slot.id) || 0));
         const sellSizes = sellSlots.map((slot: any) => sellSizeById.get(slot.id) || 0);
 
         // Apply sizes to target grid map
