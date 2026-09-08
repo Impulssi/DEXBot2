@@ -112,9 +112,11 @@ import {
     getSellStartIdx,
     slotIndexForPrice,
     isSlotInRail,
-    isDeepShelfId,
     isSlotIndexInGapBand,
-    priceSlotEqual
+    priceSlotEqual,
+    isDeepShelfId,
+    resolveBuyDeepCount,
+    deepShelfPrices
 } from './utils/math.js';
 import {
     parseChainOrder,
@@ -127,6 +129,8 @@ import {
     hasOnChainId,
     isOrderVirtual,
     resolveSpreadOrderSide,
+    resolveDeepShelfFloor,
+    ensureDeepShelfEntries,
     duplicateOrphanLogInfo
 } from './utils/order.js';
 import { parseSlotIndex } from './utils/slot.js';
@@ -1159,8 +1163,68 @@ class SyncEngine {
             const db = Number.isFinite(pb) && Number.isFinite(anchorPrice) ? Math.abs(pb - anchorPrice) : Infinity;
             return da - db;
         });
+        // Deep-shelf sync context (computed once): expected shelf pins from
+        // the live reserve floor. Null when the shelf is disabled or the
+        // floor is unresolvable — then this whole pre-check is a no-op.
+        const deepSyncCtx: any = (() => {
+            try {
+                const count = resolveBuyDeepCount(mgr.config);
+                if (!(count > 0)) return null;
+                const floor = resolveDeepShelfFloor(mgr);
+                const step = 1 + Number(mgr.config?.incrementPercent) / 100;
+                if (!Number.isFinite(Number(floor)) || Number(floor) <= 0 || !Number.isFinite(step) || step <= 1) return null;
+                const prices = deepShelfPrices(Number(floor), step, count);
+                if (!Array.isArray(prices) || prices.length !== count) return null;
+                return { count, prices, tol: Math.max((step - 1) * 2, 0.01), adopted: 0 };
+            } catch {
+                return null;
+            }
+        })();
+        const deepPriceIndex = (price: any): number => {
+            if (!deepSyncCtx) return -1;
+            const p = Number(price);
+            if (!Number.isFinite(p) || p <= 0) return -1;
+            let best = -1, bestRel = Infinity;
+            for (let i = 0; i < deepSyncCtx.prices.length; i++) {
+                const rel = Math.abs(p - deepSyncCtx.prices[i]) / deepSyncCtx.prices[i];
+                if (rel < bestRel) { bestRel = rel; best = i; }
+            }
+            return bestRel <= deepSyncCtx.tol ? best : -1;
+        };
         for (const [chainOrderId, chainOrder] of sortedChainEntries) {
             if (chainOrderIdsOnGrid.has(chainOrderId)) continue;
+
+            // DEEP-SHELF pre-check (before genesis nearest-slot mapping): a
+            // live BUY near an expected shelf pin is dip insurance, not a
+            // stray. Genesis slotIndexForPrice clamps every sub-grid price
+            // onto slot-0 — the first orphan would mis-adopt there and the
+            // rest would be cancelled as "duplicates". Route shelf-priced
+            // orphans to deep-* ids instead (creating the master entry when
+            // the shelf is not committed yet), and never cancel them here.
+            if (chainOrder.type === ORDER_TYPES.BUY && deepPriceIndex(chainOrder.price) >= 0) {
+                const di = deepPriceIndex(chainOrder.price);
+                const wantId = `deep-${di}`;
+                const existing = mgr.orders.get(wantId);
+                let target: any = null;
+                if (existing && !existing.orderId && !matchedGridOrderIds.has(wantId)) {
+                    target = existing;
+                } else if (!existing) {
+                    const ensured = ensureDeepShelfEntries(mgr.orders, mgr);
+                    const fresh = (Array.isArray(ensured) ? ensured : []).find((e: any) => e && e.id === wantId && !e.orderId);
+                    if (fresh) target = { ...fresh, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null };
+                }
+                if (target) {
+                    const adoptedDeep = await adoptChainOrderIntoSlot(mgr, target, chainOrder, chainOrderId, rawChainOrders, matchedGridOrderIds, chainOrderIdsOnGrid, filledOrders, updatedOrders, skipAccounting);
+                    if (adoptedDeep) {
+                        deepSyncCtx.adopted++;
+                        mgr.logger?.log?.(`[SYNC] Adopted deep-shelf orphan ${chainOrderId} into ${wantId} @${chainOrder.price}`, 'info');
+                        continue;
+                    }
+                }
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'deep-surplus-deferred' });
+                mgr.logger?.log?.(`[SYNC] Deep-shelf orphan ${chainOrderId} (buy, price=${chainOrder.price}) deferred: shelf full — leaving live, no cancel`, 'warn');
+                continue;
+            }
 
             // Genesis path: nearest-slot is single authority (no tolerance)
             if (hasGenesis) {
@@ -1234,6 +1298,14 @@ class SyncEngine {
                 return o.type === co.type && isOrderPlaced(o) && co != null && Math.abs(o.price - co.price) <= (calculatePriceTolerance as any)(Math.min(o.price, co.price), Math.max(o.size, co.size), o.type, mgr.assets);
             });
             if (duplicatePriceOrder) {
+                // Deep-shelf orphans are exempt from duplicate cancellation:
+                // extra live pins beyond the shelf count stay live (warned),
+                // they are never cancelled as price-level duplicates here.
+                if (chainOrder.type === ORDER_TYPES.BUY && deepPriceIndex(chainOrder.price) >= 0) {
+                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'deep-surplus-deferred' });
+                    mgr.logger?.log?.(`[SYNC] Deep-shelf orphan ${chainOrderId} (buy, price=${chainOrder.price}) deferred: shelf full — leaving live, no cancel`, 'warn');
+                    continue;
+                }
                 unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'duplicate-price-level', candidateSlotId: duplicatePriceOrder.id });
                 const { level, suffix } = duplicateOrphanLogInfo(chainOrderId);
                 mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: duplicates price level of active ${duplicatePriceOrder.id} (${duplicatePriceOrder.orderId} at ${duplicatePriceOrder.price})${suffix}`, level);
