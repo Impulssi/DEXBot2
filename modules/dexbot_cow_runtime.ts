@@ -24,11 +24,15 @@ const {
     toRailHolePlaceholder,
     buildOutsideInPairGroups,
     isOrderPlaced,
+    chainOrderUnchangedFromCache,
+    detectCrossedBookPlan,
+    collectKnownOnChainOrderIds,
 } = orderUtils as any;
 import * as validate from './order/utils/validate.js';
 const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions, stampGapEvacuationRotation } = validate as any;
 import * as math from './order/utils/math.js';
-const { validateOrderSize, findCrossedOrder, priceSlotEqual, isEvacuationRotationAllowed, isEvacuationSizeStillValid, getSellStartIdx, getPrecisionByOrderType, isSlotIndexInGapBand } = math as any;
+const { validateOrderSize, findCrossedOrder, priceSlotEqual, isEvacuationRotationAllowed, isEvacuationSizeStillValid, getSellStartIdx, getPrecisionByOrderType, isSlotIndexInGapBand, getAssetFeesSafe, blockchainToFloat, floatToBlockchainInt, quantizeFloat } = math as any;
+import { parseSlotIndex } from './order/utils/slot.js';
 
 /**
  * Re-verify a B-stamped gap-evacuation rotation against the LIVE committed
@@ -54,7 +58,6 @@ export function isEvacuationStampStillValid(liveBoundary: any, liveGapSlots: any
     const dstInRail = orderType === ORDER_TYPES.SELL ? Number(dstIdx) >= sellStartIdx : Number(dstIdx) <= b;
     return dstInRail;
 }
-import { parseSlotIndex } from './order/utils/slot.js';
 function hasSlotPriceCollision(items: any[], targetPrice: number, precision: number, excludeId: string | null, predicate?: (it:any)=>boolean) {
     for (const it of items) {
         if (predicate && !predicate(it)) continue;
@@ -65,8 +68,6 @@ function hasSlotPriceCollision(items: any[], targetPrice: number, precision: num
     }
     return null;
 }
-// Lazy accessor so test mocks on the math module export take effect at call time.
-function getAssetFeesSafe(...args: any) { return require('./order/utils/math').getAssetFeesSafe(...args); }
 import * as constantsModule from './constants.js';
 const {
     COW_ACTIONS,
@@ -81,8 +82,6 @@ const Format = FormatModule as any;
 import * as workingGridModule from './order/working_grid.js';
 const { WorkingGrid } = workingGridModule as any;
 import { getErrorMessage } from './utils/errors.js';
-import { createRequire } from 'node:module';
-const require = createRequire(import.meta.url);
 
 // Maximum number of times the pre-broadcast staleness guard may re-plan the
 // batch from a fresh master before proceeding anyway. Bounded so a master
@@ -104,11 +103,7 @@ const SINGLE_FLIGHT_MAX_WAIT_MS = 120000;
  * @returns {Array<Array>}
  */
 function buildOutsideInPairGroupsForOrders(orders: any) {
-    return buildOutsideInPairGroups(orders, {
-        isValid: Boolean,
-        getType: (o: any) => o.type,
-        getPrice: (o: any) => o.price,
-    });
+    return buildOutsideInPairGroupsWithAdapter(orders, (o: any) => o);
 }
 
 /**
@@ -117,11 +112,129 @@ function buildOutsideInPairGroupsForOrders(orders: any) {
  * @returns {Array<Array>}
  */
 function buildOutsideInPairGroupsForCreateEntries(createEntries: any) {
-    return buildOutsideInPairGroups(createEntries, {
-        isValid: (e: any) => Boolean(e?.context?.order),
-        getType: (e: any) => e.context.order.type,
-        getPrice: (e: any) => e.context.order.price,
+    return buildOutsideInPairGroupsWithAdapter(createEntries, (e: any) => e?.context?.order);
+}
+
+/**
+ * Shared outside-in delegation: project each item to its order, then group
+ * with the single order adapter. The ForOrders/ForCreateEntries wrappers
+ * differ only in this projection.
+ * @param {Array} items
+ * @param {Function} toOrder - Project an item to its order object
+ * @returns {Array<Array>}
+ */
+function buildOutsideInPairGroupsWithAdapter(items: any, toOrder: (item: any) => any) {
+    return buildOutsideInPairGroups(items, {
+        isValid: (item: any) => Boolean(toOrder(item)),
+        getType: (item: any) => toOrder(item)?.type,
+        getPrice: (item: any) => toOrder(item)?.price,
     });
+}
+
+/**
+ * Create a create-op fingerprint for a specific slot, used for
+ * pending-broadcast matching and chain-order fingerprinting.
+ * Consolidates the fingerprint construction pattern found in
+ * recordPendingBroadcast, buildChainOrderFingerprint, findChainOrderForSlot,
+ * and verifyCreateAbsent.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {Object} order - The order object
+ * @param {Object} finalInts - The final integer tuple { sell, receive, sellAssetId, receiveAssetId }
+ * @param {string} slotId - The slot identifier
+ * @returns {string|null}
+ */
+function createOpFingerprintForSlot(bot: any, order: any, finalInts: any, slotId: any): string | null {
+    if (!order || !finalInts || !slotId) return null;
+    return buildCreateOpFingerprint({
+        side: order.type,
+        assetA: bot.manager?.assets?.assetA?.id,
+        assetB: bot.manager?.assets?.assetB?.id,
+        sellInt: finalInts.sell,
+        receiveInt: finalInts.receive,
+        slotId,
+    });
+}
+
+/**
+ * Read the pending-broadcast entries as an array. The manager map is
+ * created lazily by recordPendingBroadcast, so every reader must guard
+ * on `instanceof Map` — this helper is the single spelling of that guard.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @returns {Array}
+ */
+function getPendingBroadcasts(bot: any): any[] {
+    return (bot.manager && bot.manager._pendingBroadcasts instanceof Map)
+        ? Array.from(bot.manager._pendingBroadcasts.values()) as any[]
+        : [];
+}
+
+/**
+ * Count pending-broadcast entries without materializing the array.
+ * Same instanceof Map guard as getPendingBroadcasts, for hot paths that
+ * only need the count (e.g. the orphan auto-cancel gate).
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @returns {number}
+ */
+function countPendingBroadcasts(bot: any): number {
+    return (bot.manager && bot.manager._pendingBroadcasts instanceof Map)
+        ? bot.manager._pendingBroadcasts.size
+        : 0;
+}
+
+/**
+ * Probe the chain snapshot for a pending-broadcast entry's slot.
+ * Single spelling of the findChainOrderForSlot probe literal used by
+ * reconcile (first pass + re-read), the poll confirmer, and the
+ * create-absence verifier.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {Array} chainSnapshot
+ * @param {Object} entry - Pending entry ({ slotId, finalInts, orderType, fingerprint })
+ * @returns {Object|null}
+ */
+function findChainOrderForPendingEntry(bot: any, chainSnapshot: any, entry: any) {
+    if (!entry?.slotId) return null;
+    return findChainOrderForSlot(bot, chainSnapshot, entry.slotId, {
+        sell: entry.finalInts?.sell,
+        receive: entry.finalInts?.receive,
+        orderType: entry.orderType,
+        fingerprint: entry.fingerprint,
+    });
+}
+
+/**
+ * Check whether a chain read is authoritative enough to make
+ * definitive absence/lPresence decisions. An authoritative read is
+ * non-empty, non-truncated, and non-null.
+ * @param {Object} readResult - The result of readOpenOrdersWithMeta
+ * @returns {boolean}
+ */
+function isAuthoritativeChainRead(readResult: any): boolean {
+    if (!readResult || !Array.isArray(readResult.orders)) return false;
+    if (readResult.truncated) return false;
+    return readResult.orders.length > 0;
+}
+
+/**
+ * Build a rawOnChain metadata object from final integer values.
+ * Used in processBatchResults for size-update, create, and rotation
+ * contexts to enrich order objects with on-chain identity.
+ * Returns null when the order id (or final ints) is missing: downstream
+ * chainOrderUnchangedFromCache treats a null cache as "not unchanged" and
+ * defers, which is the safer direction versus comparing an id-less object.
+ * @param {string} orderId - The on-chain order id
+ * @param {Object} finalInts - The final integer tuple
+ * @returns {Object|null}
+ */
+function rawOnChainFromInts(orderId: any, finalInts: any): object | null {
+    if (!orderId || !finalInts) return null;
+    return {
+        id: orderId,
+        for_sale: String(finalInts.sell),
+        sell_price: {
+            base: { amount: String(finalInts.sell), asset_id: finalInts.sellAssetId },
+            quote: { amount: String(finalInts.receive), asset_id: finalInts.receiveAssetId },
+        },
+    };
 }
 
 /**
@@ -238,14 +351,7 @@ function recordPendingBroadcast(bot: any, entry: any) {
     if (!bot.manager._pendingBroadcasts || !(bot.manager._pendingBroadcasts instanceof Map)) {
         bot.manager._pendingBroadcasts = new Map();
     }
-    const fingerprint = buildCreateOpFingerprint({
-        side: entry.order.type,
-        assetA: bot.manager?.assets?.assetA?.id,
-        assetB: bot.manager?.assets?.assetB?.id,
-        sellInt: entry.finalInts?.sell,
-        receiveInt: entry.finalInts?.receive,
-        slotId: entry.order.id
-    });
+    const fingerprint = createOpFingerprintForSlot(bot, entry.order, entry.finalInts, entry.order.id);
     if (!fingerprint) {
         bot.manager.logger.log?.(
             `[COW] Skipped pending-broadcast record: could not build fingerprint for ${entry.order?.id || 'unknown'}`,
@@ -538,103 +644,25 @@ async function reconcileAfterUncertainBroadcast(bot: any, err: any, opContexts: 
 }
 
 /**
- * Reconcile a broadcast whose chain state is unknown (implementation).
+ * Match pending broadcasts against a chain snapshot (first pass by slot
+ * probe, second pass by fingerprint across all pending slots), then
+ * re-read the chain for discarded CREATEs to close the TOCTOU window.
+ * Returns `{ adopted, discarded }`, or `{ deferred }` when the re-read
+ * is ambiguous/failed and the caller must defer (pending protection kept).
  * @param {import('./dexbot_class.js').DEXBot} bot
- * @param {BroadcastUncertainError} err
- * @param {Array<Object>} opContexts
- * @param {Object} options
- * @returns {Promise<Object>}
+ * @param {Array} pending
+ * @param {Array} chainSnapshot
+ * @param {Array} opContexts
+ * @param {*} accountRef
+ * @param {*} err
  */
-async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContexts: any, _options: any) {
-    const startedAt = Date.now();
-    const pending: any[] = (bot.manager && bot.manager._pendingBroadcasts instanceof Map)
-        ? Array.from(bot.manager._pendingBroadcasts.values()) as any[]
-        : [];
-    const createContextCount = opContexts.filter((c: any) => c && c.kind === 'create').length;
-    const nonCreateContextCount = opContexts.length - createContextCount;
-
-    bot.manager.logger.log(
-        `[COW][UNCERTAIN] batchId=${err?.batchId || 'n/a'} ops=${opContexts.length} ` +
-        `creates=${createContextCount} nonCreates=${nonCreateContextCount} ` +
-        `staleSinceMs=${err?.timeoutMs || 'n/a'}. Entering reconcile-then-decide.`,
-        'warn'
-    );
-
-    if (!chainOrders?.readOpenOrdersWithMeta) {
-        bot.manager.logger.log(
-            '[COW][UNCERTAIN] readOpenOrdersWithMeta unavailable; falling back to structural resync only.',
-            'error'
-        );
-        if (typeof bot.manager.requestStructuralGridResync === 'function') {
-            await bot.manager.requestStructuralGridResync(
-                'broadcast uncertain — readOpenOrders unavailable',
-                { batchId: err?.batchId || null }
-            );
-        }
-        clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
-        return { executed: false, hadRotation: false, uncertain: true };
-    }
-
-    // 1. Read the chain
-    const accountRef = bot.accountId || bot.account?.id || bot.account;
-    let chainSnapshot: any[] = [];
-    let chainReadTruncated = false;
-    try {
-        const chainRead = await chainOrders.readOpenOrdersWithMeta(accountRef);
-        chainSnapshot = chainRead.orders;
-        chainReadTruncated = chainRead.truncated;
-    } catch (readErr) {
-        bot.manager.logger.log(
-            `[COW][UNCERTAIN] readOpenOrders failed: ${(readErr as any)?.message || readErr}. ` +
-            `Falling back to structural resync.`,
-            'error'
-        );
-        if (typeof bot.manager.requestStructuralGridResync === 'function') {
-            await bot.manager.requestStructuralGridResync(
-                'broadcast uncertain — readOpenOrders failed',
-                { batchId: (err as any)?.batchId || null, error: (readErr as any)?.message || String(readErr) }
-            );
-        }
-        clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
-        return { executed: false, hadRotation: false, uncertain: true };
-    }
-
-    // 1.5. Empty/truncated-read guard: an empty snapshot is ambiguous — the
-    // account is either genuinely empty or the node is lagging behind the
-    // just-broadcast transaction. A truncated snapshot (get_full_accounts
-    // capped limit_orders; fresh creates sort last in the by_account index
-    // and are the first entries omitted) is equally ambiguous: the batch's
-    // creates may simply be missing from the returned window. Treating every
-    // pending broadcast as discarded would clear the pending-broadcast
-    // protection and let the next cycle re-CREATE slots whose orders may
-    // actually be on chain (duplicate orders). Keep the protection and let
-    // the structural resync adopt any landed orders.
-    if (pending.length > 0 && (chainSnapshot.length === 0 || chainReadTruncated)) {
-        return await deferUncertainBroadcastRead(
-            bot,
-            `${chainSnapshot.length === 0 ? 'Empty' : 'Truncated'} chain read for ${pending.length} pending broadcast(s)`,
-            '(node may be lagging or the result set capped; no discard decisions made)',
-            'uncertain broadcast — empty/truncated chain read',
-            { batchId: err?.batchId || null, truncated: chainReadTruncated }
-        );
-    }
-
+async function matchPendingToChain(bot: any, pending: any[], chainSnapshot: any[], opContexts: any, accountRef: any, err: any): Promise<any> {
     const adopted: { entry: any; match: any; }[] = [];
     let discarded: any[] = [];
 
     // 2. For each pending broadcast, look for a chain match.
     for (const entry of pending) {
-        const match = findChainOrderForSlot(
-            bot,
-            chainSnapshot,
-            entry.slotId,
-            {
-                sell: entry.finalInts?.sell,
-                receive: entry.finalInts?.receive,
-                orderType: entry.orderType,
-                fingerprint: entry.fingerprint,
-            }
-        );
+        const match = findChainOrderForPendingEntry(bot, chainSnapshot, entry);
         if (match) {
             adopted.push({ entry, match });
         } else {
@@ -682,30 +710,24 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
                 // protection and let the next cycle re-create (duplicate) an
                 // order that actually landed in the TOCTOU window. Keep the
                 // pending-broadcast protection and defer to a structural resync.
-                if (!freshRead || freshRead.truncated || !Array.isArray(freshRead.orders) || freshRead.orders.length === 0) {
+                if (!isAuthoritativeChainRead(freshRead)) {
                     const ambiguous = !freshRead || !Array.isArray(freshRead.orders) || freshRead.orders.length === 0;
-                    return await deferUncertainBroadcastRead(
-                        bot,
-                        `${ambiguous ? 'Empty' : 'Truncated'} re-read for ${createDiscarded.length} discarded CREATE(s)`,
-                        '(absence is not authoritative on an ambiguous re-read)',
-                        'uncertain broadcast — ambiguous re-read for discarded creates',
-                        { batchId: err?.batchId || null, truncated: !ambiguous }
-                    );
+                    return {
+                        deferred: await deferUncertainBroadcastRead(
+                            bot,
+                            `${ambiguous ? 'Empty' : 'Truncated'} re-read for ${createDiscarded.length} discarded CREATE(s)`,
+                            '(absence is not authoritative on an ambiguous re-read)',
+                            'uncertain broadcast — ambiguous re-read for discarded creates',
+                            { batchId: err?.batchId || null, truncated: !ambiguous }
+                        )
+                    };
                 }
                 const freshChain = freshRead.orders;
                 const remainingDiscarded: any[] = [];
                 for (const entry of discarded) {
                     const ctx = opContexts[entry.ctxIndex];
                     if (ctx && ctx.kind === 'create') {
-                        const match = findChainOrderForSlot(
-                            bot, freshChain, entry.slotId,
-                            {
-                                sell: entry.finalInts?.sell,
-                                receive: entry.finalInts?.receive,
-                                orderType: entry.orderType,
-                                fingerprint: entry.fingerprint,
-                            }
-                        );
+                        const match = findChainOrderForPendingEntry(bot, freshChain, entry);
                         if (match) {
                             adopted.push({ entry, match });
                             bot.manager.logger.log(
@@ -721,21 +743,32 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
                 }
                 discarded = remainingDiscarded;
             } catch (reReadErr: any) {
-                return await deferUncertainBroadcastRead(
-                    bot,
-                    `Fresh chain read for late adoption FAILED (${getErrorMessage(reReadErr)})`,
-                    '(absence is not authoritative on a failed re-read)',
-                    'uncertain broadcast — failed re-read for discarded creates',
-                    { batchId: err?.batchId || null }
-                );
+                return {
+                    deferred: await deferUncertainBroadcastRead(
+                        bot,
+                        `Fresh chain read for late adoption FAILED (${getErrorMessage(reReadErr)})`,
+                        '(absence is not authoritative on a failed re-read)',
+                        'uncertain broadcast — failed re-read for discarded creates',
+                        { batchId: err?.batchId || null }
+                    )
+                };
             }
         }
     }
 
-    // 3b. Apply decisions
-    let adoptedCount = 0;
-    let discardedCount = 0;
+    return { adopted, discarded };
+}
 
+/**
+ * Adopt matched pending broadcasts into the master grid (CREATE slots
+ * synchronize with the chain) and clear their pending entries.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {Array} adopted
+ * @param {Array} opContexts
+ * @returns {Promise<number>} adoptedCount
+ */
+async function adoptMatchedEntries(bot: any, adopted: any[], opContexts: any): Promise<number> {
+    let adoptedCount = 0;
     for (const { entry, match } of adopted) {
         adoptedCount++;
         const plannedOpCtx = opContexts[entry.ctxIndex];
@@ -764,7 +797,20 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
             bot.manager._pendingBroadcasts.delete(entry.fingerprint);
         }
     }
+    return adoptedCount;
+}
 
+/**
+ * Restore discarded CREATE slots to creation-uncertain state and clear
+ * their pending entries; residual pending entries that survive the
+ * decide phase are cleaned defensively.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {Array} discarded
+ * @param {Array} opContexts
+ * @returns {Promise<number>} discardedCount
+ */
+async function restoreDiscardedCreates(bot: any, discarded: any[], opContexts: any): Promise<number> {
+    let discardedCount = 0;
     for (const entry of discarded) {
         discardedCount++;
         const plannedOpCtx = opContexts[entry.ctxIndex];
@@ -877,6 +923,137 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
         }
         bot.manager._pendingBroadcasts.clear();
     }
+    return discardedCount;
+}
+
+/**
+ * Request a structural resync when chain orders remain unaccounted for
+ * after the uncertain-broadcast reconciliation.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {*} err
+ * @param {Array} pending
+ * @param {Array} chainSnapshot
+ * @param {Array} adopted
+ * @param {number} adoptedCount
+ * @param {number} discardedCount
+ */
+async function resyncIfUnreconciled(bot: any, err: any, pending: any[], chainSnapshot: any[], adopted: any[], adoptedCount: number, discardedCount: number) {
+    // 7. Request structural resync if any chain orders remain unaccounted for
+    // after the reconciliation, ensuring the next cycle re-plans from a clean
+    // chain snapshot.
+    const alreadyScheduled = bot._structuralGridResyncRunning || bot._structuralGridResyncTimer;
+    if (!alreadyScheduled && chainSnapshot.length > 0) {
+        const reconciledOrderIds = new Set(adopted.map((a: any) => a.match?.id).filter(Boolean));
+        const unreconciledCount = chainSnapshot.filter((o: any) => !reconciledOrderIds.has(o.id)).length;
+        if (unreconciledCount > 0) {
+            bot.manager.logger.log(
+                `[COW][UNCERTAIN] ${unreconciledCount} chain order(s) remain unreconciled after uncertain broadcast recovery. ` +
+                `These may be legitimate pre-existing orders or leftovers from a prior cycle. Requesting structural resync.`,
+                'warn'
+            );
+            await requestStructuralResync(
+                bot,
+                'unreconciled orders after uncertain broadcast',
+                {
+                    batchId: err?.batchId || null,
+                    pendingCount: pending.length,
+                    adoptedCount,
+                    discardedCount,
+                    unreconciledCount
+                }
+            );
+        }
+    }
+}
+
+/**
+ * Reconcile a broadcast whose chain state is unknown (implementation).
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {BroadcastUncertainError} err
+ * @param {Array<Object>} opContexts
+ * @param {Object} options
+ * @returns {Promise<Object>}
+ */
+async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContexts: any, _options: any) {
+    const startedAt = Date.now();
+    const pending: any[] = getPendingBroadcasts(bot);
+    const createContextCount = opContexts.filter((c: any) => c && c.kind === 'create').length;
+    const nonCreateContextCount = opContexts.length - createContextCount;
+
+    bot.manager.logger.log(
+        `[COW][UNCERTAIN] batchId=${err?.batchId || 'n/a'} ops=${opContexts.length} ` +
+        `creates=${createContextCount} nonCreates=${nonCreateContextCount} ` +
+        `staleSinceMs=${err?.timeoutMs || 'n/a'}. Entering reconcile-then-decide.`,
+        'warn'
+    );
+
+    if (!chainOrders?.readOpenOrdersWithMeta) {
+        bot.manager.logger.log(
+            '[COW][UNCERTAIN] readOpenOrdersWithMeta unavailable; falling back to structural resync only.',
+            'error'
+        );
+        await requestStructuralResync(
+            bot,
+            'broadcast uncertain — readOpenOrders unavailable',
+            { batchId: err?.batchId || null }
+        );
+        clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
+        return { executed: false, hadRotation: false, uncertain: true };
+    }
+
+    // 1. Read the chain
+    const accountRef = bot.accountId || bot.account?.id || bot.account;
+    let chainSnapshot: any[] = [];
+    let chainReadTruncated = false;
+    try {
+        const chainRead = await chainOrders.readOpenOrdersWithMeta(accountRef);
+        chainSnapshot = chainRead.orders;
+        chainReadTruncated = chainRead.truncated;
+    } catch (readErr) {
+        bot.manager.logger.log(
+            `[COW][UNCERTAIN] readOpenOrders failed: ${(readErr as any)?.message || readErr}. ` +
+            `Falling back to structural resync.`,
+            'error'
+        );
+        await requestStructuralResync(
+            bot,
+            'broadcast uncertain — readOpenOrders failed',
+            { batchId: (err as any)?.batchId || null, error: (readErr as any)?.message || String(readErr) }
+        );
+        clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
+        return { executed: false, hadRotation: false, uncertain: true };
+    }
+
+    // 1.5. Empty/truncated-read guard: an empty snapshot is ambiguous — the
+    // account is either genuinely empty or the node is lagging behind the
+    // just-broadcast transaction. A truncated snapshot (get_full_accounts
+    // capped limit_orders; fresh creates sort last in the by_account index
+    // and are the first entries omitted) is equally ambiguous: the batch's
+    // creates may simply be missing from the returned window. Treating every
+    // pending broadcast as discarded would clear the pending-broadcast
+    // protection and let the next cycle re-CREATE slots whose orders may
+    // actually be on chain (duplicate orders). Keep the protection and let
+    // the structural resync adopt any landed orders.
+    if (pending.length > 0 && (chainSnapshot.length === 0 || chainReadTruncated)) {
+        return await deferUncertainBroadcastRead(
+            bot,
+            `${chainSnapshot.length === 0 ? 'Empty' : 'Truncated'} chain read for ${pending.length} pending broadcast(s)`,
+            '(node may be lagging or the result set capped; no discard decisions made)',
+            'uncertain broadcast — empty/truncated chain read',
+            { batchId: err?.batchId || null, truncated: chainReadTruncated }
+        );
+    }
+
+    // 2-3a. Match pending broadcasts to the chain: slot probe, fingerprint
+    // second pass, and a TOCTOU re-read for discarded CREATEs (see
+    // matchPendingToChain). A deferred re-read returns its result directly.
+    const matched = await matchPendingToChain(bot, pending, chainSnapshot, opContexts, accountRef, err);
+    if (matched.deferred) return matched.deferred;
+    const { adopted, discarded } = matched;
+
+    // 3b. Apply decisions
+    const adoptedCount = await adoptMatchedEntries(bot, adopted, opContexts);
+    let discardedCount = await restoreDiscardedCreates(bot, discarded, opContexts);
 
     // 5. Log structured summary
     const elapsed = Date.now() - startedAt;
@@ -904,32 +1081,7 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
     // 7. Request structural resync if any chain orders remain unaccounted for
     // after the reconciliation, ensuring the next cycle re-plans from a clean
     // chain snapshot.
-    const alreadyScheduled = bot._structuralGridResyncRunning || bot._structuralGridResyncTimer;
-    if (!alreadyScheduled && chainSnapshot.length > 0) {
-        const reconciledOrderIds = new Set(adopted.map((a: any) => a.match?.id).filter(Boolean));
-        const unreconciledCount = chainSnapshot.filter((o: any) => !reconciledOrderIds.has(o.id)).length;
-        if (unreconciledCount > 0) {
-            bot.manager.logger.log(
-                `[COW][UNCERTAIN] ${unreconciledCount} chain order(s) remain unreconciled after uncertain broadcast recovery. ` +
-                `These may be legitimate pre-existing orders or leftovers from a prior cycle. Requesting structural resync.`,
-                'warn'
-            );
-            if (typeof bot.manager.requestStructuralGridResync === 'function') {
-                await bot.manager.requestStructuralGridResync(
-                    'unreconciled orders after uncertain broadcast',
-                    {
-                        batchId: err?.batchId || null,
-                        pendingCount: pending.length,
-                        adoptedCount,
-                        discardedCount,
-                        unreconciledCount
-                    }
-                );
-            } else {
-                bot._warn?.('[COW][UNCERTAIN] requestStructuralGridResync unavailable; cannot schedule structural resync.');
-            }
-        }
-    }
+    await resyncIfUnreconciled(bot, err, pending, chainSnapshot, adopted, adoptedCount, discardedCount);
 
     return { executed: false, hadRotation: false, uncertain: true, adoptedCount, discardedCount };
 }
@@ -952,9 +1104,7 @@ async function autoCancelOneUnmatchedOrphan(bot: any) {
         bot._autoCancelOrphanCycleMarker = cycleId;
         bot._autoCancelOrphanSubCount = 0;
     }
-    const pending = (bot.manager && bot.manager._pendingBroadcasts instanceof Map)
-        ? bot.manager._pendingBroadcasts.size
-        : 0;
+    const pending = countPendingBroadcasts(bot);
     if (pending > 0) {
         return { cancelled: false, reason: 'pending-broadcasts-active' };
     }
@@ -1052,14 +1202,7 @@ function verifyCreateAbsent(bot: any, freshChain: any[], ctx: any): 'absent' | '
         sell: ctx.finalInts.sell,
         receive: ctx.finalInts.receive,
         orderType: ctx.order.type,
-        fingerprint: buildCreateOpFingerprint({
-            side: ctx.order.type,
-            assetA: bot.manager?.assets?.assetA?.id,
-            assetB: bot.manager?.assets?.assetB?.id,
-            sellInt: ctx.finalInts.sell,
-            receiveInt: ctx.finalInts.receive,
-            slotId: ctx.order.id
-        })
+        fingerprint: createOpFingerprintForSlot(bot, ctx.order, ctx.finalInts, ctx.order.id)
     });
     return match ? 'landed' : 'absent';
 }
@@ -1140,7 +1283,11 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
                     const accountRef = bot.accountId || bot.account?.id || bot.account;
                     const freshRead = await chainOrders.readOpenOrdersWithMeta(accountRef);
                     const freshChain = freshRead.orders;
-                    if (Array.isArray(freshChain) && freshChain.length > 0) {
+                    // A truncated read (get_full_accounts caps limit_orders, and
+                    // fresh creates sort last in the by_account index) omits the
+                    // very orders this batch may have landed — 'absent' is not
+                    // authoritative here, degrade to 'unknown' and defer.
+                    if (isAuthoritativeChainRead(freshRead)) {
                         absence = 'absent';
                         for (const ctx of opContexts) {
                             if (!ctx) continue;
@@ -1150,13 +1297,6 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
                                 break;
                             }
                         }
-                    }
-                    // A truncated read (get_full_accounts caps limit_orders, and
-                    // fresh creates sort last in the by_account index) omits the
-                    // very orders this batch may have landed — 'absent' is not
-                    // authoritative here, degrade to 'unknown' and defer.
-                    if (freshRead.truncated && absence === 'absent') {
-                        absence = 'unknown';
                     }
                 } catch (verifyErr: any) {
                     bot.manager.logger.log(
@@ -1200,29 +1340,6 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
             throw err;
         }
     }
-}
-
-/**
- * Whether a chain order still matches the cached pre-update state the
- * limit_order_update delta was built from. Only a provably-unchanged order
- * makes a re-broadcast of the identical delta safe (it applies to the same
- * base). Any other state (target applied, filled, resized) must defer.
- * @param {Object} chainOrder - Raw chain order object (get_full_accounts)
- * @param {Object|null} cachedRaw - The rawOnChain cache captured at build time
- * @returns {boolean}
- */
-function chainOrderUnchangedFromCache(chainOrder: any, cachedRaw: any) {
-    if (!chainOrder || !cachedRaw) return false;
-    const base = chainOrder.sell_price?.base;
-    const quote = chainOrder.sell_price?.quote;
-    const cachedBase = cachedRaw.sell_price?.base?.amount;
-    const cachedQuote = cachedRaw.sell_price?.quote?.amount;
-    const cachedForSale = cachedRaw.for_sale;
-    if (base === undefined || quote === undefined) return false;
-    if (cachedForSale === undefined || cachedBase === undefined || cachedQuote === undefined) return false;
-    return String(base.amount ?? '') === String(cachedBase)
-        && String(quote.amount ?? '') === String(cachedQuote)
-        && String(chainOrder.for_sale ?? '') === String(cachedForSale);
 }
 
 /**
@@ -1489,7 +1606,6 @@ function validateOperationFunds(bot: any, operations: any, assetA: any, assetB: 
         return { isValid: true, summary: 'No operations to validate' };
     }
 
-    const { blockchainToFloat, floatToBlockchainInt, quantizeFloat } = require('./order/utils/math');
     let snap = bot.manager?.getChainFundsSnapshot?.();
     if (!snap) {
         snap = { chainFreeSell: 0, chainFreeBuy: 0 };
@@ -2163,14 +2279,7 @@ async function pollChainForConfirmation(bot: any, opContexts: any, options: any 
                     receive: ctx.finalInts.receive,
                     orderType: ctx.order.type,
                     fingerprint: createContexts.length > 0
-                        ? buildCreateOpFingerprint({
-                            side: ctx.order.type,
-                            assetA: bot.manager?.assets?.assetA?.id,
-                            assetB: bot.manager?.assets?.assetB?.id,
-                            sellInt: ctx.finalInts.sell,
-                            receiveInt: ctx.finalInts.receive,
-                            slotId: ctx.order.id
-                        })
+                        ? createOpFingerprintForSlot(bot, ctx.order, ctx.finalInts, ctx.order.id)
                         : undefined
                 });
 
@@ -2445,76 +2554,6 @@ async function waitForCowBroadcastSingleFlight(bot: any, label: string): Promise
  * @returns {Promise<Object>}
  */
 /**
- * PRE-BROADCAST CROSSED-BOOK ASSERT (defense-in-depth, any-writer detection).
- *
- * Simulates the post-batch book: currently placed master orders plus this
- * batch's action overlay (CREATEs add, CANCELs remove, UPDATEs reprice/move).
- * Returns a detail string when a planned BUY would price at-or-above a planned
- * SELL — a state no honest planner produces — so the caller can refuse the
- * broadcast instead of paying for adverse fills.  Placed order prices are
- * independent of grid geometry, so this catches boundary overruns regardless
- * of which writer produced them.
- *
- * Detector only: any internal failure returns null (never blocks a broadcast).
- */
-function detectCrossedBookPlan(manager: any, actions: any[]): string | null {
-    try {
-        const startPrice = Number(manager?.config?.startPrice);
-        const book = new Map<string, { type: string; price: number }>();
-        for (const o of Array.from(manager?.orders?.values?.() ?? []) as any[]) {
-            if (!o || !o.orderId || o.price == null) continue;
-            const price = Number(o.price);
-            if (!Number.isFinite(price)) continue;
-            let type = o.type;
-            if (type !== ORDER_TYPES.BUY && type !== ORDER_TYPES.SELL) {
-                // Legacy SPREAD-typed placed order: derive side from the same
-                // price-vs-startPrice convention used across the codebase.
-                if (!Number.isFinite(startPrice)) continue;
-                type = price < startPrice ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-            }
-            book.set(String(o.id), { type, price });
-        }
-        for (const a of actions ?? []) {
-            const id = String(a.id ?? a.orderId ?? '');
-            if (a.type === COW_ACTIONS.CANCEL) {
-                if (id) book.delete(id);
-            } else if (a.type === COW_ACTIONS.UPDATE) {
-                const newPrice = Number(a.newPrice ?? a.order?.price);
-                const newType = a.order?.type;
-                if (id && Number.isFinite(newPrice)) {
-                    const entry = book.get(id);
-                    const type = (newType === ORDER_TYPES.BUY || newType === ORDER_TYPES.SELL)
-                        ? newType
-                        : entry?.type;
-                    if (entry) book.delete(id);
-                    const key = String(a.newGridId ?? id);
-                    if (type === ORDER_TYPES.BUY || type === ORDER_TYPES.SELL) {
-                        book.set(key, { type, price: newPrice });
-                    }
-                }
-            } else if (a.type === COW_ACTIONS.CREATE) {
-                const price = Number(a.order?.price);
-                const type = a.order?.type;
-                if (!Number.isFinite(price) || (type !== ORDER_TYPES.BUY && type !== ORDER_TYPES.SELL)) continue;
-                if (id) book.set(id, { type, price });
-            }
-        }
-        let maxBuy = -Infinity;
-        let minSell = Infinity;
-        for (const { type, price } of book.values()) {
-            if (type === ORDER_TYPES.BUY && price > maxBuy) maxBuy = price;
-            else if (type === ORDER_TYPES.SELL && price < minSell) minSell = price;
-        }
-        if (Number.isFinite(maxBuy) && Number.isFinite(minSell) && minSell <= maxBuy) {
-            return `bestPlacedBuy=${maxBuy} >= bestPlacedSell=${minSell}`;
-        }
-        return null;
-    } catch {
-        return null;
-    }
-}
-
-/**
  * Derive an update action's planned target size (shared by the rotation and
  * plain size-update op builders).
  * @param {Object} action - COW action
@@ -2557,6 +2596,302 @@ function clampPostFillUpdateSize(bot: any, masterOrder: any, newSize: any, actio
         return booked;
     }
     return target;
+}
+
+/**
+ * Pre-broadcast guard chain for a COW batch: create-slot validation (with
+ * tolerance-violation filtering), recovery-exhausted block, pending-broadcast
+ * and unmatched-chain-order guards (with adoption sync), and the crossed-book
+ * gate. Every refusal pops the pushed working grid before returning.
+ *
+ * Mutates cowResult.actions in place (tolerance-violating CREATEs are
+ * filtered); the caller holds the same array reference.
+ *
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {Object} cowResult - Rebalance/COW result carrying actions
+ * @returns {Promise<Object>} { proceed:false, result } on refusal, or
+ *   { proceed:true, crossingCandidates, intraBatchCandidates } on pass
+ */
+async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
+    const { actions } = cowResult;
+    const chainOrderCandidates = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
+        ? bot.manager._lastUnmatchedChainOrders
+        : [];
+    const createSlotValidation = validateCreateTargetSlots(actions, bot.manager?.orders, bot.manager?.assets, chainOrderCandidates);
+    if (!createSlotValidation.isValid) {
+        for (const violation of createSlotValidation.violations) {
+            let reason: string;
+            switch (violation.reason) {
+                case 'price_collision':
+                    reason = `existing placed order ${violation.currentOrderId} at same price`;
+                    break;
+                case 'same_batch_price_collision':
+                    reason = `another CREATE in the same batch at same price`;
+                    break;
+                case 'chain_orphan_collision':
+                    reason = `unmatched on-chain order ${violation.currentOrderId} at same price`;
+                    break;
+                case 'same_batch_price_duplicate':
+                    reason = `another CREATE in the same batch at same broadcast price (duplicate of ${violation.duplicateOf})`;
+                    break;
+                case 'create_price_invalid':
+                    reason = `broadcast price is not a finite number`;
+                    break;
+                default:
+                    reason = `existing orderId=${violation.currentOrderId}`;
+            }
+            bot.manager.logger.log(
+                `[COW] Rejecting CREATE for slot ${violation.targetId}: ${reason} ` +
+                `(type=${violation.currentType}, state=${violation.currentState})`,
+                'error'
+            );
+        }
+
+        // Differentiate violation types:
+        //   * slot_occupied — hard constraint, not a false positive (the
+        //     target slot literally has a placed order).  Abort the batch.
+        //   * price_collision / chain_orphan_collision / same_batch_price_collision
+        //     — tolerance-based; can false-positive on low-precision assets
+        //     where calculatePriceTolerance exceeds the grid increment.
+        //     Skip only the violating CREATEs so the rest of the batch
+        //     (valid CREATEs, CANCELs, UPDATEs) still proceeds.
+        const hasHardOccupiedViolation = createSlotValidation.violations.some(
+            (v: any) => v.reason === 'slot_occupied'
+        );
+
+        if (hasHardOccupiedViolation) {
+            popPushedWorkingGrid(bot, cowResult);
+            return {
+                proceed: false,
+                result: {
+                    executed: false,
+                    aborted: true,
+                    reason: 'CREATE_SLOT_OCCUPIED',
+                    violations: createSlotValidation.violations,
+                    hadRotation: false
+                }
+            };
+        }
+
+        const violatingIds = createSlotValidation.violatingTargetIds;
+        const filteredActions = actions.filter((action: any) => {
+            if (action.type !== COW_ACTIONS.CREATE) return true;
+            const targetId = action.id || action.order?.id;
+            return !violatingIds.has(targetId);
+        });
+
+        actions.length = 0;
+        actions.push(...filteredActions);
+
+        // All violations at this point are tolerance-based; slot_occupied
+        // would have aborted above.
+        bot.manager.logger.log(
+            `[COW] Filtered ${createSlotValidation.violations.length} tolerance-violating CREATE(s); ` +
+            `${actions.length} action(s) remaining in batch`,
+            'warn'
+        );
+
+        if (!actions.some((action: any) => action.type === COW_ACTIONS.CREATE)) {
+            if (actions.length === 0) {
+                // Same exactly-once marker discipline as the other early
+                // returns: a pushed working grid must be popped here or the
+                // caller would leak the stack entry.
+                popPushedWorkingGrid(bot, cowResult);
+                return { proceed: false, result: { executed: false, hadRotation: false } };
+            }
+        }
+    }
+
+    const hasCreateActions = actions.some((action: any) => action.type === COW_ACTIONS.CREATE);
+
+    if (hasCreateActions && bot.manager?._recoveryExhaustedAt) {
+        const exhaustedAge = Date.now() - bot.manager._recoveryExhaustedAt;
+        bot.manager.logger.log?.(
+            `[RECOVERY-EXHAUSTED] Blocking ${actions.filter((a: any) => a.type === COW_ACTIONS.CREATE).length} CREATE(s) ` +
+            `(exhausted ${(exhaustedAge / 1000).toFixed(0)}s ago). ` +
+            `Waiting for next fill or sync cycle to reset recovery state.`,
+            'warn'
+        );
+        popPushedWorkingGrid(bot, cowResult);
+        return {
+            proceed: false,
+            result: {
+                executed: false,
+                aborted: true,
+                reason: 'RECOVERY_EXHAUSTED',
+                hadRotation: false
+            }
+        };
+    }
+
+    const unmatchedChainOrders = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
+        ? bot.manager._lastUnmatchedChainOrders
+        : [];
+    const pendingBroadcasts: any[] = getPendingBroadcasts(bot);
+    if (hasCreateActions && (unmatchedChainOrders.length > 0 || pendingBroadcasts.length > 0)) {
+        if (pendingBroadcasts.length > 0) {
+            bot.manager.logger.log(
+                `[COW] Rejecting CREATE batch: ${pendingBroadcasts.length} pending broadcast(s) from a prior uncertain ` +
+                `broadcast. Running recovery before placing replacement orders.`,
+                'error'
+            );
+            await requestStructuralResync(
+                bot,
+                'pending broadcasts before COW create',
+                { pendingBroadcasts: pendingBroadcasts.map((p: any) => p.slotId) }
+            );
+            try {
+                await reconcileAfterUncertainBroadcast(
+                    bot,
+                    new BroadcastUncertainError(
+                        'rejected CREATE batch had pending broadcasts',
+                        {
+                            operations: pendingBroadcasts.map((p: any) => p.order),
+                            accountName: bot.account,
+                            batchId: bot._currentBatchId || null,
+                            payload: null,
+                            timeoutMs: null
+                        }
+                    ),
+                    []
+                );
+            } catch (recoverErr: any) {
+                bot.manager.logger.log(
+                    `[COW] Recovery from pending broadcasts failed: ${recoverErr?.message || recoverErr}`,
+                    'error'
+                );
+            }
+            popPushedWorkingGrid(bot, cowResult);
+            return {
+                proceed: false,
+                result: {
+                    executed: false,
+                    aborted: true,
+                    reason: 'PENDING_BROADCASTS',
+                    hadRotation: false
+                }
+            };
+        }
+
+        const unmatchedSample = unmatchedChainOrders
+            .slice(0, 3)
+            .map((o: any) => formatUnmatchedChainOrderForLog(o))
+            .join(' | ');
+        bot.manager.logger.log(
+            `[COW] ${unmatchedChainOrders.length} unmatched chain order(s) blocking CREATES ` +
+            (unmatchedSample ? `(${unmatchedSample})` : '') +
+            ` — adopting via sync instead of cancelling`,
+            'info'
+        );
+        try {
+            const accountRef = bot.account;
+            const freshRead = await chainOrders.readOpenOrdersWithMeta(accountRef);
+            // Truncated-read guard: a partial get_full_accounts window omits the
+            // freshest orders; syncing on it would virtualize live slots and
+            // re-create duplicates. Defer the adoption to a clean read — the
+            // unmatched orders keep blocking CREATEs until then.
+            if (!isAuthoritativeChainRead(freshRead)) {
+                bot.manager.logger.log(
+                    '[COW] Post-guard chain snapshot not authoritative; skipping adoption sync (partial snapshot would virtualize live slots) — unmatched chain orders keep blocking CREATEs',
+                    'warn'
+                );
+            } else if (freshRead.orders && freshRead.orders.length > 0) {
+                const freshSnapshot = freshRead.orders;
+                const syncResult = await bot.manager.syncFromOpenOrders(freshSnapshot, {
+                    // Accounting enabled: the adopted chain orders were never
+                    // registered in master (they are unmatched/orphan), so the
+                    // adoption must lock their capital. skipAccounting:true would
+                    // leave the optimistic balances drifted until the next fetch
+                    // — inconsistent with the open-orders loop convention
+                    // ('readOpenOrders' → skipAccounting:false).
+                    skipAccounting: false,
+                });
+                if (syncResult && Array.isArray(syncResult.unmatchedChainOrders)) {
+                    const processed = (syncResult.filledOrders?.length || 0) +
+                                      (syncResult.updatedOrders?.length || 0) +
+                                      (syncResult.ordersNeedingCorrection?.length || 0);
+                    if (processed > 0) {
+                        bot.manager._lastUnmatchedChainOrders = syncResult.unmatchedChainOrders;
+                        bot.manager.logger.log(
+                            `[COW] Adopted chain order(s) via sync: ${processed} processed, ` +
+                            `${syncResult.unmatchedChainOrders.length} still unmatched`,
+                            'info'
+                        );
+                    } else {
+                        const syncUnmatchedCount = syncResult.unmatchedChainOrders.length;
+                        bot.manager.logger.log(
+                            `[COW] Sync returned without processing (processed=0, ` +
+                            `unmatched=${syncUnmatchedCount} in result, ` +
+                            `_lastUnmatchedChainOrders=${unmatchedChainOrders.length}). ` +
+                            `Structural resync will handle adoption.`,
+                            syncUnmatchedCount > 0 ? 'warn' : 'debug'
+                        );
+                        if (syncUnmatchedCount > 0 && syncUnmatchedCount !== unmatchedChainOrders.length) {
+                            bot.manager._lastUnmatchedChainOrders = syncResult.unmatchedChainOrders.map((o: any) => ({ ...o }));
+                            bot.manager.logger.log(
+                                `[COW] Updated _lastUnmatchedChainOrders from sync result: ` +
+                                `${unmatchedChainOrders.length} → ${syncUnmatchedCount}`,
+                                'debug'
+                            );
+                        }
+                    }
+                }
+            }
+        } catch (syncErr: any) {
+            bot.manager.logger.log(
+                `[COW] Failed to sync/unmatched orders: ${syncErr?.message || syncErr}`,
+                'warn'
+            );
+        }
+        await requestStructuralResync(
+            bot,
+            'unmatched chain orders before COW create',
+            { unmatchedChainOrders: unmatchedChainOrders }
+        );
+        bot.manager.logger.log(
+            `[COW] Rejecting CREATE batch after sync: working grid invalidated by master mutation`,
+            'info'
+        );
+        popPushedWorkingGrid(bot, cowResult);
+        return {
+            proceed: false,
+            result: {
+                executed: false,
+                aborted: true,
+                reason: 'UNMATCHED_CHAIN_ORDERS',
+                hadRotation: false
+            }
+        };
+    }
+
+    // Crossing-check candidate set (master + pending-broadcast + unmatched
+    // chain orders). Built after the batch-level pending/unmatched guards so
+    // it reflects any sync they triggered.
+    const crossingCandidates = buildCrossingCandidates(bot);
+    const intraBatchCandidates: any[] = [];
+
+    // CROSSED-BOOK GATE: refuse to broadcast any batch whose simulated result
+    // prices a BUY at-or-above a SELL (see detectCrossedBookPlan).
+    const crossedBookDetail = detectCrossedBookPlan(bot.manager, actions);
+    if (crossedBookDetail) {
+        bot.manager.logger.log(
+            `[COW] Rejecting batch pre-broadcast: crossed book detected (${crossedBookDetail})`,
+            'error'
+        );
+        popPushedWorkingGrid(bot, cowResult);
+        return {
+            proceed: false,
+            result: {
+                executed: false,
+                aborted: true,
+                reason: 'CROSSED_BOOK',
+                detail: crossedBookDetail,
+                hadRotation: false
+            }
+        };
+    }
+
+    return { proceed: true, crossingCandidates, intraBatchCandidates };
 }
 
 async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: any = {}) {
@@ -2622,275 +2957,14 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         }
     }
 
-    const chainOrderCandidates = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
-        ? bot.manager._lastUnmatchedChainOrders
-        : [];
-    const createSlotValidation = validateCreateTargetSlots(actions, bot.manager?.orders, bot.manager?.assets, chainOrderCandidates);
-    if (!createSlotValidation.isValid) {
-        for (const violation of createSlotValidation.violations) {
-            let reason: string;
-            switch (violation.reason) {
-                case 'price_collision':
-                    reason = `existing placed order ${violation.currentOrderId} at same price`;
-                    break;
-                case 'same_batch_price_collision':
-                    reason = `another CREATE in the same batch at same price`;
-                    break;
-                case 'chain_orphan_collision':
-                    reason = `unmatched on-chain order ${violation.currentOrderId} at same price`;
-                    break;
-                case 'same_batch_price_duplicate':
-                    reason = `another CREATE in the same batch at same broadcast price (duplicate of ${violation.duplicateOf})`;
-                    break;
-                case 'create_price_invalid':
-                    reason = `broadcast price is not a finite number`;
-                    break;
-                default:
-                    reason = `existing orderId=${violation.currentOrderId}`;
-            }
-            bot.manager.logger.log(
-                `[COW] Rejecting CREATE for slot ${violation.targetId}: ${reason} ` +
-                `(type=${violation.currentType}, state=${violation.currentState})`,
-                'error'
-            );
-        }
-
-        // Differentiate violation types:
-        //   * slot_occupied — hard constraint, not a false positive (the
-        //     target slot literally has a placed order).  Abort the batch.
-        //   * price_collision / chain_orphan_collision / same_batch_price_collision
-        //     — tolerance-based; can false-positive on low-precision assets
-        //     where calculatePriceTolerance exceeds the grid increment.
-        //     Skip only the violating CREATEs so the rest of the batch
-        //     (valid CREATEs, CANCELs, UPDATEs) still proceeds.
-        const hasHardOccupiedViolation = createSlotValidation.violations.some(
-            (v: any) => v.reason === 'slot_occupied'
-        );
-
-        if (hasHardOccupiedViolation) {
-            popPushedWorkingGrid(bot, cowResult);
-            return {
-                executed: false,
-                aborted: true,
-                reason: 'CREATE_SLOT_OCCUPIED',
-                violations: createSlotValidation.violations,
-                hadRotation: false
-            };
-        }
-
-        const violatingIds = createSlotValidation.violatingTargetIds;
-        const filteredActions = actions.filter((action: any) => {
-            if (action.type !== COW_ACTIONS.CREATE) return true;
-            const targetId = action.id || action.order?.id;
-            return !violatingIds.has(targetId);
-        });
-
-        actions.length = 0;
-        actions.push(...filteredActions);
-
-        // All violations at this point are tolerance-based; slot_occupied
-        // would have aborted above.
-        bot.manager.logger.log(
-            `[COW] Filtered ${createSlotValidation.violations.length} tolerance-violating CREATE(s); ` +
-            `${actions.length} action(s) remaining in batch`,
-            'warn'
-        );
-
-        if (!actions.some((action: any) => action.type === COW_ACTIONS.CREATE)) {
-            if (actions.length === 0) {
-                // Same exactly-once marker discipline as the other early
-                // returns: a pushed working grid must be popped here or the
-                // caller would leak the stack entry.
-                popPushedWorkingGrid(bot, cowResult);
-                return { executed: false, hadRotation: false };
-            }
-        }
-    }
-
-    const hasCreateActions = actions.some((action: any) => action.type === COW_ACTIONS.CREATE);
-
-    if (hasCreateActions && bot.manager?._recoveryExhaustedAt) {
-        const exhaustedAge = Date.now() - bot.manager._recoveryExhaustedAt;
-        bot.manager.logger.log?.(
-            `[RECOVERY-EXHAUSTED] Blocking ${actions.filter((a: any) => a.type === COW_ACTIONS.CREATE).length} CREATE(s) ` +
-            `(exhausted ${(exhaustedAge / 1000).toFixed(0)}s ago). ` +
-            `Waiting for next fill or sync cycle to reset recovery state.`,
-            'warn'
-        );
-        popPushedWorkingGrid(bot, cowResult);
-        return {
-            executed: false,
-            aborted: true,
-            reason: 'RECOVERY_EXHAUSTED',
-            hadRotation: false
-        };
-    }
-
-    const unmatchedChainOrders = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
-        ? bot.manager._lastUnmatchedChainOrders
-        : [];
-    const pendingBroadcasts: any[] = (bot.manager && bot.manager._pendingBroadcasts instanceof Map)
-        ? Array.from(bot.manager._pendingBroadcasts.values()) as any[]
-        : [];
-    if (hasCreateActions && (unmatchedChainOrders.length > 0 || pendingBroadcasts.length > 0)) {
-        if (pendingBroadcasts.length > 0) {
-            bot.manager.logger.log(
-                `[COW] Rejecting CREATE batch: ${pendingBroadcasts.length} pending broadcast(s) from a prior uncertain ` +
-                `broadcast. Running recovery before placing replacement orders.`,
-                'error'
-            );
-            if (typeof bot.manager.requestStructuralGridResync === 'function') {
-                if (bot.manager._recoveryState) bot.manager._recoveryState = { ...bot.manager._recoveryState, structuralResyncRequested: true };
-                await bot.manager.requestStructuralGridResync(
-                    'pending broadcasts before COW create',
-                    { pendingBroadcasts: pendingBroadcasts.map((p: any) => p.slotId) }
-                );
-            }
-            try {
-                await reconcileAfterUncertainBroadcast(
-                    bot,
-                    new BroadcastUncertainError(
-                        'rejected CREATE batch had pending broadcasts',
-                        {
-                            operations: pendingBroadcasts.map((p: any) => p.order),
-                            accountName: bot.account,
-                            batchId: bot._currentBatchId || null,
-                            payload: null,
-                            timeoutMs: null
-                        }
-                    ),
-                    []
-                );
-            } catch (recoverErr: any) {
-                bot.manager.logger.log(
-                    `[COW] Recovery from pending broadcasts failed: ${recoverErr?.message || recoverErr}`,
-                    'error'
-                );
-            }
-            popPushedWorkingGrid(bot, cowResult);
-            return {
-                executed: false,
-                aborted: true,
-                reason: 'PENDING_BROADCASTS',
-                hadRotation: false
-            };
-        }
-
-        const unmatchedSample = unmatchedChainOrders
-            .slice(0, 3)
-            .map((o: any) => formatUnmatchedChainOrderForLog(o))
-            .join(' | ');
-        bot.manager.logger.log(
-            `[COW] ${unmatchedChainOrders.length} unmatched chain order(s) blocking CREATES ` +
-            (unmatchedSample ? `(${unmatchedSample})` : '') +
-            ` — adopting via sync instead of cancelling`,
-            'info'
-        );
-        try {
-            const accountRef = bot.account;
-            const freshRead = await chainOrders.readOpenOrdersWithMeta(accountRef);
-            // Truncated-read guard: a partial get_full_accounts window omits the
-            // freshest orders; syncing on it would virtualize live slots and
-            // re-create duplicates. Defer the adoption to a clean read — the
-            // unmatched orders keep blocking CREATEs until then.
-            if (freshRead.truncated) {
-                bot.manager.logger.log(
-                    '[COW] Post-guard chain snapshot TRUNCATED; skipping adoption sync (partial snapshot would virtualize live slots) — unmatched chain orders keep blocking CREATEs',
-                    'warn'
-                );
-            } else if (freshRead.orders && freshRead.orders.length > 0) {
-                const freshSnapshot = freshRead.orders;
-                const syncResult = await bot.manager.syncFromOpenOrders(freshSnapshot, {
-                    // Accounting enabled: the adopted chain orders were never
-                    // registered in master (they are unmatched/orphan), so the
-                    // adoption must lock their capital. skipAccounting:true would
-                    // leave the optimistic balances drifted until the next fetch
-                    // — inconsistent with the open-orders loop convention
-                    // ('readOpenOrders' → skipAccounting:false).
-                    skipAccounting: false,
-                });
-                if (syncResult && Array.isArray(syncResult.unmatchedChainOrders)) {
-                    const processed = (syncResult.filledOrders?.length || 0) +
-                                      (syncResult.updatedOrders?.length || 0) +
-                                      (syncResult.ordersNeedingCorrection?.length || 0);
-                    if (processed > 0) {
-                        bot.manager._lastUnmatchedChainOrders = syncResult.unmatchedChainOrders;
-                        bot.manager.logger.log(
-                            `[COW] Adopted chain order(s) via sync: ${processed} processed, ` +
-                            `${syncResult.unmatchedChainOrders.length} still unmatched`,
-                            'info'
-                        );
-                    } else {
-                        const syncUnmatchedCount = syncResult.unmatchedChainOrders.length;
-                        bot.manager.logger.log(
-                            `[COW] Sync returned without processing (processed=0, ` +
-                            `unmatched=${syncUnmatchedCount} in result, ` +
-                            `_lastUnmatchedChainOrders=${unmatchedChainOrders.length}). ` +
-                            `Structural resync will handle adoption.`,
-                            syncUnmatchedCount > 0 ? 'warn' : 'debug'
-                        );
-                        if (syncUnmatchedCount > 0 && syncUnmatchedCount !== unmatchedChainOrders.length) {
-                            bot.manager._lastUnmatchedChainOrders = syncResult.unmatchedChainOrders.map((o: any) => ({ ...o }));
-                            bot.manager.logger.log(
-                                `[COW] Updated _lastUnmatchedChainOrders from sync result: ` +
-                                `${unmatchedChainOrders.length} → ${syncUnmatchedCount}`,
-                                'debug'
-                            );
-                        }
-                    }
-                }
-            }
-        } catch (syncErr: any) {
-            bot.manager.logger.log(
-                `[COW] Failed to sync/unmatched orders: ${syncErr?.message || syncErr}`,
-                'warn'
-            );
-        }
-        if (typeof bot.manager.requestStructuralGridResync === 'function') {
-            if (bot.manager._recoveryState) bot.manager._recoveryState = { ...bot.manager._recoveryState, structuralResyncRequested: true };
-            await bot.manager.requestStructuralGridResync(
-                'unmatched chain orders before COW create',
-                { unmatchedChainOrders: unmatchedChainOrders }
-            );
-        }
-        bot.manager.logger.log(
-            `[COW] Rejecting CREATE batch after sync: working grid invalidated by master mutation`,
-            'info'
-        );
-        popPushedWorkingGrid(bot, cowResult);
-        return {
-            executed: false,
-            aborted: true,
-            reason: 'UNMATCHED_CHAIN_ORDERS',
-            hadRotation: false
-        };
-    }
-
-    // Crossing-check candidate set (master + pending-broadcast + unmatched
-    // chain orders). Built after the batch-level pending/unmatched guards so
-    // it reflects any sync they triggered.
-    const crossingCandidates = buildCrossingCandidates(bot);
-    const intraBatchCandidates: any[] = [];
+    // Pre-broadcast guard chain (create-slot validation, recovery-exhausted
+    // block, pending/unmatched guards, crossed-book gate) — see
+    // runPreBroadcastGuards. Refusals already popped the working grid.
+    const guards = await runPreBroadcastGuards(bot, cowResult);
+    if (!guards.proceed) return guards.result;
+    const { crossingCandidates, intraBatchCandidates } = guards;
 
     const { assetA, assetB } = bot.manager.assets;
-
-    // CROSSED-BOOK GATE: refuse to broadcast any batch whose simulated result
-    // prices a BUY at-or-above a SELL (see detectCrossedBookPlan).
-    const crossedBookDetail = detectCrossedBookPlan(bot.manager, actions);
-    if (crossedBookDetail) {
-        bot.manager.logger.log(
-            `[COW] Rejecting batch pre-broadcast: crossed book detected (${crossedBookDetail})`,
-            'error'
-        );
-        popPushedWorkingGrid(bot, cowResult);
-        return {
-            executed: false,
-            aborted: true,
-            reason: 'CROSSED_BOOK',
-            detail: crossedBookDetail,
-            hadRotation: false
-        };
-    }
     const operations: any[] = [];
     const opContexts: any[] = [];
     const skippedUpdateSlotIds = new Set();
@@ -3057,12 +3131,8 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         const isCorrectionCreate = actionOrigin === 'spread-correction'
                             || (actionOrigin == null && batchOrigin === 'spread-correction');
                         if (!isCorrectionCreate) {
-                            try { if (refreshLastFillPivotFromQueue(bot)) lastFillGuardPivotRefreshed = true; } catch { /* best-effort */ }
-                            const lastPrice = (bot.manager as any)?._lastFilledPrice;
-                            const lastType = (bot.manager as any)?._lastFilledType;
-                            const inc = resolveLastFillGuardIncrement(bot);
-                            const check = isLastFillGuardBlocked(createPrice, order.size, order.type, lastPrice, lastType, inc);
-                            lastFillGuardStats.checked++;
+                            const { check, refreshed } = runLastFillGuardCheck(bot, createPrice, order.size, order.type, lastFillGuardStats);
+                            if (refreshed) lastFillGuardPivotRefreshed = true;
                             if (check.blocked) {
                                 lastFillGuardStats.skipped++;
                                 const dir = order.type === ORDER_TYPES.BUY ? 'above' : 'below';
@@ -3320,12 +3390,8 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             if (bypassedEvacuation) {
                                 lastFillGuardStats.bypassed++;
                             } else {
-                            try { if (refreshLastFillPivotFromQueue(bot)) lastFillGuardPivotRefreshed = true; } catch { /* best-effort */ }
-                            const lastPrice = (bot.manager as any)?._lastFilledPrice;
-                            const lastType = (bot.manager as any)?._lastFilledType;
-                            const inc = resolveLastFillGuardIncrement(bot);
-                            const check = isLastFillGuardBlocked(newPrice, newSize, orderType, lastPrice, lastType, inc);
-                            lastFillGuardStats.checked++;
+                            const { check, refreshed } = runLastFillGuardCheck(bot, newPrice, newSize, orderType, lastFillGuardStats);
+                            if (refreshed) lastFillGuardPivotRefreshed = true;
                             if (check.blocked) {
                                 lastFillGuardStats.skipped++;
                                 skippedUpdateCount++;
@@ -3491,16 +3557,9 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                 // replaces a rotation UPDATE at a repriced level,
                                 // so it obeys the same guard with a refreshed
                                 // pivot — no origin bypass, same as rotations.
-                                try { if (refreshLastFillPivotFromQueue(bot)) lastFillGuardPivotRefreshed = true; } catch { /* best-effort */ }
                                 try {
-                                    const fbInc = resolveLastFillGuardIncrement(bot);
-                                    const fbCheck = isLastFillGuardBlocked(
-                                        fbPrice, fbSize, fbType,
-                                        (bot.manager as any)?._lastFilledPrice,
-                                        (bot.manager as any)?._lastFilledType,
-                                        fbInc
-                                    );
-                                    lastFillGuardStats.checked++;
+                                    const { check: fbCheck, refreshed: fbRefreshed } = runLastFillGuardCheck(bot, fbPrice, fbSize, fbType, lastFillGuardStats);
+                                    if (fbRefreshed) lastFillGuardPivotRefreshed = true;
                                     if (fbCheck.blocked) {
                                         lastFillGuardStats.skipped++;
                                         const fbDir = fbType === ORDER_TYPES.BUY ? 'above' : 'below';
@@ -3722,14 +3781,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                 sell: item.ctx?.finalInts?.sell,
                                 receive: item.ctx?.finalInts?.receive,
                                 orderType: item.ctx?.order?.type,
-                                fingerprint: buildCreateOpFingerprint({
-                                    side: item.ctx?.order?.type,
-                                    assetA: bot.manager?.assets?.assetA?.id,
-                                    assetB: bot.manager?.assets?.assetB?.id,
-                                    sellInt: item.ctx?.finalInts?.sell,
-                                    receiveInt: item.ctx?.finalInts?.receive,
-                                    slotId
-                                })
+                                fingerprint: createOpFingerprintForSlot(bot, item.ctx?.order, item.ctx?.finalInts, slotId)
                             });
                             if (match?.id) {
                                 workingGrid.set(slotId, { ...slot, orderId: match.id });
@@ -3788,33 +3840,16 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     // processed concurrently) so the commit was refused. The batch
                     // is on chain; adopt the placed orders from the chain so master
                     // converges instead of remaining divergent until a later sync.
-                    bot.manager.logger.log(
-                        '[COW] Commit refused after broadcast; adopting placed orders from chain to keep master in sync',
-                        'warn'
+                    return await recoverRefusedCommit(
+                        bot, chainOrders, '[COW]',
+                        { placedResults: result, placedContexts: executedContexts },
+                        executedContexts, workingBoundary,
+                        {
+                            failureResyncReason: 'commit refused after broadcast (chain adoption unavailable)',
+                            failureLogMessage: 'Commit refused and chain adoption unavailable; keeping pending-broadcast protection pending structural resync',
+                            preAdoptLogMessage: 'Commit refused after broadcast; adopting placed orders from chain to keep master in sync',
+                        }
                     );
-                    const adopted = await adoptPlacedBatchFromChain(bot, chainOrders, '[COW]', { placedResults: result, placedContexts: executedContexts });
-                    if (!adopted) {
-                        // Chain state unknown (empty/lagging read or sync failure):
-                        // keep the pending-broadcast protection so a later plan
-                        // cannot duplicate the placed orders, and let the structural
-                        // resync adopt them from the chain.
-                        bot.manager.logger.log(
-                            '[COW] Commit refused and chain adoption unavailable; keeping pending-broadcast protection pending structural resync',
-                            'error'
-                        );
-                        await requestStructuralResync(
-                            bot,
-                            'commit refused after broadcast (chain adoption unavailable)',
-                            { reason: 'chain-adoption-unavailable' }
-                        );
-                        return { executed: false, hadRotation: false, commitRefused: true, chainAdoptionPending: true };
-                    }
-                    // Deduct create fees for the placed orders (mirrors
-                    // processBatchResults, which the refused path bypasses).
-                    await applyAdoptionFeeAccounting(bot, executedContexts);
-                    await restoreBoundaryAfterAdoption(bot, workingBoundary);
-                    await persistGridAndClearPendingBroadcasts(bot, '[COW]');
-                    return { executed: false, hadRotation: false, commitRefused: true };
                 }
                 
                 const batchResult = await processBatchResults(bot, result, executedContexts);
@@ -3837,13 +3872,11 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             `is ahead of disk snapshot; structural resync requested.`,
                             'error'
                         );
-                        if (typeof bot.manager.requestStructuralGridResync === 'function') {
-                            bot.manager._recoveryState = { ...bot.manager._recoveryState, structuralResyncRequested: true };
-                            await bot.manager.requestStructuralGridResync(
-                                'persistence guard triggered after COW batch',
-                                { persistReason: retryResult.reason || 'unknown' }
-                            );
-                        }
+                        await requestStructuralResync(
+                            bot,
+                            'persistence guard triggered after COW batch',
+                            { persistReason: retryResult.reason || 'unknown' }
+                        );
                     } else {
                         delete bot.manager._persistenceWarning;
                     }
@@ -3925,27 +3958,17 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         // Master moved while polling — same recovery as the
                         // refused-commit path: adopt from chain, keep pending
                         // protection if adoption is unavailable.
-                        bot.manager.logger.log(
-                            `[COW][UNCERTAIN] Poll-confirmed commit refused; adopting placed orders from chain`,
-                            'warn'
+                        return await recoverRefusedCommit(
+                            bot, chainOrders, '[COW][UNCERTAIN]',
+                            { placedContexts: opContexts, polledCreateIds: confirmation.confirmedChainIds },
+                            opContexts, workingBoundary,
+                            {
+                                successReturn: { executed: false, hadRotation: false, commitRefused: true, uncertainResolved: true },
+                                failureResyncReason: 'poll-confirmed commit refused (chain adoption unavailable)',
+                                failureLogMessage: 'Poll-refused commit with unavailable chain adoption; keeping pending protection pending structural resync',
+                                preAdoptLogMessage: 'Poll-confirmed commit refused; adopting placed orders from chain',
+                            }
                         );
-                        const pollAdopted = await adoptPlacedBatchFromChain(bot, chainOrders, '[COW][UNCERTAIN]', { placedContexts: opContexts, polledCreateIds: confirmation.confirmedChainIds });
-                        if (!pollAdopted) {
-                            bot.manager.logger.log(
-                                '[COW][UNCERTAIN] Poll-refused commit with unavailable chain adoption; keeping pending protection pending structural resync',
-                                'error'
-                            );
-                            await requestStructuralResync(
-                                bot,
-                                'poll-confirmed commit refused (chain adoption unavailable)',
-                                { reason: 'chain-adoption-unavailable' }
-                            );
-                            return { executed: false, hadRotation: false, commitRefused: true, chainAdoptionPending: true };
-                        }
-                        await applyAdoptionFeeAccounting(bot, opContexts);
-                        await restoreBoundaryAfterAdoption(bot, workingBoundary);
-                        await persistGridAndClearPendingBroadcasts(bot, '[COW][UNCERTAIN]');
-                        return { executed: false, hadRotation: false, commitRefused: true, uncertainResolved: true };
                     }
                     // Enrich master grid with chain-assigned order IDs and amounts;
                     // accounting enabled so the adopted orders' capital is locked
@@ -3956,26 +3979,21 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     // on a failed adoption would let the next cycle re-create the
                     // VIRTUAL slots as duplicate on-chain orders. Keep the
                     // protection and defer to a structural resync instead.
-                    const pollAdoptedOk = await adoptPlacedBatchFromChain(bot, chainOrders, '[COW][UNCERTAIN]', { placedContexts: opContexts, polledCreateIds: confirmation.confirmedChainIds });
-                    if (!pollAdoptedOk) {
-                        bot.manager.logger.log(
-                            '[COW][UNCERTAIN] Poll-confirmed commit with unavailable chain adoption; keeping pending protection pending structural resync',
-                            'error'
-                        );
-                        await requestStructuralResync(
-                            bot,
-                            'poll-confirmed commit (chain adoption unavailable)',
-                            { reason: 'chain-adoption-unavailable' }
-                        );
-                        return { executed: false, hadRotation: false, commitRefused: false, chainAdoptionPending: true };
-                    }
                     // The commit happened without processBatchResults (no success
                     // result to extract); deduct create fees so the optimistic
-                    // balance reflects the on-chain cost.
-                    await applyAdoptionFeeAccounting(bot, opContexts);
-                    await restoreBoundaryAfterAdoption(bot, workingBoundary);
-                    await persistGridAndClearPendingBroadcasts(bot, '[COW][UNCERTAIN]');
-                    return { executed: true, hadRotation: false, uncertainResolved: true };
+                    // balance reflects the on-chain cost (shared with the
+                    // refused-commit paths via recoverRefusedCommit).
+                    return await recoverRefusedCommit(
+                        bot, chainOrders, '[COW][UNCERTAIN]',
+                        { placedContexts: opContexts, polledCreateIds: confirmation.confirmedChainIds },
+                        opContexts, workingBoundary,
+                        {
+                            extraReturn: { commitRefused: false },
+                            successReturn: { executed: true, hadRotation: false, uncertainResolved: true },
+                            failureResyncReason: 'poll-confirmed commit (chain adoption unavailable)',
+                            failureLogMessage: 'Poll-confirmed commit with unavailable chain adoption; keeping pending protection pending structural resync',
+                        }
+                    );
                 }
             } catch (pollErr: any) {
                 bot.manager.logger.log(
@@ -4037,7 +4055,10 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
  * @param {Object} [details={}] - Details passed to the resync handler
  */
 async function requestStructuralResync(bot: any, reason: string, details: any = {}) {
-    if (typeof bot.manager?.requestStructuralGridResync !== 'function') return;
+    if (typeof bot.manager?.requestStructuralGridResync !== 'function') {
+        bot._warn?.(`[COW] requestStructuralGridResync unavailable; cannot schedule structural resync (reason: ${reason}).`);
+        return;
+    }
     if (bot.manager._recoveryState) {
         bot.manager._recoveryState = { ...bot.manager._recoveryState, structuralResyncRequested: true };
     }
@@ -4058,85 +4079,6 @@ async function requestStructuralResync(bot: any, reason: string, details: any = 
  * @param {string} logPrefix - Log prefix for sync failure messages
  * @returns {Promise<boolean>}
  */
-/**
- * Collect every on-chain order id master currently needs to converge against,
- * so adoption can re-read them by id (immune to the get_full_accounts window
- * truncation) instead of relying on a partial window read.
- *
- * Sources:
- *  - master's own tracked order ids (existing on-chain orders);
- *  - the batch's fresh CREATE ids extracted from the broadcast result
- *    (operation_results[i][1] aligns positionally with placedContexts[i]).
- *
- * @param {any} mgr - bot.manager
- * @param {any} placedResults - broadcast result (has operation_results); null when unavailable
- * @param {any[]} placedContexts - opContexts (aligned with operation_results); null when unavailable
- * @param {string[]|null} [extraCreateIds=null] - fresh CREATE chain ids from another
- *   authoritative source (e.g. the uncertain-broadcast poll confirmation) when
- *   no broadcast result exists; merged into createIds so the lagging-create
- *   retry guards them
- * @returns {string[]} Unique, well-formed 1.7.x order ids
- */
-function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContexts: any, extraCreateIds: any = null): { masterIds: string[]; createIds: string[]; all: string[] } {
-    const masterIds = new Set<string>();
-    const grid = mgr && mgr.grid;
-    if (Array.isArray(grid)) {
-        for (const slot of grid) {
-            if (slot && slot.orderId && /^1\.7\.\d+$/.test(String(slot.orderId))) {
-                masterIds.add(String(slot.orderId));
-            }
-        }
-    }
-    // Master tracked ids live in the orders Map (mgr.grid is legacy and
-    // unset on OrderManager — without this the by-id set omits every
-    // pre-existing ACTIVE order and pass-1 phantom cleanup would virtualize
-    // them as fills on a partial snapshot).
-    if (mgr && mgr.orders instanceof Map) {
-        for (const slot of mgr.orders.values()) {
-            if (slot && (slot as any).orderId && /^1\.7\.\d+$/.test(String((slot as any).orderId))) {
-                masterIds.add(String((slot as any).orderId));
-            }
-        }
-    }
-    const createIds = new Set<string>();
-    if (placedResults && Array.isArray(placedContexts)) {
-        const opResults = extractBatchOperationResults(placedResults);
-        if (Array.isArray(opResults)) {
-            for (let i = 0; i < placedContexts.length; i++) {
-                const ctx = placedContexts[i];
-                if (!ctx || ctx.kind !== 'create') continue;
-                const opResult = opResults[i] && opResults[i][1];
-                if (opResult && /^1\.7\.\d+$/.test(String(opResult))) {
-                    createIds.add(String(opResult));
-                }
-            }
-        }
-    }
-    if (Array.isArray(extraCreateIds)) {
-        for (const id of extraCreateIds) {
-            if (id && /^1\.7\.\d+$/.test(String(id))) createIds.add(String(id));
-        }
-    }
-    // Existing chain ids referenced by non-create op contexts (cancel /
-    // rotation / size-update). Pre-existing orders whose absence is expected
-    // (cancels/fills in this batch), so they join the by-id set but never
-    // the lagging-create guard.
-    if (Array.isArray(placedContexts)) {
-        for (const ctx of placedContexts) {
-            if (!ctx || ctx.kind === 'create') continue;
-            const refs: any[] = [];
-            if (ctx.kind === 'cancel' && ctx.order) refs.push(ctx.order.orderId);
-            else if (ctx.kind === 'rotation' && ctx.rotation?.oldOrder) refs.push(ctx.rotation.oldOrder.orderId);
-            else if (ctx.kind === 'size-update' && ctx.updateInfo?.partialOrder) refs.push(ctx.updateInfo.partialOrder.orderId);
-            for (const id of refs) {
-                if (id && /^1\.7\.\d+$/.test(String(id))) masterIds.add(String(id));
-            }
-        }
-    }
-    const all = new Set<string>([...masterIds, ...createIds]);
-    return { masterIds: [...masterIds], createIds: [...createIds], all: [...all] };
-}
-
 /**
  * Converge master with the chain after a COW commit was refused (master moved
  * during broadcast) or an uncertain broadcast was poll-confirmed.
@@ -4301,9 +4243,9 @@ async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: 
 
         // FALLBACK: window read (ambiguous when truncated).
         const freshRead = await readOpenOrdersWithMetaSafe(chainOrders, accountRef);
-        if (freshRead.truncated) {
+        if (!isAuthoritativeChainRead(freshRead)) {
             bot.manager.logger.log(
-                `${logPrefix} Chain read TRUNCATED after batch broadcast; adoption deferred (pending-broadcast protection kept)`,
+                `${logPrefix} Chain read ${freshRead?.truncated ? 'TRUNCATED' : 'EMPTY'} after batch broadcast; adoption deferred (pending-broadcast protection kept)`,
                 'warn'
             );
             return false;
@@ -4339,6 +4281,87 @@ async function persistGridAndClearPendingBroadcasts(bot: any, logPrefix: string)
         );
     }
     clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
+}
+
+/**
+ * Recover from a refused commit after a COW batch broadcast.
+ * Adopts placed orders from the chain, applies fee accounting, restores
+ * the boundary, and persists. All three commit-refused paths
+ * (success-path refused, poll-refused, and poll-confirmed uncertain)
+ * share this exact sequence.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {Object} chainOrders - Chain orders module
+ * @param {string} logPrefix - Log prefix for messages
+ * @param {Object} adoptOpts - Options passed to adoptPlacedBatchFromChain
+ * @param {Array} contexts - Op contexts for fee accounting
+ * @param {Object} workingBoundary - The working boundary
+ * @param {Object} [opts={}] - Named options (object form: adjacent string
+ *   options were positional before, a transposition would compile silently).
+ * @param {Object} [opts.extraReturn={}] - Extra fields merged into the failure return object
+ * @param {Object|null} [opts.successReturn=null] - Return object on successful adoption
+ *   (defaults to the commit-refused shape; the poll-confirmed path passes its
+ *   executed:true shape)
+ * @param {string} [opts.failureResyncReason='commit refused after broadcast (chain adoption unavailable)']
+ * @param {string} [opts.failureLogMessage='Commit refused and chain adoption unavailable; keeping pending-broadcast protection pending structural resync']
+ *   - Failure-path log body (prefixed with logPrefix); each call site passes
+ *   its original wording so log greps keep matching.
+ * @param {string|null} [opts.preAdoptLogMessage=null] - Optional warn logged before
+ *   the adoption attempt (the success-path and poll-refused sites log one;
+ *   the poll-confirmed site never did)
+ * @returns {Promise<Object>} The commit-refused return object
+ */
+async function recoverRefusedCommit(bot: any, chainOrders: any, logPrefix: string, adoptOpts: any, contexts: any, workingBoundary: any, opts: any = {}): Promise<any> {
+    const {
+        extraReturn = {},
+        successReturn = null,
+        failureResyncReason = 'commit refused after broadcast (chain adoption unavailable)',
+        failureLogMessage = 'Commit refused and chain adoption unavailable; keeping pending-broadcast protection pending structural resync',
+        preAdoptLogMessage = null,
+    } = opts;
+    if (preAdoptLogMessage) {
+        bot.manager.logger.log(`${logPrefix} ${preAdoptLogMessage}`, 'warn');
+    }
+    const adopted = await adoptPlacedBatchFromChain(bot, chainOrders, logPrefix, adoptOpts);
+    if (!adopted) {
+        bot.manager.logger.log(
+            `${logPrefix} ${failureLogMessage}`,
+            'error'
+        );
+        await requestStructuralResync(
+            bot,
+            failureResyncReason,
+            { reason: 'chain-adoption-unavailable' }
+        );
+        return { executed: false, hadRotation: false, commitRefused: true, chainAdoptionPending: true, ...extraReturn };
+    }
+    await applyAdoptionFeeAccounting(bot, contexts);
+    await restoreBoundaryAfterAdoption(bot, workingBoundary);
+    await persistGridAndClearPendingBroadcasts(bot, logPrefix);
+    return successReturn ?? { executed: false, hadRotation: false, commitRefused: true, ...extraReturn };
+}
+
+/**
+ * Run the last-fill guard probe: refresh the pivot from still-queued fills,
+ * read the durable pivot, and evaluate isLastFillGuardBlocked. Consolidates
+ * the identical probe pattern in the CREATE, UPDATE-rotation, and
+ * CREATE-fallback guards (origin bypasses and skip logging stay at the
+ * call sites, which differ per action kind).
+ * @param {Object} bot
+ * @param {number} price - Target order price
+ * @param {number} size - Order size
+ * @param {string} type - ORDER_TYPES.BUY/SELL
+ * @param {Object} stats - lastFillGuardStats tracker (checked++ here)
+ * @returns {{check: Object, refreshed: boolean}}
+ */
+function runLastFillGuardCheck(bot: any, price: number, size: number, type: string, stats: any): { check: any; refreshed: boolean } {
+    let refreshed = false;
+    try { refreshed = !!refreshLastFillPivotFromQueue(bot); } catch { /* best-effort */ }
+    const lastPrice = (bot.manager as any)?._lastFilledPrice;
+    const lastType = (bot.manager as any)?._lastFilledType;
+    const inc = resolveLastFillGuardIncrement(bot);
+    const check = isLastFillGuardBlocked(price, size, type, lastPrice, lastType, inc);
+    stats.checked++;
+    return { check, refreshed };
 }
 
 /**
@@ -4421,6 +4444,29 @@ async function applyAdoptionFeeAccounting(bot: any, contexts: any) {
 }
 
 /**
+ * Table-driven optimistic fee call for processBatchResults: the cancel,
+ * size-update, and both rotation branches all invoke
+ * updateOptimisticFreeBalance(oldOrder, newOrder, context, fee, false)
+ * under the same accountant guard — one spelling instead of four.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {Object} oldOrder
+ * @param {Object} newOrder
+ * @param {string} context - Fee context ('fill-cancel' | 'order-update')
+ * @param {number} fee - BTS fee amount
+ */
+async function applyOptimisticFeeBalance(bot: any, oldOrder: any, newOrder: any, context: string, fee: number) {
+    if (oldOrder && newOrder && bot.manager.accountant) {
+        await bot.manager.accountant.updateOptimisticFreeBalance(
+            oldOrder,
+            newOrder,
+            context,
+            fee || 0,
+            false
+        );
+    }
+}
+
+/**
  * Process results from batch transaction execution.
  * Updates order state, synchronizes with chain, and deducts BTS fees.
  * @param {import('./dexbot_class.js').DEXBot} bot
@@ -4451,41 +4497,18 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
             const oldOrder = ctx.order;
             const committedOrder = oldOrder?.id ? bot.manager.orders.get(oldOrder.id) : null;
 
-            if (oldOrder && committedOrder && bot.manager.accountant) {
-                await bot.manager.accountant.updateOptimisticFreeBalance(
-                    oldOrder,
-                    committedOrder,
-                    'fill-cancel',
-                    btsFeeData?.cancelFee || 0,
-                    false
-                );
-            }
+            await applyOptimisticFeeBalance(bot, oldOrder, committedOrder, 'fill-cancel', btsFeeData?.cancelFee || 0);
         }
         else if (ctx.kind === 'size-update') {
             const oldOrder = ctx.updateInfo.partialOrder;
             const ord = bot.manager.orders.get(oldOrder.id);
 
-            if (oldOrder && ord && bot.manager.accountant) {
-                await bot.manager.accountant.updateOptimisticFreeBalance(
-                    oldOrder,
-                    ord,
-                    'order-update',
-                    btsFeeData?.updateFee || 0,
-                    false
-                );
-            }
+            await applyOptimisticFeeBalance(bot, oldOrder, ord, 'order-update', btsFeeData?.updateFee || 0);
 
             if (ord) {
                 const updatedSlot = { ...ord, size: ctx.updateInfo.newSize };
                 if (ctx.finalInts) {
-                    updatedSlot.rawOnChain = {
-                        id: ord.orderId,
-                        for_sale: String(ctx.finalInts.sell),
-                        sell_price: {
-                            base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
-                            quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
-                        }
-                    };
+                    updatedSlot.rawOnChain = rawOnChainFromInts(ord.orderId, ctx.finalInts);
                 }
                 updatesToApply.push({ order: updatedSlot, context: 'post-update-metadata' });
             }
@@ -4505,14 +4528,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
                         updatesToApply.push({
                             order: {
                                 ...syncedOrder,
-                                rawOnChain: {
-                                    id: chainOrderId,
-                                    for_sale: String(ctx.finalInts.sell),
-                                    sell_price: {
-                                        base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
-                                        quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
-                                    }
-                                }
+                                rawOnChain: rawOnChainFromInts(chainOrderId, ctx.finalInts)
                             },
                             context: 'post-placement-metadata'
                         });
@@ -4549,27 +4565,12 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
             if (!newGridId) {
                 const ord = bot.manager.orders.get(oldOrder.id || rotation.id);
 
-                if (oldOrder && ord && bot.manager.accountant) {
-                    await bot.manager.accountant.updateOptimisticFreeBalance(
-                        oldOrder,
-                        ord,
-                        'order-update',
-                        btsFeeData?.updateFee || 0,
-                        false
-                    );
-                }
+                await applyOptimisticFeeBalance(bot, oldOrder, ord, 'order-update', btsFeeData?.updateFee || 0);
 
                 if (ord) {
                     const updatedSlot = { ...ord, size: newSize };
                     if (ctx.finalInts) {
-                        updatedSlot.rawOnChain = {
-                            id: ord.orderId,
-                            for_sale: String(ctx.finalInts.sell),
-                            sell_price: {
-                                base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
-                                quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
-                            }
-                        };
+                        updatedSlot.rawOnChain = rawOnChainFromInts(ord.orderId, ctx.finalInts);
                     }
                     updatesToApply.push({ order: updatedSlot, context: 'post-update-metadata' });
                 }
@@ -4605,25 +4606,10 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
             };
 
             if (ctx.finalInts) {
-                updatedSlot.rawOnChain = {
-                    id: updatedSlot.orderId,
-                    for_sale: String(ctx.finalInts.sell),
-                    sell_price: {
-                        base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
-                        quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
-                    }
-                };
+                updatedSlot.rawOnChain = rawOnChainFromInts(updatedSlot.orderId, ctx.finalInts);
             }
 
-            if (oldOrder && updatedSlot && bot.manager.accountant) {
-                await bot.manager.accountant.updateOptimisticFreeBalance(
-                    oldOrder,
-                    updatedSlot,
-                    'order-update',
-                    btsFeeData?.updateFee || 0,
-                    false
-                );
-            }
+            await applyOptimisticFeeBalance(bot, oldOrder, updatedSlot, 'order-update', btsFeeData?.updateFee || 0);
 
             if (oldOrder?.id && oldOrder.id !== newGridId) {
                 const currentSource = bot.manager.orders.get(oldOrder.id);
