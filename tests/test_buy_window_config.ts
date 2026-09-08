@@ -10,6 +10,7 @@ const assert = require('assert');
 const { resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, resolveBuyDeepCount, resolveBuyDeepSizes, isDeepShelfId, deepShelfPrices, BUY_WINDOW_DEFAULTS } = require('../modules/order/utils/math');
 const { ensureDeepShelfEntries, isDeepShelfFillOrder, resolveDeepShelfFloor, applyDeepManualSizes } = require('../modules/order/utils/order');
 const { validateWorkingGridFunds } = require('../modules/order/utils/validate');
+const SyncEngine = require('../modules/order/sync_engine').default;
 
 let passed = 0;
 function check(name, actual, expected) {
@@ -191,4 +192,47 @@ check('manual caps at 12', resolveBuyDeepSizes({ buyDeepSizes: new Array(15).fil
     check('plain rail still valid', v4.isValid, true);
 }
 
-console.log(`✓ Buy window config tests passed! (${passed} assertions)`);
+// --- deep-adopt: first placement links even when master lacks the id ---
+async function deepAdoptChecks() {
+    const applied = [];
+    const fakeMgr = {
+        assets: { assetA: { precision: 5 }, assetB: { precision: 6 } },
+        orders: new Map(),
+        lockOrders: () => {},
+        unlockOrders: () => {},
+        _gridLock: { acquire: async (fn) => await fn() },
+        _applyOrderUpdate: async (o) => { applied.push(o); fakeMgr.orders.set(o.id, o); },
+        logger: { log: () => {} },
+    };
+    const sync = new SyncEngine(fakeMgr);
+    await sync.synchronizeWithChain({
+        gridOrderId: 'deep-1', chainOrderId: '1.7.999', expectedType: 'buy', fee: 0,
+        order: { id: 'deep-1', price: 0.00117, size: 5, type: 'buy' },
+    }, 'createOrder');
+    const adopted = fakeMgr.orders.get('deep-1');
+    check('adopted entry exists', !!adopted, true);
+    check('adopted links chain id', adopted && adopted.orderId, '1.7.999');
+    check('adopted keeps BUY type', adopted && adopted.type, 'buy');
+    check('adopted keeps price', adopted && adopted.price, 0.00117);
+    check('adopted is active', adopted && adopted.state, 'active');
+    // Unknown non-deep id without master entry: still dropped, no crash.
+    const n0 = applied.length;
+    await sync.synchronizeWithChain({
+        gridOrderId: 'slot-999', chainOrderId: '1.7.1000', expectedType: 'buy', fee: 0,
+        order: { id: 'slot-999', price: 1, size: 1, type: 'buy' },
+    }, 'createOrder');
+    check('non-deep unknown id not adopted', applied.length, n0);
+    // Deep id without usable price: skipped with warn, nothing applied.
+    await sync.synchronizeWithChain({
+        gridOrderId: 'deep-2', chainOrderId: '1.7.1001', expectedType: 'buy', fee: 0,
+        order: { id: 'deep-2', price: 0, size: 5, type: 'buy' },
+    }, 'createOrder');
+    check('unusable deep descriptor not adopted', fakeMgr.orders.has('deep-2'), false);
+}
+
+deepAdoptChecks().then(() => {
+    console.log(`✓ Buy window config tests passed! (${passed} assertions)`);
+}).catch((e) => {
+    console.error('Deep adopt checks failed:', e);
+    process.exit(1);
+});

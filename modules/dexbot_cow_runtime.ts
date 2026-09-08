@@ -4496,7 +4496,8 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
             const chainOrderId = res && res[1];
             if (chainOrderId) {
                 await bot.manager.synchronizeWithChain({
-                    gridOrderId: ctx.order.id, chainOrderId, expectedType: ctx.order.type, fee: btsFeeData?.createFee || 0
+                    gridOrderId: ctx.order.id, chainOrderId, expectedType: ctx.order.type, fee: btsFeeData?.createFee || 0,
+                    order: ctx.order ? { id: ctx.order.id, price: ctx.order.price, size: ctx.order.size, type: ctx.order.type } : null
                 }, 'createOrder');
 
                 if (ctx.finalInts) {

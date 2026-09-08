@@ -112,6 +112,7 @@ import {
     getSellStartIdx,
     slotIndexForPrice,
     isSlotInRail,
+    isDeepShelfId,
     isSlotIndexInGapBand,
     priceSlotEqual
 } from './utils/math.js';
@@ -2081,6 +2082,42 @@ class SyncEngine {
                     mgr.lockOrders([gridOrderId]);
                     try {
                         const gridOrder = mgr.orders.get(gridOrderId);
+                        if (!gridOrder && isDeepShelfId(gridOrderId) && chainData?.order) {
+                            // Deep shelf first placement (divergence/bootstrap): the
+                            // broadcast succeeded but no master entry exists yet
+                            // (projection only runs on the strategy path), so a
+                            // plain lookup would silently drop the linkage and
+                            // the next cycle would place a DUPLICATE. Materialize
+                            // the entry here so the chain orderId links.
+                            const o = chainData.order || {};
+                            const px = Number(o.price);
+                            const sz = Number(o.size) || 0;
+                            if (Number.isFinite(px) && px > 0 && sz > 0) {
+                                const adoptType = (expectedType === ORDER_TYPES.BUY || expectedType === ORDER_TYPES.SELL)
+                                    ? expectedType
+                                    : ORDER_TYPES.BUY;
+                                await mgr._applyOrderUpdate({
+                                    id: gridOrderId,
+                                    type: adoptType,
+                                    state: isPartialPlacement ? ORDER_STATES.PARTIAL : ORDER_STATES.ACTIVE,
+                                    price: px,
+                                    size: sz,
+                                    orderId: chainOrderId,
+                                }, 'deep-adopt', {
+                                    skipAccounting: chainData.skipAccounting || false,
+                                    fee: fee || 0
+                                });
+                                mgr.logger?.log?.(
+                                    `[SYNC] Deep shelf adopted ${gridOrderId} @${px} x${sz} -> ${chainOrderId}`,
+                                    'info'
+                                );
+                            } else {
+                                mgr.logger?.log?.(
+                                    `[SYNC] Deep shelf order ${gridOrderId} has no usable price/size — linkage skipped (watch for duplicates)`,
+                                    'warn'
+                                );
+                            }
+                        }
                         if (gridOrder) {
                             // Check if this chain order already exists on grid (rotation case)
                             // If so, fee was already paid when original order was placed - don't deduct again
