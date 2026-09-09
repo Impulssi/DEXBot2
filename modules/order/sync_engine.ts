@@ -111,6 +111,7 @@ import {
     getBtsSide,
     getSellStartIdx,
     slotIndexForPrice,
+    isChainPriceOutOfGrid,
     isSlotInRail,
     isSlotIndexInGapBand,
     priceSlotEqual
@@ -1170,6 +1171,21 @@ class SyncEngine {
                     continue;
                 }
                 const slotId = `slot-${idx}`;
+                // Out-of-grid hold: slotIndexForPrice clamps below/above-rail
+                // prices onto the edge slots (0/N-1), so the clamp is not a
+                // real match. A below-grid buy is not slot-0 and an
+                // above-grid sell is not slot-(N-1): never adopt into the
+                // rail slot and never cancel as its duplicate — hold/defer
+                // (no adopt, no cancelOnly), e.g. dip-protection levels
+                // sitting below a fresh grid after a reset.
+                {
+                    const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
+                    if (isChainPriceOutOfGrid(chainOrder.price, genesis, precision)) {
+                        unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'out-of-grid-deferred', candidateSlotId: slotId });
+                        mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: price outside grid range, deferred (nearest slot ${slotId})`, 'warn');
+                        continue;
+                    }
+                }
                 const gapSlots = genesis.gapSlots ?? (mgr as any)._gapSlots ?? 0;
                 const boundaryIdx = (mgr as any).boundaryIdx;
                 // Pre-boundary sync: gap geometry is unknown, so adoption is
