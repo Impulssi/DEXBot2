@@ -5,7 +5,7 @@
  * Includes grid indexing, order comparison, delta building, and strategy calculations.
  *
  * ===============================================================================
- * TABLE OF CONTENTS (36 exported functions)
+ * TABLE OF CONTENTS (35 exported functions)
  * ===============================================================================
  *
  * SECTION 1: CHAIN ORDER MATCHING & RECONCILIATION (5 functions)
@@ -46,9 +46,8 @@
  *   - checkSizeThreshold(size, threshold) - Check if size exceeds threshold
  *   - checkSizesBeforeMinimum(sizes, minSize) - Check sizes against minimum
  *
- * SECTION 7: GRID BOUNDARY & ROLES (4 functions)
+ * SECTION 7: GRID BOUNDARY & ROLES (3 functions)
  *   - calculateIdealBoundary(allSlots, startPrice, gapSlots) - Calculate ideal boundary
- *   - calculateFundDrivenBoundary(allSlots, availA, availB, startPrice, gapSlots) - Fund-driven boundary
  *   - assignGridRoles(allSlots, boundaryIdx, gapSlots, ...) - Assign BUY/SELL roles
  *   - shouldFlagOutOfSpread(order, startPrice, configSpread) - Check if order is out of spread
  *
@@ -1451,26 +1450,6 @@ function calculateIdealBoundary(allSlots: any, referencePrice: any, gapSlots: an
 }
 
 /**
- * Calculate grid boundary based on available funds ratio.
- * Distributes buy/sell slots proportional to fund values.
- * 
- * @param {Array<Object>} allSlots - All grid slots sorted by price
- * @param {number} availA - Available assetA (sell-side capital)
- * @param {number} availB - Available assetB (buy-side capital)
- * @param {number} price - Current reference price for valuation
- * @param {number} gapSlots - Number of gap slots between buy and sell
- * @returns {number} Fund-driven boundary index
- */
-function calculateFundDrivenBoundary(allSlots: any, availA: any, availB: any, price: any, gapSlots: any) {
-    const valA = toFiniteNumber(availA) * toFiniteNumber(price);
-    const valB = toFiniteNumber(availB);
-    const totalVal = valA + valB;
-    if (totalVal <= 0) return Math.floor((allSlots.length - gapSlots) / 2);
-    const targetBuySlots = Math.round((allSlots.length - gapSlots) * (valB / totalVal));
-    return Math.max(0, Math.min(allSlots.length - gapSlots - 1, targetBuySlots - 1));
-}
-
-/**
  * Assign BUY/SELL/SPREAD roles to grid slots based on boundary.
  * Slots below boundary are BUY, above boundary are SELL, between are SPREAD.
  * Can optionally override even on-chain orders.
@@ -1860,11 +1839,10 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
     const remainingBudget = effectiveBudget - Math.abs(netShift);
 
     newBoundaryIdx += netShift;
-
-    // Clamp boundary — cap at one slot before the gap band's SELL rail,
-    // matching calculateFundDrivenBoundary's geometry. Degenerate geometries
-    // (fewer slots than the gap needs) fall back to the legacy length-1
-    // ceiling instead of collapsing the boundary below its current position.
+    // Clamp boundary — cap at one slot before the gap band's SELL rail.
+    // Degenerate geometries (fewer slots than the gap needs) fall back to the
+    // legacy length-1 ceiling instead of collapsing the boundary below its
+    // current position.
     const gapAwareCeiling = allSlots.length - gapSlots - 1;
     const legacyCeiling = allSlots.length - 1;
     const ceiling = gapAwareCeiling >= 0
@@ -2144,5 +2122,5 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
 }
 
 // ================================================================================
-            export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isShiftEligibleFill, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds }
+            export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isShiftEligibleFill, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds }
 

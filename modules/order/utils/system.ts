@@ -27,10 +27,7 @@
  *   - retryPersistenceIfNeeded(manager) - Retry persistence if previous failed
  *   - applyGridDivergenceCorrections(manager, ...) - Apply grid divergence corrections
  *
- * SECTION 4: GRID UTILITIES (1 function)
- *   - syncBoundaryToFunds(manager) - Sync boundary position to available funds
- *
- * SECTION 5: UI & INTERACTIVE UTILITIES (7 functions)
+ * SECTION 4: UI & INTERACTIVE UTILITIES (7 functions)
  *   - ensureProfilesDirectory(profilesDir) - Ensure profiles directory exists
  *   - sleep(ms) - Pause execution for specified duration
  *   - readInput(prompt, options) - Read user input from stdin
@@ -984,7 +981,7 @@ export async function retryPersistenceIfNeeded(manager: any): Promise<boolean> {
  * @param {Function} updateGridFromBlockchainSnapshotFn - Grid resize function (injected to avoid circular dependency with grid.ts)
  * @returns {Promise<void>}
  */
-export async function applyGridDivergenceCorrections(manager: any, accountOrders: any, _botKey: string, updateOrdersOnChainBatchFn: Function, updateGridFromBlockchainSnapshotFn: Function): Promise<{ committed: boolean, boundaryChanged: boolean, reason?: string } | undefined> {
+export async function applyGridDivergenceCorrections(manager: any, accountOrders: any, _botKey: string, updateOrdersOnChainBatchFn: Function, updateGridFromBlockchainSnapshotFn: Function): Promise<{ committed: boolean, reason?: string } | undefined> {
     if (!manager._gridLock) return;
     if (typeof updateGridFromBlockchainSnapshotFn !== 'function') {
         manager.logger?.log?.('[DIVERGENCE-COW] updateGridFromBlockchainSnapshotFn is not a function — aborting', 'error');
@@ -995,12 +992,15 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
 
     // Phase 1: Pre-lock grid resizing using COW
     // This calculates new sizes from blockchain state but DOES NOT modify master.
-    // pendingBoundaryIdx carries any fund-driven boundary shift through the COW
-    // pipeline so that manager.boundaryIdx is only updated atomically inside
-    // _commitWorkingGrid — never before the slot types are consistent.
+    // The boundary stays pinned to the committed value: fund changes resize
+    // orders through the budget allocation below but never shift rails.  The
+    // fund-ratio writer was removed — it moved the boundary without guaranteed
+    // same-batch refills, so a guard-vetoed refill stranded empty slots past
+    // the new boundary (h-bts 91->94) with no repair path.  Remaining writers:
+    // fills (deriveTargetBoundary, same-cycle rotations) and spread promotion
+    // (shifts only onto slots placed in the same atomic batch).
     let resizeCowResult: any = null;
-    let pendingBoundaryIdx = manager.boundaryIdx;
-    let hadBoundaryShift = false;
+    const pendingBoundaryIdx = manager.boundaryIdx;
     if (manager._gridSidesUpdated && manager._gridSidesUpdated.size > 0) {
         const hasBuy = manager._gridSidesUpdated.has(ORDER_TYPES.BUY);
         const hasSell = manager._gridSidesUpdated.has(ORDER_TYPES.SELL);
@@ -1009,20 +1009,6 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
             : hasBuy
                 ? ORDER_TYPES.BUY
                 : ORDER_TYPES.SELL;
-
-        // If out-of-spread correction moves boundary, recompute both sides.
-        // syncBoundaryToFunds is a pure computation — it does NOT write
-        // manager.boundaryIdx.  We store the result in pendingBoundaryIdx
-        // so it flows through the COW pipeline to _commitWorkingGrid, where
-        // _setBoundary writes it atomically with manager.orders.
-        const boundarySync = syncBoundaryToFunds(manager);
-        hadBoundaryShift = boundarySync.changed;
-        if (hadBoundaryShift) {
-            pendingBoundaryIdx = boundarySync.newIdx!;
-            resizeOrderType = 'both';
-            manager._gridSidesUpdated.add(ORDER_TYPES.BUY);
-            manager._gridSidesUpdated.add(ORDER_TYPES.SELL);
-        }
 
         try {
             resizeCowResult = await updateGridFromBlockchainSnapshotFn(manager, resizeOrderType, true, pendingBoundaryIdx);
@@ -1046,19 +1032,17 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         
         const actions = resizeCowResult?.actions ? [...resizeCowResult.actions] : [];
 
-        // Geometric rail constraint for desired-slot selection.  After a
-        // fund-driven boundary shift (syncBoundaryToFunds → pendingBoundaryIdx)
-        // the working grid is re-typed for the NEW boundary while
-        // manager.boundaryIdx still carries the pre-shift value, so the gap band
-        // must be derived from the working boundary.  Uses the shared
-        // MathUtils.isSlotInRail helper (also used by the strategy window and
-        // _pickVirtualSlotsToActivate): the SPREAD GUARD keeps gap-band strays
-        // typed BUY/SELL (never SPREAD+ACTIVE), so without a geometric filter
-        // they are selected as "closest to market" and left inside the gap —
-        // collapsing the spread when the boundary shifts into the rail (h-bts:
-        // boundary 107→110 left the sell rail parked at 111-130 with the bottom
-        // three, 111-113, inside the new spread gap; real spread 0.5% instead
-        // of the 2.0% target).
+        // Geometric rail constraint for desired-slot selection.  The gap band
+        // is derived from the working boundary (== committed: divergence never
+        // shifts it).  Uses the shared MathUtils.isSlotInRail helper (also used
+        // by the strategy window and _pickVirtualSlotsToActivate): the SPREAD
+        // GUARD keeps gap-band strays typed BUY/SELL (never SPREAD+ACTIVE), so
+        // without a geometric filter they are selected as "closest to market"
+        // and left inside the gap — collapsing the spread when a fill-driven
+        // boundary shift moves into the rail (h-bts: boundary 107->110 left
+        // the sell rail parked at 111-130 with the bottom three, 111-113,
+        // inside the new spread gap; real spread 0.5% instead of the 2.0%
+        // target).
         const workingBoundaryIdx = (pendingBoundaryIdx !== null && pendingBoundaryIdx !== undefined && Number.isFinite(Number(pendingBoundaryIdx)))
             ? Number(pendingBoundaryIdx)
             : manager.boundaryIdx;
@@ -1208,7 +1192,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         // Convert same-side surplus-CANCEL + hole-CREATE pairs into in-place
         // rotation UPDATEs (reprice the existing order to the hole slot) instead
         // of cancel+recreate. Mirrors the reconcile path (manager.ts:210) and
-        // removes churn when a fund-driven boundary shift re-types slots. The COW
+        // removes churn when a fill-driven boundary shift re-types slots. The COW
         // executor already handles rotation UPDATEs (newGridId + newPrice remap).
         const optimizedActions = optimizeRebalanceActions(actions, manager.orders, {
             logger: (msg: any, level: any) => manager.logger?.log?.(msg, level),
@@ -1283,16 +1267,16 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                 // such path exists, but if one is added, the reader may see a stale
                 // count until the next checkSpreadCondition runs.
                 // Grid already persisted via _commitWorkingGrid in updateOrdersOnChainBatch
-                return { committed: true, boundaryChanged: hadBoundaryShift };
+                return { committed: true };
             } else {
                 manager.logger.log(`[DIVERGENCE-COW] Divergence corrections not executed (working grid discarded)`, 'warn');
                 manager._gridSidesUpdated.clear();
-                return { committed: false, boundaryChanged: hadBoundaryShift, reason: result?.reason };
+                return { committed: false, reason: result?.reason };
             }
         } catch (err: any) {
             manager.logger.log(`[DIVERGENCE-COW] Error executing divergence corrections: ${getErrorMessage(err)}`, 'error');
             manager._gridSidesUpdated.clear();
-            return { committed: false, boundaryChanged: hadBoundaryShift };
+            return { committed: false };
         }
     } else {
         // No actions needed or aborted
@@ -1301,70 +1285,6 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
     }
 }
 
-// ================================================================================
-// SECTION 4: GRID UTILITIES
-// ================================================================================
-
-/**
- * Synchronize grid boundary position based on available funds.
- *
- * Computes a fund-driven boundary index and clamps it to the gap between the
- * highest on-chain BUY slot and the lowest on-chain SELL slot.  The boundary
- * may therefore only shift within the existing spread — it can never jump over
- * a committed order on either side.
- *
- * A shift is only produced when the fund ratio is asymmetric enough that the
- * clamped result differs from the current boundaryIdx.  Balanced available
- * funds yield a mid-range result that, after clamping, equals the current
- * boundary and produces no change.
- *
- * NOTE: This is a pure computation — it does NOT mutate manager.boundaryIdx.
- * Boundary writes are gated by _setBoundary() which enforces COW-commit-only
- * mutation.  Callers must carry the result through the COW pipeline to
- * _commitWorkingGrid for atomic commit alongside manager.orders.
- *
- * @param {Object} manager - OrderManager instance
- * @returns {{ changed: boolean, newIdx?: number }}
- */
-export function syncBoundaryToFunds(manager: any): { changed: boolean; newIdx?: number } {
-    const availA = (manager.funds?.available?.sell || 0);
-    const availB = (manager.funds?.available?.buy || 0);
-    const allSlots = (Array.from(manager.orders.values()) as any[]).sort((a: any, b: any) => a.price - b.price);
-    const gapSlots = manager._gapSlots ?? MathUtils.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
-
-    // Determine the index range permitted by master-grid slot assignments.
-    // Both virtual and active orders count: the boundary must stay strictly
-    // between the highest BUY slot and the lowest SELL slot so it never
-    // crosses an existing order regardless of whether it is on-chain.
-    let maxBuyIdx  = -1;
-    let minSellIdx = allSlots.length;
-    for (let i = 0; i < allSlots.length; i++) {
-        const slot = allSlots[i];
-        if (slot.type === ORDER_TYPES.BUY  && i > maxBuyIdx)  maxBuyIdx  = i;
-        if (slot.type === ORDER_TYPES.SELL && i < minSellIdx) minSellIdx = i;
-    }
-
-    // Build clamp bounds from whichever sides have typed slots.
-    // If a side has no typed slots there is nothing to protect on that side,
-    // so the boundary is free to move to the corresponding edge of the grid.
-    const lowerBound = maxBuyIdx  >= 0                ? maxBuyIdx  + 1          : 0;
-    const upperBound = minSellIdx < allSlots.length   ? minSellIdx - 1          : allSlots.length - 1;
-
-    // Bounds are contradictory — typed slots leave no gap to shift into.
-    if (lowerBound > upperBound) {
-        return { changed: false };
-    }
-
-    let newIdx = OrderUtils.calculateFundDrivenBoundary(allSlots, availA, availB, manager.config.startPrice, gapSlots);
-
-    // Clamp to the permitted range.
-    newIdx = Math.max(lowerBound, Math.min(newIdx, upperBound));
-
-    if (newIdx !== manager.boundaryIdx) {
-        return { changed: true, newIdx };
-    }
-    return { changed: false };
-}
 
 // ================================================================================
 // SECTION 5: UI & INTERACTIVE UTILITIES

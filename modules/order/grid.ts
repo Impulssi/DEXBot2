@@ -1785,11 +1785,12 @@ export async function updateGridFromBlockchainSnapshot(manager: any, orderType: 
         // after the size calc means crossers keep their pre-shift sizes, producing
         // an allocation that doesn't match the post-shift grid structure.
         //
-        // NOTE: syncBoundaryToFunds is a pure computation (no eager write), so
-        // manager.boundaryIdx still carries the pre-shift value here.  The
-        // overrideBoundaryIdx !== manager.boundaryIdx check correctly detects
-        // that a shift is needed.  The boundary is only written atomically
-        // inside _commitWorkingGrid via _setBoundary.
+        // NOTE: overrideBoundaryIdx carries the caller's intended boundary.
+        // Divergence pins it to the committed value (fund changes never shift
+        // rails — only fills move the boundary, and spread promotion derives
+        // its own shift atomically in prepareSpreadCorrectionOrders).  The
+        // boundary itself is only written atomically inside _commitWorkingGrid
+        // via _setBoundary.
         if (overrideBoundaryIdx !== null && overrideBoundaryIdx !== manager.boundaryIdx) {
             const gapSlots = manager._gapSlots ?? calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
             const allSlots = (Array.from(workingGrid.values()) as Order[])
@@ -2760,9 +2761,9 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         const slotIndexMap = new Map(allSlotsByPrice.map((o: any, i: number) => [o.id, i]));
 
         // Use the committed boundary for slot classification — never a speculative
-        // value from syncBoundaryToFunds that hasn't been persisted through the COW
-        // pipeline.  If the boundary shifts later via _commitWorkingGrid, the next
-        // spread correction cycle will re-classify with the updated committed value.
+        // value that hasn't been persisted through the COW pipeline.  If the
+        // boundary shifts later via _commitWorkingGrid, the next spread
+        // correction cycle will re-classify with the updated committed value.
         // This prevents TOCTOU-style inconsistency where slot types are chosen
         // against a boundary that was never atomically committed to manager.orders.
         const resolved = resolveGapBand(manager);

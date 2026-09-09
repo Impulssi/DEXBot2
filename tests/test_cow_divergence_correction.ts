@@ -269,7 +269,7 @@ async function testCOWDivergenceCorrection() {
     }
 
     // Test 5: Surplus orders pair with hole slots into rotation UPDATEs (reprice
-    // in place) instead of cancel+recreate. Mirrors a fund-driven boundary shift
+    // in place) instead of cancel+recreate. Mirrors a fill-driven boundary shift
     // where slots are re-typed: orders sit outside the desired window while
     // desired slots hold no orders.
     console.log('Test 5: Surplus + holes become rotation UPDATEs instead of cancel+create');
@@ -356,7 +356,7 @@ async function testCOWDivergenceCorrection() {
         console.log('  ✓ Surplus orders repriced in place onto hole slots\n');
     }
 
-    // Test 6: h-bts regression — a fund-driven boundary shift leaves on-chain
+    // Test 6: h-bts regression — a boundary shift leaves on-chain
     // SELL orders inside the new spread gap.  The SPREAD GUARD keeps them typed
     // SELL (never SPREAD+ACTIVE), so a type-only window would pick them as
     // "closest to market" and leave the rail parked across the gap (spread

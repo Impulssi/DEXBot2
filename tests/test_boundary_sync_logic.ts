@@ -1,6 +1,7 @@
 /**
- * Integration tests for boundary sync logic in applyGridDivergenceCorrections
- * Tests fund-driven boundary recalculation and order matching
+ * Integration tests for divergence startup checks and pool-ID caching.
+ * (The fund-driven boundary sync test was removed with the writer: divergence
+ * never shifts the boundary — only fills do.)
  */
 
 const assert = require('assert');
@@ -44,84 +45,6 @@ function logTest(name, passed, details = '') {
     console.log(` - ${status} ${name}${details ? ' (' + details + ')' : ''}`);
 }
 
-async function testBoundarySync() {
-    console.log('\nRunning Boundary Sync Tests...');
-
-    // Test 1: Boundary shifts when funds are skewed
-    {
-        const manager = createMockManager(20000, 50, 100);
-        const allSlots = Array.from({ length: 10 }, (_, i) => ({
-            id: `slot-${i}`,
-            price: 100 * Math.pow(1.005, i - 5),
-            type: i < 5 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL,
-            size: i < 5 ? 2000 : 5,
-            state: ORDER_STATES.VIRTUAL
-        }));
-
-        // Simulate fund-driven boundary calculation
-        const availA = manager.funds.buy.free;
-        const availB = manager.funds.sell.free;
-        const buySideValue = availA;
-        const sellSideValue = availB * manager.config.startPrice;
-        const totalValue = buySideValue + sellSideValue;
-        const buyRatio = buySideValue / totalValue;
-
-        // Expected: More buy funds means boundary should shift toward sell side (higher prices)
-        const expectedBoundaryBias = buyRatio > 0.7 ? 'shifted_right' : buyRatio < 0.3 ? 'shifted_left' : 'centered';
-        logTest('Boundary shifts with fund imbalance', expectedBoundaryBias !== 'centered', expectedBoundaryBias);
-    }
-
-    // Test 2: Rotation pairing matches orders correctly
-    {
-        const manager = createMockManager(10000, 100, 100);
-        manager.orders = new Map();
-
-        // Create 3 active buy orders
-        const activeBuys = [
-            { id: 'buy-1', price: 99, orderId: 'chain-1', size: 100, type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE },
-            { id: 'buy-2', price: 98.5, orderId: 'chain-2', size: 100, type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE },
-            { id: 'buy-3', price: 98, orderId: 'chain-3', size: 100, type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE }
-        ];
-
-        // Create 4 desired slots (due to fund increase)
-        const desiredSlots = [
-            { id: 'slot-1', price: 99, size: 150 },
-            { id: 'slot-2', price: 98.5, size: 150 },
-            { id: 'slot-3', price: 98, size: 150 },
-            { id: 'slot-4', price: 97.5, size: 150 }
-        ];
-
-        // Expected: First 3 active orders rotate to match first 3 desired slots
-        // 4th slot is placed as new
-        const matchCount = Math.min(activeBuys.length, desiredSlots.length);
-        logTest('Rotation pairing matches all existing orders', matchCount === 3, `${matchCount}/3 matched`);
-    }
-
-    // Test 3: Target count follows configured active window
-    {
-        const baseTargetCount = 5;
-        const targetCount = Math.max(1, baseTargetCount);
-
-        logTest('Target count keeps configured window size', targetCount === 5, `${baseTargetCount} -> ${targetCount}`);
-    }
-
-    // Test 4: Prevents overfunding when boundary syncs
-    {
-        const manager = createMockManager(1000, 10, 100);
-        const availA = manager.funds.buy.free;
-        const ordersWithNewPrice = [
-            { price: 101, size: 100 },
-            { price: 102, size: 100 },
-            { price: 103, size: 100 }
-        ];
-
-        const totalRequired = ordersWithNewPrice.reduce((sum, o) => sum + o.size, 0);
-        const wouldExceedBudget = totalRequired > availA;
-
-        logTest('Boundary sync respects available funds', wouldExceedBudget === false || totalRequired <= availA,
-                `need ${totalRequired} have ${availA}`);
-    }
-}
 
 async function testStartupGridChecks() {
     console.log('\nRunning Startup Grid Checks Tests...');
@@ -247,10 +170,9 @@ async function testPoolIdCaching() {
 // ================================================================================
 async function runTests() {
     try {
-        await testBoundarySync();
         await testStartupGridChecks();
         await testPoolIdCaching();
-        console.log('\n✓ All boundary sync and startup integration tests passed!');
+        console.log('\n✓ All startup integration tests passed!');
         process.exit(0);
     } catch (err) {
         console.error('\n✗ Test failed:', getErrorMessage(err));
@@ -265,4 +187,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { testBoundarySync, testStartupGridChecks, testPoolIdCaching };
+module.exports = { testStartupGridChecks, testPoolIdCaching };
