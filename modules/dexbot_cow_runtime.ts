@@ -1166,7 +1166,7 @@ async function autoCancelOneUnmatchedOrphan(bot: any) {
 
     const target = unmatched.find((u: any) => u && u.reason === 'price-drift-orphan');
     if (!target) {
-        return { cancelled: false, reason: 'no-price-drift-orphan', message: 'no price-drift orphan to cancel; other unmatched orders are adoptable' };
+        return { cancelled: false, reason: 'no-price-drift-orphan', message: 'no price-drift orphan to cancel; remaining unmatched orders need no cancellation (adoptable or deferred holds)' };
     }
     const orderId = target.id || target.orderId || target.chainOrderId;
     if (!orderId) {
@@ -2836,8 +2836,13 @@ async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
     const unmatchedChainOrders = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
         ? bot.manager._lastUnmatchedChainOrders
         : [];
+    // Out-of-grid holds are permanent by design (live orders held outside
+    // the frozen rail): they can never be adopted and collide with nothing,
+    // so they must not block CREATES — otherwise one dip-protection hold
+    // freezes the whole grid. Only adoptable/cancellable orphans block.
+    const blockingUnmatched = unmatchedChainOrders.filter((u: any) => u?.reason !== 'out-of-grid-deferred');
     const pendingBroadcasts: any[] = getPendingBroadcasts(bot);
-    if (hasCreateActions && (unmatchedChainOrders.length > 0 || pendingBroadcasts.length > 0)) {
+    if (hasCreateActions && (blockingUnmatched.length > 0 || pendingBroadcasts.length > 0)) {
         if (pendingBroadcasts.length > 0) {
             bot.manager.logger.log(
                 `[COW] Rejecting CREATE batch: ${pendingBroadcasts.length} pending broadcast(s) from a prior uncertain ` +
@@ -2882,12 +2887,12 @@ async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
             };
         }
 
-        const unmatchedSample = unmatchedChainOrders
+        const unmatchedSample = blockingUnmatched
             .slice(0, 3)
             .map((o: any) => formatUnmatchedChainOrderForLog(o))
             .join(' | ');
         bot.manager.logger.log(
-            `[COW] ${unmatchedChainOrders.length} unmatched chain order(s) blocking CREATES ` +
+            `[COW] ${blockingUnmatched.length} unmatched chain order(s) blocking CREATES ` +
             (unmatchedSample ? `(${unmatchedSample})` : '') +
             ` — adopting via sync instead of cancelling`,
             'info'

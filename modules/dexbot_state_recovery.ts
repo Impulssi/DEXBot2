@@ -450,16 +450,27 @@ async function recoverFromPersistedGrid(bot: any) {
         const remainingUnmatched = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
             ? bot.manager._lastUnmatchedChainOrders
             : [];
-        if (remainingUnmatched.length > 0) {
-            const sample = remainingUnmatched.slice(0, 3)
+        // Out-of-grid holds are permanent by design (live orders held outside
+        // the frozen rail): they survive every reload, so they must not fail
+        // snapshot recovery — otherwise each restart forces a full grid reset
+        // while a hold exists. Only adoptable/cancellable orphans reject.
+        const blockingUnmatched = remainingUnmatched.filter((u: any) => u?.reason !== 'out-of-grid-deferred');
+        if (blockingUnmatched.length > 0) {
+            const sample = blockingUnmatched.slice(0, 3)
                 .map((o: any) => bot._formatUnmatchedChainOrderForLog(o))
                 .join(' | ');
             bot.manager.logger.log(
-                `[RECOVERY] Persisted grid reloaded but ${remainingUnmatched.length} unmatched chain order(s) ` +
+                `[RECOVERY] Persisted grid reloaded but ${blockingUnmatched.length} unmatched chain order(s) ` +
                 `remain${sample ? ` (${sample})` : ''}. Rejecting — full grid reset required.`,
                 'warn'
             );
-            return { success: false, reason: `grid inconsistent after reload: ${remainingUnmatched.length} unmatched remain` };
+            return { success: false, reason: `grid inconsistent after reload: ${blockingUnmatched.length} unmatched remain` };
+        }
+        if (remainingUnmatched.length > 0) {
+            bot.manager.logger.log(
+                `[RECOVERY] Persisted grid reloaded with ${remainingUnmatched.length} out-of-grid hold(s) kept (no reset required).`,
+                'info'
+            );
         }
 
         const ordersArr = Array.from(bot.manager.orders.values());

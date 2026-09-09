@@ -870,8 +870,12 @@ function validateCreateTargetSlots(actions: any, orders: any, _assets: any = nul
     }
 
     if (createEntries.length > 0) {
+        // Out-of-grid holds occupy no slot: their candidateSlotId is the
+        // clamped edge (slot-0/N-1), not a real match. Counting it here
+        // would permanently block refilling that rail slot while the hold
+        // lives below/above the grid — the hold must not collide.
         // Chain orphan: if chain order's nearest slot equals target slot
-        const validChainCandidates = chainOrderCandidates.length > 0 ? chainOrderCandidates.filter((u: any) => u.chainOrderId) : [];
+        const validChainCandidates = chainOrderCandidates.length > 0 ? chainOrderCandidates.filter((u: any) => u.chainOrderId && u.reason !== 'out-of-grid-deferred') : [];
         if (validChainCandidates.length > 0) {
             const chainSlotIds = new Set(validChainCandidates.map((u: any) => u.chainSlotId || u.candidateSlotId).filter(Boolean));
             for (const entry of createEntries) {

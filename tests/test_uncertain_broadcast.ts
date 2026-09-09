@@ -1813,6 +1813,7 @@ async function main() {
     await testRecoverFromPersistedGridNoGrid();
     await testRecoverFromPersistedGridBloated();
     await testRecoverFromPersistedGridUnmatchedRemain();
+    await testRecoverFromPersistedGridOutOfGridHold();
     await testRecoverFromPersistedGridTruncatedRead();
     await testBoundaryShiftAllDiscarded();
     await testBoundaryShiftMixedAdoptedDiscarded();
@@ -2433,6 +2434,80 @@ async function testRecoverFromPersistedGridUnmatchedRemain() {
         bot.manager.persistGrid = origPersist;
     }
     console.log('✓ UNC-016d passed');
+}
+// ── _recoverFromPersistedGrid: out-of-grid holds do not reject ──────────
+async function testRecoverFromPersistedGridOutOfGridHold() {
+    console.log('\n[UNC-016f] _recoverFromPersistedGrid keeps out-of-grid holds without forcing a full reset...');
+    const bot = makeBot();
+    const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
+    const origPersist = bot.manager.persistGrid;
+
+    bot.accountId = 'test-account';
+
+    bot.manager._gridLock = {
+        acquire: async (fn) => fn(),
+        isLocked: () => false,
+        isReentrant: () => false,
+    };
+    bot.manager._syncLock = {
+        acquire: async (fn) => fn(),
+        isLocked: () => false,
+        isReentrant: () => false,
+        forceRelease: () => 0,
+    };
+    bot.manager._fillProcessingLock = undefined;
+    bot.manager._applyOrderUpdate = async () => true;
+    bot.manager._initializeAssets = async () => {};
+    bot.manager.resetFunds = () => {};
+    bot.manager.pauseRecalcLogging = () => {};
+    bot.manager.resumeRecalcLogging = () => {};
+    bot.manager.funds = { btsFeesOwed: 0 };
+    bot.manager.boundaryIdx = 0;
+    bot.manager._restoreBoundary = (idx: any) => { bot.manager.boundaryIdx = idx; };
+    bot.manager.config = {
+        incrementPercent: 0.3,
+        targetSpreadPercent: 0.6,
+    };
+
+    // Same grid as UNC-016d, but the extra chain order is a permanent
+    // out-of-grid hold (live dip-protection below the frozen rail): it can
+    // never be adopted, so it must not fail snapshot recovery — otherwise
+    // every restart forces a full grid reset while a hold exists.
+    const persistedGrid = [
+        { id: 'slot-1', type: 'buy', price: 0.04, size: 200, orderId: '1.7.111' },
+        { id: 'slot-2', type: 'sell', price: 0.06, size: 100, orderId: '1.7.222' }
+    ];
+    const chainState = [
+        { id: '1.7.111', type: 'buy', price: 0.04, for_sale: 200 },
+        { id: '1.7.222', type: 'sell', price: 0.06, for_sale: 100 },
+        { id: '1.7.444', type: 'buy', price: 0.01, for_sale: 50 }
+    ];
+
+    bot.accountOrders = {
+        loadGrid: () => persistedGrid,
+        loadBoundaryIdx: () => 1,
+    };
+
+    chainOrders.readOpenOrdersWithMeta = async () => ({ orders: chainState, truncated: false });
+
+    bot.manager.syncFromOpenOrders = async (orders, options) => {
+        const hold = { chainOrderId: '1.7.444', type: 'buy', price: 0.01, size: 50, reason: 'out-of-grid-deferred', candidateSlotId: 'slot-0' };
+        bot.manager._lastUnmatchedChainOrders = [hold];
+        bot.manager._lastUnmatchedChainOrdersAt = Date.now();
+        return { filledOrders: [], updatedOrders: [], unmatchedChainOrders: [hold] };
+    };
+    bot.manager.persistGrid = async () => ({ isValid: true });
+
+    try {
+        const result = await bot._recoverFromPersistedGrid();
+        assert.strictEqual(result.success, true,
+            'Recovery must keep out-of-grid holds without a full reset: success=' + result.success +
+            ' reason=' + (result.reason || 'none'));
+    } finally {
+        chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
+        bot.manager.persistGrid = origPersist;
+    }
+    console.log('✓ UNC-016f passed');
 }
 
 // ── Boundary shift: all CREATEs discarded → boundary must NOT shift ─────
