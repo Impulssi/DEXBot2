@@ -529,7 +529,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                         </span>
                         <button type="button" class="reset-btn" id="ama-reset">Reset</button>
                     </div>
-                    <div class="indicator" title="Range min/max built only from the live AMA price (green above, red below); Scale sizes it by AMA slope like the grid build">
+                    <div class="indicator" title="Range min/max built only from the live AMA price (red above, green below); Scale sizes it by AMA slope like the grid build">
                         <label><input type="checkbox" id="range-toggle"${defaults.rangeEnabled ? ' checked' : ''}> Range</label>
                         <label title="Range Scaling: size the band by AMA slope like the grid build (trend side widens, opposite tightens) and fit the price axis to it"><input type="checkbox" id="range-scale-toggle"${defaults.rangeScaleEnabled ? ' checked' : ''}> Scale</label>
                         <span id="range-grid-wrap" style="display:${defaults.grid ? 'inline' : 'none'}" title="x-range around AMA (default = bot grid setting)">
@@ -1169,7 +1169,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         // applyAsymmetricBounds (+ metrics/base), applyNarrowingSideGuard,
         // parseRelativeMultiplier. With Range Scaling on, the AMA slope sizes
         // the real range: trend side widens, opposite side tightens. Painted
-        // symmetrically always: green [AMA, upper], red [lower, AMA].
+        // symmetrically always: red [AMA, upper], green [lower, AMA].
         // Without usable grid shape falls back to a width% envelope around AMA.
         // Never reads candles, pair-display mapping, or axis/zoom state —
         // inversion and timeframe sampling apply to the AMA first.
@@ -1602,10 +1602,10 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 u.ctx.clip();
                 // Behind candles/AMA lines (same trick as the dynamic-weight signal background).
                 u.ctx.globalCompositeOperation = 'destination-over';
-                const UP_FILL = 'rgba(38,166,154,0.16)';
-                const DOWN_FILL = 'rgba(239,83,80,0.16)';
-                // Symmetric envelope, always both sides: green [AMA, upper]
-                // plus red [lower, AMA] along the whole AMA, tilted by the
+                const UP_FILL = 'rgba(239,83,80,0.16)';
+                const DOWN_FILL = 'rgba(38,166,154,0.16)';
+                // Symmetric envelope, always both sides: red [AMA, upper]
+                // plus green [lower, AMA] along the whole AMA, tilted by the
                 // grid's range scaling. Paint per contiguous valid segment.
                 let segTop = [];
                 let segBot = [];
@@ -1628,12 +1628,12 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                         u.ctx.closePath();
                         u.ctx.fill();
                     }
-                    u.ctx.strokeStyle = 'rgba(38,166,154,0.55)';
+                    u.ctx.strokeStyle = 'rgba(239,83,80,0.55)';
                     u.ctx.lineWidth = 1;
                     u.ctx.beginPath();
                     segTop.forEach((p, k) => { if (k === 0) u.ctx.moveTo(p[0], p[1]); else u.ctx.lineTo(p[0], p[1]); });
                     u.ctx.stroke();
-                    u.ctx.strokeStyle = 'rgba(239,83,80,0.55)';
+                    u.ctx.strokeStyle = 'rgba(38,166,154,0.55)';
                     u.ctx.beginPath();
                     segBot.forEach((p, k) => { if (k === 0) u.ctx.moveTo(p[0], p[1]); else u.ctx.lineTo(p[0], p[1]); });
                     u.ctx.stroke();
