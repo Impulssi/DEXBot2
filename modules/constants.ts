@@ -191,6 +191,7 @@ let DEFAULT_CONFIG = {
     weightDistribution: { sell: 1, buy: 1 },  // Geometric weight for order sizing (1 = ~1:2 center/outer split, 0.5 = linear)
     botFunds: { sell: "100%", buy: "100%" },      // Percentage of wallet balance to allocate ("100%" or numeric value)
     activeOrders: { sell: 20, buy: 20 },          // Number of orders to maintain closest to market on each side
+    reserveOrders: { buy: 0, sell: 0 },           // Edge-pinned insurance orders resting live outside the window (buy: grid floor, sell: grid ceiling; 0 disables)
 
     // BTS fee management for non-BTS pairs
     min_BTS_value: null,          // Minimum BTS balance to maintain (null = auto from activeOrders × fees × multiplier)

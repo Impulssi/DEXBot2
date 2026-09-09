@@ -62,6 +62,7 @@
  *       "weightDistribution": { "sell": 1, "buy": 1 },
  *       "botFunds": { "sell": "100%", "buy": "100%" },
  *       "activeOrders": { "sell": 20, "buy": 20 },
+ *       "reserveOrders": { "buy": 0, "sell": 0 },  // Edge reserves: extra live orders (buy: floor, sell: ceiling)
  *       "debtPolicy": "ignore",       // Debt policy: "ignore", "warn", or "block"
  *       "min_BTS_value": 0,           // Minimum BTS value threshold for operations
  *     }
@@ -1014,6 +1015,8 @@ function normalizeBotDraft(base = {}) {
     if (!data.weightDistribution) data.weightDistribution = { ...DEFAULT_CONFIG.weightDistribution };
     if (!data.botFunds) data.botFunds = { ...DEFAULT_CONFIG.botFunds };
     if (!data.activeOrders) data.activeOrders = { ...DEFAULT_CONFIG.activeOrders };
+    if (typeof data.reserveOrders === 'number') data.reserveOrders = { buy: Math.max(0, Math.floor(data.reserveOrders)), sell: 0 };
+    if (data.reserveOrders === undefined || data.reserveOrders === null || typeof data.reserveOrders !== 'object' || Array.isArray(data.reserveOrders)) data.reserveOrders = { ...DEFAULT_CONFIG.reserveOrders };
 
     if (data.active === undefined) data.active = DEFAULT_CONFIG.active;
     if (data.dryRun === undefined) data.dryRun = DEFAULT_CONFIG.dryRun;
@@ -1148,7 +1151,7 @@ async function promptBotData(base = {}) {
              console.log(`${COLORS.yellowBold}2) Identity:${COLORS.reset}   ${COLORS.orange}Name:${COLORS.reset} ${data.name || '?'} , ${COLORS.orange}Account:${COLORS.reset} ${data.preferredAccount || '?'} , ${COLORS.orange}Active:${COLORS.reset} ${colorBooleanFlag(data.active, true)}, ${COLORS.orange}DryRun:${COLORS.reset} ${colorBooleanFlag(data.dryRun, false)}`);
              console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}      ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}], ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${data.poolRef || 'none'}, ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice, data.startPrice)}`);
              console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%`);
-             console.log(`${COLORS.yellowBold}5) Funding:${COLORS.reset}    ${COLORS.orange}Sell:${COLORS.reset} ${colorPercentageInput(data.botFunds.sell)}, ${COLORS.orange}Buy:${COLORS.reset} ${colorPercentageInput(data.botFunds.buy)} | ${COLORS.orange}Orders:${COLORS.reset} (S:${data.activeOrders.sell}, B:${data.activeOrders.buy})`);
+             console.log(`${COLORS.yellowBold}5) Funding:${COLORS.reset}    ${COLORS.orange}Sell:${COLORS.reset} ${colorPercentageInput(data.botFunds.sell)}, ${COLORS.orange}Buy:${COLORS.reset} ${colorPercentageInput(data.botFunds.buy)} | ${COLORS.orange}Orders:${COLORS.reset} (S:${data.activeOrders.sell}, B:${data.activeOrders.buy}) | ${COLORS.orange}Reserve:${COLORS.reset} (S:${data.reserveOrders?.sell ?? 0}, B:${data.reserveOrders?.buy ?? 0})`);
              console.log('--------------------------------------------------');
              console.log(`${COLORS.greenBold}S) Save & Exit${COLORS.reset}`);
              console.log(`${COLORS.white}C) Cancel (Discard changes)${COLORS.reset}`);
@@ -1258,10 +1261,15 @@ async function promptBotData(base = {}) {
                 if (oSell === '\x1b') break;
                 const oBuy = await askIntegerInRange('activeOrders buy count', data.activeOrders.buy, 1, 100);
                 if (oBuy === '\x1b') break;
+                const rBuy = await askIntegerInRange('reserveOrders buy floor count (0 disables)', data.reserveOrders?.buy ?? 0, 0, 20);
+                if (rBuy === '\x1b') break;
+                const rSell = await askIntegerInRange('reserveOrders sell ceiling count (0 disables)', data.reserveOrders?.sell ?? 0, 0, 20);
+                if (rSell === '\x1b') break;
                 data.botFunds.sell = fSell;
                 data.botFunds.buy = fBuy;
                 data.activeOrders.sell = oSell;
                 data.activeOrders.buy = oBuy;
+                data.reserveOrders = { buy: rBuy, sell: rSell };
                 showMenu = true;
                 break;
             case 's':

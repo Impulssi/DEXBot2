@@ -64,7 +64,7 @@ import {
     buildSuccessResult,
     evaluateCommit
 } from './utils/validate.js';
-import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain } from './utils/order.js';
+import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, resolveReserveCount } from './utils/order.js';
 import { getErrorMessage } from '../utils/errors.js';
 const { toFiniteNumber } = Format;
 
@@ -1615,7 +1615,30 @@ class OrderManager {
         // Reverse for placement order (lowest first)
         validBuys.sort((a: any, b: any) => a.price - b.price);
 
-        return [...validSells, ...validBuys];
+        // Reserve ladder: edge-pinned orders activate alongside the window
+        // without consuming its budget. Buys pin at the floor (lowest first),
+        // sells at the ceiling (highest first). Same min-size gate as the window.
+        const pickEdgeReserves = (orderType: any, count: any, windowed: any[], precision: any, minSizeInt: any, ascending: any): any[] => {
+            const picked: any[] = [];
+            if (count <= 0) return picked;
+            const windowedIds = new Set(windowed.map((o: any) => o.id));
+            const edgeFirst = this.getOrdersByTypeAndState(orderType, ORDER_STATES.VIRTUAL)
+                .sort((a: any, b: any) => ascending ? a.price - b.price : b.price - a.price);
+            for (const o of edgeFirst) {
+                if (picked.length >= count) break;
+                if (windowedIds.has(o.id)) continue;
+                if (floatToBlockchainInt(o.size, precision) >= minSizeInt) {
+                    picked.push(o);
+                    windowedIds.add(o.id);
+                }
+            }
+            picked.sort((a: any, b: any) => ascending ? a.price - b.price : b.price - a.price);
+            return picked;
+        };
+        const reserveBuys = pickEdgeReserves(ORDER_TYPES.BUY, resolveReserveCount(this.config, 'buy'), validBuys, buyPrecision, minBuySizeInt, true);
+        const reserveSells = pickEdgeReserves(ORDER_TYPES.SELL, resolveReserveCount(this.config, 'sell'), validSells, sellPrecision, minSellSizeInt, false);
+
+        return [...validSells, ...reserveSells, ...validBuys, ...reserveBuys];
     }
 
     /**

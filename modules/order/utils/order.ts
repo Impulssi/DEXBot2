@@ -60,10 +60,11 @@
  *   - buildDelta(masterGrid, workingGrid) - Build delta actions between grids
  *   - getOrderSize(order) - Extract order size with fallback
  *
- * SECTION 10: STRATEGY CALCULATIONS (3 functions)
- *   - deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget) - Derive boundary from fills (returns { boundaryIdx, remainingBudget })
- *   - getSideBudget(side, funds, config, totalTarget) - Calculate side budget after fees
- *   - calculateBudgetedSizes(slots, side, budget, weightDist, incrementPercent, assets) - Calculate budgeted sizes
+ * SECTION 10: STRATEGY CALCULATIONS (6 functions)
+ *   - resolveReserveCount(config, side) - Clamped per-side reserve count (>=0 int, 0 disables)
+ *   - resolveReserveOrders(config) - Total reserves buy+sell (fee/count totals)
+ *   - resolveReserveFloorIds(allSlots, reserve) - Bottom-N BUY slot ids by price
+ *   - resolveReserveCeilIds(allSlots, reserve) - Top-N SELL slot ids by price
  *
  * ===============================================================================
  */
@@ -1813,10 +1814,16 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
          newBoundaryIdx = calculateIdealBoundary(allSlots, referencePrice, gapSlots);
     }
 
-    // Apply shift from fills with rate-limiting
+    // Apply shift from fills with rate-limiting (reserve fills excluded: static insurance).
     let netShift = 0;
+    // Reserve ladder: fills from edge-pinned reserve slots never crawl the
+    // boundary — they are static fat-finger insurance, not market movement.
+    const reserveBuyIds = reserveEdgeIdSet(allSlots, config, ORDER_TYPES.BUY);
+    const reserveSellIds = reserveEdgeIdSet(allSlots, config, ORDER_TYPES.SELL);
     for (const fill of fills) {
         if (!isShiftEligibleFill(fill)) continue;
+        if (fill && fill.type === ORDER_TYPES.BUY && reserveBuyIds && reserveBuyIds.has(fill.id)) continue;
+        if (fill && fill.type === ORDER_TYPES.SELL && reserveSellIds && reserveSellIds.has(fill.id)) continue;
         if (fill.type === ORDER_TYPES.SELL) netShift++;
         else if (fill.type === ORDER_TYPES.BUY) netShift--;
     }
@@ -1855,17 +1862,122 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
 }
 
 /**
+ * Per-side reserve count (edge-pinned fat-finger insurance orders).
+ * Buy reserves pin at the grid floor, sell reserves at the grid ceiling.
+ * Non-finite/non-integer/negative values disable (0).
+ *
+ * @param {Object} config - Bot configuration
+ * @param {string} side - 'buy' or 'sell'
+ * @returns {number} Reserve count for the side (>= 0 integer)
+ */
+function resolveReserveCount(config: any, side: any) {
+    const key = side === 'sell' ? 'sell' : 'buy';
+    const raw = Number(config?.reserveOrders?.[key] ?? 0);
+    if (!Number.isInteger(raw) || raw < 0) return 0;
+    return raw;
+}
+
+/**
+ * Total reserve count across both sides (fee/count totals).
+ *
+ * @param {Object} config - Bot configuration
+ * @returns {number} Total reserves (buy + sell)
+ */
+function resolveReserveOrders(config: any) {
+    return resolveReserveCount(config, 'buy') + resolveReserveCount(config, 'sell');
+}
+
+/**
+ * Edge-pinned reserve id set for one side, or null when disabled.
+ * Boundary-independent: floor/ceiling by price rank regardless of crawl.
+ *
+ * @param {Array<Object>} allSlots - All grid slots (need id/price/type)
+ * @param {Object} config - Bot configuration
+ * @param {string} orderType - ORDER_TYPES.BUY (floor) or SELL (ceiling)
+ * @returns {Set<string>|null} Edge slot ids, or null when side disabled
+ */
+function reserveEdgeIdSet(allSlots: any, config: any, orderType: any): Set<string> | null {
+    const side = orderType === ORDER_TYPES.SELL ? 'sell' : 'buy';
+    const n = resolveReserveCount(config, side);
+    if (n <= 0) return null;
+    return orderType === ORDER_TYPES.SELL
+        ? resolveReserveCeilIds(allSlots, n)
+        : resolveReserveFloorIds(allSlots, n);
+}
+
+/**
+ * Bottom-N BUY slot ids by price (floor-anchored reserve set).
+ * Boundary-independent: the lowest prices are the floor regardless of crawl.
+ *
+ * @param {Array<Object>} allSlots - All grid slots (need id/price/type)
+ * @param {number} reserve - Reserve count
+ * @returns {Set<string>} Floor slot ids (empty when reserve <= 0)
+ */
+function resolveReserveFloorIds(allSlots: any, reserve: any): Set<string> {
+    const ids = new Set<string>();
+    const n = Math.max(0, Math.floor(Number(reserve) || 0));
+    if (n <= 0 || !Array.isArray(allSlots)) return ids;
+    const floor = allSlots
+        .filter((s: any) => s && s.id != null && s.price != null && s.type === ORDER_TYPES.BUY)
+        .sort((a: any, b: any) => Number(a.price) - Number(b.price))
+        .slice(0, n);
+    for (const s of floor) ids.add(s.id);
+    return ids;
+}
+
+/**
+ * Top-N SELL slot ids by price (ceiling-anchored reserve set).
+ * Boundary-independent: the highest prices are the ceiling regardless of crawl.
+ *
+ * @param {Array<Object>} allSlots - All grid slots (need id/price/type)
+ * @param {number} reserve - Reserve count
+ * @returns {Set<string>} Ceiling slot ids (empty when reserve <= 0)
+ */
+function resolveReserveCeilIds(allSlots: any, reserve: any): Set<string> {
+    const ids = new Set<string>();
+    const n = Math.max(0, Math.floor(Number(reserve) || 0));
+    if (n <= 0 || !Array.isArray(allSlots)) return ids;
+    const ceil = allSlots
+        .filter((s: any) => s && s.id != null && s.price != null && s.type === ORDER_TYPES.SELL)
+        .sort((a: any, b: any) => Number(b.price) - Number(a.price))
+        .slice(0, n);
+    for (const s of ceil) ids.add(s.id);
+    return ids;
+}
+
+/**
+ * Central edge selector: take reserve slots from a price-ascending list,
+ * skipping already-windowed ids. floor → first N (buy dip insurance),
+ * ceiling → last N (sell spike insurance). Callers pre-filter rail/type and
+ * apply their own size gates; this only picks positions.
+ *
+ * @param {Array<Object>} sortedAsc - Slots sorted by price ascending
+ * @param {number} count - Reserve count
+ * @param {Set<string>|null} excludeIds - Windowed ids to skip
+ * @param {string} edge - 'floor' or 'ceiling'
+ * @returns {Array<Object>} Reserve slots (ascending for floor, descending for ceiling)
+ */
+function selectReserveEdgeSlots(sortedAsc: any, count: any, excludeIds: any, edge: any): any[] {
+    const n = Math.max(0, Math.floor(Number(count) || 0));
+    if (n <= 0 || !Array.isArray(sortedAsc)) return [];
+    const avail = sortedAsc.filter((s: any) => s && s.id != null && (!excludeIds || !excludeIds.has(s.id)));
+    if (edge === 'ceiling') return avail.slice(-n).reverse();
+    return avail.slice(0, n);
+}
+
+/**
  * Total target order count across both sides (used for BTS fee calculation).
  * Single source of truth so every budget derivation sizes identically.
+ * Includes per-side reserves: they rest live on-chain and pay creation fees.
  *
  * @param {Object} config - Bot configuration
  * @returns {number} Total target order count
  */
 function getActiveOrdersTotal(config: any) {
     return Math.max(0, config?.activeOrders?.buy ?? 1) +
-        Math.max(0, config?.activeOrders?.sell ?? 1);
+        Math.max(0, config?.activeOrders?.sell ?? 1) +
+        resolveReserveOrders(config);
 }
-
 /**
  * Calculate side budget after BTS fee deduction.
  *
@@ -2102,7 +2214,7 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
         }
     }
     // Existing chain ids referenced by non-create op contexts (cancel /
-    // rotation / size-update). Pre-existing orders whose absence is expected
+    // rotation / size-update) are already live: they belong to the master set
     // (cancels/fills in this batch), so they join the by-id set but never
     // the lagging-create guard.
     if (Array.isArray(placedContexts)) {
@@ -2121,6 +2233,5 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
     return { masterIds: [...masterIds], createIds: [...createIds], all: [...all] };
 }
 
-// ================================================================================
-            export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isShiftEligibleFill, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds }
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, resolveReserveFloorIds, resolveReserveCeilIds, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds }
 

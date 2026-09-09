@@ -51,7 +51,7 @@
 import { ORDER_TYPES, ORDER_STATES } from '../constants.js';
 import { calculateGapSlots } from './grid.js';
 import { isSlotInRail } from './utils/math.js';
-import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal } from './utils/order.js';
+import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, resolveReserveCount, selectReserveEdgeSlots } from './utils/order.js';
 import { assignGridRoles } from './utils/order.js';
 import {
     convertToSpreadPlaceholder,
@@ -340,8 +340,28 @@ class StrategyEngine {
         const buySizeById = new Map(allBuySortedForSizing.map((slot: any, i: any) => [slot.id, fullBuySizes[i] || 0]));
         const sellSizeById = new Map(allSellSortedForSizing.map((slot: any, i: any) => [slot.id, fullSellSizes[i] || 0]));
 
-        const buySizes = buySlots.map((slot: any) => buySizeById.get(slot.id) || 0);
-        const sellSizes = sellSlots.map((slot: any) => sellSizeById.get(slot.id) || 0);
+        // Reserve ladder: edge-pinned insurance orders stay live alongside the
+        // window. Buys pin at the floor (lowest prices), sells at the ceiling
+        // (highest prices). Discontiguous by design — the middle stays VIRTUAL.
+        // Sizes come from the same full-rail curves; reserve fills never crawl
+        // (filtered in deriveTargetBoundary).
+        const reserveBuySlots = selectReserveEdgeSlots(
+            allBuySortedForSizing.filter((s: any) => inBuyRail(s)),
+            resolveReserveCount(config, 'buy'),
+            new Set(buySlots.map((s: any) => s.id)),
+            'floor'
+        );
+        const reserveSellSlots = selectReserveEdgeSlots(
+            allSellSortedForSizing.filter((s: any) => inSellRail(s)),
+            resolveReserveCount(config, 'sell'),
+            new Set(sellSlots.map((s: any) => s.id)),
+            'ceiling'
+        );
+        const buySlotsAll = [...buySlots, ...reserveBuySlots];
+        const sellSlotsAll = [...sellSlots, ...reserveSellSlots];
+
+        const buySizes = buySlotsAll.map((slot: any) => buySizeById.get(slot.id) || 0);
+        const sellSizes = sellSlotsAll.map((slot: any) => sellSizeById.get(slot.id) || 0);
 
         // Apply sizes to target grid map
         const targetGrid = new Map();
@@ -364,14 +384,14 @@ class StrategyEngine {
             });
         };
 
-        applySizes(buySlots, buySizes);
-        applySizes(sellSlots, sellSizes);
+        applySizes(buySlotsAll, buySizes);
+        applySizes(sellSlotsAll, sellSizes);
         
         // Handle slots outside the window: preserve their calculated sizes
         // Window Discipline only controls WHICH orders are placed on-chain,
         // not the grid's fund allocation. Virtual orders must retain their
         // sizes so that funds.virtual reflects the full grid commitment.
-        const windowIds = new Set([...buySlots, ...sellSlots].map((s: any) => s.id));
+        const windowIds = new Set([...buySlotsAll, ...sellSlotsAll].map((s: any) => s.id));
         updatedSlots.forEach((slot: any) => {
             if (!windowIds.has(slot.id)) {
                 // Use calculated size from full-rail sizing (preserves fund allocation)

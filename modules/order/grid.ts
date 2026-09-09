@@ -163,7 +163,8 @@ import {
     parseSlotIndex,
     calculateIdealBoundary,
     assignGridRoles,
-    resolveOnChainRetypeType
+    resolveOnChainRetypeType,
+    resolveReserveCount
 } from './utils/order.js';
 import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry } from './utils/system.js';
 import * as MathUtils from './utils/math.js';
@@ -296,8 +297,8 @@ export async function _getSizingContext(manager: any, side: any, { skipRecalc = 
         // BTS fees are paid for ALL order operations regardless of side, so the
         // BTS-holding side reserves fees for both buy and sell target counts.
         if (budget > 0) {
-            const targetBuy = Math.max(0, manager.config.activeOrders?.buy ?? 1);
-            const targetSell = Math.max(0, manager.config.activeOrders?.sell ?? 1);
+            const targetBuy = Math.max(0, manager.config.activeOrders?.buy ?? 1) + resolveReserveCount(manager.config, 'buy');
+            const targetSell = Math.max(0, manager.config.activeOrders?.sell ?? 1) + resolveReserveCount(manager.config, 'sell');
             const totalTarget = targetBuy + targetSell;
             const btsOrderType = getBtsSide(manager.config?.assetA, manager.config?.assetB);
             const isBtsSide = isBuy ? (btsOrderType === ORDER_TYPES.BUY) : (btsOrderType === ORDER_TYPES.SELL);
@@ -1518,13 +1519,20 @@ export function checkAndUpdateGridIfNeeded(manager: any): any {
         for (const s of sides) {
             if (s.grid <= 0) continue;
 
+            const feeActiveOrders = manager.config.activeOrders && typeof manager.config.activeOrders === 'object'
+                ? {
+                    ...manager.config.activeOrders,
+                    buy: Math.max(0, Number(manager.config.activeOrders.buy) || 0) + resolveReserveCount(manager.config, 'buy'),
+                    sell: Math.max(0, Number(manager.config.activeOrders.sell) || 0) + resolveReserveCount(manager.config, 'sell'),
+                }
+                : manager.config.activeOrders;
             const availableFunds = calculateAvailableFundsValue(
                 s.name,
                 manager.accountTotals,
                 manager.funds,
                 manager.config.assetA,
                 manager.config.assetB,
-                manager.config.activeOrders,
+                feeActiveOrders,
                 manager.config.min_BTS_value,
                 manager.config.feeParams ?? null
             );

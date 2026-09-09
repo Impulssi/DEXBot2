@@ -548,6 +548,7 @@ async function writeSettingsJSON(botConfig: any, botName: any, outputPath: any) 
                 increment_percent: botConfig.incrementPercent || DEFAULT_CONFIG.incrementPercent,
                 target_spread_percent: botConfig.targetSpreadPercent || DEFAULT_CONFIG.targetSpreadPercent,
                 active_orders: botConfig.activeOrders || DEFAULT_CONFIG.activeOrders,
+                reserve_orders: botConfig.reserveOrders ?? DEFAULT_CONFIG.reserveOrders,
                 bot_funds: botConfig.botFunds || DEFAULT_CONFIG.botFunds,
                 weight_distribution: botConfig.weightDistribution || DEFAULT_CONFIG.weightDistribution,
                 dry_run: botConfig.dryRun || false,

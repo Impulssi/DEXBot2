@@ -1089,9 +1089,25 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                 ? Math.max(1, manager.config.activeOrders[sideName])
                 : currentOnChainOrders.length;
             const targetCount = baseTargetCount;
-            
-            // Determine desired slots (closest to market)
-            const desiredSlots = allSideSlots.slice(0, targetCount);
+
+            // Determine desired slots (closest to market) + edge-pinned reserves.
+            // Buys pin at the floor, sells at the ceiling. Reserves rest live
+            // without consuming the window: the middle stays undesired and gets
+            // cancelled as surplus.
+            const windowSlots = allSideSlots.slice(0, targetCount);
+            let desiredSlots = windowSlots;
+            const reserveCount = OrderUtils.resolveReserveCount(manager.config, sideName);
+            if (reserveCount > 0) {
+                const asc = allSideSlots.slice().sort((a: any, b: any) => a.price - b.price);
+                const edge = sideName === 'sell' ? 'ceiling' : 'floor';
+                const edgeSlots = OrderUtils.selectReserveEdgeSlots(
+                    asc,
+                    reserveCount,
+                    new Set(windowSlots.map((s: any) => s.id)),
+                    edge
+                );
+                desiredSlots = [...windowSlots, ...edgeSlots];
+            }
             const desiredSlotIds = new Set(desiredSlots.map((s: any) => s.id));
             const onChainBySlotId = new Map(currentOnChainOrders.map((o: any) => [o.id, o]));
 

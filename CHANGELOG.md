@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] - 2026-09-09 - Reserve Ladder, Range-Band Grid Parity, Range-Zone Tune
+
+### 2026-09-09
+
+- **Fix(tradingview)**: range band ignores span slider on grid-less charts — pair/pool charts render with `grid: null`, which hid the span slider (`display:none`) and dropped the band into the uncontrollable ±2% width envelope instead of the 1.25x–2.0x slider span; slider now always renders inline (retagged grid → span), the no-grid fallback builds a symmetric AMA/span-AMA×span base (grid config supplies only tilt/guard params, never a price), and per-bar scaling embeds `computeAmaSlopeClipThreshold` verbatim so the band clips raw AMA slope at the adaptive 90th-percentile threshold before `applyAsymmetricBounds` + `applyNarrowingSideGuard` — grid and pool charts share one path, matching the live grid pipeline (`analysis/tradingview/tradingview_uplot_chart_generator.ts`).
+- **Tune(range)**: widen orange range zone to 1.40x, lower TradingView slider floor — `RANGE_QUALITY` ORANGE_MIN / RED_MAX 1.45 → 1.40 (suizidal starts below 1.40x, orange tight zone widens 0.10 → 0.15) with the range legend now built from `RANGE_QUALITY` as single source of truth; TradingView range-span slider floor 1.25x → 1.2x (slider min, tooltip, all server- and client-side clamps, README flag row) (`modules/constants.ts`, `modules/account_bots.ts`, `analysis/tradingview/*`).
+- **Feat(reserve)**: per-side reserve ladder, edge-pinned dip/spike insurance (issue #25) — no way to rest live BUY/SELL orders far outside the active window for crash wicks and fat fingers (widening minPrice relocates the window, activeOrders counts from the rail); new `reserveOrders: { buy, sell }` (default `{0,0}`, 0 disables per side; editor menu 5 Funding prompts both counts, non-negative-integer validation, legacy numeric form migrates to `{ buy: n, sell: 0 }`). Shared helpers in `modules/order/utils/order.ts` (single source): `resolveReserveCount`/`resolveReserveOrders`, `resolveReserveFloorIds`/`resolveReserveCeilIds` (price-rank edge sets, boundary-independent), `selectReserveEdgeSlots` (floor-first / ceiling-last, skips windowed ids); `deriveTargetBoundary` filters reserve-edge fills so reserves never crawl; placement is window + edge union (middle stays VIRTUAL) across `strategy.ts`, `utils/system.ts`, `manager.ts`, and `grid_reconcile_internal.ts` (startup desired split + edge-cancel-last for unmatched orphans and matched excess); fee/count maintenance counts reserves once (`grid.ts`, `grid_reconcile.ts`, `accounting.ts`, `dexbot_maintenance_runtime.ts`, `export.ts`). New `tests/test_reserve_orders.ts` (per-side clamp, floor/ceiling anchors, both-edges no-crawl, window+edge union, off-means-window-only).
+
 ## [1.5.4] - 2026-09-09 - Out-of-Grid Orphan Deferral, Range Band Color Fix
 
 ### 2026-09-09

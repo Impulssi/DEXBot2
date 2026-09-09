@@ -113,11 +113,13 @@ Compact, era-level view; per-release commit detail lives in [CHANGELOG.md](../CH
 | v1.5.0 → v1.5.1 | 11 | Gap-evacuation guard allowance + rail-typed holes, persisted streaks with cancel-only teeth, vacated-rail refill, adoption/accounting/duplicate-guard hardening |
 | v1.5.1 → v1.5.2 | 10 | Sync rejection handling across pass-1/pass-2 adoption, crossing-guard candidate sharing, empty-read confirmation, broadcast-price CREATE validation, stamped gap-evacuation re-proof, credit whole-account display + expiry, offline export fill-block derivation |
 | v1.5.2 → v1.5.3 | 6 | Boundary ownership hardening (fund-driven sync removal, guard-skipped refill hold), COW broadcast/reconcile dedup, TradingView bot-grid range highlight, createOrder unknown-id materialize-or-error, curve-comparison docs |
+| v1.5.3 → v1.5.4 | 3 | Out-of-grid orphan deferral (no adopt/no cancel holds), hold-unblocked creates/refills/recovery, range-band color convention fix |
+| v1.5.4 → Unreleased | 3 | Per-side reserve ladder (edge-pinned dip/spike insurance), range-band grid parity on grid-less charts, orange range zone widened to 1.40x |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
 **Last Updated**: September 09, 2026
-**Total Commits**: 2,172
+**Total Commits**: 2,180
 **Date Range**: December 2, 2025 – September 09, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)
