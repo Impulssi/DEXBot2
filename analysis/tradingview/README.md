@@ -184,7 +184,7 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 | `--no-vwap` | Disable VWMA | — |
 | `--no-range` | Disable range highlight | — |
 | `--range-scale` | Range Scaling: size the band by AMA slope like the grid build + fit price axis to it | — |
-| `--range-span <mult>` | x-range around AMA, 1.25–2 (default: bot grid setting) | bot grid |
+| `--range-span <mult>` | x-range around AMA, 1.2–2 (default: bot grid setting) | bot grid |
 | `--quiet` | Suppress progress logs | — |
 
 ## Notes

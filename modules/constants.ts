@@ -198,12 +198,12 @@ let DEFAULT_CONFIG = {
 
 // Range quality zones for price bounds (minPrice/maxPrice multipliers).
 // Used for pre-entry legend in the bot editor (mountain-style).
-// Thresholds per user spec: green >=2x, yellow >=1.55x, orange 1.45x–1.55x, red <1.45x.
+// Thresholds per user spec: green >=2x, yellow >=1.55x, orange 1.40x–1.55x, red <1.40x.
 let RANGE_QUALITY = {
     GREEN_MIN: 2.0,   // >=2.0x → green (wide)
     YELLOW_MIN: 1.55, // >=1.55x → yellow (effeciant)
-    ORANGE_MIN: 1.45, // >=1.45x → orange (tight)
-    RED_MAX: 1.45,    // <1.45x → red (suizidal) — exclusive upper bound for red
+    ORANGE_MIN: 1.40, // >=1.40x → orange (tight)
+    RED_MAX: 1.40,    // <1.40x → red (suizidal) — exclusive upper bound for red
 };
 
 // Timing constants used by OrderManager and helpers

@@ -122,15 +122,15 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
     };
     function defaultRangeSpan(input: { rangeSpan?: unknown; grid?: { minPrice?: unknown; maxPrice?: unknown } | null }): number {
         const cli = Number(input.rangeSpan);
-        if (Number.isFinite(cli)) return Math.min(2, Math.max(1.25, cli));
+        if (Number.isFinite(cli)) return Math.min(2, Math.max(1.2, cli));
         const down = parseRelativeMultiplier(input.grid?.minPrice);
         const up = parseRelativeMultiplier(input.grid?.maxPrice);
-        if (down != null && down > 1 && up != null && up > 1) return Math.min(2, Math.max(1.25, (down + up) / 2));
+        if (down != null && down > 1 && up != null && up > 1) return Math.min(2, Math.max(1.2, (down + up) / 2));
         const vd = Number(input.grid?.minPrice);
         const vu = Number(input.grid?.maxPrice);
         if (Number.isFinite(vd) && Number.isFinite(vu) && vd > 0 && vu > vd) {
             const ref = Math.sqrt(vd * vu);
-            return Math.min(2, Math.max(1.25, (ref / vd + vu / ref) / 2));
+            return Math.min(2, Math.max(1.2, (ref / vd + vu / ref) / 2));
         }
         return 1.55;
     }
@@ -533,9 +533,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     <div class="indicator" title="Range min/max built only from the live AMA price (red above, green below); Scale sizes it by AMA slope like the grid build">
                         <label><input type="checkbox" id="range-toggle"${defaults.rangeEnabled ? ' checked' : ''}> Range</label>
                         <label title="Range Scaling: size the band by AMA slope like the grid build (trend side widens, opposite tightens) and fit the price axis to it"><input type="checkbox" id="range-scale-toggle"${defaults.rangeScaleEnabled ? ' checked' : ''}> Scale</label>
-                        <span id="range-grid-wrap" style="display:inline" title="x-range around AMA (1.25x–2.0x)">
+                        <span id="range-grid-wrap" style="display:inline" title="x-range around AMA (1.2x–2.0x)">
                             <span class="tag">span</span>
-                            <input type="range" id="range-span" min="1.25" max="2" step="0.05" value="${defaults.rangeSpan.toFixed(2)}" style="width:90px;vertical-align:middle">
+                            <input type="range" id="range-span" min="1.2" max="2" step="0.05" value="${defaults.rangeSpan.toFixed(2)}" style="width:90px;vertical-align:middle">
                             <span id="range-span-val" style="font-size:11px;color:#8b949e;width:40px;display:inline-block;text-align:right">${defaults.rangeSpan.toFixed(2)}x</span>
                         </span>
                     </div>
@@ -607,8 +607,8 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             ? Number(state.rangeWidthPct)
             : (Number.isFinite(Number(payload.rangeWidthPct)) && Number(payload.rangeWidthPct) > 0 ? Number(payload.rangeWidthPct) : 2);
         let currentRangeSpan = Number.isFinite(state.rangeSpan) && Number(state.rangeSpan) > 0
-            ? Math.min(2, Math.max(1.25, Number(state.rangeSpan)))
-            : (Number.isFinite(Number(payload.rangeSpan)) && Number(payload.rangeSpan) > 0 ? Math.min(2, Math.max(1.25, Number(payload.rangeSpan))) : 1.55);
+            ? Math.min(2, Math.max(1.2, Number(state.rangeSpan)))
+            : (Number.isFinite(Number(payload.rangeSpan)) && Number(payload.rangeSpan) > 0 ? Math.min(2, Math.max(1.2, Number(payload.rangeSpan))) : 1.55);
         let currentAmaInitOffsetEnabled = false;
         let currentAmaInitOffset = Number.isFinite(state.amaInitOffset) ? state.amaInitOffset : 0;
         let currentPriceScale = state.priceScale || payload.priceScale || 'log';
@@ -1191,9 +1191,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 : (Number(slopeCfg.maxAsymmetryFactor) > 0 ? Number(slopeCfg.maxAsymmetryFactor) : 0.35);
             const inc = gridCfg && Number(gridCfg.incrementPercent) > 0 ? Number(gridCfg.incrementPercent) : null;
             const minSlots = Math.floor(Number(gridCfg && gridCfg.minScaleSlots) > 0 ? Number(gridCfg.minScaleSlots) : (Number(slopeCfg.minScaleSlots) || 0));
-            // User x-range span (slider 1.25x–2.0x, default 1.55x): the only
+            // User x-range span (slider 1.2x–2.0x, default 1.55x): the only
             // width input — symmetric base min = AMA/span, max = AMA*span.
-            const span = Math.min(2, Math.max(1.25, Number(currentRangeSpan) > 0 ? Number(currentRangeSpan) : 1.55));
+            const span = Math.min(2, Math.max(1.2, Number(currentRangeSpan) > 0 ? Number(currentRangeSpan) : 1.55));
             // Canonical grid pipeline (ama_slope_model): adaptive percentile
             // clip over the AMA history, then offset + trend — the same numbers
             // the live grid build feeds into applyAsymmetricBounds.
@@ -2172,7 +2172,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             currentVwapBars = clamp(Math.round(Number(document.getElementById('vwap-bars').value) || 500), 24, 2000);
             currentRangeEnabled = document.getElementById('range-toggle').checked;
             currentRangeScaleEnabled = document.getElementById('range-scale-toggle').checked;
-            currentRangeSpan = Math.min(2, Math.max(1.25, Math.round((Number(document.getElementById('range-span').value) || 1.55) * 20) / 20));
+            currentRangeSpan = Math.min(2, Math.max(1.2, Math.round((Number(document.getElementById('range-span').value) || 1.55) * 20) / 20));
             setControls();
             rerender(false);
         };
