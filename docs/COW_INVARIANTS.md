@@ -166,7 +166,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 - `INV-GRID-001` One-to-one order mapping
   - One grid slot = at most one on-chain order. No two chain orders may map to the same grid slot.
   - Sync engine tracks `matchedGridOrderIds` through both sync passes and skips already-matched slots.
-  - Surplus orders (matched count > `activeOrders.buy/sell` targets) are flagged for cancellation.
+  - Surplus orders (matched count above the per-side `activeOrders` + `reserveOrders` targets) are flagged for cancellation.
 
 - `INV-GRID-002` One order per price level
   - The active grid must have at most one on-chain order per (type, price) pair.
