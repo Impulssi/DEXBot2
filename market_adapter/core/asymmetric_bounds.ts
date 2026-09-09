@@ -102,5 +102,49 @@ function applyAsymmetricBounds(params: any) {
     };
 }
 
-export { resolveMaxAsymmetryFactor, computeAsymmetricBoundsMetrics, applyAsymmetricBounds }
+/**
+ * Narrowing-side slot guard: range scaling tightens one bound toward the
+ * center. Without a floor this can collapse that side into a near-center
+ * sliver holding few or zero active orders. Guarantees at least
+ * minScaleSlots price levels remain between the grid center and the
+ * tightened bound (in multiples of incrementPercent). The widened side
+ * still extends freely. Self-contained (no imports) so chart generators can
+ * embed its exact source via fn.toString() instead of a hand copy.
+ */
+function applyNarrowingSideGuard(params: {
+    centerPrice: unknown;
+    minPrice: number | null | undefined;
+    maxPrice: number | null | undefined;
+    trend: unknown;
+    incrementPercent: unknown;
+    minScaleSlots: unknown;
+}): { minPrice: number | null | undefined; maxPrice: number | null | undefined; held: 'min' | 'max' | null } {
+    let resolvedMinPrice = params.minPrice;
+    let resolvedMaxPrice = params.maxPrice;
+    let held: 'min' | 'max' | null = null;
+    const gridStartPrice = Number(params.centerPrice);
+    const inc = Number(params.incrementPercent);
+    const mss = Number.isFinite(Number(params.minScaleSlots)) ? Math.floor(Number(params.minScaleSlots)) : 0;
+    if ((params.trend === 'UP' || params.trend === 'DOWN')
+            && Number.isFinite(gridStartPrice) && gridStartPrice > 0
+            && Number.isFinite(inc) && inc > 0 && mss > 0) {
+        const stepMult = 1 + (inc / 100);
+        if (params.trend === 'DOWN' && resolvedMaxPrice != null) {
+            const keepAbove = gridStartPrice * Math.pow(stepMult, mss);
+            if (resolvedMaxPrice < keepAbove) {
+                resolvedMaxPrice = keepAbove;
+                held = 'max';
+            }
+        } else if (params.trend === 'UP' && resolvedMinPrice != null) {
+            const belowMin = gridStartPrice * Math.pow(1 - (inc / 100), mss);
+            if (resolvedMinPrice > belowMin) {
+                resolvedMinPrice = belowMin;
+                held = 'min';
+            }
+        }
+    }
+    return { minPrice: resolvedMinPrice, maxPrice: resolvedMaxPrice, held };
+}
+
+export { resolveMaxAsymmetryFactor, computeAsymmetricBoundsMetrics, applyAsymmetricBounds, applyNarrowingSideGuard, resolveBaseBounds }
 

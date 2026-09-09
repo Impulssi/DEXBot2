@@ -215,13 +215,21 @@ async function deepAdoptChecks() {
     check('adopted keeps BUY type', adopted && adopted.type, 'buy');
     check('adopted keeps price', adopted && adopted.price, 0.00117);
     check('adopted is active', adopted && adopted.state, 'active');
-    // Unknown non-deep id without master entry: still dropped, no crash.
+    // Unknown non-deep id WITH descriptor: upstream materialize-or-error
+    // adopts it (v1.5.3) — same outcome as the deep path, via generic code.
     const n0 = applied.length;
     await sync.synchronizeWithChain({
         gridOrderId: 'slot-999', chainOrderId: '1.7.1000', expectedType: 'buy', fee: 0,
         order: { id: 'slot-999', price: 1, size: 1, type: 'buy' },
     }, 'createOrder');
-    check('non-deep unknown id not adopted', applied.length, n0);
+    const m999 = fakeMgr.orders.get('slot-999');
+    check('upstream materialize adopts unknown id', m999 && m999.orderId, '1.7.1000');
+    // Unknown id WITHOUT descriptor: error path, nothing applied.
+    await sync.synchronizeWithChain({
+        gridOrderId: 'slot-998', chainOrderId: '1.7.1001', expectedType: 'buy', fee: 0,
+    }, 'createOrder');
+    check('descriptor-less unknown id not adopted', applied.length, n0 + 1);
+    check('descriptor-less unknown id absent', fakeMgr.orders.has('slot-998'), false);
     // Deep id without usable price: skipped with warn, nothing applied.
     await sync.synchronizeWithChain({
         gridOrderId: 'deep-2', chainOrderId: '1.7.1001', expectedType: 'buy', fee: 0,

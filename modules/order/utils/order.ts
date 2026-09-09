@@ -5,7 +5,7 @@
  * Includes grid indexing, order comparison, delta building, and strategy calculations.
  *
  * ===============================================================================
- * TABLE OF CONTENTS (36 exported functions)
+ * TABLE OF CONTENTS (35 exported functions)
  * ===============================================================================
  *
  * SECTION 1: CHAIN ORDER MATCHING & RECONCILIATION (5 functions)
@@ -46,9 +46,8 @@
  *   - checkSizeThreshold(size, threshold) - Check if size exceeds threshold
  *   - checkSizesBeforeMinimum(sizes, minSize) - Check sizes against minimum
  *
- * SECTION 7: GRID BOUNDARY & ROLES (4 functions)
+ * SECTION 7: GRID BOUNDARY & ROLES (3 functions)
  *   - calculateIdealBoundary(allSlots, startPrice, gapSlots) - Calculate ideal boundary
- *   - calculateFundDrivenBoundary(allSlots, availA, availB, startPrice, gapSlots) - Fund-driven boundary
  *   - assignGridRoles(allSlots, boundaryIdx, gapSlots, ...) - Assign BUY/SELL roles
  *   - shouldFlagOutOfSpread(order, startPrice, configSpread) - Check if order is out of spread
  *
@@ -70,7 +69,7 @@
  */
 
 
-import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT, COW_PERFORMANCE, DEFAULT_CONFIG } from '../../constants.js';
+import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT, COW_PERFORMANCE, COW_ACTIONS, DEFAULT_CONFIG } from '../../constants.js';
 import * as Format from '../format.js';
 import * as MathUtils from './math.js';
 import Logger from '../../order/logger.js';
@@ -1456,26 +1455,6 @@ function calculateIdealBoundary(allSlots: any, referencePrice: any, gapSlots: an
 }
 
 /**
- * Calculate grid boundary based on available funds ratio.
- * Distributes buy/sell slots proportional to fund values.
- * 
- * @param {Array<Object>} allSlots - All grid slots sorted by price
- * @param {number} availA - Available assetA (sell-side capital)
- * @param {number} availB - Available assetB (buy-side capital)
- * @param {number} price - Current reference price for valuation
- * @param {number} gapSlots - Number of gap slots between buy and sell
- * @returns {number} Fund-driven boundary index
- */
-function calculateFundDrivenBoundary(allSlots: any, availA: any, availB: any, price: any, gapSlots: any) {
-    const valA = toFiniteNumber(availA) * toFiniteNumber(price);
-    const valB = toFiniteNumber(availB);
-    const totalVal = valA + valB;
-    if (totalVal <= 0) return Math.floor((allSlots.length - gapSlots) / 2);
-    const targetBuySlots = Math.round((allSlots.length - gapSlots) * (valB / totalVal));
-    return Math.max(0, Math.min(allSlots.length - gapSlots - 1, targetBuySlots - 1));
-}
-
-/**
  * Assign BUY/SELL/SPREAD roles to grid slots based on boundary.
  * Slots below boundary are BUY, above boundary are SELL, between are SPREAD.
  * Can optionally override even on-chain orders.
@@ -2053,11 +2032,10 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
     const remainingBudget = effectiveBudget - Math.abs(netShift);
 
     newBoundaryIdx += netShift;
-
-    // Clamp boundary — cap at one slot before the gap band's SELL rail,
-    // matching calculateFundDrivenBoundary's geometry. Degenerate geometries
-    // (fewer slots than the gap needs) fall back to the legacy length-1
-    // ceiling instead of collapsing the boundary below its current position.
+    // Clamp boundary — cap at one slot before the gap band's SELL rail.
+    // Degenerate geometries (fewer slots than the gap needs) fall back to the
+    // legacy length-1 ceiling instead of collapsing the boundary below its
+    // current position.
     const gapAwareCeiling = allSlots.length - gapSlots - 1;
     const legacyCeiling = allSlots.length - 1;
     const ceiling = gapAwareCeiling >= 0
@@ -2160,5 +2138,182 @@ function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: 
 }
 
 // ================================================================================
-            export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, calculateFundDrivenBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isDeepShelfFillOrder, resolveDeepShelfFloor, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, isShiftEligibleFill, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo }
+// SECTION: COW batch-shared pure helpers (moved from dexbot_cow_runtime.ts —
+// no bot dependency; shared by the COW runtime and any future consumer).
+// ================================================================================
+
+/**
+ * Whether a chain order still matches the cached pre-update state the
+ * limit_order_update delta was built from. Only a provably-unchanged order
+ * makes a re-broadcast of the identical delta safe (it applies to the same
+ * base). Any other state (target applied, filled, resized) must defer.
+ * @param {Object} chainOrder - Raw chain order object (get_full_accounts)
+ * @param {Object|null} cachedRaw - The rawOnChain cache captured at build time
+ * @returns {boolean}
+ */
+function chainOrderUnchangedFromCache(chainOrder: any, cachedRaw: any) {
+    if (!chainOrder || !cachedRaw) return false;
+    const base = chainOrder.sell_price?.base;
+    const quote = chainOrder.sell_price?.quote;
+    const cachedBase = cachedRaw.sell_price?.base?.amount;
+    const cachedQuote = cachedRaw.sell_price?.quote?.amount;
+    const cachedForSale = cachedRaw.for_sale;
+    if (base === undefined || quote === undefined) return false;
+    if (cachedForSale === undefined || cachedBase === undefined || cachedQuote === undefined) return false;
+    return String(base.amount ?? '') === String(cachedBase)
+        && String(quote.amount ?? '') === String(cachedQuote)
+        && String(chainOrder.for_sale ?? '') === String(cachedForSale);
+}
+
+/**
+ * PRE-BROADCAST CROSSED-BOOK ASSERT (defense-in-depth, any-writer detection).
+ *
+ * Simulates the post-batch book: currently placed master orders plus this
+ * batch's action overlay (CREATEs add, CANCELs remove, UPDATEs reprice/move).
+ * Returns a detail string when a planned BUY would price at-or-above a planned
+ * SELL — a state no honest planner produces — so the caller can refuse the
+ * broadcast instead of paying for adverse fills.  Placed order prices are
+ * independent of grid geometry, so this catches boundary overruns regardless
+ * of which writer produced them.
+ *
+ * Detector only: any internal failure returns null (never blocks a broadcast).
+ */
+function detectCrossedBookPlan(manager: any, actions: any[]): string | null {
+    try {
+        const startPrice = Number(manager?.config?.startPrice);
+        const book = new Map<string, { type: string; price: number }>();
+        for (const o of Array.from(manager?.orders?.values?.() ?? []) as any[]) {
+            if (!o || !o.orderId || o.price == null) continue;
+            const price = Number(o.price);
+            if (!Number.isFinite(price)) continue;
+            let type = o.type;
+            if (type !== ORDER_TYPES.BUY && type !== ORDER_TYPES.SELL) {
+                // Legacy SPREAD-typed placed order: derive side from the same
+                // price-vs-startPrice convention used across the codebase.
+                if (!Number.isFinite(startPrice)) continue;
+                type = price < startPrice ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+            }
+            book.set(String(o.id), { type, price });
+        }
+        for (const a of actions ?? []) {
+            const id = String(a.id ?? a.orderId ?? '');
+            if (a.type === COW_ACTIONS.CANCEL) {
+                if (id) book.delete(id);
+            } else if (a.type === COW_ACTIONS.UPDATE) {
+                const newPrice = Number(a.newPrice ?? a.order?.price);
+                const newType = a.order?.type;
+                if (id && Number.isFinite(newPrice)) {
+                    const entry = book.get(id);
+                    const type = (newType === ORDER_TYPES.BUY || newType === ORDER_TYPES.SELL)
+                        ? newType
+                        : entry?.type;
+                    if (entry) book.delete(id);
+                    const key = String(a.newGridId ?? id);
+                    if (type === ORDER_TYPES.BUY || type === ORDER_TYPES.SELL) {
+                        book.set(key, { type, price: newPrice });
+                    }
+                }
+            } else if (a.type === COW_ACTIONS.CREATE) {
+                const price = Number(a.order?.price);
+                const type = a.order?.type;
+                if (!Number.isFinite(price) || (type !== ORDER_TYPES.BUY && type !== ORDER_TYPES.SELL)) continue;
+                if (id) book.set(id, { type, price });
+            }
+        }
+        let maxBuy = -Infinity;
+        let minSell = Infinity;
+        for (const { type, price } of book.values()) {
+            if (type === ORDER_TYPES.BUY && price > maxBuy) maxBuy = price;
+            else if (type === ORDER_TYPES.SELL && price < minSell) minSell = price;
+        }
+        if (Number.isFinite(maxBuy) && Number.isFinite(minSell) && minSell <= maxBuy) {
+            return `bestPlacedBuy=${maxBuy} >= bestPlacedSell=${minSell}`;
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Collect every on-chain order id master currently needs to converge against,
+ * so adoption can re-read them by id (immune to the get_full_accounts window
+ * truncation) instead of relying on a partial window read.
+ *
+ * Sources:
+ *  - master's own tracked order ids (existing on-chain orders);
+ *  - the batch's fresh CREATE ids extracted from the broadcast result
+ *    (operation_results[i][1] aligns positionally with placedContexts[i]).
+ *
+ * @param {any} mgr - bot.manager
+ * @param {any} placedResults - broadcast result (has operation_results); null when unavailable
+ * @param {any[]} placedContexts - opContexts (aligned with operation_results); null when unavailable
+ * @param {string[]|null} [extraCreateIds=null] - fresh CREATE chain ids from another
+ *   authoritative source (e.g. the uncertain-broadcast poll confirmation) when
+ *   no broadcast result exists; merged into createIds so the lagging-create
+ *   retry guards them
+ * @returns {string[]} Unique, well-formed 1.7.x order ids
+ */
+function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContexts: any, extraCreateIds: any = null): { masterIds: string[]; createIds: string[]; all: string[] } {
+    const masterIds = new Set<string>();
+    const grid = mgr && mgr.grid;
+    if (Array.isArray(grid)) {
+        for (const slot of grid) {
+            if (slot && slot.orderId && /^1\.7\.\d+$/.test(String(slot.orderId))) {
+                masterIds.add(String(slot.orderId));
+            }
+        }
+    }
+    // Master tracked ids live in the orders Map (mgr.grid is legacy and
+    // unset on OrderManager — without this the by-id set omits every
+    // pre-existing ACTIVE order and pass-1 phantom cleanup would virtualize
+    // them as fills on a partial snapshot).
+    if (mgr && mgr.orders instanceof Map) {
+        for (const slot of mgr.orders.values()) {
+            if (slot && (slot as any).orderId && /^1\.7\.\d+$/.test(String((slot as any).orderId))) {
+                masterIds.add(String((slot as any).orderId));
+            }
+        }
+    }
+    const createIds = new Set<string>();
+    if (placedResults && Array.isArray(placedContexts)) {
+        const opResults = extractBatchOperationResults(placedResults);
+        if (Array.isArray(opResults)) {
+            for (let i = 0; i < placedContexts.length; i++) {
+                const ctx = placedContexts[i];
+                if (!ctx || ctx.kind !== 'create') continue;
+                const opResult = opResults[i] && opResults[i][1];
+                if (opResult && /^1\.7\.\d+$/.test(String(opResult))) {
+                    createIds.add(String(opResult));
+                }
+            }
+        }
+    }
+    if (Array.isArray(extraCreateIds)) {
+        for (const id of extraCreateIds) {
+            if (id && /^1\.7\.\d+$/.test(String(id))) createIds.add(String(id));
+        }
+    }
+    // Existing chain ids referenced by non-create op contexts (cancel /
+    // rotation / size-update). Pre-existing orders whose absence is expected
+    // (cancels/fills in this batch), so they join the by-id set but never
+    // the lagging-create guard.
+    if (Array.isArray(placedContexts)) {
+        for (const ctx of placedContexts) {
+            if (!ctx || ctx.kind === 'create') continue;
+            const refs: any[] = [];
+            if (ctx.kind === 'cancel' && ctx.order) refs.push(ctx.order.orderId);
+            else if (ctx.kind === 'rotation' && ctx.rotation?.oldOrder) refs.push(ctx.rotation.oldOrder.orderId);
+            else if (ctx.kind === 'size-update' && ctx.updateInfo?.partialOrder) refs.push(ctx.updateInfo.partialOrder.orderId);
+            for (const id of refs) {
+                if (id && /^1\.7\.\d+$/.test(String(id))) masterIds.add(String(id));
+            }
+        }
+    }
+    const all = new Set<string>([...masterIds, ...createIds]);
+    return { masterIds: [...masterIds], createIds: [...createIds], all: [...all] };
+}
+
+// ================================================================================
+            export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isDeepShelfFillOrder, resolveDeepShelfFloor, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, isShiftEligibleFill, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds }
 

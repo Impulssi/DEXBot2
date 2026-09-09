@@ -2149,6 +2149,11 @@ class SyncEngine {
         switch (source) {
             case 'createOrder': {
                 const { gridOrderId, chainOrderId, isPartialPlacement, expectedType, fee } = chainData;
+                // Optional placement descriptor for unknown-id recovery. Callers
+                // pass the placed slot's price/size/type so a grid reset racing
+                // the broadcast can't strand the live chain order untracked.
+                // Callers that omit it take the no-descriptor error path.
+                const placedDescriptor = chainData.order ?? null;
                 const runCreate = async () => {
                     // Lock order to prevent concurrent modifications during state transition
                     mgr.lockOrders([gridOrderId]);
@@ -2249,6 +2254,78 @@ class SyncEngine {
                                 skipAccounting: chainData.skipAccounting || false,
                                 fee: actualFee
                             });
+                        } else {
+                            // Unknown grid id: the broadcast landed but master no
+                            // longer holds the slot (grid reset/regen raced the
+                            // CREATE, or a first placement for an id never
+                            // projected via projectTargetToWorkingGrid). The old
+                            // code dropped the linkage silently, so the next
+                            // cycle re-placed the same level (duplicate CREATEs,
+                            // funds locked xN). Materialize-or-error: rebind when
+                            // the chain id is already tracked, materialize the
+                            // slot when the caller supplied its descriptor, and
+                            // log an error otherwise so the order never vanishes
+                            // quietly again.
+                            const rebound: any = Array.from(mgr.orders.values() as any[]).find(
+                                (o: any) => o.orderId === chainOrderId
+                            );
+                            if (rebound) {
+                                mgr.logger?.log?.(
+                                    `[SYNC] createOrder for unknown grid order ${gridOrderId}: chain order ${chainOrderId} already tracked on ${rebound.id} — linkage up to date, skipping`,
+                                    'warn'
+                                );
+                            } else {
+                                const rawType = placedDescriptor?.type ?? expectedType;
+                                let materializeType = (rawType === ORDER_TYPES.BUY || rawType === ORDER_TYPES.SELL)
+                                    ? rawType
+                                    : null;
+                                const descriptorPrice = toFiniteNumber(placedDescriptor?.price, NaN);
+                                if (!materializeType && Number.isFinite(descriptorPrice)) {
+                                    materializeType = resolveSpreadOrderSide(descriptorPrice, mgr.config.startPrice);
+                                }
+                                const descriptorSize = toFiniteNumber(placedDescriptor?.size, NaN);
+                                const hasDescriptor = !!materializeType
+                                    && Number.isFinite(descriptorPrice) && descriptorPrice > 0
+                                    && Number.isFinite(descriptorSize) && descriptorSize > 0;
+                                if (!hasDescriptor) {
+                                    mgr.logger?.log?.(
+                                        `[SYNC] createOrder linkage LOST: grid order ${gridOrderId} not in master — chain order ${chainOrderId} placed but untracked (no placement descriptor; next readOpenOrders sync must adopt it as an orphan before the slot re-places)`,
+                                        'error'
+                                    );
+                                } else {
+                                    // Minimal slot shape: the raw chain object
+                                    // isn't available here, so rawOnChain and
+                                    // slot-scheme metadata are absent. The next
+                                    // readOpenOrders pass repopulates rawOnChain
+                                    // from the live order (slot-scheme ids only).
+                                    const materializedOrder: any = {
+                                        id: gridOrderId,
+                                        type: materializeType,
+                                        price: descriptorPrice,
+                                        size: descriptorSize,
+                                        state: isPartialPlacement ? ORDER_STATES.PARTIAL : ORDER_STATES.ACTIVE,
+                                        orderId: chainOrderId,
+                                    };
+                                    if (chainData.deferredFee !== undefined && chainData.deferredFee !== null) {
+                                        materializedOrder.btsFeeState = { deferredFee: Math.max(0, chainData.deferredFee) };
+                                    }
+                                    const materialized = await mgr._applyOrderUpdate(materializedOrder, 'createOrder-unknown-id-adopt', {
+                                        skipAccounting: chainData.skipAccounting || false,
+                                        fee: fee,
+                                    });
+                                    if (materialized === false) {
+                                        mgr.logger?.log?.(
+                                            `[SYNC] createOrder linkage FAILED: grid order ${gridOrderId} not in master and materializing chain order ${chainOrderId} (${materializeType} @${descriptorPrice} x${descriptorSize}) was rejected — chain order left untracked`,
+                                            'error'
+                                        );
+                                    } else {
+                                        mgr.logger?.log?.(
+                                            `[SYNC] createOrder for unknown grid order ${gridOrderId}: materialized ${materializeType} @${descriptorPrice} x${descriptorSize} -> ${chainOrderId} (master lost the slot mid-broadcast)`,
+                                            'warn'
+                                        );
+                                    }
+                                }
+                            }
                         }
                     } finally {
                         mgr.unlockOrders([gridOrderId]);
@@ -2300,6 +2377,15 @@ class SyncEngine {
                                     skipAccounting: false,
                                     fee: btsFeeData?.cancelFee || 0
                                 });
+                            } else {
+                                // Slot vanished or was rebound between lookup and
+                                // lock — never skip quietly: the next
+                                // readOpenOrders sync reconciles the slot, but the
+                                // race must be visible when it happens.
+                                mgr.logger?.log?.(
+                                    `[SYNC] cancelOrder for ${orderId}: slot ${gridOrder.id} changed underneath (missing or rebound to ${currentGridOrder?.orderId ?? 'none'}) — linkage skipped, next sync reconciles`,
+                                    'warn'
+                                );
                             }
                         } finally {
                             mgr.unlockOrders(orderIds);

@@ -1760,12 +1760,6 @@ async function executeMaintenanceLogic(bot: any, context: any) {
 
             const divergence = await grid.monitorDivergence(bot.manager, calculatedGrid, persistedGridData);
 
-            // Runtime lockout for the spread check below: when divergence
-            // corrections end in a pending boundary-shift retry, spread
-            // correction this tick is skipped because placing orders against a
-            // stale boundary before the retry re-derives it would be a TOCTOU.
-            let boundaryShiftPending = false;
-
             if (divergence.needsUpdate) {
                 const hasRmsDivergence = !!(divergence.buy.rms || divergence.sell.rms);
                 if (divergence.buy.ratio || divergence.sell.ratio) {
@@ -1800,30 +1794,17 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                     bot._warn(`Error applying divergence corrections during ${context}: ${getErrorMessage(err)}`);
                 }
 
-                // If divergence corrections failed with a pending boundary shift, retry
-                // immediately instead of patching master types.  The retry re-fetches
-                // blockchain state and re-derives the boundary with consistent data.
-                // Skip spread correction this tick — the retry will handle it.
-                // EXCEPTION: a RECOVERY_EXHAUSTED abort means CREATEs are blocked until
-                // the next fill or sync cycle (see recovery-exhausted reset logic), so an
-                // immediate retry can never make progress and would spin the loop,
-                // producing unbounded log volume.  Defer to the normal cycle instead.
-                if (dcResult && !dcResult.committed && dcResult.boundaryChanged &&
-                    dcResult.reason !== 'RECOVERY_EXHAUSTED') {
+                // Divergence never shifts the boundary (fills move it via
+                // deriveTargetBoundary; spread promotion shifts only onto
+                // same-batch placements), so a failed commit has no pending
+                // geometry to retry — the next fill/sync cycle re-plans from
+                // the unchanged committed state.
+                if (dcResult && !dcResult.committed) {
                     bot._log(
-                        `[DIVERGENCE-COW] Commit failed with boundary shift; ` +
-                        `scheduling immediate retry instead of patching master`,
+                        `[DIVERGENCE-COW] Divergence corrections not executed (reason=${dcResult.reason ?? 'unknown'}); ` +
+                        `deferring to next fill/sync cycle`,
                         'warn'
                     );
-                    setTimeout(() => runGridMaintenance(bot, 'failed-commit-retry', { skipIdle: true }), 0);
-                    boundaryShiftPending = true;
-                } else if (dcResult && !dcResult.committed && dcResult.boundaryChanged) {
-                    bot._log(
-                        `[DIVERGENCE-COW] Boundary-shift commit blocked (reason=${dcResult.reason}); ` +
-                        `deferring retry to next fill/sync cycle`,
-                        'warn'
-                    );
-                    boundaryShiftPending = true;
                 }
             }
 
@@ -1836,34 +1817,30 @@ async function executeMaintenanceLogic(bot: any, context: any) {
             // Running the spread check here every pipeline-empty tick catches that
             // case via prepareSpreadCorrectionOrders' orphaned-virtual candidates.
             //
-            // The ONLY skip is a pending boundary-shift commit: placing orders
-            // against a stale boundary before the retry re-derives it would be
-            // a TOCTOU. checkSpreadCondition itself holds _gridLock, uses the
-            // committed boundary, and re-plans on fund change, so this tick is
-            // race-safe whenever it does run.
-            if (!boundaryShiftPending) {
-                // Re-check the fill queue: fills may have arrived during this
-                // tick's earlier phases (health check, dust cancels, divergence
-                // corrections), after the pipeline gate above passed. Sizing a
-                // correction from pre-fill budgets would under/over-fund the
-                // repair — defer to the next tick so the fill cycle runs first
-                // and side choice + sizing read fresh funds.
-                const queuedFills = Array.isArray((bot as any)?._incomingFillQueue)
-                    ? (bot as any)._incomingFillQueue.length
-                    : 0;
-                if (queuedFills > 0) {
-                    bot._log(
-                        `[SPREAD] Deferring spread check: ${queuedFills} fill(s) queued since pipeline gate; ` +
-                        `processing fills first for fresh funds`,
-                        'debug'
-                    );
-                } else {
-                    const spreadResult = await bot.manager.checkSpreadCondition(BitShares, bot.updateOrdersOnChainPlan.bind(bot));
-                    if (await bot._abortFlowIfIllegalState(`${context} spread check`)) return;
-                    if (spreadResult && spreadResult.ordersPlaced > 0) {
-                        bot._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
-                        await bot._persistAndRecoverIfNeeded();
-                    }
+            // checkSpreadCondition holds _gridLock, uses the committed boundary,
+            // and re-plans on fund change, so this tick is race-safe whenever
+            // it runs.
+            // Re-check the fill queue: fills may have arrived during this
+            // tick's earlier phases (health check, dust cancels, divergence
+            // corrections), after the pipeline gate above passed. Sizing a
+            // correction from pre-fill budgets would under/over-fund the
+            // repair — defer to the next tick so the fill cycle runs first
+            // and side choice + sizing read fresh funds.
+            const queuedFills = Array.isArray((bot as any)?._incomingFillQueue)
+                ? (bot as any)._incomingFillQueue.length
+                : 0;
+            if (queuedFills > 0) {
+                bot._log(
+                    `[SPREAD] Deferring spread check: ${queuedFills} fill(s) queued since pipeline gate; ` +
+                    `processing fills first for fresh funds`,
+                    'debug'
+                );
+            } else {
+                const spreadResult = await bot.manager.checkSpreadCondition(BitShares, bot.updateOrdersOnChainPlan.bind(bot));
+                if (await bot._abortFlowIfIllegalState(`${context} spread check`)) return;
+                if (spreadResult && spreadResult.ordersPlaced > 0) {
+                    bot._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
+                    await bot._persistAndRecoverIfNeeded();
                 }
             }
         } catch (err: any) {

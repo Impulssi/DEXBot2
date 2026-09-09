@@ -837,38 +837,6 @@ async function testSpreadCheckRunsWithoutDivergence() {
     console.log('✓ spread check runs without divergence (no-divergence tick)');
 }
 
-async function testSpreadCheckSkippedOnPendingBoundaryShift() {
-    let spreadChecked = false;
-    const logs = [];
-
-    installDivergenceMocks({
-        applyCorrections: async () => ({
-            committed: false,
-            boundaryChanged: true,
-            reason: 'RECOVERY_EXHAUSTED',
-        }),
-        divergence: {
-            needsUpdate: true,
-            buy: { ratio: true, rms: false, metric: 1 },
-            sell: { ratio: false, rms: false, metric: 0 },
-        },
-    });
-
-    const { executeMaintenanceLogic } = require('../modules/dexbot_maintenance_runtime');
-    await executeMaintenanceLogic(
-        makeDivergenceSelf({
-            botKey: 'spread-boundary-pending-bot-0',
-            logs,
-            markSpreadChecked: () => { spreadChecked = true; },
-        }),
-        'unit-test-boundary-pending'
-    );
-
-    assert.strictEqual(spreadChecked, false, 'spread check must be skipped when a boundary-shift commit is pending');
-
-    console.log('✓ spread check skipped on pending boundary-shift commit');
-}
-
 async function testDexbotClassPerformGridResyncForwardsOptions() {
     let forwardedThis = null;
     let forwardedOptions = null;
@@ -967,7 +935,6 @@ const STAGES = {
     market_adapter_slope_trigger_reset: testMarketAdapterSlopeTriggerResetRecordsSlopeSource,
     rms_divergence_runs_full_grid_resync: testRmsDivergenceRunsFullGridResync,
     spread_check_runs_without_divergence: testSpreadCheckRunsWithoutDivergence,
-    spread_check_skipped_on_pending_boundary_shift: testSpreadCheckSkippedOnPendingBoundaryShift,
     dexbot_class_perform_grid_resync_forwards_options: testDexbotClassPerformGridResyncForwardsOptions,
 };
 

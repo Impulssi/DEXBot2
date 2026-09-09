@@ -35,6 +35,9 @@ function parseArgs() {
         amaEnabled: boolean;
         vwapEnabled: boolean;
         vwapBars: number;
+        rangeEnabled: boolean;
+        rangeScaleEnabled: boolean;
+        rangeSpan: number | undefined;
         quiet: boolean;
         listBots: boolean;
     } = {
@@ -50,6 +53,9 @@ function parseArgs() {
         amaEnabled: true,
         vwapEnabled: false,
         vwapBars: 500,
+        rangeEnabled: true,
+        rangeScaleEnabled: false,
+        rangeSpan: undefined,
         quiet: false,
         listBots: false,
     };
@@ -72,7 +78,9 @@ function parseArgs() {
         else if (arg === '--no-sma') config.smaEnabled = false;
         else if (arg === '--no-ama') config.amaEnabled = false;
         else if (arg === '--no-vwap') config.vwapEnabled = false;
-        else if (arg === '--vwap-bars') config.vwapBars = Math.max(24, parseInt(args[++i], 10) || 500);
+        else if (arg === '--no-range') config.rangeEnabled = false;
+        else if (arg === '--range-scale') config.rangeScaleEnabled = true;
+        else if (arg === '--range-span') config.rangeSpan = parseFloat(args[++i]);
         else if (arg === '--list-bots') config.listBots = true;
         else if (arg === '--quiet') config.quiet = true;
     }
@@ -125,6 +133,20 @@ async function main() {
         const hasAmaGridPrice = AMA_KEYWORDS.has(String(botMeta?.gridPrice || '').trim().toLowerCase());
         const amaEnabled = hasAmaGridPrice ? config.amaEnabled : false;
 
+        // Bot grid bounds for the range highlight: mirrors the runtime grid
+        // (center = AMA, min "Nx" = center/N, max "Nx" = center*N) with the
+        // live asymmetric tilt. Null when no bot key (width% fallback in-page).
+        const grid = botMeta?.minPrice != null && botMeta?.maxPrice != null ? {
+            minPrice: botMeta.minPrice,
+            maxPrice: botMeta.maxPrice,
+            incrementPercent: Number(botMeta.incrementPercent) > 0 ? Number(botMeta.incrementPercent) : null,
+            maxAsymmetryFactor: Number.isFinite(Number(botMeta?.asymmetricBounds?.maxAsymmetryFactor))
+                ? Number(botMeta.asymmetricBounds.maxAsymmetryFactor)
+                : null,
+            minScaleSlots: Number.isFinite(Number(botMeta?.asymmetricBounds?.minScaleSlots))
+                ? Number(botMeta.asymmetricBounds.minScaleSlots)
+                : null,
+        } : null;
         const html = generateHTML({
             candles,
             meta: jsonMeta || {
@@ -141,6 +163,10 @@ async function main() {
             amaEnabled,
             vwapEnabled: config.vwapEnabled,
             vwapBars: config.vwapBars,
+            rangeEnabled: config.rangeEnabled,
+            rangeScaleEnabled: config.rangeScaleEnabled,
+            rangeSpan: config.rangeSpan,
+            grid,
             priceScale: config.priceScale === 'linear' ? 'linear' : 'log',
             defaultTimeframe: '1h',
             marketAdapter: MARKET_ADAPTER,

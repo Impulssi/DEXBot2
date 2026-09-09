@@ -2,7 +2,7 @@
 
 import fs from 'node:fs';
 import { MARKET_ADAPTER } from '../../modules/constants.js';
-import { escapeHtml, serializeJsonForScript, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
+import { escapeHtml, serializeJsonForScript, UPLOT_SHARED_SCRIPT, embedFunctionSources } from '../chart_utils.js';
 import { cursorCSS, uplotBgCSS } from '../chart_css.js';
 import { zoomResetScript } from '../chart_ui.js';
 import { normalizeCandle } from '../math_utils.js';
@@ -10,6 +10,14 @@ import { PATHS } from '../../modules/paths.js';
 import { getStorage } from '../../modules/storage/index.js';
 const { readJSON } = getStorage();
 import { getErrorMessage } from '../../modules/utils/errors.js';
+import { parseRelativeMultiplier } from '../../modules/order/utils/math.js';
+import { computeAverageAmaSlopePct } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
+import {
+    resolveBaseBounds,
+    computeAsymmetricBoundsMetrics,
+    applyAsymmetricBounds,
+    applyNarrowingSideGuard,
+} from '../../market_adapter/core/asymmetric_bounds.js';
 
 
 function inferBaseIntervalSeconds(candles: any[], fallback: any = 3600) {
@@ -103,6 +111,28 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
 
     const marketProfiles = data.marketProfiles || loadMarketProfiles();
     const defaultAmaConfig = resolveAmaDefaults({ meta, data, marketProfiles });
+    const rangeSlope = {
+        lookbackBars: MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS,
+        maxSlopePct: MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT,
+        neutralZonePct: MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_NEUTRAL_ZONE_PCT,
+        maxSlopeOffset: MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP,
+        maxAsymmetryFactor: MARKET_ADAPTER.ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR,
+        minScaleSlots: MARKET_ADAPTER.ASYMMETRIC_BOUNDS_MIN_SCALE_SLOTS,
+    };
+    function defaultRangeSpan(input: { rangeSpan?: unknown; grid?: { minPrice?: unknown; maxPrice?: unknown } | null }): number {
+        const cli = Number(input.rangeSpan);
+        if (Number.isFinite(cli)) return Math.min(2, Math.max(1.25, cli));
+        const down = parseRelativeMultiplier(input.grid?.minPrice);
+        const up = parseRelativeMultiplier(input.grid?.maxPrice);
+        if (down != null && down > 1 && up != null && up > 1) return Math.min(2, Math.max(1.25, (down + up) / 2));
+        const vd = Number(input.grid?.minPrice);
+        const vu = Number(input.grid?.maxPrice);
+        if (Number.isFinite(vd) && Number.isFinite(vu) && vd > 0 && vu > vd) {
+            const ref = Math.sqrt(vd * vu);
+            return Math.min(2, Math.max(1.25, (ref / vd + vu / ref) / 2));
+        }
+        return 1.55;
+    }
     const defaults = {
         smaPeriod: Math.max(1, Math.round(data.smaPeriod ?? 500)),
         amaDefaults: defaultAmaConfig,
@@ -111,6 +141,21 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         vwapEnabled: data.vwapEnabled === true,
         vwapBars: Math.max(5, Math.round(data.vwapBars ?? 500)),
         priceScale: data.priceScale === 'linear' ? 'linear' : 'log',
+        rangeEnabled: data.rangeEnabled !== false,
+        rangeScaleEnabled: data.rangeScaleEnabled === true,
+        rangeWidthPct: Number.isFinite(Number(data.rangeWidthPct)) && Number(data.rangeWidthPct) > 0
+            ? Number(data.rangeWidthPct)
+            : 2,
+        rangeSpan: defaultRangeSpan(data),
+        grid: data.grid && data.grid.minPrice != null && data.grid.maxPrice != null ? {
+            minPrice: data.grid.minPrice,
+            maxPrice: data.grid.maxPrice,
+            incrementPercent: Number(data.grid.incrementPercent) > 0 ? Number(data.grid.incrementPercent) : null,
+            maxAsymmetryFactor: Number.isFinite(Number(data.grid.maxAsymmetryFactor)) && Number(data.grid.maxAsymmetryFactor) > 0
+                ? Number(data.grid.maxAsymmetryFactor)
+                : rangeSlope.maxAsymmetryFactor,
+        } : null,
+        rangeSlope,
     };
 
     const assetLabelA = meta.assetA?.symbol || meta.assetA?.id || 'Asset A';
@@ -134,6 +179,12 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         vwapEnabled: defaults.vwapEnabled,
         vwapBars: defaults.vwapBars,
         priceScale: defaults.priceScale,
+        rangeEnabled: defaults.rangeEnabled,
+        rangeScaleEnabled: defaults.rangeScaleEnabled,
+        rangeWidthPct: defaults.rangeWidthPct,
+        rangeSpan: defaults.rangeSpan,
+        grid: defaults.grid,
+        rangeSlope,
         defaultPairMode,
         assetLabelA,
         assetLabelB,
@@ -177,7 +228,8 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         #brand { display: flex; flex-direction: column; gap: 4px; min-width: 240px; }
         #title { font-size: 15px; font-weight: 700; color: #f5f8fb; }
         #subtitle { font-size: 11px; color: #b9c6d4; text-transform: uppercase; letter-spacing: 0.6px; }
-        #toolbar { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px 12px; align-items: center; }
+        #toolbar { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+        .toolbar-row { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px 12px; align-items: center; }
         .group { display: inline-flex; align-items: center; gap: 8px; padding-left: 12px; border-left: 1px solid #263241; }
         .group:first-child { padding-left: 0; border-left: 0; }
         :root {
@@ -399,7 +451,8 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         ${cursorCSS()}
         @media (max-width: 980px) {
             #topbar { flex-direction: column; align-items: flex-start; }
-            #toolbar { justify-content: flex-start; }
+            #toolbar { align-items: flex-start; }
+            .toolbar-row { justify-content: flex-start; }
             .group { padding-left: 0; border-left: 0; flex-wrap: wrap; }
             #legend { min-width: 0; max-width: calc(100vw - 24px); }
         }
@@ -413,9 +466,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 <div id="subtitle">${escapeHtml(poolLabel)} · ${escapeHtml(pairLabelNormal)} · ${escapeHtml(intervalLabel)} base · indicators from 1h · volume · uPlot</div>
             </div>
             <div id="toolbar">
-                <div class="group" id="tf-group">
-                    ${timeframes.map((item: any) => `<button class="time-btn${item.label === defaultTimeframe.label ? ' active' : ''}" data-timeframe="${escapeHtml(item.label)}"${item.enabled ? '' : ' disabled'}>${escapeHtml(item.label)}</button>`).join('')}
-                </div>
+                <div class="toolbar-row">
                 <div class="group">
                     <div class="indicator">
                         <span class="tag">pair</span>
@@ -429,6 +480,11 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                         <span class="tag">scale</span>
                         <button type="button" class="scale-toggle${defaults.priceScale === 'linear' ? ' is-linear' : ''}" id="scale-toggle" data-scale="${escapeHtml(defaults.priceScale)}" aria-label="Toggle price scale" title="Toggle price scale">${defaults.priceScale === 'linear' ? 'Linear' : 'Log'}</button>
                     </div>
+                </div>
+                <div class="group" id="tf-group">
+                    ${timeframes.map((item: any) => `<button class="time-btn${item.label === defaultTimeframe.label ? ' active' : ''}" data-timeframe="${escapeHtml(item.label)}"${item.enabled ? '' : ' disabled'}>${escapeHtml(item.label)}</button>`).join('')}
+                </div>
+                <div class="group">
                     <div class="indicator">
                         <label><input type="checkbox" id="sma-toggle"${defaults.smaEnabled ? ' checked' : ''}> SMA</label>
                         <span class="tag">period</span>
@@ -447,6 +503,10 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                             <button type="button" class="step-btn" id="vwap-bars-dec">▼</button>
                         </span>
                     </div>
+                </div>
+                </div>
+                <div class="toolbar-row">
+                <div class="group">
                     <div class="indicator">
                         <label><input type="checkbox" id="ama-toggle"${defaults.amaEnabled ? ' checked' : ''}> AMA</label>
                         <span class="tag">er</span>
@@ -469,13 +529,22 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                         </span>
                         <button type="button" class="reset-btn" id="ama-reset">Reset</button>
                     </div>
-                    <div class="indicator" style="margin-top:4px">
+                    <div class="indicator" title="Range min/max built only from the live AMA price (green above, red below); Scale sizes it by AMA slope like the grid build">
+                        <label><input type="checkbox" id="range-toggle"${defaults.rangeEnabled ? ' checked' : ''}> Range</label>
+                        <label title="Range Scaling: size the band by AMA slope like the grid build (trend side widens, opposite tightens) and fit the price axis to it"><input type="checkbox" id="range-scale-toggle"${defaults.rangeScaleEnabled ? ' checked' : ''}> Scale</label>
+                        <span id="range-grid-wrap" style="display:${defaults.grid ? 'inline' : 'none'}" title="x-range around AMA (default = bot grid setting)">
+                            <span class="tag">grid</span>
+                            <input type="range" id="range-span" min="1.25" max="2" step="0.05" value="${defaults.rangeSpan.toFixed(2)}" style="width:90px;vertical-align:middle">
+                            <span id="range-span-val" style="font-size:11px;color:#8b949e;width:40px;display:inline-block;text-align:right">${defaults.rangeSpan.toFixed(2)}x</span>
+                        </span>
+                    </div>
+                    <div class="indicator">
                         <label><input type="checkbox" id="ama-init-offset-toggle"> Init Offset</label>
                         <input type="range" id="ama-init-offset" min="-50" max="50" value="0" step="1" style="width:120px;vertical-align:middle" disabled>
                         <span id="ama-init-offset-val" style="font-size:11px;color:#8b949e;width:32px;display:inline-block;text-align:right">0%</span>
                     </div>
                 </div>
-                <div class="group"></div>
+                </div>
             </div>
         </div>
         <div id="chart-shell">
@@ -495,6 +564,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     <span class="legend-item"><span class="legend-dot" style="background:#a855f7"></span><span class="legend-label">AMA Off</span> <span class="legend-value" id="legend-ama-off">-</span></span>
 
                     <span class="legend-item"><span class="legend-dot" style="background:#93c5fd"></span><span class="legend-label">VWMA</span> <span class="legend-value" id="legend-vwap">-</span></span>
+                    <span class="legend-item"><span class="legend-dot" id="legend-range-dot" style="background:#8b949e"></span><span class="legend-label">Range</span> <span class="legend-value" id="legend-range">-</span></span>
                 </div>
             </div>
             <div id="price-chart" title="Wheel: zoom time (ulos = tyhjaa tilaa datan ymparilla) · Drag: siirra aika- ja hintanakymaa · Wheel/drag hinta-akselilla: zoomaa hintaa · Double-click hinta-akselia: autofit"></div>
@@ -530,6 +600,14 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             : Number(payload.amaDefaults?.slowPeriod || ${MARKET_ADAPTER.AMAS.AMA3.slowPeriod});
         let currentVwapEnabled = state.vwapEnabled ?? !!payload.vwapEnabled;
         let currentVwapBars = Number.isFinite(state.vwapBars) ? state.vwapBars : Number(payload.vwapBars || 500);
+        let currentRangeEnabled = state.rangeEnabled ?? !!payload.rangeEnabled;
+        let currentRangeScaleEnabled = state.rangeScaleEnabled ?? !!payload.rangeScaleEnabled;
+        let currentRangeWidthPct = Number.isFinite(state.rangeWidthPct) && Number(state.rangeWidthPct) > 0
+            ? Number(state.rangeWidthPct)
+            : (Number.isFinite(Number(payload.rangeWidthPct)) && Number(payload.rangeWidthPct) > 0 ? Number(payload.rangeWidthPct) : 2);
+        let currentRangeSpan = Number.isFinite(state.rangeSpan) && Number(state.rangeSpan) > 0
+            ? Math.min(2, Math.max(1.25, Number(state.rangeSpan)))
+            : (Number.isFinite(Number(payload.rangeSpan)) && Number(payload.rangeSpan) > 0 ? Math.min(2, Math.max(1.25, Number(payload.rangeSpan))) : 1.55);
         let currentAmaInitOffsetEnabled = false;
         let currentAmaInitOffset = Number.isFinite(state.amaInitOffset) ? state.amaInitOffset : 0;
         let currentPriceScale = state.priceScale || payload.priceScale || 'log';
@@ -551,6 +629,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         let currentSmaInit = [];
         let currentSmaInitOff = [];
         let currentAmaOff = [];
+        let currentRangeUpper = [];
+        let currentRangeLower = [];
+        let currentRangeTrend = [];
         let priceChart = null;
         let volumeChart = null;
         let lastRenderedPriceScale = null;
@@ -749,6 +830,10 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     amaSlowPeriod: currentAmaSlowPeriod,
                     vwapEnabled: currentVwapEnabled,
                     vwapBars: currentVwapBars,
+                    rangeEnabled: currentRangeEnabled,
+                    rangeScaleEnabled: currentRangeScaleEnabled,
+                    rangeWidthPct: currentRangeWidthPct,
+                    rangeSpan: currentRangeSpan,
                     amaInitOffset: currentAmaInitOffset,
                     priceScale: currentPriceScale,
                     pairMode: currentPairMode,
@@ -1078,6 +1163,106 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             vwapCache.set(cacheKey, out);
             return out;
         }
+        // Bot-grid range band: min/max derive ONLY from the live AMA price.
+        // All math below runs the canonical market_adapter/grid sources,
+        // embedded verbatim (not hand-copied): computeAverageAmaSlopePct,
+        // applyAsymmetricBounds (+ metrics/base), applyNarrowingSideGuard,
+        // parseRelativeMultiplier. With Range Scaling on, the AMA slope sizes
+        // the real range: trend side widens, opposite side tightens. Painted
+        // symmetrically always: green [AMA, upper], red [lower, AMA].
+        // Without usable grid shape falls back to a width% envelope around AMA.
+        // Never reads candles, pair-display mapping, or axis/zoom state —
+        // inversion and timeframe sampling apply to the AMA first.
+        ${embedFunctionSources([computeAverageAmaSlopePct, resolveBaseBounds, computeAsymmetricBoundsMetrics, applyAsymmetricBounds, applyNarrowingSideGuard, parseRelativeMultiplier])}
+        function computeRangeBand(baseAma) {
+            const n = Array.isArray(baseAma) ? baseAma.length : 0;
+            const upper = new Array(n).fill(null);
+            const lower = new Array(n).fill(null);
+            const trend = new Array(n).fill(0);
+            const slopeCfg = payload.rangeSlope || {};
+            const gridCfg = payload.grid || null;
+            const lookback = Math.max(1, Math.round(Number(slopeCfg.lookbackBars) || 9));
+            const maxSlope = Number(slopeCfg.maxSlopePct) > 0 ? Number(slopeCfg.maxSlopePct) : 0.09;
+            const neutral = Number(slopeCfg.neutralZonePct) >= 0 ? Number(slopeCfg.neutralZonePct) : 0;
+            const maxSlopeOffset = Number(slopeCfg.maxSlopeOffset) > 0 ? Number(slopeCfg.maxSlopeOffset) : 0.5;
+            const maxAsym = gridCfg && Number(gridCfg.maxAsymmetryFactor) > 0
+                ? Number(gridCfg.maxAsymmetryFactor)
+                : (Number(slopeCfg.maxAsymmetryFactor) > 0 ? Number(slopeCfg.maxAsymmetryFactor) : 0.35);
+            const widthPct = Number(currentRangeWidthPct) > 0 ? Number(currentRangeWidthPct) : 2;
+            const inc = gridCfg && Number(gridCfg.incrementPercent) > 0 ? Number(gridCfg.incrementPercent) : null;
+            const minSlots = Math.floor(Number(gridCfg && gridCfg.minScaleSlots) > 0 ? Number(gridCfg.minScaleSlots) : (Number(slopeCfg.minScaleSlots) || 0));
+            // User x-range span (slider, default = bot grid ratio): the only
+            // width input — min = AMA/span, max = AMA*span. Grid config only
+            // selects the grid path vs the width% fallback, never a price.
+            const span = Math.min(2, Math.max(1.25, Number(currentRangeSpan) > 0 ? Number(currentRangeSpan) : 1.55));
+            const gMinN = Number(gridCfg && gridCfg.minPrice);
+            const gMaxN = Number(gridCfg && gridCfg.maxPrice);
+            const multOk = (v) => { const m = parseRelativeMultiplier(v); return m != null && m > 1; };
+            const hasGridShape = gridCfg != null && (
+                (multOk(gridCfg.minPrice) && multOk(gridCfg.maxPrice)) ||
+                (Number.isFinite(gMinN) && Number.isFinite(gMaxN) && gMinN > 0 && gMaxN > gMinN));
+            const slopeScaling = !!currentRangeScaleEnabled;
+            if (!currentAmaEnabled || n === 0) return { upper, lower, trend };
+            for (let i = 0; i < n; i++) {
+                const ama = baseAma[i];
+                const past = i - lookback >= 0 ? baseAma[i - lookback] : null;
+                if (!Number.isFinite(ama) || ama <= 0 || !Number.isFinite(past) || past <= 0) continue;
+                const slopePct = computeAverageAmaSlopePct(ama, past, lookback);
+                if (slopePct == null || !Number.isFinite(slopePct)) continue;
+                const dir = Math.abs(slopePct) <= neutral ? 0 : (slopePct > 0 ? 1 : -1);
+                const strength = Math.min(Math.abs(slopePct) / maxSlope, 1);
+                if (!hasGridShape) {
+                    // Width% envelope: symmetric around AMA; scaling sizes it
+                    // by slope strength ("real range"), otherwise full width.
+                    const w = slopeScaling ? strength * widthPct : widthPct;
+                    if (!(w > 0)) continue;
+                    const half = ama * w / 100;
+                    if (!Number.isFinite(half) || half <= 0) continue;
+                    upper[i] = ama + half;
+                    lower[i] = Math.max(ama - half, ama * 1e-6);
+                    trend[i] = dir;
+                    continue;
+                }
+                // Symmetric base from this bar's AMA and the user span —
+                // no chart or config price level.
+                let rMin = ama / span;
+                let rMax = ama * span;
+                if (slopeScaling && dir !== 0) {
+                    // Canonical tilt: ama_slope_model slope offset applied
+                    // through asymmetric_bounds, then the narrowing-side guard.
+                    const trendName = dir > 0 ? 'UP' : 'DOWN';
+                    const slopeOffset = clamp(slopePct / maxSlope, -1, 1) * maxSlopeOffset;
+                    const tilt = applyAsymmetricBounds({
+                        centerPrice: ama,
+                        minPrice: ama / span,
+                        maxPrice: ama * span,
+                        trend: trendName,
+                        slopeOffset,
+                        maxSlopeOffset,
+                        maxAsymmetryFactor: maxAsym,
+                    });
+                    const guard = applyNarrowingSideGuard({
+                        centerPrice: ama,
+                        minPrice: tilt.resolvedMinPrice,
+                        maxPrice: tilt.resolvedMaxPrice,
+                        trend: trendName,
+                        incrementPercent: inc,
+                        minScaleSlots: minSlots,
+                    });
+                    rMin = guard.minPrice;
+                    rMax = guard.maxPrice;
+                }
+                if (!Number.isFinite(rMin) || !Number.isFinite(rMax) || rMin <= 0 || rMax <= rMin) continue;
+                upper[i] = rMax;
+                lower[i] = rMin;
+                trend[i] = dir;
+            }
+            return { upper, lower, trend };
+        }
+        function sampleTrendByIndex(series, idxs) {
+            if (!Array.isArray(series) || !Array.isArray(idxs)) return [];
+            return idxs.map((idx) => (Number.isFinite(idx) && series[idx] != null ? series[idx] : 0));
+        }
         function lowerBound(arr, value) {
             let lo = 0;
             let hi = arr.length;
@@ -1098,6 +1283,25 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             let end = Math.min(xs.length, lowerBound(xs, maxX) + 2);
             let min = Infinity;
             let max = -Infinity;
+            // Range scaling active: fit the price axis to the full envelope
+            // (lower ↔ upper through AMA) instead of the candles, so the
+            // switch visibly adjusts the range. Falls through to the candle
+            // fit when the band has no finite values in view.
+            if (currentRangeEnabled && currentRangeScaleEnabled && currentAmaEnabled) {
+                let bmin = Infinity;
+                let bmax = -Infinity;
+                for (let i = start; i < end; i++) {
+                    const a = currentAma[i];
+                    const up = currentRangeUpper[i];
+                    const lo = currentRangeLower[i];
+                    if (Number.isFinite(a) && a > 0) { if (a < bmin) bmin = a; if (a > bmax) bmax = a; }
+                    if (Number.isFinite(up) && up > 0) { if (up < bmin) bmin = up; if (up > bmax) bmax = up; }
+                    if (Number.isFinite(lo) && lo > 0) { if (lo < bmin) bmin = lo; if (lo > bmax) bmax = lo; }
+                }
+                if (Number.isFinite(bmin) && Number.isFinite(bmax) && bmin > 0 && bmax > bmin) {
+                    return [bmin * 0.97, bmax * 1.03];
+                }
+            }
             for (let i = start; i < end; i++) {
                 const lo = currentLow[i];
                 const hi = currentHigh[i];
@@ -1174,11 +1378,24 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             refreshLegend();
             saveState();
         }
+        function hideRangeBandImmediate() {
+            currentRangeUpper = new Array(currentCandles.length).fill(null);
+            currentRangeLower = new Array(currentCandles.length).fill(null);
+            currentRangeTrend = new Array(currentCandles.length).fill(0);
+            // The band is a draw hook with no uPlot series: nothing else
+            // repaints on hide, so redraw explicitly (stale pixels otherwise linger).
+            if (priceChart && typeof priceChart.redraw === 'function') priceChart.redraw();
+            refreshLegend();
+            saveState();
+        }
         function hideAmaSeriesImmediate() {
             currentAma = new Array(currentCandles.length).fill(null);
             currentAmaOff = new Array(currentCandles.length).fill(null);
             currentSmaInit = new Array(currentCandles.length).fill(null);
             currentSmaInitOff = new Array(currentCandles.length).fill(null);
+            currentRangeUpper = new Array(currentCandles.length).fill(null);
+            currentRangeLower = new Array(currentCandles.length).fill(null);
+            currentRangeTrend = new Array(currentCandles.length).fill(0);
             if (Array.isArray(currentPriceData) && currentPriceData.length >= 11) {
                 currentPriceData[6] = currentAma;
                 currentPriceData[8] = currentSmaInit;
@@ -1219,6 +1436,18 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             document.getElementById('legend-sma-init').textContent = Number.isFinite(currentSmaInit[idx]) ? fmtPrice(currentSmaInit[idx]) : '-';
             document.getElementById('legend-off-init').textContent = Number.isFinite(currentSmaInitOff[idx]) ? fmtPrice(currentSmaInitOff[idx]) : '-';
             document.getElementById('legend-ama-off').textContent = Number.isFinite(currentAmaOff[idx]) ? fmtPrice(currentAmaOff[idx]) : '-';
+            const rangeDir = currentRangeTrend[idx];
+            const rangeDot = document.getElementById('legend-range-dot');
+            const rangeVal = document.getElementById('legend-range');
+            if (rangeDot) rangeDot.style.background = rangeDir === 1 ? '#26a69a' : (rangeDir === -1 ? '#ef5350' : '#8b949e');
+            if (rangeVal) {
+                const ru = currentRangeUpper[idx];
+                const rl = currentRangeLower[idx];
+                const ama = currentAma[idx];
+                if (currentRangeEnabled && currentAmaEnabled && Number.isFinite(ru) && ru > ama && Number.isFinite(rl) && rl > 0 && rl < ama && ama > 0) {
+                    rangeVal.textContent = '+' + ((ru - ama) / ama * 100).toFixed(1) + '% / -' + ((ama - rl) / ama * 100).toFixed(1) + '%';
+                } else rangeVal.textContent = '-';
+            }
             document.getElementById('legend-vwap').textContent = Number.isFinite(currentVwap[idx]) ? fmtPrice(currentVwap[idx]) : '-';
         }
         function candlePlugin() {
@@ -1362,6 +1591,80 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 hooks: { drawAxes: [drawVolumeBars] },
             };
         }
+        function rangeBandPlugin() {
+            function drawRangeBand(u) {
+                if (!currentRangeEnabled || !currentAmaEnabled || !currentCandles.length) return;
+                const xs = u.data[0];
+                if (!Array.isArray(xs) || xs.length === 0) return;
+                u.ctx.save();
+                u.ctx.beginPath();
+                u.ctx.rect(u.bbox.left, u.bbox.top, u.bbox.width, u.bbox.height);
+                u.ctx.clip();
+                // Behind candles/AMA lines (same trick as the dynamic-weight signal background).
+                u.ctx.globalCompositeOperation = 'destination-over';
+                const UP_FILL = 'rgba(38,166,154,0.16)';
+                const DOWN_FILL = 'rgba(239,83,80,0.16)';
+                // Symmetric envelope, always both sides: green [AMA, upper]
+                // plus red [lower, AMA] along the whole AMA, tilted by the
+                // grid's range scaling. Paint per contiguous valid segment.
+                let segTop = [];
+                let segBot = [];
+                const flush = () => {
+                    if (segTop.length > 1) {
+                        u.ctx.fillStyle = UP_FILL;
+                        u.ctx.beginPath();
+                        u.ctx.moveTo(segTop[0][0], segTop[0][1]);
+                        for (let k = 1; k < segTop.length; k++) u.ctx.lineTo(segTop[k][0], segTop[k][1]);
+                        for (let k = segTop.length - 1; k >= 0; k--) u.ctx.lineTo(segTop[k][0], segTop[k][2]);
+                        u.ctx.closePath();
+                        u.ctx.fill();
+                    }
+                    if (segBot.length > 1) {
+                        u.ctx.fillStyle = DOWN_FILL;
+                        u.ctx.beginPath();
+                        u.ctx.moveTo(segBot[0][0], segBot[0][1]);
+                        for (let k = 1; k < segBot.length; k++) u.ctx.lineTo(segBot[k][0], segBot[k][1]);
+                        for (let k = segBot.length - 1; k >= 0; k--) u.ctx.lineTo(segBot[k][0], segBot[k][2]);
+                        u.ctx.closePath();
+                        u.ctx.fill();
+                    }
+                    u.ctx.strokeStyle = 'rgba(38,166,154,0.55)';
+                    u.ctx.lineWidth = 1;
+                    u.ctx.beginPath();
+                    segTop.forEach((p, k) => { if (k === 0) u.ctx.moveTo(p[0], p[1]); else u.ctx.lineTo(p[0], p[1]); });
+                    u.ctx.stroke();
+                    u.ctx.strokeStyle = 'rgba(239,83,80,0.55)';
+                    u.ctx.beginPath();
+                    segBot.forEach((p, k) => { if (k === 0) u.ctx.moveTo(p[0], p[1]); else u.ctx.lineTo(p[0], p[1]); });
+                    u.ctx.stroke();
+                    segTop = [];
+                    segBot = [];
+                };
+                for (let i = 0; i < xs.length; i++) {
+                    const a = currentAma[i];
+                    const up = currentRangeUpper[i];
+                    const lo = currentRangeLower[i];
+                    if (!Number.isFinite(a) || a <= 0 || !Number.isFinite(up) || up <= a
+                            || !Number.isFinite(lo) || lo <= 0 || lo >= a) {
+                        flush();
+                        continue;
+                    }
+                    const x = u.valToPos(xs[i], 'x', true);
+                    const yA = u.valToPos(a, 'y', true);
+                    const yU = u.valToPos(up, 'y', true);
+                    const yL = u.valToPos(lo, 'y', true);
+                    if (!Number.isFinite(x) || !Number.isFinite(yA) || !Number.isFinite(yU) || !Number.isFinite(yL)) {
+                        flush();
+                        continue;
+                    }
+                    segTop.push([x, yU, yA]);
+                    segBot.push([x, yL, yA]);
+                }
+                flush();
+                u.ctx.restore();
+            }
+            return { hooks: { draw: [drawRangeBand] } };
+        }
         function buildData() {
             const tf = timeframeMap.get(currentTimeframe) || timeframeMap.get(defaultTimeframe.label) || timeframes[0];
             currentSeriesState = getSeriesState(currentPairMode);
@@ -1396,6 +1699,10 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 currentSma = new Array(currentCandles.length).fill(null);
             }
             currentAma = currentAmaEnabled ? sampleSeriesByIndex(baseAma, aggregated.idxs) : new Array(currentCandles.length).fill(null);
+            const baseRange = computeRangeBand(baseAma);
+            currentRangeUpper = sampleSeriesByIndex(baseRange.upper, aggregated.idxs);
+            currentRangeLower = sampleSeriesByIndex(baseRange.lower, aggregated.idxs);
+            currentRangeTrend = sampleTrendByIndex(baseRange.trend, aggregated.idxs);
             currentAmaOff = currentAmaEnabled && currentAmaInitOffset !== 0 ? sampleSeriesByIndex(baseAmaOff, aggregated.idxs) : new Array(currentCandles.length).fill(null);
             currentVwap = currentVwapEnabled ? sampleSeriesByIndex(baseVwap, aggregated.idxs) : new Array(currentCandles.length).fill(null);
             const amaCfg = currentAmaConfig();
@@ -1500,7 +1807,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
 
             const plugin = candlePlugin();
             plugin.opts(null, priceOpts);
-            priceOpts.plugins = [plugin];
+            priceOpts.plugins = [rangeBandPlugin(), plugin];
             if (!priceChart) priceChart = new uPlot(priceOpts, data.priceData, priceEl);
             else priceChart.setData(data.priceData, false);
 
@@ -1657,12 +1964,11 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 priceBounds = null;
                 return;
             }
-            const range = max - min;
             // Uloszoomauksen rajat: alin naytettava hinta voi painua viimeistaan
-            // ~35 % datan minimin alapuolelle, ylin ~1.6x datan maksimin, ja
-            // kokonaisvali saa olla enintaan ~1.6x datan hintahaarukasta —
+            // ~35 % datan minimin alapuolelle, ylin ~1.6x datan maksimin —
             // ei siis paase "lipsahtamaan" candleita nakyvasta kadottaen.
-            priceBounds = { min: min, max: max, floor: min * 0.35, ceil: max * 1.6, maxSpan: range * 1.6 };
+            // Kokonaisvalille ei ole ylarajaa: pystyakselia saa zoomata ulos vapaasti.
+            priceBounds = { min: min, max: max, floor: min * 0.35, ceil: max * 1.6 };
         }
         function applyYRange(chart, min, max) {
             if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return false;
@@ -1675,13 +1981,6 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             if (priceBounds) {
                 let nMin = Math.max(min, priceBounds.floor);
                 let nMax = Math.min(max, priceBounds.ceil);
-                if (nMax - nMin > priceBounds.maxSpan) {
-                    const c = (nMin + nMax) / 2;
-                    nMin = c - priceBounds.maxSpan / 2;
-                    nMax = c + priceBounds.maxSpan / 2;
-                    nMin = Math.max(nMin, priceBounds.floor);
-                    nMax = Math.min(nMax, priceBounds.ceil);
-                }
                 if (nMax <= nMin) return false;
                 min = nMin;
                 max = nMax;
@@ -1765,6 +2064,11 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             document.getElementById('ama-slow').value = currentAmaSlowPeriod.toFixed(1);
             document.getElementById('vwap-toggle').checked = currentVwapEnabled;
             document.getElementById('vwap-bars').value = String(currentVwapBars);
+            document.getElementById('range-toggle').checked = currentRangeEnabled;
+            document.getElementById('range-scale-toggle').checked = currentRangeScaleEnabled;
+            document.getElementById('range-span').value = Number(currentRangeSpan).toFixed(2);
+            document.getElementById('range-span-val').textContent = Number(currentRangeSpan).toFixed(2) + 'x';
+            document.getElementById('range-grid-wrap').style.display = payload.grid ? 'inline' : 'none';
             document.getElementById('ama-init-offset-toggle').checked = currentAmaInitOffsetEnabled;
             document.getElementById('ama-init-offset').value = String(currentAmaInitOffset);
             document.getElementById('ama-init-offset').disabled = !currentAmaInitOffsetEnabled;
@@ -1835,7 +2139,6 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
 
         setControls();
         rerender(false);
-
         document.querySelectorAll('.time-btn').forEach((btn) => {
             btn.addEventListener('click', () => {
                 if (btn.disabled) return;
@@ -1846,7 +2149,6 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 rerender(true);
             });
         });
-
         const scaleToggle = document.getElementById('scale-toggle');
         if (scaleToggle) {
             scaleToggle.addEventListener('click', () => {
@@ -1879,6 +2181,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             document.getElementById('ama-init-offset-val').textContent = currentAmaInitOffset + '%';
             currentVwapEnabled = document.getElementById('vwap-toggle').checked;
             currentVwapBars = clamp(Math.round(Number(document.getElementById('vwap-bars').value) || 500), 24, 2000);
+            currentRangeEnabled = document.getElementById('range-toggle').checked;
+            currentRangeScaleEnabled = document.getElementById('range-scale-toggle').checked;
+            currentRangeSpan = Math.min(2, Math.max(1.25, Math.round((Number(document.getElementById('range-span').value) || 1.55) * 20) / 20));
             setControls();
             rerender(false);
         };
@@ -1917,6 +2222,25 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             rerender(false);
         });
         document.getElementById('ama-init-offset-toggle').addEventListener('change', syncInputs);
+        document.getElementById('range-toggle').addEventListener('change', () => {
+            const nextEnabled = document.getElementById('range-toggle').checked;
+            if (currentRangeEnabled === nextEnabled) return;
+            currentRangeEnabled = nextEnabled;
+            setControls();
+            if (!currentRangeEnabled) {
+                hideRangeBandImmediate();
+                return;
+            }
+            rerender(false);
+        });
+        document.getElementById('range-scale-toggle').addEventListener('change', () => {
+            const nextEnabled = document.getElementById('range-scale-toggle').checked;
+            if (currentRangeScaleEnabled === nextEnabled) return;
+            currentRangeScaleEnabled = nextEnabled;
+            manualYRange = null;
+            setControls();
+            rerender(false);
+        });
         ['sma-period', 'ama-er', 'ama-fast', 'ama-slow', 'vwap-bars'].forEach((id) => {
             document.getElementById(id).addEventListener('change', syncInputs);
             document.getElementById(id).addEventListener('blur', syncInputs);
@@ -1966,6 +2290,11 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const snapped = snapInitOffset(input.value);
             if (String(snapped) !== String(input.value)) input.value = String(snapped);
             document.getElementById('ama-init-offset-val').textContent = snapped + '%';
+            syncInputs();
+        });
+        document.getElementById('range-span').addEventListener('input', () => {
+            const input = document.getElementById('range-span');
+            document.getElementById('range-span-val').textContent = Number(input.value).toFixed(2) + 'x';
             syncInputs();
         });
 

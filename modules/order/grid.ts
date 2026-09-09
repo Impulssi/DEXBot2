@@ -102,6 +102,7 @@ import * as Format from './format.js';
 import {
     resolveMaxAsymmetryFactor,
     applyAsymmetricBounds,
+    applyNarrowingSideGuard,
 } from '../../market_adapter/core/asymmetric_bounds.js';
 
 // FIX: Extract magic numbers to named constants for maintainability
@@ -1211,39 +1212,29 @@ export async function initializeGrid(manager: any): Promise<void> {
             }
         }
 
-        // Narrowing-side slot guard: range scaling tightens one bound toward the
-        // center. Without a floor this can collapse that side into a near-center
-        // sliver holding few or zero active orders. Guarantee at least
-        // minScaleSlots price levels remain between the grid center and the
-        // tightened bound (in multiples of incrementPercent). The widened side
-        // still extends freely.
-        if (appliedTrend && Number.isFinite(gridStartPrice) && gridStartPrice > 0) {
-            const inc = Number(manager.config.incrementPercent);
-            const mss = Number.isFinite(minScaleSlots) ? Math.floor(Number(minScaleSlots)) : 0;
-            if (Number.isFinite(inc) && inc > 0 && mss > 0) {
-                const stepMult = 1 + (inc / 100);
-                if (appliedTrend === 'DOWN' && resolvedMaxP != null) {
-                    const keepAbove = gridStartPrice * Math.pow(stepMult, mss);
-                    if (resolvedMaxP < keepAbove) {
-                        manager.logger?.log?.(
-                            `[BOUND-ASYMMETRY] narrowing-side guard: max ${resolvedMaxP.toFixed(8)} collapses ` +
-                            `${mss} levels; holding at ${keepAbove.toFixed(8)}`,
-                            'info'
-                        );
-                        resolvedMaxP = keepAbove;
-                    }
-                } else if (appliedTrend === 'UP' && resolvedMinP != null) {
-                    const belowMin = gridStartPrice * Math.pow(1 - (inc / 100), mss);
-                    if (resolvedMinP > belowMin) {
-                        manager.logger?.log?.(
-                            `[BOUND-ASYMMETRY] narrowing-side guard would pull min ${resolvedMinP.toFixed(8)} ` +
-                            `short of ${mss} levels; holding at ${belowMin.toFixed(8)}`,
-                            'info'
-                        );
-                        resolvedMinP = belowMin;
-                    }
-                }
-            }
+        // Narrowing-side slot guard (canonical: applyNarrowingSideGuard).
+        const guard = applyNarrowingSideGuard({
+            centerPrice: gridStartPrice,
+            minPrice: resolvedMinP,
+            maxPrice: resolvedMaxP,
+            trend: appliedTrend,
+            incrementPercent: manager.config.incrementPercent,
+            minScaleSlots,
+        });
+        if (guard.held === 'max' && guard.maxPrice != null && resolvedMaxP != null) {
+            manager.logger?.log?.(
+                `[BOUND-ASYMMETRY] narrowing-side guard: max ${resolvedMaxP.toFixed(8)} collapses ` +
+                `${Math.floor(Number(minScaleSlots))} levels; holding at ${guard.maxPrice.toFixed(8)}`,
+                'info'
+            );
+            resolvedMaxP = guard.maxPrice;
+        } else if (guard.held === 'min' && guard.minPrice != null && resolvedMinP != null) {
+            manager.logger?.log?.(
+                `[BOUND-ASYMMETRY] narrowing-side guard would pull min ${resolvedMinP.toFixed(8)} ` +
+                `short of ${Math.floor(Number(minScaleSlots))} levels; holding at ${guard.minPrice.toFixed(8)}`,
+                'info'
+            );
+            resolvedMinP = guard.minPrice;
         }
 
         manager.config.minPrice = resolvedMinP;
@@ -1794,11 +1785,12 @@ export async function updateGridFromBlockchainSnapshot(manager: any, orderType: 
         // after the size calc means crossers keep their pre-shift sizes, producing
         // an allocation that doesn't match the post-shift grid structure.
         //
-        // NOTE: syncBoundaryToFunds is a pure computation (no eager write), so
-        // manager.boundaryIdx still carries the pre-shift value here.  The
-        // overrideBoundaryIdx !== manager.boundaryIdx check correctly detects
-        // that a shift is needed.  The boundary is only written atomically
-        // inside _commitWorkingGrid via _setBoundary.
+        // NOTE: overrideBoundaryIdx carries the caller's intended boundary.
+        // Divergence pins it to the committed value (fund changes never shift
+        // rails — only fills move the boundary, and spread promotion derives
+        // its own shift atomically in prepareSpreadCorrectionOrders).  The
+        // boundary itself is only written atomically inside _commitWorkingGrid
+        // via _setBoundary.
         if (overrideBoundaryIdx !== null && overrideBoundaryIdx !== manager.boundaryIdx) {
             const gapSlots = manager._gapSlots ?? calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent, manager.config.gridLimits);
             const allSlots = (Array.from(workingGrid.values()) as Order[])
@@ -2772,9 +2764,9 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         const slotIndexMap = new Map(allSlotsByPrice.map((o: any, i: number) => [o.id, i]));
 
         // Use the committed boundary for slot classification — never a speculative
-        // value from syncBoundaryToFunds that hasn't been persisted through the COW
-        // pipeline.  If the boundary shifts later via _commitWorkingGrid, the next
-        // spread correction cycle will re-classify with the updated committed value.
+        // value that hasn't been persisted through the COW pipeline.  If the
+        // boundary shifts later via _commitWorkingGrid, the next spread
+        // correction cycle will re-classify with the updated committed value.
         // This prevents TOCTOU-style inconsistency where slot types are chosen
         // against a boundary that was never atomically committed to manager.orders.
         const resolved = resolveGapBand(manager);

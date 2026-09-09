@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.5.2 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.5.3 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
  - **Growth Phase**: 2,141 commits over ~9 active months
 - **Code Maturity**: Evolution from basic utilities to a ~100,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 248 automated test files
-- **Releases**: 102 release entries (v0.1.0 to v1.5.2)
+- **Releases**: 103 release entries (v0.1.0 to v1.5.3)
 
 ---
 
@@ -112,11 +112,12 @@ Compact, era-level view; per-release commit detail lives in [CHANGELOG.md](../CH
 | v1.4.25 → v1.5.0 | 13 | Credit overview CLI + whitelist-scoped CR on shared pricing math, one-step TradingView chart, daemon-safe reload, offline account-ID cache, case-insensitive bot identity, stale-pivot guard fix, partial-surplus rotation clamp, adapter ownership centralization, op-77 bot discovery split |
 | v1.5.0 → v1.5.1 | 11 | Gap-evacuation guard allowance + rail-typed holes, persisted streaks with cancel-only teeth, vacated-rail refill, adoption/accounting/duplicate-guard hardening |
 | v1.5.1 → v1.5.2 | 10 | Sync rejection handling across pass-1/pass-2 adoption, crossing-guard candidate sharing, empty-read confirmation, broadcast-price CREATE validation, stamped gap-evacuation re-proof, credit whole-account display + expiry, offline export fill-block derivation |
+| v1.5.2 → v1.5.3 | 6 | Boundary ownership hardening (fund-driven sync removal, guard-skipped refill hold), COW broadcast/reconcile dedup, TradingView bot-grid range highlight, createOrder unknown-id materialize-or-error, curve-comparison docs |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: September 07, 2026
-**Total Commits**: 2,164
-**Date Range**: December 2, 2025 – September 07, 2026
+**Last Updated**: September 09, 2026
+**Total Commits**: 2,172
+**Date Range**: December 2, 2025 – September 09, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

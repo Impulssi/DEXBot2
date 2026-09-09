@@ -122,7 +122,13 @@ const WHITELIST_FUNCTIONS = new Set([
 
     // COW runtime (dexbot_cow_runtime.ts): called from updateOrdersOnChainBatchCOW
     // which owns the persistGrid() call immediately after processBatchResults.
-    'processBatchResults'
+    'processBatchResults',
+
+    // COW runtime (dexbot_cow_runtime.ts): restores discarded CREATE slots via
+    // applyGridUpdateBatch. The CALLER (reconcileAfterUncertainBroadcastImpl,
+    // step 6) owns the persistGrid() call immediately after, so this helper
+    // itself does not need its own persistGrid().
+    'restoreDiscardedCreates'
 ]);
 
 // Files where the invariant is enforced elsewhere (e.g. by the dirty-flag

@@ -1555,27 +1555,25 @@ function resolveGapBand(manager: { _gapSlots?: any; boundaryIdx?: any; config?: 
  *   1. numeric sanity — finite, integer, non-negative
  *   2. array range   — boundary index exists in the price-sorted slot space
  *      (the same sort used by promotion/`getSlotCorrectType`)
- *   3. sell-rail ceiling — boundary may not exceed the shared writer ceiling
- *      `[0, N−gapSlots−1]`. Both boundary writers (calculateFundDrivenBoundary
- *      and the fill-driven deriveTargetBoundary) clamp to that window; a
- *      proposal past it could only come from a legacy persisted snapshot or a
- *      buggy future writer, and would self-legalize zero-SELL geometry via
- *      resolveGapBand() on the next cycle.
+ *   3. sell-rail ceiling — boundary may not exceed the writer ceiling
+ *      `[0, N−gapSlots−1]`. The fill-driven deriveTargetBoundary clamps to that
+ *      window; a proposal past it could only come from a legacy persisted
+ *      snapshot or a buggy future writer, and would self-legalize zero-SELL
+ *      geometry via resolveGapBand() on the next cycle.
  *   4. crossed book  — among PLACED orders, the highest boundary-classified
  *      BUY must price strictly below the lowest implied-SELL.  Placed prices
  *      do not depend on the boundary, so this detects an overrun regardless
  *      of which writer produced it.
  *
  * Deliberately NOT checked here: distance from config.startPrice-derived
- * geometry.  Fund-skewed boundaries legitimately sit far from the structural
- * center (calculateFundDrivenBoundary clamps only to [0, N−gapSlots−1]), so a
- * startPrice-distance rule would false-positive on valid fund-driven shifts.
+ * geometry.  Fill-skewed boundaries legitimately sit far from the structural
+ * center, so a startPrice-distance rule would false-positive on valid shifts.
  *
  * @param options.rejectInBandPlacements - When true, additionally reject a
  *   boundary under which a PLACED order sits strictly inside the implied gap
  *   band (stranding).  Honest writers never produce this — the promotion walk
- *   caps depth upstream and syncBoundaryToFunds clamps between typed rails —
- *   so it is OFF at commit time (a refusal could not repair the placement
+ *   caps depth upstream and the fill path carries its rotations in the same
+ *   batch — so it is OFF at commit time (a refusal could not repair the
  *   anyway) but ON for
  *   persisted-state validation, where stranding is exactly the poison
  *   signature and the safe fallback is a rebuild.
