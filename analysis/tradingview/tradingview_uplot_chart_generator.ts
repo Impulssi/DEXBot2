@@ -142,7 +142,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         vwapEnabled: data.vwapEnabled === true,
         vwapBars: Math.max(5, Math.round(data.vwapBars ?? 500)),
         priceScale: data.priceScale === 'linear' ? 'linear' : 'log',
-        rangeEnabled: data.rangeEnabled !== false,
+        rangeEnabled: data.rangeEnabled === true,
         rangeScaleEnabled: data.rangeScaleEnabled === true,
         rangeWidthPct: Number.isFinite(Number(data.rangeWidthPct)) && Number(data.rangeWidthPct) > 0
             ? Number(data.rangeWidthPct)

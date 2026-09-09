@@ -4,7 +4,7 @@ This exporter generates a standalone HTML chart in the `analysis/charts/` folder
 
 ## Recommended: `dexbot tv` (One Step)
 
-`dexbot tv` fetches the candles itself (chunked Kibana scans for pools, order-book fallback for pairs) and then renders through this exporter — no manual fetch/export steps needed:
+`dexbot tv` fetches the candles itself (chunked Kibana scans: pools with order-book fallback for pairs) and then renders through this exporter — no manual fetch/export steps needed:
 
 ```bash
 # Bot chart with AMA overlay (bot key from profiles/bots.json, default: 3 months)
@@ -17,10 +17,14 @@ dexbot tv 1.19.133
 # Any pair (pool-first, order-book fallback)
 dexbot tv TOKENA/TOKENB
 
+# MPA price-feed history instead of market candles (opt-in; MPA/MPA pairs
+# cross both feeds into one quote, e.g. HONEST.USD/HONEST.EUR)
+dexbot tv BTS/HONEST.USD --feed
+
 # Options
 dexbot tv <bot> --month 6              # months of 1h candles (default: 3)
 dexbot tv <bot> --chart analysis/charts/custom.html
-dexbot tv <bot> --scale linear         # log (default) or linear
+dexbot tv BTS/HONEST.USD --book # override: order-book fills instead of the pool
 ```
 
 Output: `analysis/charts/tv_<bot|pool_<id>|<a>_<b>>_1h_<N>m.html`, with a clickable `file://` link printed on completion. Unknown targets fail fast with the list of known bot keys.
@@ -33,7 +37,7 @@ The sections below cover manual usage (explicit candle files, direct runner flag
 - Candle timeframe buttons: `1h`, `4h`, `1d`, `1w`
 - Pair-orientation switcher for `A/B` and `B/A`
 - SMA overlay
-- Bot-grid range highlight (the bot's min/max around AMA with live asymmetric tilt; red above AMA, green below)
+- Bot-grid range highlight, off by default (the bot's min/max around AMA with live asymmetric tilt; red above AMA, green below)
 - Range-scale switch: fit the price axis to the range band
 - VWMA overlay
 - Bottom volume panel
@@ -176,12 +180,11 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 | `--ama-er-period <n>` | AMA ER period | `781` |
 | `--ama-fast-period <n>` | AMA fast period | `5.2` |
 | `--ama-slow-period <n>` | AMA slow period | `83.6` |
-| `--price-scale <log\|linear>` | Price axis scale | `log` |
-| `--scale <log\|linear>` | Alias for `--price-scale` | `log` |
 | `--vwap-bars <n>` | Rolling VWMA window | `500` |
 | `--no-sma` | Disable SMA | — |
 | `--no-ama` | Disable AMA | — |
 | `--no-vwap` | Disable VWMA | — |
+| `--range` | Enable range highlight (off by default; toggle in-chart) | off |
 | `--no-range` | Disable range highlight | — |
 | `--range-scale` | Range Scaling: size the band by AMA slope like the grid build + fit price axis to it | — |
 | `--range-span <mult>` | x-range around AMA, 1.2–2 (default: bot grid setting) | bot grid |

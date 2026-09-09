@@ -53,7 +53,7 @@ function parseArgs() {
         amaEnabled: true,
         vwapEnabled: false,
         vwapBars: 500,
-        rangeEnabled: true,
+        rangeEnabled: false,
         rangeScaleEnabled: false,
         rangeSpan: undefined,
         quiet: false,
@@ -70,7 +70,6 @@ function parseArgs() {
         else if (arg === '--bot-key') config.source.config.botKey = args[++i];
         else if (arg === '--chart') config.chartFile = args[++i];
         else if (arg === '--title') config.title = args[++i];
-        else if (arg === '--price-scale' || arg === '--scale') config.priceScale = String(args[++i] || 'log');
         else if (arg === '--sma-period') config.smaPeriod = Math.max(1, parseInt(args[++i], 10) || 500);
         else if (arg === '--ama-er-period') config.amaErPeriod = Math.max(1, parseInt(args[++i], 10) || DEFAULT_AMA.erPeriod);
         else if (arg === '--ama-fast-period') config.amaFastPeriod = Math.max(0.1, parseFloat(args[++i]) || DEFAULT_AMA.fastPeriod);
@@ -78,6 +77,7 @@ function parseArgs() {
         else if (arg === '--no-sma') config.smaEnabled = false;
         else if (arg === '--no-ama') config.amaEnabled = false;
         else if (arg === '--no-vwap') config.vwapEnabled = false;
+        else if (arg === '--range') config.rangeEnabled = true;
         else if (arg === '--no-range') config.rangeEnabled = false;
         else if (arg === '--range-scale') config.rangeScaleEnabled = true;
         else if (arg === '--range-span') config.rangeSpan = parseFloat(args[++i]);
