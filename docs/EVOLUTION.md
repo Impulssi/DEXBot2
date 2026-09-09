@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.5.3 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.5.4 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
  - **Growth Phase**: 2,141 commits over ~9 active months
 - **Code Maturity**: Evolution from basic utilities to a ~100,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 248 automated test files
-- **Releases**: 103 release entries (v0.1.0 to v1.5.3)
+- **Releases**: 103 release entries (v0.1.0 to v1.5.4)
 
 ---
 

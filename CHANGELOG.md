@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.4] - 2026-09-09 - Out-of-Grid Orphan Deferral, Range Band Color Fix
+
+### 2026-09-09
+
+- **Fix(tradingview)**: invert range band colors to red-above, green-below — the range envelope around AMA painted the upper segment green and the lower segment red; swaps `UP_FILL`/`DOWN_FILL` (plus boundary strokes) to the correct convention (chart cosmetics only, `analysis/tradingview/*`).
+- **Fix(sync)**: defer out-of-grid orphans instead of clamping onto edge slots (issue #24) — `slotIndexForPrice` clamps below/above-grid prices onto slot-0/slot-(N-1), so the genesis Pass-2 path mis-adopted the first sub-grid orphan into the rail slot (overwriting the live orderId and poisoning slot bookkeeping) and queued every further same-zone orphan as a duplicate `cancelOnly`, wrongfully cancelling live correctly-priced orders; new `isChainPriceOutOfGrid` guard defers out-of-range chain orders with reason `out-of-grid-deferred` (no adopt, no cancel) while exact in-rail orphans still adopt (`modules/order/sync_engine.ts`, `modules/order/utils/math.ts`, `tests/test_sync_out_of_grid_defer.ts` OUT-OF-GRID-001..005).
+- **Fix(sync)**: keep out-of-grid holds from freezing creates and refills — holds are permanent by design, so three paths keyed on "any unmatched order" froze around them: `validateCreateTargetSlots` flagged `chain_orphan_collision` on the hold's clamped candidate slot (permanently blocking that rail refill), the COW pre-broadcast gate rejected every CREATE batch (`UNMATCHED_CHAIN_ORDERS`), and snapshot recovery rejected the persisted grid (`full grid reset required`) on every restart while a hold existed; all three now filter `reason !== 'out-of-grid-deferred'` (holds stay visible to crossing guards and sync but block nothing), plus auto-cancel idle wording corrected and live order ids replaced with synthetic `1.7.91xxxx` in tests (`modules/order/utils/validate.ts`, `modules/dexbot_cow_runtime.ts`, `modules/dexbot_state_recovery.ts`, OUT-OF-GRID-006, `tests/test_uncertain_broadcast.ts` UNC-016f which fails pre-fix with `grid inconsistent after reload: 1 unmatched remain`).
+
 ## [1.5.3] - 2026-09-09 - Boundary Ownership Hardening, COW Dedup, TradingView Range Highlight, Sync Materialize Fix
 
 ### 2026-09-07

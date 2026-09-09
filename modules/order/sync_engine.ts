@@ -111,6 +111,7 @@ import {
     getBtsSide,
     getSellStartIdx,
     slotIndexForPrice,
+    isChainPriceOutOfGrid,
     isSlotInRail,
     isSlotIndexInGapBand,
     priceSlotEqual,
@@ -1221,7 +1222,7 @@ class SyncEngine {
                         continue;
                     }
                 }
-                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'deep-surplus-deferred' });
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'out-of-grid-deferred' });
                 mgr.logger?.log?.(`[SYNC] Deep-shelf orphan ${chainOrderId} (buy, price=${chainOrder.price}) deferred: shelf full — leaving live, no cancel`, 'warn');
                 continue;
             }
@@ -1235,6 +1236,21 @@ class SyncEngine {
                     continue;
                 }
                 const slotId = `slot-${idx}`;
+                // Out-of-grid hold: slotIndexForPrice clamps below/above-rail
+                // prices onto the edge slots (0/N-1), so the clamp is not a
+                // real match. A below-grid buy is not slot-0 and an
+                // above-grid sell is not slot-(N-1): never adopt into the
+                // rail slot and never cancel as its duplicate — hold/defer
+                // (no adopt, no cancelOnly), e.g. dip-protection levels
+                // sitting below a fresh grid after a reset.
+                {
+                    const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
+                    if (isChainPriceOutOfGrid(chainOrder.price, genesis, precision)) {
+                        unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'out-of-grid-deferred', candidateSlotId: slotId });
+                        mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: price outside grid range, deferred (nearest slot ${slotId})`, 'warn');
+                        continue;
+                    }
+                }
                 const gapSlots = genesis.gapSlots ?? (mgr as any)._gapSlots ?? 0;
                 const boundaryIdx = (mgr as any).boundaryIdx;
                 // Pre-boundary sync: gap geometry is unknown, so adoption is
@@ -1301,8 +1317,11 @@ class SyncEngine {
                 // Deep-shelf orphans are exempt from duplicate cancellation:
                 // extra live pins beyond the shelf count stay live (warned),
                 // they are never cancelled as price-level duplicates here.
+                // Aligned to the upstream out-of-grid hold framework so the
+                // create gate, collision set and snapshot recovery treat
+                // them as holds, not blockers.
                 if (chainOrder.type === ORDER_TYPES.BUY && deepPriceIndex(chainOrder.price) >= 0) {
-                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'deep-surplus-deferred' });
+                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'out-of-grid-deferred' });
                     mgr.logger?.log?.(`[SYNC] Deep-shelf orphan ${chainOrderId} (buy, price=${chainOrder.price}) deferred: shelf full — leaving live, no cancel`, 'warn');
                     continue;
                 }

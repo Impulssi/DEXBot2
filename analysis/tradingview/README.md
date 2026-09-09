@@ -33,7 +33,7 @@ The sections below cover manual usage (explicit candle files, direct runner flag
 - Candle timeframe buttons: `1h`, `4h`, `1d`, `1w`
 - Pair-orientation switcher for `A/B` and `B/A`
 - SMA overlay
-- Bot-grid range highlight (the bot's min/max around AMA with live asymmetric tilt; green above AMA when up, red below when down)
+- Bot-grid range highlight (the bot's min/max around AMA with live asymmetric tilt; red above AMA, green below)
 - Range-scale switch: fit the price axis to the range band
 - VWMA overlay
 - Bottom volume panel

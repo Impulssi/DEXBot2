@@ -8,7 +8,7 @@ import { PROCESSED_FILL_PERSISTENCE_MODES } from './order/processed_fill_store.j
 import { NATIVE_CLIENT, FILL_PROCESSING, TIMING, MAINTENANCE, ORDER_TYPES } from './constants.js';
 import { getErrorMessage } from './utils/errors.js';
 import { isOrderDoesNotExistError } from './dexbot_maintenance_runtime.js';
-import { slotIndexForPrice, isSlotInRail } from './order/utils/math.js';
+import { slotIndexForPrice, isChainPriceOutOfGrid, isSlotInRail } from './order/utils/math.js';
 import { ORDER_STATES } from './constants.js';
 function buildFillKey(...args: any) { return require('./order/utils/order').buildFillKey(...args); }
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
@@ -62,6 +62,17 @@ async function isUnknownFillOrderAdoptable(bot: any, fillOp: any): Promise<boole
         if (genesis && Array.isArray(genesis.priceLevels) && genesis.priceLevels.length > 0) {
             try {
                 const idx = slotIndexForPrice(price, genesis);
+                // Out-of-grid hold (mirror of the sync Pass-2 guard): the
+                // clamp onto edge slot 0/N-1 is not a real match. An
+                // out-of-grid live order is not adoptable here — fall
+                // through to the credit path instead of deferring credit
+                // to an adoption sync that must not adopt it.
+                {
+                    const precision = parsed.type === ORDER_TYPES.SELL
+                        ? bot.manager?.assets?.assetA?.precision
+                        : bot.manager?.assets?.assetB?.precision;
+                    if (isChainPriceOutOfGrid(price, genesis, precision)) return false;
+                }
                 const slotId = `slot-${idx}`;
                 const slot = bot.manager.orders.get(slotId);
                 if (!slot) return false;
