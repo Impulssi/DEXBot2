@@ -33,7 +33,8 @@ The sections below cover manual usage (explicit candle files, direct runner flag
 - Candle timeframe buttons: `1h`, `4h`, `1d`, `1w`
 - Pair-orientation switcher for `A/B` and `B/A`
 - SMA overlay
-- AMA overlay with explicit `erPeriod`, `fastPeriod`, and `slowPeriod` inputs
+- Bot-grid range highlight (the bot's min/max around AMA with live asymmetric tilt; green above AMA when up, red below when down)
+- Range-scale switch: fit the price axis to the range band
 - VWMA overlay
 - Bottom volume panel
 - Crosshair legend with current candle values
@@ -181,6 +182,9 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 | `--no-sma` | Disable SMA | — |
 | `--no-ama` | Disable AMA | — |
 | `--no-vwap` | Disable VWMA | — |
+| `--no-range` | Disable range highlight | — |
+| `--range-scale` | Range Scaling: size the band by AMA slope like the grid build + fit price axis to it | — |
+| `--range-span <mult>` | x-range around AMA, 1.25–2 (default: bot grid setting) | bot grid |
 | `--quiet` | Suppress progress logs | — |
 
 ## Notes

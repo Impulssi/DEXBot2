@@ -79,6 +79,9 @@ function resolveSource(config: SourceConfig, options: { quiet?: boolean } = {}):
             }
         }
         const source = createSource('json', { filePath: filePath! });
+        if (config.botKey) {
+            return { source, botKey: config.botKey, amaConfig: resolveAmaConfig(config.botKey), amaKey: resolveAmaKey(config.botKey) };
+        }
         return { source, amaConfig: resolveAmaConfig(''), amaKey: 'AMA3' };
     }
 
