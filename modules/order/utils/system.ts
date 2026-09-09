@@ -1204,6 +1204,12 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
             actions.length = 0;
             actions.push(...optimizedActions);
         }
+        // Refill-slot wire (boundary-hold): unpairable hole-CREATEs surviving
+        // the fold above justify the pending boundary shift. The executor
+        // holds the committed boundary when a listed refill is guard-skipped.
+        const refillSlotIds = actions
+            .filter((a: any) => a?.type === COW_ACTIONS.CREATE && typeof a?.id === 'string' && a.id.length > 0)
+            .map((a: any) => a.id);
 
         // Build COW result with all actions
         if (actions.length > 0) {
@@ -1212,6 +1218,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                 workingGrid,
                 workingIndexes: workingGrid.getIndexes(),
                 workingBoundary: pendingBoundaryIdx,
+                refillSlotIds,
                 aborted: false
             };
         } else if (resizeCowResult?.hasWorkingChanges) {

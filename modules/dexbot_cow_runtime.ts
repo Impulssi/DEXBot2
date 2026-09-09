@@ -2139,12 +2139,21 @@ function buildCowResultFromPlan(bot: any, plan: any) {
         }
     }
 
+    // Refill-slot wire (boundary-hold): producers attach the slot ids of
+    // hole-CREATEs that justify this plan's boundary shift; the executor
+    // holds the committed boundary when a listed refill is guard-skipped.
+    // Absent/non-array => undefined (guarded default at execution, never
+    // fail-open). Spread-correction plans never set this (disjoint bypass).
+    const refillSlotIds = Array.isArray((plan as any)?.refillSlotIds)
+        ? (plan as any).refillSlotIds.filter((id: any) => typeof id === 'string' && id.length > 0)
+        : undefined;
     return {
         workingGrid,
         workingIndexes: workingGrid.getIndexes(),
         workingBoundary,
         actions,
-        origin: (plan as any)?.origin
+        origin: (plan as any)?.origin,
+        ...(refillSlotIds !== undefined ? { refillSlotIds } : {})
     };
 }
 
@@ -2327,6 +2336,61 @@ async function pollChainForConfirmation(bot: any, opContexts: any, options: any 
     return { allConfirmed: false, confirmed, unconfirmed: remaining, confirmedChainIds: [...matchedChainIds] };
 }
 
+/**
+ * Normalize a producer-supplied refillSlotIds wire into a Set.
+ * Absent/empty/non-array => empty (guarded default, never fail-open).
+ */
+function toRefillSlotIdSet(refillSlotIds: any): Set<string> {
+    const set = new Set<string>();
+    if (Array.isArray(refillSlotIds)) {
+        for (const id of refillSlotIds) {
+            if (typeof id === 'string' && id.length > 0) set.add(id);
+        }
+    }
+    return set;
+}
+
+/**
+ * Boundary-hold decision for guard-skipped refills.
+ * When a skipped slot is one of the plan's refill slots — a hole-CREATE that
+ * justified the planned boundary shift — the committed boundary is kept: the
+ * slot was never placed (CREATE skip) or restored to master (UPDATE skip), so
+ * committing the planned boundary would strand empty rail holes past it
+ * (91->94 with 91-94 empty self-legalizes via resolveGapBand).
+ * Unrelated vetoes (skip ids outside the refill set) never pin geometry.
+ * The grid still commits; only the boundary value is held (same discipline
+ * as the overrun-hold in validateBoundaryCommit).
+ */
+function resolveRefillBoundaryHold(
+    workingBoundary: any,
+    committedBoundary: any,
+    skippedUpdateSlotIds: any,
+    clampedUpdateSlotIds: any,
+    refillSlotIds: any,
+    skippedCreateSlotIds: any = undefined
+): { effectiveBoundary: any; heldRefillSlotIds: string[] } {
+    const refills = toRefillSlotIdSet(refillSlotIds);
+    const heldRefillSlotIds: string[] = [];
+    if (refills.size > 0) {
+        const seen = new Set<string>();
+        const skipCollections = skippedCreateSlotIds !== undefined
+            ? [skippedUpdateSlotIds, clampedUpdateSlotIds, skippedCreateSlotIds]
+            : [skippedUpdateSlotIds, clampedUpdateSlotIds];
+        for (const coll of skipCollections) {
+            if (!coll || typeof coll[Symbol.iterator] !== 'function') continue;
+            for (const id of coll) {
+                if (typeof id === 'string' && refills.has(id) && !seen.has(id)) {
+                    seen.add(id);
+                    heldRefillSlotIds.push(id);
+                }
+            }
+        }
+    }
+    return {
+        effectiveBoundary: heldRefillSlotIds.length > 0 ? committedBoundary : workingBoundary,
+        heldRefillSlotIds
+    };
+}
 /**
  * Restore skipped update slots in the working grid to master state.
  * @param {import('./dexbot_class.js').DEXBot} bot
@@ -2898,6 +2962,10 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     const replanDepth = Number.isFinite(Number(options?.replanDepth)) ? Number(options.replanDepth) : 0;
     bot._currentCycleId = (Number.isFinite(Number(bot._currentCycleId)) ? Number(bot._currentCycleId) : 0) + 1;
     const { workingGrid, workingIndexes, workingBoundary, actions } = cowResult;
+    // Boundary-hold value: computed pre-broadcast after the skip-restore and
+    // frozen for every downstream commit path (success + uncertain-catch).
+    // workingBoundary itself stays untouched (audit trail).
+    let effectiveBoundary: any = workingBoundary;
 
     if (bot.config.dryRun) {
         const cancelCount = actions.filter((a: any) => a.type === COW_ACTIONS.CANCEL).length;
@@ -2969,6 +3037,10 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     const opContexts: any[] = [];
     const skippedUpdateSlotIds = new Set();
     let skippedUpdateCount = 0;
+    // Guard-skipped CREATE slot ids (hole-refills never placed). Fed to the
+    // boundary-hold intersect alongside the UPDATE sets above — a skipped
+    // refill CREATE strands its rail hole exactly like a restored UPDATE.
+    const skippedCreateSlotIds = new Set();
     // Per-batch LAST-FILL-GUARD disposition counters. Per-action pass lines
     // would spam big batches, so the guard emits one batch summary instead
     // (see the summary after the action loop below).
@@ -3053,6 +3125,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             `Skipping create op for ${action.id}: ${sizeValidation.reason}`,
                             'warn'
                         );
+                        if (action.id) skippedCreateSlotIds.add(action.id);
                         continue;
                     }
                     const liveSlot = bot.manager.orders.get(order.id);
@@ -3085,6 +3158,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             `The next reconcile cycle will resolve the mismatch.`,
                             'warn'
                         );
+                        if (order.id) skippedCreateSlotIds.add(order.id);
                         continue;
                     }
 
@@ -3118,6 +3192,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             `${crossedOrderLabel(effectiveCrossed)}; re-planned after its cancel confirms.`,
                             'warn'
                         );
+                        if (order.id) skippedCreateSlotIds.add(order.id);
                         continue;
                     }
 
@@ -3140,6 +3215,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                     `[LAST-FILL-GUARD] Skipping ${order.type} CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} (halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)}); re-planned after market moves`,
                                     'warn'
                                 );
+                                if (order.id) skippedCreateSlotIds.add(order.id);
                                 continue;
                             }
                             lastFillGuardStats.passed++;
@@ -3162,6 +3238,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             `Skipping create op for ${action.id}: amounts would round to 0 on blockchain`,
                             'warn'
                         );
+                        if (action.id) skippedCreateSlotIds.add(action.id);
                         continue;
                     }
                     operations.push(buildResult.op);
@@ -3672,6 +3749,25 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 'debug'
             );
         }
+        // BOUNDARY HOLD: skipped refill slots strand empty rail holes past the
+        // planned boundary (commit gate skips empties, self-legalizing) — hold
+        // the committed boundary; intersect-only, grid still commits.
+        const refillHold = resolveRefillBoundaryHold(
+            workingBoundary,
+            bot.manager.boundaryIdx,
+            skippedUpdateSlotIds,
+            clampedUpdateSlotIds,
+            (cowResult as any)?.refillSlotIds,
+            skippedCreateSlotIds
+        );
+        effectiveBoundary = refillHold.effectiveBoundary;
+        if (refillHold.heldRefillSlotIds.length > 0) {
+            bot.manager.logger.log(
+                `[COW] Boundary hold: ${refillHold.heldRefillSlotIds.length} refill slot(s) skipped ` +
+                `(${refillHold.heldRefillSlotIds.join(', ')}) — keeping ${bot.manager.boundaryIdx} over planned ${workingBoundary}`,
+                'warn'
+            );
+        }
 
         if (operations.length === 0) {
             // Pop the working grid: in the re-plan recursion the fresh plan's
@@ -3832,7 +3928,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 const commitOk: boolean = await bot.manager._commitWorkingGrid(
                     workingGrid,
                     workingIndexes,
-                    workingBoundary,
+                    effectiveBoundary,
                     { skipRecalc: true, result: cowResult }
                 );
                 if (!commitOk) {
@@ -3843,7 +3939,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     return await recoverRefusedCommit(
                         bot, chainOrders, '[COW]',
                         { placedResults: result, placedContexts: executedContexts },
-                        executedContexts, workingBoundary,
+                        executedContexts, effectiveBoundary,
                         {
                             failureResyncReason: 'commit refused after broadcast (chain adoption unavailable)',
                             failureLogMessage: 'Commit refused and chain adoption unavailable; keeping pending-broadcast protection pending structural resync',
@@ -3951,7 +4047,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     const pollCommitOk: boolean = await bot.manager._commitWorkingGrid(
                         workingGrid,
                         workingIndexes,
-                        workingBoundary,
+                        effectiveBoundary,
                         { skipRecalc: true, result: cowResult }
                     );
                     if (!pollCommitOk) {
@@ -3961,7 +4057,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         return await recoverRefusedCommit(
                             bot, chainOrders, '[COW][UNCERTAIN]',
                             { placedContexts: opContexts, polledCreateIds: confirmation.confirmedChainIds },
-                            opContexts, workingBoundary,
+                            opContexts, effectiveBoundary,
                             {
                                 successReturn: { executed: false, hadRotation: false, commitRefused: true, uncertainResolved: true },
                                 failureResyncReason: 'poll-confirmed commit refused (chain adoption unavailable)',
@@ -3986,7 +4082,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     return await recoverRefusedCommit(
                         bot, chainOrders, '[COW][UNCERTAIN]',
                         { placedContexts: opContexts, polledCreateIds: confirmation.confirmedChainIds },
-                        opContexts, workingBoundary,
+                        opContexts, effectiveBoundary,
                         {
                             extraReturn: { commitRefused: false },
                             successReturn: { executed: true, hadRotation: false, uncertainResolved: true },
@@ -4644,7 +4740,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
         updateOperationCount
     };
 }
-export { isLastFillGuardBlocked, refreshLastFillPivotFromQueue, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain };
+export { isLastFillGuardBlocked, refreshLastFillPivotFromQueue, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain, resolveRefillBoundaryHold, toRefillSlotIdSet };
 
 
 export default {
@@ -4675,6 +4771,8 @@ export default {
     buildActionsFromPlan,
     buildCowResultFromPlan,
     restoreSkippedUpdateSlotsInWorkingGrid,
+    resolveRefillBoundaryHold,
+    toRefillSlotIdSet,
     applyRotationTransitionsToWorkingGrid,
     pollChainForConfirmation,
     updateOrdersOnChainBatchCOW,

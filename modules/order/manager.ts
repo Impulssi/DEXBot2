@@ -257,6 +257,14 @@ class COWRebalanceEngine {
             optimizedActions.length = 0;
             optimizedActions.push(...guarded);
         }
+        // Refill-slot wire (boundary-hold): surviving hole-CREATEs justify this
+        // plan's boundary shift (folded CANCEL+CREATE pairs already became
+        // stamped UPDATEs above; stale-dropped placements are excluded — a
+        // deferred placement justifies nothing). The executor holds the
+        // committed boundary when a listed refill is guard-skipped.
+        const refillSlotIds = optimizedActions
+            .filter((a: any) => a?.type === COW_ACTIONS.CREATE && typeof a?.id === 'string' && a.id.length > 0)
+            .map((a: any) => a.id);
 
         projectTargetToWorkingGrid(workingGrid, targetGrid, { actions: optimizedActions });
 
@@ -314,7 +322,8 @@ class COWRebalanceEngine {
                 stateUpdates,
                 workingGrid,
                 workingBoundary: targetBoundary,
-                planningDuration: duration
+                planningDuration: duration,
+                refillSlotIds
             }),
             evacReady
         };

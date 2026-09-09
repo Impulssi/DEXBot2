@@ -1219,7 +1219,8 @@ function buildSuccessResult({
     stateUpdates,
     workingGrid,
     workingBoundary,
-    planningDuration
+    planningDuration,
+    refillSlotIds
 }: any) {
     return {
         actions,
@@ -1229,6 +1230,10 @@ function buildSuccessResult({
         workingIndexes: workingGrid.getIndexes(),
         workingBoundary,
         planningDuration,
+        // Refill-slot wire (boundary-hold): hole-CREATE ids justifying the
+        // planned boundary shift. May be absent/empty => executor treats as
+        // empty (guarded default, never fail-open).
+        ...(refillSlotIds !== undefined ? { refillSlotIds } : {}),
         aborted: false
     };
 }
