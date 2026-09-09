@@ -783,6 +783,7 @@ async function adoptMatchedEntries(bot: any, adopted: any[], opContexts: any): P
                     chainOrderId,
                     expectedType,
                     fee: btsFeeData?.createFee || 0,
+                    order: plannedOpCtx.order ?? entry.order ?? null,
                 }, 'createOrder');
             } catch (syncErr: any) {
                 bot.manager.logger.log(
@@ -891,7 +892,46 @@ async function restoreDiscardedCreates(bot: any, discarded: any[], opContexts: a
                                 await bot.manager.applyGridUpdateBatch(updates, 'uncertain-broadcast-discard-restore');
                             }
                         }
+                    } else {
+                        // Slot missing from master (grid reset raced the uncertain
+                        // broadcast). Deleting the pending entry below without
+                        // restoring anything would leave a clean hole the next
+                        // cycle re-CREATEs — duplicating a possibly-landed order.
+                        // Materialize the creation-uncertain slot from the
+                        // broadcast-time descriptor so the next sync's orphan
+                        // adoption reconciles a landed order into it.
+                        const missingType = entry.order.type;
+                        if (missingType === ORDER_TYPES.BUY || missingType === ORDER_TYPES.SELL) {
+                            bot.manager.logger.log(
+                                `[COW][UNCERTAIN] Slot ${entry.order.id} missing from master after discard — materializing creation-uncertain state ` +
+                                `(type=${missingType}, size: ${entry.order.size}); next sync adoption will reconcile any landed order`,
+                                'warn'
+                            );
+                            const updates = [{
+                                id: entry.order.id,
+                                type: missingType,
+                                size: entry.order.size,
+                                price: entry.order.price,
+                                state: ORDER_STATES.VIRTUAL,
+                                createUncertain: true,
+                                orderId: null,
+                                rawOnChain: null,
+                            }];
+                            if (typeof bot.manager.applyGridUpdateBatch === 'function') {
+                                await bot.manager.applyGridUpdateBatch(updates, 'uncertain-broadcast-discard-restore');
+                            }
+                        } else {
+                            bot.manager.logger.log(
+                                `[COW][UNCERTAIN] Slot ${entry.order.id} missing from master after discard with unrecognized type ${missingType} — cannot reconstruct creation-uncertain state; next sync must adopt any landed order as an orphan`,
+                                'error'
+                            );
+                        }
                     }
+                } else {
+                    bot.manager.logger.log(
+                        `[COW][UNCERTAIN] Discarded CREATE for slot ${entry.slotId} has no usable placement descriptor (id=${entry.order?.id ?? 'none'}, size=${entry.order?.size ?? 'none'}, type=${entry.order?.type ?? 'none'}) — nothing restored; next sync must adopt any landed order as an orphan`,
+                        'error'
+                    );
                 }
             } catch (restoreErr: any) {
                 bot.manager.logger.log(
@@ -899,6 +939,11 @@ async function restoreDiscardedCreates(bot: any, discarded: any[], opContexts: a
                     'error'
                 );
             }
+        } else {
+            bot.manager.logger.log(
+                `[COW][UNCERTAIN] Discarded pending broadcast for slot ${entry.slotId} is not a recognizable CREATE (no create opContext, no order id/type) — skipping restore; next sync must adopt any landed order as an orphan`,
+                'error'
+            );
         }
         // Remove from pending broadcasts.
         if (entry.fingerprint && bot.manager._pendingBroadcasts?.has(entry.fingerprint)) {
@@ -4495,6 +4540,7 @@ async function applyAdoptionFeeAccounting(bot: any, contexts: any) {
                     isPartialPlacement: false,
                     expectedType: ctx.order.type,
                     fee: btsFeeData?.createFee || 0,
+                    order: ctx.order ?? null,
                 }, 'createOrder');
             } catch (feeErr: any) {
                 bot.manager.logger.log(
@@ -4615,7 +4661,8 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
             const chainOrderId = res && res[1];
             if (chainOrderId) {
                 await bot.manager.synchronizeWithChain({
-                    gridOrderId: ctx.order.id, chainOrderId, expectedType: ctx.order.type, fee: btsFeeData?.createFee || 0
+                    gridOrderId: ctx.order.id, chainOrderId, expectedType: ctx.order.type, fee: btsFeeData?.createFee || 0,
+                    order: ctx.order ?? null,
                 }, 'createOrder');
 
                 if (ctx.finalInts) {
@@ -4741,6 +4788,9 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
     };
 }
 export { isLastFillGuardBlocked, refreshLastFillPivotFromQueue, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain, resolveRefillBoundaryHold, toRefillSlotIdSet };
+// Exported for regression tests (issue #23 sibling): the uncertain-broadcast
+// discard path must never drop a placement silently when master lost the slot.
+export { restoreDiscardedCreates };
 
 
 export default {
