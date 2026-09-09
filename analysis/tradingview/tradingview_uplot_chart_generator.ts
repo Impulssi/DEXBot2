@@ -11,7 +11,7 @@ import { getStorage } from '../../modules/storage/index.js';
 const { readJSON } = getStorage();
 import { getErrorMessage } from '../../modules/utils/errors.js';
 import { parseRelativeMultiplier } from '../../modules/order/utils/math.js';
-import { computeAverageAmaSlopePct } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
+import { computeAverageAmaSlopePct, computeAmaSlopeClipThreshold } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
 import {
     resolveBaseBounds,
     computeAsymmetricBoundsMetrics,
@@ -118,6 +118,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         maxSlopeOffset: MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP,
         maxAsymmetryFactor: MARKET_ADAPTER.ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR,
         minScaleSlots: MARKET_ADAPTER.ASYMMETRIC_BOUNDS_MIN_SCALE_SLOTS,
+        clipPercentile: MARKET_ADAPTER.DYNAMIC_WEIGHT_CLIP_PERCENTILE,
     };
     function defaultRangeSpan(input: { rangeSpan?: unknown; grid?: { minPrice?: unknown; maxPrice?: unknown } | null }): number {
         const cli = Number(input.rangeSpan);
@@ -532,8 +533,8 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     <div class="indicator" title="Range min/max built only from the live AMA price (red above, green below); Scale sizes it by AMA slope like the grid build">
                         <label><input type="checkbox" id="range-toggle"${defaults.rangeEnabled ? ' checked' : ''}> Range</label>
                         <label title="Range Scaling: size the band by AMA slope like the grid build (trend side widens, opposite tightens) and fit the price axis to it"><input type="checkbox" id="range-scale-toggle"${defaults.rangeScaleEnabled ? ' checked' : ''}> Scale</label>
-                        <span id="range-grid-wrap" style="display:${defaults.grid ? 'inline' : 'none'}" title="x-range around AMA (default = bot grid setting)">
-                            <span class="tag">grid</span>
+                        <span id="range-grid-wrap" style="display:inline" title="x-range around AMA (1.25x–2.0x)">
+                            <span class="tag">span</span>
                             <input type="range" id="range-span" min="1.25" max="2" step="0.05" value="${defaults.rangeSpan.toFixed(2)}" style="width:90px;vertical-align:middle">
                             <span id="range-span-val" style="font-size:11px;color:#8b949e;width:40px;display:inline-block;text-align:right">${defaults.rangeSpan.toFixed(2)}x</span>
                         </span>
@@ -1166,14 +1167,14 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         // Bot-grid range band: min/max derive ONLY from the live AMA price.
         // All math below runs the canonical market_adapter/grid sources,
         // embedded verbatim (not hand-copied): computeAverageAmaSlopePct,
-        // applyAsymmetricBounds (+ metrics/base), applyNarrowingSideGuard,
-        // parseRelativeMultiplier. With Range Scaling on, the AMA slope sizes
-        // the real range: trend side widens, opposite side tightens. Painted
-        // symmetrically always: red [AMA, upper], green [lower, AMA].
-        // Without usable grid shape falls back to a width% envelope around AMA.
+        // computeAmaSlopeClipThreshold, applyAsymmetricBounds (+ metrics/base),
+        // applyNarrowingSideGuard, parseRelativeMultiplier. With Range Scaling
+        // on, the clipped AMA slope tilts the span-symmetric band like the
+        // grid build: trend side widens, opposite side tightens. Painted
+        // red [AMA, upper], green [lower, AMA].
         // Never reads candles, pair-display mapping, or axis/zoom state —
         // inversion and timeframe sampling apply to the AMA first.
-        ${embedFunctionSources([computeAverageAmaSlopePct, resolveBaseBounds, computeAsymmetricBoundsMetrics, applyAsymmetricBounds, applyNarrowingSideGuard, parseRelativeMultiplier])}
+        ${embedFunctionSources([computeAverageAmaSlopePct, computeAmaSlopeClipThreshold, resolveBaseBounds, computeAsymmetricBoundsMetrics, applyAsymmetricBounds, applyNarrowingSideGuard, parseRelativeMultiplier])}
         function computeRangeBand(baseAma) {
             const n = Array.isArray(baseAma) ? baseAma.length : 0;
             const upper = new Array(n).fill(null);
@@ -1188,19 +1189,19 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const maxAsym = gridCfg && Number(gridCfg.maxAsymmetryFactor) > 0
                 ? Number(gridCfg.maxAsymmetryFactor)
                 : (Number(slopeCfg.maxAsymmetryFactor) > 0 ? Number(slopeCfg.maxAsymmetryFactor) : 0.35);
-            const widthPct = Number(currentRangeWidthPct) > 0 ? Number(currentRangeWidthPct) : 2;
             const inc = gridCfg && Number(gridCfg.incrementPercent) > 0 ? Number(gridCfg.incrementPercent) : null;
             const minSlots = Math.floor(Number(gridCfg && gridCfg.minScaleSlots) > 0 ? Number(gridCfg.minScaleSlots) : (Number(slopeCfg.minScaleSlots) || 0));
-            // User x-range span (slider, default = bot grid ratio): the only
-            // width input — min = AMA/span, max = AMA*span. Grid config only
-            // selects the grid path vs the width% fallback, never a price.
+            // User x-range span (slider 1.25x–2.0x, default 1.55x): the only
+            // width input — symmetric base min = AMA/span, max = AMA*span.
             const span = Math.min(2, Math.max(1.25, Number(currentRangeSpan) > 0 ? Number(currentRangeSpan) : 1.55));
-            const gMinN = Number(gridCfg && gridCfg.minPrice);
-            const gMaxN = Number(gridCfg && gridCfg.maxPrice);
-            const multOk = (v) => { const m = parseRelativeMultiplier(v); return m != null && m > 1; };
-            const hasGridShape = gridCfg != null && (
-                (multOk(gridCfg.minPrice) && multOk(gridCfg.maxPrice)) ||
-                (Number.isFinite(gMinN) && Number.isFinite(gMaxN) && gMinN > 0 && gMaxN > gMinN));
+            // Canonical grid pipeline (ama_slope_model): adaptive percentile
+            // clip over the AMA history, then offset + trend — the same numbers
+            // the live grid build feeds into applyAsymmetricBounds.
+            const clipPct = Number(slopeCfg.clipPercentile) >= 0 ? Number(slopeCfg.clipPercentile) : 10;
+            const clipEr = Number.isFinite(currentAmaErPeriod) && currentAmaErPeriod > 0
+                ? Math.ceil(currentAmaErPeriod)
+                : Math.ceil(Number(payload.amaDefaults?.erPeriod) || 781);
+            const clipThreshold = computeAmaSlopeClipThreshold(baseAma, clipEr, lookback, clipPct);
             const slopeScaling = !!currentRangeScaleEnabled;
             if (!currentAmaEnabled || n === 0) return { upper, lower, trend };
             for (let i = 0; i < n; i++) {
@@ -1209,29 +1210,17 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 if (!Number.isFinite(ama) || ama <= 0 || !Number.isFinite(past) || past <= 0) continue;
                 const slopePct = computeAverageAmaSlopePct(ama, past, lookback);
                 if (slopePct == null || !Number.isFinite(slopePct)) continue;
-                const dir = Math.abs(slopePct) <= neutral ? 0 : (slopePct > 0 ? 1 : -1);
-                const strength = Math.min(Math.abs(slopePct) / maxSlope, 1);
-                if (!hasGridShape) {
-                    // Width% envelope: symmetric around AMA; scaling sizes it
-                    // by slope strength ("real range"), otherwise full width.
-                    const w = slopeScaling ? strength * widthPct : widthPct;
-                    if (!(w > 0)) continue;
-                    const half = ama * w / 100;
-                    if (!Number.isFinite(half) || half <= 0) continue;
-                    upper[i] = ama + half;
-                    lower[i] = Math.max(ama - half, ama * 1e-6);
-                    trend[i] = dir;
-                    continue;
-                }
+                const csp = Math.max(-clipThreshold, Math.min(clipThreshold, slopePct));
+                const dir = Math.abs(csp) <= neutral ? 0 : (csp > 0 ? 1 : -1);
                 // Symmetric base from this bar's AMA and the user span —
                 // no chart or config price level.
                 let rMin = ama / span;
                 let rMax = ama * span;
                 if (slopeScaling && dir !== 0) {
-                    // Canonical tilt: ama_slope_model slope offset applied
-                    // through asymmetric_bounds, then the narrowing-side guard.
+                    // Canonical tilt: clipped slope offset applied through
+                    // asymmetric_bounds, then the narrowing-side guard.
                     const trendName = dir > 0 ? 'UP' : 'DOWN';
-                    const slopeOffset = clamp(slopePct / maxSlope, -1, 1) * maxSlopeOffset;
+                    const slopeOffset = clamp(csp / maxSlope, -1, 1) * maxSlopeOffset;
                     const tilt = applyAsymmetricBounds({
                         centerPrice: ama,
                         minPrice: ama / span,
@@ -2068,7 +2057,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             document.getElementById('range-scale-toggle').checked = currentRangeScaleEnabled;
             document.getElementById('range-span').value = Number(currentRangeSpan).toFixed(2);
             document.getElementById('range-span-val').textContent = Number(currentRangeSpan).toFixed(2) + 'x';
-            document.getElementById('range-grid-wrap').style.display = payload.grid ? 'inline' : 'none';
+            document.getElementById('range-grid-wrap').style.display = 'inline';
             document.getElementById('ama-init-offset-toggle').checked = currentAmaInitOffsetEnabled;
             document.getElementById('ama-init-offset').value = String(currentAmaInitOffset);
             document.getElementById('ama-init-offset').disabled = !currentAmaInitOffsetEnabled;
