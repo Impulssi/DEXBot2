@@ -664,12 +664,14 @@ async function main() {
         // cheapest live offer listing the pair.
         let liveOffer: any = null;
         let liveRate: number | null = null;
+        let liveOfferId: string | null = null;
         const offerRows = pairRows.filter((r) => r.source === 'offer' && r.rate !== null && r.offerId);
         if (offerRows.length > 0) {
           const ranked = offerRows.map((r) => ({ r, daily: dailyOfferFeeRate(offerById.get(r.offerId!), feeDenom) }))
             .sort((a, b) => a.daily - b.daily || String(a.r.offerId).localeCompare(String(b.r.offerId)));
           liveOffer = offerById.get(ranked[0].r.offerId!) || null;
           liveRate = ranked[0].r.rate;
+          liveOfferId = ranked[0].r.offerId != null ? String(ranked[0].r.offerId) : null;
         } else if (pair.debtId && pair.collId) {
           const liveOffers = (await fetchLiveOffers(pair.debtId)).filter((o) => o?.enabled !== false);
           const cands: Array<{ offer: any; rate: number; daily: number; id: string }> = [];
@@ -686,7 +688,7 @@ async function main() {
             if (rate !== null) cands.push({ offer: o, rate, daily: dailyOfferFeeRate(o, feeDenom), id: String(o.id) });
           }
           cands.sort((a, b) => a.daily - b.daily || a.id.localeCompare(b.id));
-          if (cands.length > 0) { liveOffer = cands[0].offer; liveRate = cands[0].rate; }
+          if (cands.length > 0) { liveOffer = cands[0].offer; liveRate = cands[0].rate; liveOfferId = cands[0].id; }
         }
         const avail = liveOffer && pair.debtId
           ? await toFloat(Number(liveOffer.current_balance), pair.debtId)
@@ -706,10 +708,13 @@ async function main() {
             ? colors.white
             : displayCr > pair.maxCR ? colors.sell : colors.buy;
         const crText = displayCr !== null ? formatAmount(displayCr) : 'n/a';
+        if (!liveOfferId && liveOffer?.id != null) liveOfferId = String(liveOffer.id);
         const availText = avail !== null && avail > 0
-          ? `${formatAmount(avail)} ${pair.debtSym} avail.`
-          : 'no funds avail.';
-        console.log(`   ${colors.white}${colors.bold}Curr. CR:${colors.reset} ${crColor}${crText}${colors.reset}, ${pair.debtSym}←${pair.collSym} | ${availText}`);
+          ? `${formatAmount(avail)} ${pair.debtSym}`
+          : 'no funds';
+        const shortOfferId = liveOfferId?.includes('.') ? liveOfferId.split('.').pop()! : liveOfferId;
+        const idSuffix = shortOfferId ? ` ${colors.gray}(${shortOfferId})${colors.reset}` : '';
+        console.log(`   ${colors.white}${colors.bold}Curr. CR:${colors.reset} ${crColor}${crText}${colors.reset}, ${pair.debtSym}←${pair.collSym} | ${availText}${idSuffix}`);
       }
     }
     if (callOrders.length === 0 && deals.length === 0) {
