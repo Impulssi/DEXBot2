@@ -33,6 +33,10 @@
 import { fillCandleGaps } from '../candle_utils.js';
 import { resolveRequestedFillRange } from '../core/kibana_candles.js';
 import { kibanaSearch, DEFAULT_CONFIG as BASE_CONFIG } from '../core/kibana_client.js';
+import { path } from '../../modules/path_api.js';
+import { PATHS } from '../../modules/paths.js';
+import { toIntervalLabel } from '../interval_utils.js';
+import { chunkPathFor, buildFetchWindowsFromRange, runCachedWindows } from './window_cache.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -458,6 +462,107 @@ async function getFeedCandlesForMpaCross(assetA: any, assetB: any, legA: any, le
     return applyGapFill(bucketPricesToCandles(points, cfg.intervalSeconds), cfg);
 }
 
+// ─── Sequential cached fetch (tv --feed) ───────────────────────────────────────
+// Without this, every `dexbot tv --feed` re-queries all windows from Kibana.
+// Chunk files live under MARKET_ADAPTER.FEED_DATA_DIR and reuse the shared
+// bucket-cache machinery (see window_cache.js): shifted reruns reuse local
+// buckets and query only what is missing.
+//
+// Correctness note: single-MPA pairs allow sub-range fetches (each bucket is
+// built from its own publishes). MPA/MPA crosses forward-fill the denominator
+// leg, which needs history before the query start — so crosses reuse exact
+// ranges but always take full-window fetches otherwise (same boundary
+// semantics as the uncached path: only the window-start edge is affected).
+
+function feedSlugPart(value: any) {
+    return String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '') || 'unknown';
+}
+
+function feedCacheKey(feedCtx: any) {
+    if (feedCtx?.kind === 'cross') {
+        const a = feedCtx.legs[0]?.mpa?.symbol || feedCtx.legs[0]?.mpa?.id || 'legA';
+        const b = feedCtx.legs[1]?.mpa?.symbol || feedCtx.legs[1]?.mpa?.id || 'legB';
+        return `cross_${feedSlugPart(a)}_${feedSlugPart(b)}`;
+    }
+    return feedSlugPart(feedCtx?.legs[0]?.mpa?.symbol || feedCtx?.legs[0]?.mpa?.id || 'feed');
+}
+
+function feedOutputPath(feedKey: any, intervalSeconds: any, assetA: any, assetB: any) {
+    const label = toIntervalLabel(intervalSeconds);
+    const folder = `${feedSlugPart(assetA?.symbol)}_${feedSlugPart(assetB?.symbol)}`;
+    return path.join(PATHS.MARKET_ADAPTER.FEED_DATA_DIR, folder, `feed_${feedSlugPart(feedKey)}_${label}.json`);
+}
+
+function isFeedChunkMatch(meta: any, requestKey: any) {
+    if (meta.feed !== requestKey.feed) return false;
+    if (meta.intervalSeconds !== requestKey.intervalSeconds) return false;
+    if (meta.assetA?.id !== requestKey.assetA.id || meta.assetB?.id !== requestKey.assetB.id) return false;
+    if (meta.assetA?.precision !== requestKey.assetA.precision || meta.assetB?.precision !== requestKey.assetB.precision) return false;
+    return true;
+}
+
+async function fetchFeedCandlesSequentially(feedCtx: any, assetA: any, assetB: any, opts: any = {}) {
+    const intervalSeconds = Number(opts.intervalSeconds) || 3600;
+    const chunkMonths = Number(opts.chunkMonths) || 1;
+    const timeRange = opts.timeRange;
+    if (!timeRange?.gte || !timeRange?.lte) {
+        throw new Error('fetchFeedCandlesSequentially requires opts.timeRange { gte, lte }');
+    }
+    const feedKey = feedCacheKey(feedCtx);
+    const outPath = opts.outPath || feedOutputPath(feedKey, intervalSeconds, assetA, assetB);
+    const requestKey = {
+        feed: feedKey,
+        assetA: { id: assetA.id, precision: assetA.precision, symbol: assetA.symbol },
+        assetB: { id: assetB.id, precision: assetB.precision, symbol: assetB.symbol },
+        intervalSeconds,
+    };
+    const isCross = feedCtx?.kind === 'cross';
+
+    const plainWindows = buildFetchWindowsFromRange(timeRange, chunkMonths);
+    const windows = plainWindows.map((w: any, idx: any) => ({
+        index: idx + 1,
+        gte: w.gte,
+        lte: w.lte,
+        file: chunkPathFor(outPath, idx + 1, w),
+    }));
+
+    const fetchRange = isCross
+        ? (gte: string, lte: string) => getFeedCandlesForMpaCross(
+            assetA, assetB, feedCtx.legs[0], feedCtx.legs[1],
+            { intervalSeconds, timeRange: { gte, lte } },
+        )
+        : (gte: string, lte: string) => getFeedCandlesForPair(
+            assetA, assetB, feedCtx.legs[0].mpa, feedCtx.legs[0].backing,
+            { intervalSeconds, timeRange: { gte, lte } },
+        );
+
+    return runCachedWindows({
+        windows,
+        outPath,
+        requestKey,
+        isMatch: isFeedChunkMatch,
+        metaForWindow: (window: any) => ({
+            source: `https://kibana.bitshares.dev (bitshares-*, op_type 19, feed ${feedKey})`,
+            feed: feedKey,
+            assetA: requestKey.assetA,
+            assetB: requestKey.assetB,
+            intervalSeconds,
+            chunkIndex: window.index,
+            timeRange: { gte: window.gte, lte: window.lte },
+            format: '[timestamp_ms, open, high, low, close, feed_publish_count]',
+        }),
+        fetchRange,
+        bucketMs: intervalSeconds * 1000,
+        // Crosses forward-fill across the query start: sub-range fetches
+        // would drop leading ratios, so only exact reuse applies to them.
+        allowSubFetch: !isCross,
+    });
+}
+
 export {
     OP_TYPE_FEED,
     DEFAULT_CONFIG,
@@ -472,4 +577,6 @@ export {
     getFeedCandlesForMpa,
     getFeedCandlesForPair,
     getFeedCandlesForMpaCross,
+    feedOutputPath,
+    fetchFeedCandlesSequentially,
 }

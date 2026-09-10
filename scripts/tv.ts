@@ -28,7 +28,7 @@ import { PATHS } from '../modules/paths.js';
 import { normalizePoolId, resolveAsset, findPoolByAssets } from '../market_adapter/utils/chain.js';
 import { fetchCandlesSequentially, outputPath, buildFetchWindowsFromRange } from '../market_adapter/inputs/fetch_lp_data.js';
 import { getMarketCandles } from '../market_adapter/core/kibana_market_candles.js';
-import { getFeedCandlesForPair, getFeedCandlesForMpaCross } from '../market_adapter/inputs/kibana_feed_source.js';
+import { fetchFeedCandlesSequentially } from '../market_adapter/inputs/kibana_feed_source.js';
 import { mergeCandles } from '../market_adapter/candle_utils.js';
 import { getErrorMessage } from '../modules/utils/errors.js';
 import { muteChainLogs } from '../modules/utils/chain_logs.js';
@@ -364,22 +364,14 @@ async function run(): Promise<void> {
         console.log(`[tv] Fetching 1h candles (${months}mo, ${timeRange.gte.slice(0, 10)} → ${timeRange.lte.slice(0, 10)}) from ${sourceLabel} for ${assetA.symbol}/${assetB.symbol}...`);
         let candles: any[];
         if (feedCtx) {
-            const windows = buildFetchWindowsFromRange(timeRange, TV_CHUNK_MONTHS);
-            let merged: any[] = [];
-            for (let w = 0; w < windows.length; w++) {
-                const windowStartMs = Date.now();
-                console.log(`  Window ${w + 1}/${windows.length}: ${windows[w].gte.slice(0, 10)} → ${windows[w].lte.slice(0, 10)}`);
-                const part = feedCtx.kind === 'cross'
-                    ? await getFeedCandlesForMpaCross(assetA, assetB, feedCtx.legs[0], feedCtx.legs[1], { intervalSeconds: INTERVAL_SECONDS, timeRange: windows[w] })
-                    : await getFeedCandlesForPair(assetA, assetB, feedCtx.legs[0].mpa, feedCtx.legs[0].backing, { intervalSeconds: INTERVAL_SECONDS, timeRange: windows[w] });
-                console.log(`    -> ${part.length} candles (${((Date.now() - windowStartMs) / 1000).toFixed(1)}s)`);
-                merged = merged.length === 0
-                    ? part
-                    : mergeCandles(merged, part, {
-                        onCollision: (existing: any, incoming: any) => incoming[5] > existing[5] ? incoming : existing,
-                    });
-            }
-            candles = merged;
+            // Feed publishes go through the same chunk-cache machinery as LP
+            // candles: reruns reuse local buckets and query only what is
+            // missing (plus a tail refresh for late-indexed publishes).
+            candles = await fetchFeedCandlesSequentially(feedCtx, assetA, assetB, {
+                intervalSeconds: INTERVAL_SECONDS,
+                timeRange,
+                chunkMonths: TV_CHUNK_MONTHS,
+            });
         } else if (poolId) {
             candles = await fetchCandlesSequentially(poolId, assetA, assetB, {
                 intervalSeconds: INTERVAL_SECONDS,
@@ -403,7 +395,6 @@ async function run(): Promise<void> {
             candles = merged;
         }
         if (!Array.isArray(candles) || candles.length === 0) throw new Error('No candles returned for the requested range');
-        console.log(`[tv] Fetched ${candles.length} candles`);
 
         tmpFile = path.join(os.tmpdir(), `dexbot-tv-${sanitizeKey(botKey || assetA.symbol + '-' + assetB.symbol)}-${process.pid}.json`);
         fs.writeFileSync(tmpFile, JSON.stringify({
