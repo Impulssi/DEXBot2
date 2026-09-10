@@ -70,10 +70,20 @@ function createSubscriptionManager(chainClient: any): any {
         return `${match[1]}${next}`;
     }
 
+    // Active node for log correlation: subscription/history errors are almost
+    // always node problems, so every warn carries the node that served it.
+    function activeNodeUrl(): string {
+        try {
+            return chainClient?.transport?.getNodeUrl?.() || 'unknown node';
+        } catch (_: any) {
+            return 'unknown node';
+        }
+    }
+
     function warnSubscription(sub: any, message: string, err: any = null): void {
         const account = sub?.accountName || sub?.accountId || 'unknown';
         const detail = err?.message ? `: ${getErrorMessage(err)}` : '';
-        subscriptionsLogger.warn(`${message} for ${account}${detail}`);
+        subscriptionsLogger.warn(`${message} for ${account}${detail} (node=${activeNodeUrl()})`);
     }
 
     function getAccountHistoryFetcher(): any {
@@ -639,7 +649,7 @@ function createSubscriptionManager(chainClient: any): any {
                     try {
                         await Promise.resolve(callback(fills));
                     } catch (err: any) {
-                        subscriptionsLogger.warn(`processObjects: callback error for ${sub.accountName}: ${getErrorMessage(err)}`);
+                        subscriptionsLogger.warn(`processObjects: callback error for ${sub.accountName}: ${getErrorMessage(err)} (node=${activeNodeUrl()})`);
                         failed.push(err);
                     }
                 }
@@ -676,7 +686,7 @@ function createSubscriptionManager(chainClient: any): any {
             }
         } catch (err: any) {
             sub.lastNoticeAt = Date.now();
-            subscriptionsLogger.warn(`processObjects: error for ${sub.accountName}: ${getErrorMessage(err)}`);
+            subscriptionsLogger.warn(`processObjects: error for ${sub.accountName}: ${getErrorMessage(err)} (node=${activeNodeUrl()})`);
             if (sub.onError && !err?.subscriptionErrorReported) {
                 try { sub.onError(err); } catch (_: any) {}
             }

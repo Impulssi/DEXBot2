@@ -282,6 +282,25 @@ let TIMING = {
     // survive moderate fill-processing bursts.
     DUST_CANCEL_TIMEOUT_MS: 5 * 1000,  // 5 seconds
 
+    // FILL_BROADCAST_DEFER_MAX_MS: Bound on fill-consumer deferral while a
+    // broadcast region is active. The consumer defers (instead of acquiring
+    // the fill lock and sleeping up to 30s inside it) so concurrent consumers
+    // never queue as lock waiters and time out. Past this bound a stuck flag
+    // falls through to the legacy in-lock wait, which still caps at 30s and
+    // proceeds — a leaked flag can delay fills, never starve them.
+    FILL_BROADCAST_DEFER_MAX_MS: 60 * 1000,  // 60 seconds
+
+    // BOUNDARY_HOLD_RESYNC_THRESHOLD / COOLDOWN: consecutive boundary-hold
+    // batches (each carrying fresh fills) after which the COW executor asks
+    // for a guard-aware structural re-center. A hold is correct maker
+    // discipline when a guard vetoes stale-priced refills, but a growing run
+    // means the grid is trailing the market and fill-less replans cannot heal
+    // it (they re-derive the identical veto). At the threshold the executor
+    // requests a structural resync that re-derives centers on the live pivot;
+    // the cooldown prevents resync storms.
+    BOUNDARY_HOLD_RESYNC_THRESHOLD: 4,
+    BOUNDARY_HOLD_RESYNC_COOLDOWN_MS: 5 * 60 * 1000,  // 5 minutes
+
     // Blockchain settle delay before follow-up structural work after a scheduled maintenance action.
     // Gives maintenance-triggered cancels/rebalances time to acquire locks, broadcast, and settle
     // before a deferred grid resync attempts more on-chain changes.
@@ -844,6 +863,12 @@ let NODE_MANAGEMENT = {
     BLACKLIST_THRESHOLD: 3,             // Failures before blacklist
     BLACKLIST_COOLDOWN_MS: 24 * 60 * 60 * 1000,  // 24 hours before retrying blacklisted nodes
     FAILURE_REPORT_COOLDOWN_MS: 1000,   // Min ms between failure count increments (prevents rapid-fire blacklisting)
+
+    // Consecutive successful health probes required before a node whose last
+    // failure came from the live transport (not a health check) gets its
+    // failure ledger reset. Prevents a single "is it up?" probe from erasing
+    // live-transport strikes, so flapping nodes still reach BLACKLIST_THRESHOLD.
+    LIVE_FAILURE_HEALTH_SUCCESS_STREAK: 2,
 
     // Expected chain ID (BitShares mainnet)
     EXPECTED_CHAIN_ID: '4018d7844c78f6a6c41c6a552b898022310fc5dec06da467ee7905a8dad512c8',
@@ -1653,6 +1678,11 @@ let NATIVE_CLIENT = {
         // Some WebSocket implementations can emit close/error cascades for one
         // underlying connection failure; this window prevents redundant failover work.
         CLOSE_COALESCE_MS: 250,
+
+        // WebSocket close codes treated as benign — they do NOT count as a
+        // node failure. 1000 = normal closure, 1001 = going away (server
+        // shutdown/deploy). Any other code, or wasClean === false, is abnormal.
+        BENIGN_CLOSE_CODES: [1000, 1001],
 
         // NOTE: These constants are informational but not imported by transport.ts
         // Reconnection backoff parameters (ms).

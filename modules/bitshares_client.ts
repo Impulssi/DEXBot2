@@ -45,6 +45,7 @@ import Logger from './order/logger.js';
 import * as native from './bitshares-native/index.js';
 import { createSigningClient } from './bitshares-native/index.js';
 import { getErrorMessage } from './utils/errors.js';
+import { resolveConnectedNodeAction } from './node_connect_policy.js';
 const { TRANSPORT } = NATIVE_CLIENT;
 const logger = new Logger('bitshares_client');
 
@@ -112,8 +113,28 @@ function ensureInitialized() {
     _initialized = true;
 
     const { createSubscriptionManager, createResolvers } = native;
+    // Single sink for every node-failure path (live transport + signing/builder
+    // fee fetch) so strike counting and blacklisting cannot diverge.
+    const reportNodeFailureToManager = (nodeUrl: string, errorMessage?: string, source?: string): void => {
+        if (nodeManager) {
+            nodeManager.reportNodeFailure(nodeUrl, errorMessage, source);
+        }
+    };
     _nativeClient = native.createChainClient({
         onStatusChange: handleConnectionStatus,
+        // Live transport failures (unexpected close, keep-alive trip) feed
+        // the NodeManager failure ledger so flapping nodes accumulate
+        // strikes and get blacklisted (3 strikes, 24h cooldown) instead of
+        // being re-selected forever. Late-bound because nodeManager is created
+        // after the client.
+        onNodeFailure: reportNodeFailureToManager,
+        // Blacklist-aware reconnect: the transport prefers nodes that are not
+        // failed/blacklisted, so a stale node is switched away from instead of
+        // winning the reconnect race again.
+        shouldSkipNode: (nodeUrl: string) => {
+            if (!nodeManager) return false;
+            return nodeManager.shouldAvoidNode(nodeUrl);
+        },
         rpcTimeoutMs: TIMING.CONNECTION_TIMEOUT_MS,
         connectTimeoutMs: TIMING.CONNECTION_TIMEOUT_MS,
     });
@@ -122,11 +143,8 @@ function ensureInitialized() {
         await _subscriptionManager.onReconnect();
         await notifyReconnectCallbacks();
     };
-    _nativeClient.reportNodeFailure = (nodeUrl: string, errorMessage?: string, source?: string) => {
-        if (nodeManager) {
-            nodeManager.reportNodeFailure(nodeUrl, errorMessage, source);
-        }
-    };
+    // Required by modules/bitshares-native/tx/builder.ts (fee-cache failures).
+    _nativeClient.reportNodeFailure = reportNodeFailureToManager;
     _resolvers = createResolvers(_nativeClient);
 
     _nativeBitSharesProxy = {
@@ -330,7 +348,8 @@ async function restartBitsharesConnection(serverList: any, reason: any = 'startu
         await notifyReconnectCallbacks();
 
         if (!suppressConnectionLog) {
-            logger.info(`${reason}: reconnect requested across ${servers.length} node(s)`);
+            const landedNode = _nativeClient?.transport?.getNodeUrl?.();
+            logger.info(`${reason}: reconnect requested across ${servers.length} node(s), landed on ${landedNode || 'unknown'}`);
         }
         return true;
     } catch (err: any) {
@@ -364,10 +383,9 @@ async function assessFailover(reason: any = 'status change') {
     lastFailoverAssessmentAt = now;
 
     failoverAssessmentPromise = (async () => {
-        logger.warn(`${reason}, triggering failover assessment`);
+        const activeNode = _nativeClient?.transport?.getNodeUrl?.();
+        logger.warn(`${reason} (node=${activeNode || 'unknown'}), triggering failover assessment`);
         try {
-            const activeNode = _nativeClient?.transport?.getNodeUrl?.();
-
             await nodeManager.checkAllNodes();
             const healthyNodes = nodeManager.getHealthyNodes();
             const availableHealthyNodes = activeNode
@@ -428,6 +446,35 @@ function handleConnectionStatus(status: any) {
         }
         if (!suppressConnectionLog) {
             logger.info('BitShares connected');
+        }
+        if (nodeManager) {
+            const activeNode = _nativeClient?.transport?.getNodeUrl?.();
+            // Pure decision (modules/node_connect_policy): a blacklisted active
+            // node switches to a healthy one (autonomous reconnects do not
+            // consult the blacklist); otherwise align the transport's candidate
+            // list with the healthy set so future reconnects avoid known-bad
+            // nodes. The switch is deferred so we do not tear down the socket
+            // from inside the transport's own status callback.
+            const decision = resolveConnectedNodeAction({
+                healthCheckEnabled: nodeConfig?.healthCheck?.enabled !== false,
+                reconnectInProgress,
+                activeNode,
+                isBlacklisted: (nodeUrl: string) => nodeManager.isBlacklisted(nodeUrl),
+                getHealthyNodes: () => nodeManager.getHealthyNodes(),
+            });
+            if (decision.action === 'switch') {
+                logger.warn(`Connected to blacklisted node ${activeNode}; switching to a healthy node`);
+                const { nodes: healthy } = decision;
+                setTimeout(() => {
+                    // Skip if the process is shutting down or the node has
+                    // since recovered/been reset.
+                    if (intentionalDisconnect || !activeNode || !nodeManager?.isBlacklisted(activeNode)) return;
+                    restartBitsharesConnection(healthy, decision.reason)
+                        .catch((err: any) => logger.warn(`Blacklisted-node switch failed: ${getErrorMessage(err)}`));
+                }, 0);
+            } else if (decision.action === 'align') {
+                _nativeClient.setNodes(decision.nodes);
+            }
         }
         return false;
     }

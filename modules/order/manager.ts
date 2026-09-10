@@ -507,6 +507,10 @@ class OrderManager {
     _lastFilledSellPrice: number | null;
     _lastFilledPrice: number | null;
     _lastFilledType: string | null;
+    _lastFilledAt: number;
+    _deferredRebalanceAt: number;
+    _lastHeldPlanSignature: any;
+    _lastBoundaryHoldResyncAt: number;
     _gapEvacStreaks: Map<string, number>;
     _gapEvacCancelQueued: Set<string>;
     // anchor fields removed
@@ -631,6 +635,10 @@ class OrderManager {
         this._lastFilledSellPrice = null;
         this._lastFilledPrice = null;
         this._lastFilledType = null;
+        this._lastFilledAt = 0;
+        this._deferredRebalanceAt = 0;
+        this._lastHeldPlanSignature = null;
+        this._lastBoundaryHoldResyncAt = 0;
         this._gapEvacStreaks = new Map();
         this._gapEvacCancelQueued = new Set();
 
@@ -792,6 +800,11 @@ class OrderManager {
                 // The caller is released from the refcount contract.
                 this._broadcastingFlag = 0;
                 this._broadcastingStartedAt = 0;
+                // A leaked flag never reaches stopBroadcasting, so wake the same
+                // region-end listeners it would have: without this, fills
+                // enqueued during the hung region are stranded until the next
+                // fill event even though the flag is now clear.
+                this._fireBroadcastRegionEnd();
             }
         }
     }
@@ -877,7 +890,25 @@ class OrderManager {
             // this flag is held and its defer branch returns without
             // rescheduling, so fills enqueued during a long region would
             // starve indefinitely. Fire once when the last region ends.
+            this._fireBroadcastRegionEnd();
+        }
+    }
+
+    /**
+     * Notify runtime listeners that the last broadcast/placement region ended.
+     * Called from stopBroadcasting (refcount -> 0) and the stale-flag watchdog
+     * (a leaked flag hard-reset to 0). The fill consumer's defer branch returns
+     * without rescheduling, so this is the only wake-up for fills enqueued
+     * during a region; the watchdog path must fire it too or a hung broadcast's
+     * queued fills wait for the next fill event.
+     * Guarded so a listener error never escapes into a finally/watchdog frame.
+     * @returns {void}
+     */
+    _fireBroadcastRegionEnd() {
+        try {
             (this as any)._onBroadcastRegionEnd?.();
+        } catch (err: any) {
+            this.logger?.log?.(`[BROADCAST] Region-end hook failed: ${err?.message || err}`, 'warn');
         }
     }
 
@@ -1589,7 +1620,7 @@ class OrderManager {
      * @param {Object} [options]
      * @returns {Promise<any>}
      */
-    async processFilledOrders(orders: any, excl: any, _options: any) {
+    async processFilledOrders(orders: any, excl: any, options: any = {}) {
         // Step 1: Handle Fills (Accounting & State Updates)
         await this.strategy.processFillsOnly(orders, excl);
 
@@ -1598,7 +1629,16 @@ class OrderManager {
         const shouldRebalance = triggerFills.length > 0;
 
         if (shouldRebalance) {
-            const rebalanceResult = await this.performSafeRebalance(orders, excl);
+            // deferIfBroadcasting: fill processing runs under
+            // _fillProcessingLock, and _awaitBroadcastIdle can sleep 30s —
+            // beyond the lock's 20s acquisition timeout. Defer the rebalance
+            // instead of waiting in-lock; processFillsOnly already recorded
+            // the boundary crawls, so a later derivation applies them. The
+            // region-end hook schedules the deferred rebalance.
+            const rebalanceResult = await this.performSafeRebalance(orders, excl, {
+                ...(options || {}),
+                deferIfBroadcasting: true
+            });
             // Carry the fill set + exclusions on the result so the COW batch
             // executor can re-plan once from fresh master if the plan goes
             // stale between planning and broadcast.
@@ -1856,6 +1896,7 @@ class OrderManager {
             this._lastFilledType = f.type;
             if (f.type === ORDER_TYPES.BUY) this._lastFilledBuyPrice = price as number;
             else if (f.type === ORDER_TYPES.SELL) this._lastFilledSellPrice = price as number;
+            this._lastFilledAt = Date.now();
             recorded++;
             lastKind = (f as any)?.isPartial === true ? 'partial' : ((f as any)?.isPartial === false ? 'full' : 'unknown');
             lastPriceSrc = priceSrc;
@@ -2219,10 +2260,49 @@ class OrderManager {
     async performSafeRebalance(fills: any = [], excludeIds: any = new Set(), options: any = {}) {
         this.logger.log("[SAFE-REBALANCE] Starting with COW...", "info");
         if (!options?.skipBroadcastWait) {
-            const idle = await this._awaitBroadcastIdle();
-            if (idle.shutdown || this._shuttingDown) {
+            // Shutdown guard applies to every path here (including the
+            // deferIfBroadcasting defer path, which never reaches
+            // _awaitBroadcastIdle): a rebalance must not plan/broadcast while
+            // the bot is shutting down. _awaitBroadcastIdle returns
+            // shutdown:true for this, so keep it explicit when skipping it.
+            if (this._shuttingDown) {
                 this.logger.log('[SAFE-REBALANCE] Aborting rebalance: shutdown in progress', 'warn');
                 return buildAbortedResult('Shutdown in progress — safe rebalance aborted');
+            }
+            // Never sleep on the broadcast flag while holding
+            // _fillProcessingLock (the lock's acquisition timeout is 20s; the
+            // wait is 30s). A fill-driven rebalance defers instead, leaving
+            // the crawls recorded by processFillsOnly for a later derivation.
+            if (options?.deferIfBroadcasting && this.isBroadcastingActive()) {
+                this.logger.log(
+                    '[SAFE-REBALANCE] Deferred: broadcast/placement activity active; rebalance retries after the region ends',
+                    'info'
+                );
+                this._deferredRebalanceAt = Date.now();
+                return { ...buildAbortedResult('broadcast-active-deferred'), deferred: true };
+            }
+            // Identical-held-plan suppression: a fill-less replan whose
+            // boundary, guard pivot and fill timestamp are unchanged since the
+            // last hold can only reproduce the same vetoed plan (INV-COW-007).
+            // Defer instead of spending another broadcast region re-deriving
+            // it; a fresh fill changes _lastFilledAt and re-enables planning.
+            const heldSig = this._lastHeldPlanSignature;
+            if (fills.length === 0 && heldSig
+                && Number(this.boundaryIdx) === Number(heldSig.boundaryIdx)
+                && Number(this._lastFilledPrice) === Number(heldSig.pivot)
+                && Number(this._lastFilledAt) === Number(heldSig.fillsAt)) {
+                this.logger.log(
+                    '[SAFE-REBALANCE] Deferred: identical held plan (no new fills since last hold); a fill-driven plan will re-derive',
+                    'debug'
+                );
+                return { ...buildAbortedResult('held-plan-unchanged-deferred'), deferred: true };
+            }
+            if (!options?.deferIfBroadcasting) {
+                const idle = await this._awaitBroadcastIdle();
+                if (idle.shutdown || this._shuttingDown) {
+                    this.logger.log('[SAFE-REBALANCE] Aborting rebalance: shutdown in progress', 'warn');
+                    return buildAbortedResult('Shutdown in progress — safe rebalance aborted');
+                }
             }
         }
         return await this._gridLock.acquire(async () => {

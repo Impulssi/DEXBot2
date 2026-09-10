@@ -2437,6 +2437,55 @@ function resolveRefillBoundaryHold(
     };
 }
 /**
+ * Track consecutive boundary-hold batches on the manager (ops visibility).
+ *
+ * A single hold is normal maker discipline: the guard vetoed stale-priced
+ * refills, so the committed boundary stays instead of advancing past
+ * stranded rail holes. A growing run means the grid is trailing the market
+ * (plans keep pricing refills against a racing guard pivot, typically while
+ * fill batches run on backlogged state) and only fresh fills unstick it —
+ * worth escalating so it cannot hide inside per-batch warns.
+ *
+ * Also records a hold signature (`_lastHeldPlanSignature`) for the
+ * identical-held-plan suppression in `performSafeRebalance`, and the caller
+ * escalates a long run to a guard-aware structural re-center. A fill-less
+ * re-plan from unchanged master re-derives the identical plan and re-hits
+ * the identical guard blocks, so it is suppressed rather than re-broadcast;
+ * the heal path is a fresh fill-driven plan or the re-center.
+ * @param {any} manager - Order manager (mutable tracking fields)
+ * @param {boolean} held - Whether this batch held the boundary
+ * @param {any} keptBoundary - Committed boundary that was kept
+ * @param {any} plannedBoundary - Boundary the plan wanted
+ * @param {string[]} heldSlotIds - Refill slots skipped this batch
+ * @returns {number} Consecutive-hold count after this batch (0 when clear)
+ */
+function trackBoundaryHold(manager: any, held: boolean, keptBoundary: any, plannedBoundary: any, heldSlotIds: any): number {
+    if (!manager) return 0;
+    const prev = Number((manager as any)._consecutiveBoundaryHolds) || 0;
+    const consecutive = held ? prev + 1 : 0;
+    (manager as any)._consecutiveBoundaryHolds = consecutive;
+    if (held) {
+        (manager as any)._lastBoundaryHoldInfo = {
+            at: Date.now(),
+            kept: keptBoundary,
+            planned: plannedBoundary,
+            slots: Array.isArray(heldSlotIds) ? [...heldSlotIds] : [],
+        };
+        // Signature for the identical-held-plan suppression in
+        // performSafeRebalance: a fill-less replan with the same boundary,
+        // pivot and fill timestamp can only reproduce this hold.
+        (manager as any)._lastHeldPlanSignature = {
+            boundaryIdx: keptBoundary,
+            pivot: (manager as any)._lastFilledPrice ?? null,
+            fillsAt: (manager as any)._lastFilledAt ?? 0,
+            wire: Array.isArray(heldSlotIds) ? [...heldSlotIds] : [],
+        };
+    } else {
+        (manager as any)._lastHeldPlanSignature = null;
+    }
+    return consecutive;
+}
+/**
  * Restore skipped update slots in the working grid to master state.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {any} workingGrid
@@ -3021,6 +3070,14 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     // catch commits too, and a held boundary must keep the owed fill crawls
     // there as well (see _commitWorkingGrid pending-crawl bookkeeping).
     let boundaryHeld = false;
+    // Consecutive-hold re-center tuning (see the escalation block below).
+    const boundaryHoldTiming: any = (constantsModule as any)?.TIMING || {};
+    const holdResyncThreshold = Number(boundaryHoldTiming.BOUNDARY_HOLD_RESYNC_THRESHOLD) > 0
+        ? Number(boundaryHoldTiming.BOUNDARY_HOLD_RESYNC_THRESHOLD)
+        : 4;
+    const holdResyncCooldownMs = Number(boundaryHoldTiming.BOUNDARY_HOLD_RESYNC_COOLDOWN_MS) > 0
+        ? Number(boundaryHoldTiming.BOUNDARY_HOLD_RESYNC_COOLDOWN_MS)
+        : 5 * 60 * 1000;
 
     if (bot.config.dryRun) {
         const cancelCount = actions.filter((a: any) => a.type === COW_ACTIONS.CANCEL).length;
@@ -3836,6 +3893,55 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                 `(${refillHold.heldRefillSlotIds.join(', ')}) — keeping ${bot.manager.boundaryIdx} over planned ${workingBoundary}`,
                 'warn'
             );
+        }
+        // Consecutive-hold tracking (INV-COW-007 visibility): escalate a
+        // growing run — the grid is trailing the market and only fresh
+        // fills unstick it. Cleared automatically on the first clean batch.
+        const consecutiveHolds = trackBoundaryHold(
+            bot.manager,
+            refillHold.heldRefillSlotIds.length > 0,
+            bot.manager.boundaryIdx,
+            workingBoundary,
+            refillHold.heldRefillSlotIds
+        );
+        if (consecutiveHolds >= 3) {
+            bot.manager.logger.log(
+                `[COW] Boundary held ${consecutiveHolds} consecutive batches ` +
+                `(keeping ${bot.manager.boundaryIdx} over planned ${workingBoundary}). ` +
+                `Grid is trailing the market — refills re-price once the guard pivot settles; ` +
+                `heals on the next fill-driven plan. Investigate only if the run keeps growing without new fills.`,
+                'warn'
+            );
+        }
+
+        // Guard-aware re-center escalation (INV-COW-007 heal path): a run of
+        // holds carrying fresh fills means the grid is trailing the market and
+        // will not heal from fill-less replans (they re-derive the identical
+        // veto). Request a structural resync that re-derives centers on the
+        // live pivot; the cooldown prevents resync storms. requestStructuralGridResync
+        // re-defers while this batch is still in flight, so it runs in a clean context.
+        if (boundaryHeld && consecutiveHolds >= holdResyncThreshold) {
+            const freshFills = Array.isArray((cowResult as any)?.fills) && (cowResult as any).fills.length > 0;
+            const lastResyncAt = Number(bot.manager._lastBoundaryHoldResyncAt) || 0;
+            if (freshFills && (Date.now() - lastResyncAt) >= holdResyncCooldownMs) {
+                bot.manager._lastBoundaryHoldResyncAt = Date.now();
+                bot.manager.logger.log(
+                    `[COW] Boundary held ${consecutiveHolds} consecutive batches with fresh fills; ` +
+                    `requesting guard-aware structural re-center (cooldown ${Math.round(holdResyncCooldownMs / 1000)}s)`,
+                    'warn'
+                );
+                try {
+                    void bot.manager.requestStructuralGridResync?.(
+                        'boundary-hold-trailing-market',
+                        { reason: 'boundary-hold-trailing-market' }
+                    );
+                } catch (err: any) {
+                    bot.manager.logger.log(
+                        `[COW] Structural re-center request failed (non-fatal): ${getErrorMessage(err)}`,
+                        'warn'
+                    );
+                }
+            }
         }
 
         if (operations.length === 0) {
@@ -4819,7 +4925,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
         updateOperationCount
     };
 }
-export { isLastFillGuardBlocked, refreshLastFillPivotFromQueue, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain, resolveRefillBoundaryHold, toRefillSlotIdSet };
+export { isLastFillGuardBlocked, refreshLastFillPivotFromQueue, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain, resolveRefillBoundaryHold, toRefillSlotIdSet, trackBoundaryHold };
 // Exported for regression tests (issue #23 sibling): the uncertain-broadcast
 // discard path must never drop a placement silently when master lost the slot.
 export { restoreDiscardedCreates };
@@ -4855,6 +4961,7 @@ export default {
     restoreSkippedUpdateSlotsInWorkingGrid,
     resolveRefillBoundaryHold,
     toRefillSlotIdSet,
+    trackBoundaryHold,
     applyRotationTransitionsToWorkingGrid,
     pollChainForConfirmation,
     updateOrdersOnChainBatchCOW,

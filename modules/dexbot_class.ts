@@ -1133,6 +1133,7 @@ class DEXBot {
         if (typeof this.manager?.pauseFundRecalc === 'function') {
             this.manager.pauseFundRecalc();
         }
+        let anyDeferred = false;
         try {
             const activeSell = this.manager?.config?.activeOrders?.sell ?? 1;
             const activeBuy = this.manager?.config?.activeOrders?.buy ?? 1;
@@ -1175,6 +1176,20 @@ class DEXBot {
                 const rebalanceResult = await this.manager.processFilledOrders(
                     fillBatch, fullExcludeSet, options
                 );
+                // Deferred (broadcast region active): accounting is already
+                // applied and crawls recorded. Do NOT broadcast; continue the
+                // remaining chunks so every fill is credited, then let the
+                // region-end hook run a single no-fill rebalance to apply the
+                // owed boundary shift. This replaces the old in-lock 30s wait
+                // that cascaded into "Lock acquisition timeout".
+                if ((rebalanceResult as any)?.deferred) {
+                    anyDeferred = true;
+                    managerLog(
+                        `[COW] ${label} rebalance deferred (broadcast active); accounting applied, boundary re-derives after the region ends`,
+                        'debug'
+                    );
+                    continue;
+                }
                 const batchResult = await this._executeBatchIfNeeded(rebalanceResult, label);
 
                 if (batchResult?.abortedForIllegalState || batchResult?.abortedForAccountingFailure) {
@@ -1204,7 +1219,7 @@ class DEXBot {
             }
         }
 
-        return { aborted: false };
+        return { aborted: false, deferred: anyDeferred };
     }
 
     /**
@@ -1772,6 +1787,18 @@ class DEXBot {
         if (!manager || manager._onBroadcastRegionEnd) return;
         manager._onBroadcastRegionEnd = () => {
             if (this._shuttingDown) return;
+            // A fill-driven rebalance deferred because this region was active:
+            // schedule a single no-fill rebalance to apply the boundary crawls
+            // the deferred fills recorded. Runs after _batchInFlight teardown
+            // (schedulePostRecoveryRebalance re-defers), so it never overlaps
+            // the batch whose finally is still executing.
+            if ((manager as any)._deferredRebalanceAt) {
+                (manager as any)._deferredRebalanceAt = 0;
+                DexbotStateRecovery.schedulePostRecoveryRebalance(
+                    this,
+                    'fill rebalance deferred by an active broadcast region'
+                );
+            }
             // A recovery sync wrapping the region keeps the consumer gated;
             // requestGridReset's finally drains once the counter clears.
             if ((this as any)._recoverySyncInFlight) return;
