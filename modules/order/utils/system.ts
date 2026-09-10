@@ -1240,9 +1240,16 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         // Refill-slot wire (boundary-hold): unpairable hole-CREATEs surviving
         // the fold above justify the pending boundary shift. The executor
         // holds the committed boundary when a listed refill is guard-skipped.
-        const refillSlotIds = actions
-            .filter((a: any) => a?.type === COW_ACTIONS.CREATE && typeof a?.id === 'string' && a.id.length > 0)
-            .map((a: any) => a.id);
+        // Reserve-ladder CREATEs are excluded by collectRefillSlotIds — static
+        // edge insurance, never a justification for a boundary shift.
+        const refillSlotIds = OrderUtils.collectRefillSlotIds(actions, {
+            config: manager.config,
+            slots: manager.orders,
+            edgeAnchors: {
+                buy: OrderUtils.resolveLiveReserveEdgeAnchorPrice(manager, 'buy'),
+                sell: OrderUtils.resolveLiveReserveEdgeAnchorPrice(manager, 'sell')
+            }
+        });
 
         // Build COW result with all actions
         if (actions.length > 0) {
@@ -1677,3 +1684,65 @@ export function parseJsonWithComments(raw: string): any {
 }
 
 export { ensureDir };
+
+/**
+ * Apply persisted-but-uncommitted fill crawls onto the restored boundary.
+ *
+ * Fills record a crawl at intake and the derivation consumes it on commit; a
+ * refused broadcast, an aborted plan, or a restart in between leaves the crawl
+ * owed and the boundary stale, so reconcile would refill the holes same-side.
+ * Every grid-load path that restores a persisted boundary must therefore apply
+ * the stored records BEFORE it syncs/reconciles — the startup resume path and
+ * the recovery reload both go through here, so the two can never drift.
+ *
+ * Records are relative deltas applied by consumePendingFillCrawls onto a
+ * FINITE restored boundary (a null boundary re-anchors absolutely from live
+ * fills instead, which subsumes every owed delta). The candidate is validated
+ * placed-order-aware; on failure the records are dropped rather than stranding
+ * live orders. Best-effort: the caller proceeds with the restored boundary
+ * either way.
+ *
+ * @param {Object} bot - DEXBot (accountOrders + manager required)
+ * @param {Object} [options]
+ * @param {(message: string, level?: any) => void} [options.log] - Log sink;
+ *   defaults to the manager logger (startup passes bot._log)
+ * @param {boolean} [options.forceReload=false] - Re-read the store from disk
+ *   before applying (recovery reloads already re-read the grid; startup has a
+ *   freshly-constructed store)
+ * @returns {Promise<{applied: boolean, from?: number, to?: number, count?: number, reason?: string}>}
+ */
+export async function applyPersistedPendingCrawls(
+    bot: any,
+    options: { log?: (message: string, level?: any) => void; forceReload?: boolean } = {}
+): Promise<{ applied: boolean; from?: number; to?: number; count?: number; reason?: string }> {
+    const log = typeof options.log === 'function'
+        ? options.log
+        : (message: string, level?: any) => {
+            try { bot?.manager?.logger?.log?.(message, level); } catch { /* best-effort */ }
+        };
+    try {
+        const load = bot?.accountOrders?.loadPendingFillCrawls;
+        const persisted = typeof load === 'function'
+            ? (load.call(bot.accountOrders, options.forceReload === true) ?? [])
+            : [];
+        if (Array.isArray(persisted) && persisted.length > 0 && Array.isArray(bot?.manager?._pendingFillCrawls)) {
+            bot.manager._pendingFillCrawls = persisted;
+        }
+        const result = OrderUtils.consumePendingFillCrawls(bot?.manager);
+        if (result?.applied) {
+            log(
+                `[BOUNDARY] Applied ${result.count} pending fill crawl(s): boundary ${result.from} -> ${result.to}; ` +
+                `persisting before reconcile`,
+                'warn'
+            );
+            try { await bot.manager?.persistGrid?.(); } catch { /* best-effort */ }
+        } else if (result?.reason && result.reason !== 'nothing-owed'
+            && result.reason !== 'no-op' && result.reason !== 'null-boundary') {
+            log(`[BOUNDARY] Pending fill crawls dropped (${result.reason})`, 'warn');
+        }
+        return result ?? { applied: false };
+    } catch (err) {
+        log(`[BOUNDARY] Pending-crawl application failed (${err}); continuing with restored boundary`, 'warn');
+        return { applied: false, reason: 'error' };
+    }
+}

@@ -1288,6 +1288,13 @@ export async function initializeGrid(manager: any): Promise<void> {
         manager._gapSlots = gapSlots;
         if (genesis) manager._genesis = genesis;
 
+        // A rebuilt grid is a NEW generation: the boundary below is re-derived
+        // absolutely from the fresh price ladder, so owed fill crawls recorded
+        // against the previous generation must not survive — their relative
+        // deltas would shift the new anchor again for movement it already
+        // contains (and their slot ids now name different prices).
+        manager._clearPendingFillCrawls?.('grid rebuild');
+
         // RC-8: Update boundary with notification to dependent systems
         // Persist master boundary for StrategyEngine
         if (manager.boundaryIdx !== boundaryIdx) {

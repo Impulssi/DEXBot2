@@ -1,12 +1,13 @@
 /**
- * Boundary-hold + refill-stamp contract tests (HOLD-001..HOLD-007).
+ * Boundary-hold + refill-stamp contract tests (HOLD-001..HOLD-009).
  *
  * Joint wire: producers attach the slot ids of hole-CREATEs that justify a
- * planned boundary shift (refillSlotIds); the executor holds the committed
- * boundary when a listed refill is guard-skipped instead of committing a
- * shift whose rail holes were restored empty (91->94 empty-strand class).
- * UPDATE refills folded from CANCEL+CREATE pairs stamp via the frozen
- * geometry (fund-fold case); CREATE refills never stamp.
+ * planned boundary shift (refillSlotIds, reserve-ladder CREATEs excluded);
+ * the executor holds the committed boundary when a listed refill is
+ * guard-skipped instead of committing a shift whose rail holes were restored
+ * empty (91->94 empty-strand class). UPDATE refills folded from CANCEL+CREATE
+ * pairs stamp via the frozen geometry (fund-fold case); CREATE refills never
+ * stamp.
  */
 
 const assert = require('assert');
@@ -16,6 +17,7 @@ const {
     buildCowResultFromPlan,
 } = require('../modules/dexbot_cow_runtime');
 const { optimizeRebalanceActions } = require('../modules/order/utils/validate');
+const { collectRefillSlotIds } = require('../modules/order/utils/order');
 const { getSellStartIdx } = require('../modules/order/utils/math');
 const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS } = require('../modules/constants');
 
@@ -164,6 +166,45 @@ async function testHOLD008_SkippedCreateRefillHolds() {
     console.log('✓ HOLD-008 passed');
 }
 
+async function testHOLD009_ReserveSkipNeverPins() {
+    console.log('\n[HOLD-009] Skipped RESERVE create never pins the boundary...');
+    // Plan actions: floor reserve CREATEs (slot-0/slot-1), ceiling reserve
+    // (slot-13) and a genuine hole refill (slot-8). The producer
+    // (collectRefillSlotIds) must drop the reserve ids, so a guard-skipped
+    // reserve CREATE — the shape a dump below the grid floor produces, when the
+    // last-fill guard blocks the floor BUYs — leaves the boundary free to
+    // advance, while a skipped hole refill still holds it.
+    const slots = [];
+    for (let i = 0; i < 14; i++) {
+        slots.push({ id: `slot-${i}`, type: i < 10 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL, price: 80 + i });
+    }
+    const actions = [
+        { type: COW_ACTIONS.CREATE, id: 'slot-0' },
+        { type: COW_ACTIONS.CREATE, id: 'slot-1' },
+        { type: COW_ACTIONS.CREATE, id: 'slot-8' },
+        { type: COW_ACTIONS.CREATE, id: 'slot-13' },
+    ];
+    const wire = collectRefillSlotIds(actions, {
+        config: { reserveOrders: { buy: 2, sell: 1 } },
+        slots,
+        edgeAnchors: { buy: 80, sell: 93 },
+    });
+    assert.deepStrictEqual(wire, ['slot-8'], 'wire carries the hole refill only');
+
+    const reserveSkip = resolveRefillBoundaryHold(
+        94, 91, new Set(), new Set(), wire, new Set(['slot-0', 'slot-1'])
+    );
+    assert.strictEqual(reserveSkip.effectiveBoundary, 94, 'skipped reserve must not pin geometry');
+    assert.deepStrictEqual(reserveSkip.heldRefillSlotIds, []);
+
+    const refillSkip = resolveRefillBoundaryHold(
+        94, 91, new Set(), new Set(), wire, new Set(['slot-8'])
+    );
+    assert.strictEqual(refillSkip.effectiveBoundary, 91, 'skipped hole refill still holds');
+    assert.deepStrictEqual(refillSkip.heldRefillSlotIds, ['slot-8']);
+    console.log('✓ HOLD-009 passed');
+}
+
 async function runAllTests() {
     console.log('=== Boundary-Hold Test Suite ===\n');
     await testHOLD001_RefillIntersectHolds();
@@ -174,6 +215,7 @@ async function runAllTests() {
     await testHOLD006_FundFoldStampsWithFrozenGeometry();
     await testHOLD007_PlanCarrierPassthrough();
     await testHOLD008_SkippedCreateRefillHolds();
+    await testHOLD009_ReserveSkipNeverPins();
     console.log('\n=== All boundary-hold tests passed! ===');
 }
 

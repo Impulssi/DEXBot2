@@ -159,7 +159,7 @@ External consumers — other parts of DEXBot2 interact with modules through thes
 
 - **Zero runtime dependencies** — no npm trading/blockchain libraries; the native client, crypto, and serialization are all in `bitshares-native/`. This eliminates supply-chain risk and keeps the bot fully self-contained.
 - **Copy-on-write** — `order/working_grid.ts` provides isolated COW mutations; master grid is immutable during rebalance. The grid is never modified in-place; a working copy is built, mutated, and committed atomically only after blockchain operations succeed.
-- **Fund-driven boundary sync** — the grid rebalances based on available funds, not arbitrary triggers; no forced allocations. When a fill arrives, the system calculates what it can actually afford and adjusts the grid around that.
+- **Fund-driven sizing, fill-driven boundary** — available funds set order sizing and budget allocation, not the boundary position; no forced allocations. The boundary moves only through boundary crawl on fills or spread promotion onto orders placed in the same atomic batch.
 - **Replay-safe accounting** — fill processing in `dexbot_fill_runtime.ts` uses `processed_fill_store.ts` to prevent double-counting. If the bot restarts mid-fill, it can safely replay without creating duplicate orders.
 - **Daemon-backed signing** — the credential daemon holds decrypted keys; modules never handle raw private keys. If the main bot crashes, keys stay encrypted on disk — only the small daemon process sees them.
 - **Fixed-cap batch processing** — fill batches are capped (default 4) to keep blockchain broadcasts predictable. Even if 20 fills arrive at once, they're processed in small chunks to avoid overwhelming the chain.

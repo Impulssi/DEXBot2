@@ -9,7 +9,7 @@
 
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/index').default;
-const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG } = require('../modules/constants');
+const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, COW_ACTIONS } = require('../modules/constants');
 const {
     resolveReserveCount,
     resolveReserveOrders,
@@ -20,9 +20,11 @@ const {
     selectReserveEdgeSlots,
     deriveTargetBoundary,
     getActiveOrdersTotal,
+    collectRefillSlotIds,
 } = require('../modules/order/utils/order');
 
 const { _setFeeCache } = require('../modules/order/utils/math');
+const { reconcileGrid, optimizeRebalanceActions } = require('../modules/order/utils/validate');
 const { _reconcileStartupSide } = require('../modules/order/grid_reconcile_internal');
 _setFeeCache({
     BTS: {
@@ -464,6 +466,109 @@ async function runTests() {
         );
         assert.strictEqual(plainBuys.length, 3, 'no reserve means buy window only');
         assert.strictEqual(plainSells.length, 2, 'no reserve means sell window only');
+    }
+
+    console.log(' - refill wire excludes reserve CREATEs (boundary hold)...');
+    {
+        const slots: any[] = [];
+        for (let i = 0; i < 14; i++) {
+            slots.push({ id: `slot-${i}`, type: i < 10 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL, price: 80 + i });
+        }
+        const actions = [
+            { type: COW_ACTIONS.CREATE, id: 'slot-0' },
+            { type: COW_ACTIONS.CREATE, id: 'slot-1' },
+            { type: COW_ACTIONS.CREATE, id: 'slot-8' },
+            { type: COW_ACTIONS.CREATE, id: 'slot-13' },
+            { type: COW_ACTIONS.UPDATE, id: 'slot-9', newGridId: 'slot-2' },
+        ];
+        const cfg = { reserveOrders: { buy: 2, sell: 1 } };
+        const anchors = { buy: 80, sell: 93 };
+        const wire = collectRefillSlotIds(actions, { config: cfg, slots, edgeAnchors: anchors });
+        assert.deepStrictEqual(wire, ['slot-8'],
+            'floor/ceiling reserve CREATEs are not refills; the window CREATE stays');
+        assert.deepStrictEqual(
+            collectRefillSlotIds(actions, { config: cfg, slots: new Map(slots.map((s) => [s.id, s])), edgeAnchors: anchors }),
+            ['slot-8'],
+            'Map slots (the plan path passes manager.orders) classify like the array form'
+        );
+        const plainWire = ['slot-0', 'slot-1', 'slot-8', 'slot-13'];
+        assert.deepStrictEqual(
+            collectRefillSlotIds(actions, { config: { reserveOrders: { buy: 0, sell: 0 } }, slots }),
+            plainWire,
+            'disabled reserves keep the plain CREATE wire'
+        );
+        assert.deepStrictEqual(
+            collectRefillSlotIds(actions, {}),
+            plainWire,
+            'no classification context (legacy callers) must not drop ids'
+        );
+        assert.deepStrictEqual(
+            collectRefillSlotIds([{ type: COW_ACTIONS.CANCEL, id: 'slot-3' }, { type: COW_ACTIONS.CREATE }], {}),
+            [],
+            'cancel/malformed actions never enter the wire'
+        );
+    }
+
+    console.log(' - COW plan path: reserve CREATEs never enter the refill wire...');
+    {
+        const mgr: any = new OrderManager({
+            market: 'TEST/BTS', assetA: 'TEST', assetB: 'BTS',
+            startPrice: 100, incrementPercent: 1, targetSpreadPercent: 0,
+            activeOrders: { buy: 3, sell: 2 }, weightDistribution: { sell: 0.5, buy: 0.5 },
+            reserveOrders: { buy: 2, sell: 1 },
+        });
+        mgr.logger.level = 'silent';
+        mgr.assets = { assetA: { id: '1.3.0', precision: 8 }, assetB: { id: '1.3.1', precision: 5 } };
+        await mgr.setAccountTotals({ buy: 10000, sell: 100, buyFree: 10000, sellFree: 100 });
+        await mgr.resetFunds();
+        mgr._gapSlots = 0;
+        mgr.boundaryIdx = 9;
+        mgr.pauseFundRecalc();
+        for (let i = 0; i < 14; i++) {
+            await mgr._updateOrder({
+                id: `slot-${i}`, type: i < 10 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL,
+                price: 80 + i, size: 100, state: ORDER_STATES.VIRTUAL,
+            });
+        }
+        await mgr.resumeFundRecalc();
+
+        const StrategyEngine = require('../modules/order/strategy').default;
+        const strategy = new StrategyEngine(mgr);
+        const funds = { ...mgr.funds, allocatedBuy: 10000, allocatedSell: 100 };
+        const { targetGrid, boundaryIdx } = strategy.calculateTargetGrid({
+            frozenMasterGrid: mgr.orders,
+            config: mgr.config,
+            accountAssets: mgr.assets,
+            funds,
+            fills: [],
+            currentBoundaryIdx: mgr.boundaryIdx,
+        });
+        const reconciled = reconcileGrid(mgr.orders, targetGrid, boundaryIdx, {
+            logger: () => {},
+            dustThresholdPercent: 0,
+            assets: mgr.assets,
+            gapSlots: mgr._gapSlots,
+        });
+        const optimized = optimizeRebalanceActions(reconciled.actions, mgr.orders, {
+            assets: mgr.assets,
+            boundaryIdx,
+            gapSlots: mgr._gapSlots,
+        });
+        const edgeAnchors = {
+            buy: resolveLiveReserveEdgeAnchorPrice(mgr, 'buy'),
+            sell: resolveLiveReserveEdgeAnchorPrice(mgr, 'sell'),
+        };
+        const createIds = optimized
+            .filter((a: any) => a?.type === COW_ACTIONS.CREATE && typeof a?.id === 'string')
+            .map((a: any) => a.id);
+        const wire = collectRefillSlotIds(optimized, { config: mgr.config, slots: mgr.orders, edgeAnchors });
+
+        assert(createIds.includes('slot-0') && createIds.includes('slot-1') && createIds.includes('slot-13'),
+            `fixture must plan the reserve edges as CREATEs (got ${createIds.join(', ')})`);
+        assert(!wire.includes('slot-0') && !wire.includes('slot-1') && !wire.includes('slot-13'),
+            `reserve CREATEs must never justify a boundary hold (wire: ${wire.join(', ')})`);
+        assert(wire.includes('slot-7') && wire.includes('slot-10'),
+            `window hole CREATEs stay in the wire (wire: ${wire.join(', ')})`);
     }
 
     console.log('✓ Reserve orders tests passed!');

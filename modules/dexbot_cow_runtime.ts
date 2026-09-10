@@ -3016,6 +3016,11 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     // frozen for every downstream commit path (success + uncertain-catch).
     // workingBoundary itself stays untouched (audit trail).
     let effectiveBoundary: any = workingBoundary;
+    // True when the refill hold pinned the committed boundary over the plan's
+    // target. Hoisted out of the broadcast try block: the uncertain-broadcast
+    // catch commits too, and a held boundary must keep the owed fill crawls
+    // there as well (see _commitWorkingGrid pending-crawl bookkeeping).
+    let boundaryHeld = false;
 
     if (bot.config.dryRun) {
         const cancelCount = actions.filter((a: any) => a.type === COW_ACTIONS.CANCEL).length;
@@ -3356,6 +3361,13 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             newSize
                         );
                         if (!rotationSizeValidation.isValid) {
+                            // Record like every sibling skip site: the skip set
+                            // feeds both the working-grid restore and the
+                            // boundary hold (a skipped refill must not let the
+                            // committed boundary advance past its empty slot).
+                            skippedUpdateCount++;
+                            if (action.id) skippedUpdateSlotIds.add(action.id);
+                            if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
                             bot.manager.logger.log(
                                 `Skipping rotation update ${action.id} -> ${action.newGridId}: ${rotationSizeValidation.reason}`,
                                 'warn'
@@ -3817,6 +3829,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
             skippedCreateSlotIds
         );
         effectiveBoundary = refillHold.effectiveBoundary;
+        boundaryHeld = refillHold.heldRefillSlotIds.length > 0;
         if (refillHold.heldRefillSlotIds.length > 0) {
             bot.manager.logger.log(
                 `[COW] Boundary hold: ${refillHold.heldRefillSlotIds.length} refill slot(s) skipped ` +
@@ -3985,7 +3998,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     workingGrid,
                     workingIndexes,
                     effectiveBoundary,
-                    { skipRecalc: true, result: cowResult }
+                    { skipRecalc: true, result: cowResult, boundaryHeld }
                 );
                 if (!commitOk) {
                     // Master changed during broadcast (e.g. a fill landed and was
@@ -4104,7 +4117,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         workingGrid,
                         workingIndexes,
                         effectiveBoundary,
-                        { skipRecalc: true, result: cowResult }
+                        { skipRecalc: true, result: cowResult, boundaryHeld }
                     );
                     if (!pollCommitOk) {
                         // Master moved while polling — same recovery as the

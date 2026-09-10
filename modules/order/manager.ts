@@ -64,7 +64,7 @@ import {
     buildSuccessResult,
     evaluateCommit
 } from './utils/validate.js';
-import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge } from './utils/order.js';
+import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge, collectRefillSlotIds } from './utils/order.js';
 import { getErrorMessage } from '../utils/errors.js';
 const { toFiniteNumber } = Format;
 
@@ -179,7 +179,8 @@ class COWRebalanceEngine {
         fills = [],
         excludeIds = new Set(),
         gapSlots = null,
-        evacStreaks = null
+        evacStreaks = null,
+        reserveEdgeAnchors = null
     }: any) {
         const startTime = Date.now();
 
@@ -298,9 +299,14 @@ class COWRebalanceEngine {
         // stamped UPDATEs above; stale-dropped placements are excluded — a
         // deferred placement justifies nothing). The executor holds the
         // committed boundary when a listed refill is guard-skipped.
-        const refillSlotIds = optimizedActions
-            .filter((a: any) => a?.type === COW_ACTIONS.CREATE && typeof a?.id === 'string' && a.id.length > 0)
-            .map((a: any) => a.id);
+        // Reserve-ladder CREATEs are excluded (collectRefillSlotIds): reserves
+        // are static edge insurance and their fills never crawl, so a skipped
+        // reserve must not pin geometry either.
+        const refillSlotIds = collectRefillSlotIds(optimizedActions, {
+            config: this.config,
+            slots: masterGrid,
+            edgeAnchors: reserveEdgeAnchors
+        });
 
         projectTargetToWorkingGrid(workingGrid, targetGrid, { actions: optimizedActions });
 
@@ -1332,7 +1338,14 @@ class OrderManager {
         if (options === null || typeof options !== 'object' || Array.isArray(options)) {
             throw new TypeError('Commit options must be an object');
         }
-        return { skipRecalc: options.skipRecalc === true };
+        return {
+            skipRecalc: options.skipRecalc === true,
+            // Set by the COW refill hold: the boundary passed to this commit is
+            // the COMMITTED value, not the plan's target, so nothing was
+            // derived into it and owed fill crawls must survive (see the
+            // pending-crawl bookkeeping in _commitWorkingGrid).
+            boundaryHeld: options.boundaryHeld === true
+        };
     }
 
     async _updateOrder(order: any, context: any = 'updateOrder', options: any = {}) {
@@ -1736,6 +1749,34 @@ class OrderManager {
     _restoreBoundary(newIdx: number | null): void {
         this.boundaryIdx = newIdx;
         this._logBoundaryDebug('restore', newIdx);
+    }
+
+    /**
+     * Drop owed fill-crawl records (boundary bookkeeping).
+     *
+     * Records are pushed per shift-eligible fill at intake and consumed when a
+     * derivation commits them. They must be dropped only when the crawl they
+     * encode has been applied — an accepted commit that used the PLAN's target
+     * boundary (or an absolute fill anchor that subsumes every owed delta).
+     * A held boundary (refill guard skip), a gate-rejected boundary, and a
+     * null boundary all leave the records owed, so they are not dropped there.
+     *
+     * Also used when the boundary is (re)anchored outside the fill path (grid
+     * reset / recenter / rejected-snapshot rebuild): those records belong to
+     * the previous generation, and applying their relative deltas onto a fresh
+     * anchor would double-count movement the anchor already contains.
+     *
+     * Marks the grid dirty so the cleared array reaches disk even on paths
+     * that do not otherwise persist.
+     *
+     * @param {string} reason - Log/debug label for the drop
+     */
+    _clearPendingFillCrawls(reason: any = 'unspecified'): void {
+        if (!Array.isArray(this._pendingFillCrawls) || this._pendingFillCrawls.length === 0) return;
+        const count = this._pendingFillCrawls.length;
+        this._pendingFillCrawls = [];
+        this._markGridDirty();
+        this.logger?.log?.(`[BOUNDARY] Dropped ${count} owed fill crawl(s) (${reason})`, 'debug');
     }
 
     /**
@@ -2183,6 +2224,13 @@ class OrderManager {
         this._setRebalanceState(REBALANCE_STATES.REBALANCING);
         if (!(this._gapEvacStreaks instanceof Map)) this._gapEvacStreaks = new Map();
         if (!(this._gapEvacCancelQueued instanceof Set)) this._gapEvacCancelQueued = new Set();
+        // Live reserve edge anchors, resolved once and shared with the engine's
+        // refill wire so a reserve-ladder CREATE can never be classified as a
+        // hole refill (which would let a skipped reserve pin the boundary).
+        const reserveEdgeAnchors = {
+            buy: resolveLiveReserveEdgeAnchorPrice(this, 'buy'),
+            sell: resolveLiveReserveEdgeAnchorPrice(this, 'sell')
+        };
         const result = await cowEngine.execute({
             masterGrid: this.orders,
             gridVersion: this._gridVersion,
@@ -2191,7 +2239,8 @@ class OrderManager {
             fills,
             excludeIds,
             gapSlots: this._gapSlots,
-            evacStreaks: this._gapEvacStreaks
+            evacStreaks: this._gapEvacStreaks,
+            reserveEdgeAnchors
         });
 
         // Phase 3 safety net: act on stuck in-band orders regardless of the
@@ -2276,7 +2325,7 @@ class OrderManager {
         };
 
         try {
-            const { skipRecalc: skipRecalcOpt } = this._normalizeCommitOptions(options);
+            const { skipRecalc: skipRecalcOpt, boundaryHeld } = this._normalizeCommitOptions(options);
             skipRecalc = skipRecalcOpt;
             const stats = workingGrid.getMemoryStats();
 
@@ -2358,12 +2407,15 @@ class OrderManager {
                 // crawl entries are consumed here. A gate-rejected commit keeps
                 // the previous boundary — nothing was derived into it — so
                 // pending entries survive for the next derivation. A null
-                // commit (boundary hold) likewise consumes nothing.
-                if (boundaryCheck.ok && commitBoundary !== null && commitBoundary !== undefined) {
-                    if (Array.isArray(this._pendingFillCrawls) && this._pendingFillCrawls.length > 0) {
-                        this._pendingFillCrawls = [];
-                        this._markGridDirty();
-                    }
+                // commit likewise consumes nothing, and neither does a HELD
+                // boundary (boundaryHeld): the refill hold deliberately keeps
+                // the committed boundary over the plan's target, so the shift
+                // those records encode was never applied and must stay owed —
+                // clearing here lost the crawl permanently (no fill evidence
+                // left for the next derivation, holes refilled same-side).
+                if (boundaryCheck.ok && commitBoundary !== null && commitBoundary !== undefined
+                    && boundaryHeld !== true) {
+                    this._clearPendingFillCrawls('boundary commit');
                 }
                 this._gridVersion++;
                 committed = true;

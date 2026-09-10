@@ -38,7 +38,7 @@ const NAMES = {
         'readPassword', 'resolveAccountRef', 'resolveAssetByRef', 'sleep',
         'withBlockchainRetry', 'retryPersistenceIfNeeded',
         'applyGridDivergenceCorrections', 'initializeFeeCache',
-        'restoreGapEvacStreaks',
+        'restoreGapEvacStreaks', 'applyPersistedPendingCrawls',
     ],
     format: ['formatCurrency', 'formatMetric2', 'isValidNumber', 'toFiniteNumber', 'formatPrice6'],
     orderUtils: [
@@ -47,7 +47,7 @@ const NAMES = {
         'buildOutsideInPairGroups', 'calculateBudgetedSizes',
         'calculateIdealBoundary', 'chainOrderMatchesSlot',
         'chainOrderMatchesSlotWithTolerance', 'checkSizesBeforeMinimum', 'checkSizeThreshold',
-        'clearDuplicateOrphanDetection', 'compareReserveEdge', 'consumePendingFillCrawls', 'convertToSpreadPlaceholder',
+        'clearDuplicateOrphanDetection', 'collectRefillSlotIds', 'compareReserveEdge', 'consumePendingFillCrawls', 'convertToSpreadPlaceholder',
         'deriveTargetBoundary', 'duplicateOrphanLogInfo',
         'extractBatchOperationResults', 'filterOrdersByType',
         'findMatchingGridOrderByOpenOrder', 'geometryTypeForSlotIndex',

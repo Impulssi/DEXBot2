@@ -2149,6 +2149,69 @@ function reserveEdgeIdSet(allSlots: any, config: any, orderType: any, anchorPric
 }
 
 /**
+ * Refill-slot wire for the COW boundary hold (single source for both plan
+ * producers: the fill-driven COW engine and the divergence fold).
+ *
+ * The hold keeps the committed boundary when a listed refill is guard-skipped
+ * at broadcast — the refill is what justified the plan's boundary shift, so
+ * committing the shift without it would strand an empty rail slot past the
+ * new boundary. The wire must therefore list only placements that justify the
+ * shift:
+ *
+ *   - CREATE ids of the plan (the slots a fold did not convert into an
+ *     UPDATE), minus
+ *   - reserve-ladder ids. Reserves are static edge insurance; their fills
+ *     never crawl (deriveTargetBoundary filters them), so a guard-skipped
+ *     reserve must not pin geometry either. Without this exclusion a reserve
+ *     CREATE skipped at the wrong moment (e.g. a floor BUY above the last-fill
+ *     pivot while the market dumps below the grid) would hold the boundary for
+ *     a cycle although nothing was stranded.
+ *
+ * Absent/disabled reserves or an empty action list yield the plain CREATE ids,
+ * so callers that never configured reserves keep the previous behavior.
+ *
+ * @param {Array<Object>} actions - Optimized COW actions
+ * @param {Object} [options]
+ * @param {Object} [options.config] - Bot configuration (reserve count source)
+ * @param {Iterable<Object>} [options.slots] - Master slots (reserve classification)
+ * @param {{buy?: number|null, sell?: number|null}} [options.edgeAnchors] - Live
+ *   edge anchors (same pair the strategy classifies reserve fills against)
+ * @returns {string[]} Refill slot ids (CREATE ids minus reserve edge ids)
+ */
+function collectRefillSlotIds(actions: any, options: { config?: any; slots?: any; edgeAnchors?: { buy?: number | null; sell?: number | null } | null } = {}): string[] {
+    const { config = null, slots = null, edgeAnchors = null } = options;
+    const out: string[] = [];
+    if (!Array.isArray(actions)) return out;
+    const createIds = actions
+        .filter((a: any) => a?.type === COW_ACTIONS.CREATE && typeof a?.id === 'string' && a.id.length > 0)
+        .map((a: any) => a.id);
+    if (createIds.length === 0) return out;
+    let reserveIds: Set<string> | null = null;
+    if (slots && config) {
+        try {
+            // Accept a Map (master grid), an array of slots, or any iterable of
+            // slot objects. Map entries are [id, slot] pairs, so `.values()` is
+            // required — Array.from(map) would hand reserveEdgeIdSet pairs.
+            const allSlots = Array.isArray(slots)
+                ? slots
+                : (typeof (slots as any)?.values === 'function'
+                    ? Array.from((slots as any).values())
+                    : Array.from(slots as Iterable<any>));
+            const buyIds = reserveEdgeIdSet(allSlots, config, ORDER_TYPES.BUY, edgeAnchors?.buy ?? null);
+            const sellIds = reserveEdgeIdSet(allSlots, config, ORDER_TYPES.SELL, edgeAnchors?.sell ?? null);
+            if (buyIds || sellIds) reserveIds = new Set<string>([...(buyIds ?? []), ...(sellIds ?? [])]);
+        } catch { reserveIds = null; }
+    }
+    for (const id of createIds) {
+        // Fail-open on classification errors: an id we cannot prove is a reserve
+        // stays in the wire, so the hold keeps its previous (conservative) reach.
+        if (reserveIds && reserveIds.has(id)) continue;
+        out.push(id);
+    }
+    return out;
+}
+
+/**
  * Resolved bound anchor for reserve edges from CONFIG alone.
  * BUY floor anchors toward minPrice (dip-insurance end), SELL ceiling toward
  * maxPrice (spike-insurance end). Resolves numeric and "Nx" relative forms
@@ -2578,5 +2641,5 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
 }
 
 export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, deriveTargetBoundary, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds, reserveEdgeIdSet }
-export { resolveReserveEdgeAnchorPrice, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge };
+export { resolveReserveEdgeAnchorPrice, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge, collectRefillSlotIds };
 
