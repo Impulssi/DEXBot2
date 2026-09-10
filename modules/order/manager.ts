@@ -64,7 +64,7 @@ import {
     buildSuccessResult,
     evaluateCommit
 } from './utils/validate.js';
-import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, resolveReserveCount, resolveReserveEdgeAnchorPrice, compareReserveEdge } from './utils/order.js';
+import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge } from './utils/order.js';
 import { getErrorMessage } from '../utils/errors.js';
 const { toFiniteNumber } = Format;
 
@@ -1660,8 +1660,8 @@ class OrderManager {
             const picked: any[] = [];
             if (count <= 0) return picked;
             const windowedIds = new Set(windowed.map((o: any) => o.id));
-            // Both edges anchor toward their resolved bound (single source).
-            const edgeAnchor = resolveReserveEdgeAnchorPrice(this.config, ascending ? 'buy' : 'sell');
+            // Both edges anchor at the live grid's own edge (ladder/rail extreme).
+            const edgeAnchor = resolveLiveReserveEdgeAnchorPrice(this, ascending ? 'buy' : 'sell');
             const edge = ascending ? 'floor' : 'ceiling';
             const edgeFirst = this.getOrdersByTypeAndState(orderType, ORDER_STATES.VIRTUAL)
                 .sort((a: any, b: any) => compareReserveEdge(a, b, edge, edgeAnchor));

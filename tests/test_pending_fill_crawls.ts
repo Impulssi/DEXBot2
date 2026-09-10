@@ -27,6 +27,8 @@ const StrategyEngine = require('../modules/order/strategy').default;
 const {
     deriveTargetBoundary,
     consumePendingFillCrawls,
+    reserveEdgeIdSet,
+    resolveLiveReserveEdgeAnchorPrice,
 } = require('../modules/order/utils/order');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
@@ -89,7 +91,7 @@ function buildMaster(extraPlaced = []) {
     return orders;
 }
 
-function mockManager(boundary, orders, pending, config = CFG): any {
+function mockManager(boundary, orders, pending, config: any = CFG): any {
     return {
         boundaryIdx: boundary,
         orders,
@@ -226,6 +228,31 @@ async function testConsume_DropsUnsafe() {
     console.log('✓ PEND-008 passed');
 }
 
+async function testConsume_LiveAnchorClassifies() {
+    console.log('\n[PEND-011] startup classifies reserves with the live anchor, not the config fallback...');
+    // Stale leftover: a BUY-typed VIRTUAL slot left above the buy rail by an
+    // older bound, priced below the live floor. The live run (finite live
+    // anchor) ranks it out of the reserve set, so its crawl is owed; the
+    // config-bound fallback is null for mode-string bounds, and plain rank
+    // would make it a reserve and drop the crawl.
+    const orders = buildMaster();
+    Object.assign(orders.get('slot-210'), {
+        type: ORDER_TYPES.BUY, state: ORDER_STATES.VIRTUAL, orderId: '', price: 0.0005, size: 0,
+    });
+    const mgr = mockManager(96, orders, [{ slotId: 'slot-210', side: ORDER_TYPES.BUY, ts: 1 }],
+        { ...CFG, reserveOrders: { buy: 2, sell: 0 } });
+    const allSlots = Array.from(orders.values());
+    const liveAnchor = resolveLiveReserveEdgeAnchorPrice(mgr, 'buy');
+    const liveReserveIds = reserveEdgeIdSet(allSlots, mgr.config, ORDER_TYPES.BUY, liveAnchor);
+    const configAnchorIds = reserveEdgeIdSet(allSlots, mgr.config, ORDER_TYPES.BUY);
+    assert.ok(!liveReserveIds.has('slot-210'), 'live anchor must not rank the stale leftover as a reserve');
+    assert.ok(configAnchorIds.has('slot-210'), 'config fallback would (the drift this pins down)');
+    const result = consumePendingFillCrawls(mgr);
+    assert.strictEqual(result.applied, true, `live-anchored classification must apply the crawl (${result.reason ?? 'no reason'})`);
+    assert.strictEqual(result.to, 95, `one owed buy must crawl 96 -> 95 (got ${result.to})`);
+    console.log('✓ PEND-011 passed');
+}
+
 async function testPersist_RoundTripAndClear() {
     console.log('\n[PEND-009] storeMasterGrid sanitizes, round-trips, and clears pending crawls...');
     const botKey = createBotKey({ name: 'pending-crawl-test' }, 0);
@@ -289,6 +316,7 @@ async function main() {
     await testConsume_AppliesOntoRestored();
     await testConsume_DropsOnNull();
     await testConsume_DropsUnsafe();
+    await testConsume_LiveAnchorClassifies();
     await testPersist_RoundTripAndClear();
     await testRecord_PushDedupesSlot();
     console.log('\nAll pending-crawl tests passed.');

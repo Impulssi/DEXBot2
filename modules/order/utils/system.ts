@@ -1114,8 +1114,8 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
             if (reserveCount > 0) {
                 const asc = allSideSlots.slice().sort((a: any, b: any) => a.price - b.price);
                 const edge = sideName === 'sell' ? 'ceiling' : 'floor';
-                // Both edges anchor toward their resolved bound (single source).
-                const edgeAnchor = OrderUtils.resolveReserveEdgeAnchorPrice(manager.config, sideName);
+                // Both edges anchor at the live grid's own edge (single source).
+                const edgeAnchor = OrderUtils.resolveLiveReserveEdgeAnchorPrice(manager, sideName);
                 const edgeSlots = OrderUtils.selectReserveEdgeSlots(
                     asc,
                     reserveCount,

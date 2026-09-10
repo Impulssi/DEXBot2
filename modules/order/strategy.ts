@@ -51,7 +51,7 @@
 import { ORDER_TYPES, ORDER_STATES } from '../constants.js';
 import { calculateGapSlots } from './grid.js';
 import { isSlotInRail } from './utils/math.js';
-import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, resolveReserveCount, resolveReserveEdgeAnchorPrice, selectReserveEdgeSlots, isShiftEligibleFill } from './utils/order.js';
+import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, selectReserveEdgeSlots, isShiftEligibleFill } from './utils/order.js';
 import { assignGridRoles } from './utils/order.js';
 import {
     convertToSpreadPlaceholder,
@@ -284,7 +284,16 @@ class StrategyEngine {
         const boundaryConfig = (!Number.isFinite(Number(config?.startPrice)) && Number.isFinite(genesisStart))
             ? { ...config, genesisStartPrice: genesisStart }
             : config;
-        const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, boundaryConfig, gapSlots, crossChunkBudget, (this.manager as any)?._pendingFillCrawls);
+        // Live reserve edge anchors (single source): the ladder extremes of the
+        // grid actually being traded. Resolved once and shared by the reserve
+        // selection below and the no-crawl classification inside
+        // deriveTargetBoundary, so placement and fill classification can never
+        // disagree about which slots are reserves.
+        const reserveEdgeAnchors = {
+            buy: resolveLiveReserveEdgeAnchorPrice(this.manager, 'buy'),
+            sell: resolveLiveReserveEdgeAnchorPrice(this.manager, 'sell'),
+        };
+        const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, boundaryConfig, gapSlots, crossChunkBudget, (this.manager as any)?._pendingFillCrawls, reserveEdgeAnchors);
         if (crossChunkBudget != null) {
             (this.manager as any)._boundaryShiftBudget = remainingBudget;
         }
@@ -386,23 +395,21 @@ class StrategyEngine {
         // (highest prices). Discontiguous by design — the middle stays VIRTUAL.
         // Sizes come from the same full-rail curves; reserve fills never crawl
         // (filtered in deriveTargetBoundary).
-        // Both edges anchor toward their resolved bound (single source):
-        // floor toward minPrice, ceiling toward maxPrice.
-        const reserveFloorAnchor = resolveReserveEdgeAnchorPrice(config, 'buy');
-        const reserveCeilAnchor = resolveReserveEdgeAnchorPrice(config, 'sell');
+        // Both edges anchor at the live grid's own edge (reserveEdgeAnchors),
+        // which is the same pair deriveTargetBoundary classified against.
         const reserveBuySlots = selectReserveEdgeSlots(
             allBuySortedForSizing.filter((s: any) => inBuyRail(s)),
             resolveReserveCount(config, 'buy'),
             new Set(buySlots.map((s: any) => s.id)),
             'floor',
-            reserveFloorAnchor
+            reserveEdgeAnchors.buy
         );
         const reserveSellSlots = selectReserveEdgeSlots(
             allSellSortedForSizing.filter((s: any) => inSellRail(s)),
             resolveReserveCount(config, 'sell'),
             new Set(sellSlots.map((s: any) => s.id)),
             'ceiling',
-            reserveCeilAnchor
+            reserveEdgeAnchors.sell
         );
         const buySlotsAll = [...buySlots, ...reserveBuySlots];
         const sellSlotsAll = [...sellSlots, ...reserveSellSlots];
