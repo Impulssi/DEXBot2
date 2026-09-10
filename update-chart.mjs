@@ -128,6 +128,7 @@ if (!payload) {
 // Merkitaan mihin hintaan EDELLINEN datasettai loppui — charttiin piirretaan
 // "updated from here" -viiva tahan kohtaan (uusi data alkaa tastä oikealle).
 let prevUpdate = null;
+const dataFile = outputPath();
 try {
     if (existsSync(dataFile)) {
         const oldRaw = JSON.parse(readFileSync(dataFile, 'utf8'));
@@ -142,10 +143,10 @@ try {
     }
 } catch (e) {}
 if (prevUpdate) {
-    const newBars = payload.candles.filter((c) => c[0] > prevUpdate.lastCandleSec).length;
+    const newBars = payload.candles.filter((c) => Math.floor(Number(c[0]) / 1000) > prevUpdate.lastCandleSec).length;
     prevUpdate.newBars = newBars;
 }
-const dataFile = writeLpFile(payload);
+writeLpFile(payload, dataFile);
 console.log('  Tallennettu: ' + dataFile);
 console.log();
 
@@ -162,12 +163,22 @@ const ORDER_CANDIDATES = [
 ];
 let ordersFileArg = [];
 for (const p of ORDER_CANDIDATES) { try { if (p && existsSync(p)) { ordersFileArg = ['--orders-file', p]; break; } } catch {} }
+// Update marker ("updated from here" line): previous dataset end + new bar
+// count, so the chart shows where this incremental fetch started.
+let updateMarkerArg = [];
+if (prevUpdate && Number(prevUpdate.lastCandleSec) > 0) {
+    updateMarkerArg = ['--update-marker-ts', String(Math.floor(Number(prevUpdate.lastCandleSec)))];
+    if (Number.isFinite(Number(prevUpdate.newBars)) && Number(prevUpdate.newBars) >= 0) {
+        updateMarkerArg.push('--update-marker-bars', String(Math.floor(Number(prevUpdate.newBars))));
+    }
+}
 const chartCode = await runNode([
     'dist/analysis/tradingview/analyze_tradingview.js',
     '--file', dataFile,
     '--chart', CHART_FILE,
     ...AMA_ARGS,
     ...ordersFileArg,
+    ...updateMarkerArg,
 ]);
 if (chartCode !== 0) {
     console.error('Chartin generointi epaonnistui (exit ' + chartCode + ').');
