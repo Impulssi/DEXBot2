@@ -1035,6 +1035,19 @@ class DEXBot {
     async _executeBatchIfNeeded(rebalanceResult: any, contextLabel: any = 'rebalance') {
         if (!hasExecutableActions(rebalanceResult)) {
             this.manager?.logger?.log?.(`[COW] No actions needed for ${contextLabel}`, 'debug');
+            // Structural-resync request from the plan path (unrecoverable
+            // boundary, rail-edge target, over-distance rotations): the plan
+            // was refused before broadcast, so trigger the rebuild here where
+            // bot context (and the wired resync entry point) exists.
+            if ((rebalanceResult as any)?.needsResync && typeof this.manager?.requestStructuralGridResync === 'function') {
+                const reason = String((rebalanceResult as any)?.resyncReason || (rebalanceResult as any)?.reason || 'plan-refused');
+                this.manager?.logger?.log?.(`[COW] Requesting structural resync: ${reason}`, 'warn');
+                try {
+                    await this.manager.requestStructuralGridResync(reason, { reason });
+                } catch (err: any) {
+                    this.manager?.logger?.log?.(`[COW] Structural resync request failed: ${err?.message || err}`, 'warn');
+                }
+            }
             // Clear REBALANCING state even when there are no actions to execute.
             // _applySafeRebalanceCOW sets REBALANCING before calling the COW engine;
             // if the engine returns an empty actions list (not aborted), the state

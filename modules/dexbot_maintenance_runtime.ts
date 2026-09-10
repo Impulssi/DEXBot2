@@ -59,6 +59,7 @@ function updateDynamicGridSnapshotSync(...args: any) { return require('../market
 // would be circular; at call time both modules are fully loaded.
 function scheduleFillConsumerRestartFn(...args: any) { return require('./dexbot_fill_runtime').scheduleFillConsumerRestart(...args); }
 function reconcileGridOrders(...args: any) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
+function resolveReserveCount(...args: any) { return require('./order/utils/order').resolveReserveCount(...args); }
 function formatUnmatchedChainOrder(...args: any) { return require('./order/utils/order').formatUnmatchedChainOrder(...args); }
 function getSideBudget(...args: any) { return require('./order/utils/order').getSideBudget(...args); }
 function getActiveOrdersTotal(config: any) { return require('./order/utils/order').getActiveOrdersTotal(config); }
@@ -161,7 +162,12 @@ function countLiveGridOrders(manager: any, type: any) {
 
 function getTargetActiveOrders(config: any, side: any) {
     const configured = Number(config?.activeOrders?.[side]);
-    return Math.max(0, Number.isFinite(configured) ? configured : 1);
+    // Reserve ladder rests live on-chain: countLiveGridOrders sees window +
+    // edge orders, so the shortfall target must include reserves too —
+    // otherwise live reserves mask window shortfalls and a filled/cancelled
+    // reserve order never triggers targeted reconciliation.
+    const reserves = resolveReserveCount(config, side);
+    return Math.max(0, Number.isFinite(configured) ? configured : 1) + reserves;
 }
 
 function _hasBudgetForSide(manager: any, config: any, side: any) {

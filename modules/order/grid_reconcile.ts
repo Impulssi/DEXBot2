@@ -14,7 +14,7 @@ import { getAssetFeesSafe, priceSlotEqual } from './utils/math.js';
 import {
     isOrderPlaced, parseChainOrder, isOrderOnChain,
     chainOrderMatchesSlotWithTolerance,
-    duplicateOrphanLogInfo,
+    duplicateOrphanLogInfo, resolveReserveCount,
 } from './utils/order.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -203,8 +203,10 @@ export async function reconcileGridOrders({
         .filter((x: any) => x.parsed);
 
     const activeCfg = (config && config.activeOrders) ? config.activeOrders : {};
-    let targetBuy = Math.max(0, Number.isFinite(Number(activeCfg.buy)) ? Number(activeCfg.buy) : 1);
-    let targetSell = Math.max(0, Number.isFinite(Number(activeCfg.sell)) ? Number(activeCfg.sell) : 1);
+    let targetBuy = Math.max(0, Number.isFinite(Number(activeCfg.buy)) ? Number(activeCfg.buy) : 1)
+        + resolveReserveCount(config, 'buy');
+    let targetSell = Math.max(0, Number.isFinite(Number(activeCfg.sell)) ? Number(activeCfg.sell) : 1)
+        + resolveReserveCount(config, 'sell');
 
     const chainBuys = parsedChain.filter((x: any) => x.parsed.type === ORDER_TYPES.BUY).map((x: any) => x.chain);
     const chainSells = parsedChain.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).map((x: any) => x.chain);

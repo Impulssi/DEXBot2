@@ -310,12 +310,11 @@ node dist/analysis/analyze_trade_heatmap.js \
 
 Generates a standalone TradingView-style HTML chart with candle OHLC, SMA, AMA, VWMA, and volume panel. See [tradingview/README.md](tradingview/README.md) for full documentation.
 
-```bash
 # Recommended one-step: bot, pool, or pair (fetches candles + renders, default 3 months)
 dexbot tv <bot-key>
 dexbot tv 133
 dexbot tv TOKENA/TOKENB
-
+dexbot tv BTS/HONEST.USD --feed  # opt-in: MPA price-feed history instead of market candles
 # Manual: bot-key (auto-resolves candle file and AMA settings)
 npm run analysis:tradingview -- --source market_adapter --bot-key <bot-key>
 

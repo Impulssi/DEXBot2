@@ -36,6 +36,20 @@ import { parseJsonWithComments } from '../../modules/order/utils/system.js';
 import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { normalizePoolId, resolveAsset, findPoolByAssets } from '../utils/chain.js';
 import { writeJsonAtomic } from '../utils/atomic_write.js';
+import {
+    TAIL_REFRESH_HOURS,
+    IMMUTABLE_WINDOW_AGE_MS,
+    chunkPathFor,
+    cachedCandlesInRange,
+    findMissingBucketRanges,
+    pruneImmutableGaps,
+    loadBucketCache,
+    cleanupOrphanCacheChunks,
+    planWindowReuse,
+    priorQueriedInWindow,
+    buildFetchWindowsFromRange,
+    formatWindowLine,
+} from './window_cache.js';
 import { PATHS } from '../../modules/paths.js';
 import * as bitsharesClient from '../../modules/bitshares_client.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
@@ -165,35 +179,6 @@ function manifestPathFor(outPath: any) {
     return `${outPath}.fetch_manifest.json`;
 }
 
-function chunkPathFor(outPath: any, index: any, window: any) {
-    const parsed = path.parse(outPath);
-    const start = window.gte.slice(0, 10);
-    const end = window.lte.slice(0, 10);
-    return path.join(parsed.dir, `${parsed.name}.chunk_${String(index).padStart(2, '0')}_${start}_${end}${parsed.ext}`);
-}
-
-function addUtcMonths(date: any, months: any) {
-    const result = new Date(date.getTime());
-    const day = result.getUTCDate();
-    result.setUTCDate(1);
-    result.setUTCMonth(result.getUTCMonth() + months);
-    const lastDay = new Date(Date.UTC(
-        result.getUTCFullYear(),
-        result.getUTCMonth() + 1,
-        0
-    )).getUTCDate();
-    result.setUTCDate(Math.min(day, lastDay));
-    return result;
-}
-
-function normalizeDateInput(raw: any, label: any) {
-    const ms = Date.parse(String(raw || ''));
-    if (!Number.isFinite(ms)) {
-        throw new Error(`Invalid ${label} date: ${raw}`);
-    }
-    return new Date(ms);
-}
-
 function resolveChunkMonths(config: any) {
     const months = Number(config.chunkMonths);
     if (!Number.isFinite(months) || months <= 0) {
@@ -218,30 +203,18 @@ function normalizeLookbackRange(config: any, nowMs: any = Date.now()) {
     };
 }
 
-function buildFetchWindowsFromRange(timeRange: any, chunkMonths: any) {
-    let start;
-    let end;
-
-    start = normalizeDateInput(timeRange.gte, 'start');
-    end = normalizeDateInput(timeRange.lte, 'end');
-
-    if (start >= end) {
-        throw new Error(`Invalid fetch range: ${start.toISOString()} must be earlier than ${end.toISOString()}`);
-    }
-
-    const windows: any[] = [];
-    let cursor = start;
-    while (cursor < end) {
-        const next = addUtcMonths(cursor, chunkMonths);
-        const windowEnd = next < end ? next : end;
-        windows.push({
-            gte: cursor.toISOString(),
-            lte: windowEnd.toISOString(),
-        });
-        cursor = windowEnd;
-    }
-
-    return windows;
+function buildRequestKey(config: any, fullPoolId: any, assetA: any, assetB: any, timeRange: any, outPath: any) {
+    const chunkMonths = resolveChunkMonths(config);
+    return {
+        pool: fullPoolId,
+        assetA: { id: assetA.id, precision: assetA.precision, symbol: assetA.symbol },
+        assetB: { id: assetB.id, precision: assetB.precision, symbol: assetB.symbol },
+        intervalSeconds: config.intervalSeconds,
+        lookbackHours: config.timeRange ? null : config.lookbackHours,
+        timeRange,
+        outPath: path.resolve(outPath),
+        chunkMonths,
+    };
 }
 
 function loadManifest(manifestPath: any) {
@@ -311,19 +284,6 @@ function sameRequest(a: any, b: any) {
     return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function buildRequestKey(config: any, fullPoolId: any, assetA: any, assetB: any, timeRange: any, outPath: any) {
-    const chunkMonths = resolveChunkMonths(config);
-    return {
-        pool: fullPoolId,
-        assetA: { id: assetA.id, precision: assetA.precision, symbol: assetA.symbol },
-        assetB: { id: assetB.id, precision: assetB.precision, symbol: assetB.symbol },
-        intervalSeconds: config.intervalSeconds,
-        lookbackHours: config.timeRange ? null : config.lookbackHours,
-        timeRange,
-        outPath: path.resolve(outPath),
-        chunkMonths,
-    };
-}
 
 function buildManifest(requestKey: any, windows: any, outPath: any) {
     return {
@@ -375,7 +335,14 @@ function validateChunkFile(chunkFile: any, requestKey: any, windowEntry: any) {
     }
 }
 
-function persistChunkFile(chunkFile: any, requestKey: any, windowEntry: any, candles: any) {
+function persistChunkFile(chunkFile: any, requestKey: any, windowEntry: any, candles: any, queriedRanges: any = null) {
+    // Ranges actually queried to produce these candles (conservative
+    // coverage for future immutable-gap pruning — see window_cache.js).
+    // Defaults to the whole window for legacy callers (full fetch only).
+    const queried = Array.isArray(queriedRanges) ? queriedRanges : [{
+        gte: Date.parse(String(windowEntry.gte)),
+        lte: Date.parse(String(windowEntry.lte)),
+    }];
     const payload = {
         meta: {
             fetchedAt: new Date().toISOString(),
@@ -390,11 +357,35 @@ function persistChunkFile(chunkFile: any, requestKey: any, windowEntry: any, can
                 gte: windowEntry.gte,
                 lte: windowEntry.lte,
             },
+            queriedRanges: queried,
             format: '[timestamp_ms, open, high, low, close, volume_A]',
         },
         candles,
     };
     writeJsonAtomic(chunkFile, payload);
+}
+
+// ─── Local-first incremental reuse ────────────────────────────────────────────
+// The manifest + exact timeRange match invalidates the whole cache when the
+// caller anchors its range at floored-"now" (every `dexbot tv` run shifts all
+// windows by an hour). Bucket-level reuse lives in ./window_cache.js (shared
+// with the feed fetcher); below are only the LP-specific identity predicate
+// and thin wrappers preserving the historical helper names/exports.
+
+function isLpChunkMatch(meta: any, requestKey: any) {
+    if (meta.pool !== requestKey.pool) return false;
+    if (meta.intervalSeconds !== requestKey.intervalSeconds) return false;
+    if (meta.assetA?.id !== requestKey.assetA.id || meta.assetB?.id !== requestKey.assetB.id) return false;
+    if (meta.assetA?.precision !== requestKey.assetA.precision || meta.assetB?.precision !== requestKey.assetB.precision) return false;
+    return true;
+}
+
+function loadLocalChunkCache(outPath: any, requestKey: any) {
+    return loadBucketCache(outPath, requestKey, isLpChunkMatch);
+}
+
+function cleanupOrphanChunkFiles(outPath: any, requestKey: any, activeFiles: Set<string>) {
+    return cleanupOrphanCacheChunks(outPath, requestKey, isLpChunkMatch, activeFiles);
 }
 
 function ensureManifest(config: any, fullPoolId: any, assetA: any, assetB: any, outPath: any, nowMs: any = Date.now()) {
@@ -462,16 +453,24 @@ async function withTimeout(run: any, timeoutMs: any, description: any) {
 }
 
 async function fetchWindowCandles(fullPoolId: any, assetA: any, assetB: any, config: any, windowEntry: any, total: any) {
-    const label = `${windowEntry.gte} → ${windowEntry.lte}`;
+    const tag = formatWindowLine('Chunk', windowEntry.index, total, windowEntry.gte, windowEntry.lte);
     let lastErr = null;
 
     for (let attempt = 1; attempt <= FETCH_MAX_ATTEMPTS; attempt++) {
-        console.log(`  Chunk ${windowEntry.index}/${total}: ${label} (attempt ${attempt}/${FETCH_MAX_ATTEMPTS})`);
+        const attemptStartMs = Date.now();
+        const onPage = (info: any) => {
+            // Per-page progress stays silent; only page retries are reported.
+            if (info?.event === 'retry') {
+                const secs = ((Date.now() - attemptStartMs) / 1000).toFixed(1);
+                console.warn(`${tag}: ${info.direction} page ${info.page} retry ${info.attempt} at ${secs}s: ${info.error}`);
+            }
+        };
         try {
             const candles = await withTimeout((signal: any) => kibanaSource.getLpCandlesForPool(fullPoolId, assetA, assetB, {
                     ...config,
                     timeout: FETCH_TIMEOUT_MS,
                     signal,
+                    onPage,
                     timeRange: {
                         gte: windowEntry.gte,
                         lte: windowEntry.lte,
@@ -479,17 +478,18 @@ async function fetchWindowCandles(fullPoolId: any, assetA: any, assetB: any, con
                 }),
                 FETCH_TIMEOUT_MS,
                 `Chunk ${windowEntry.index}/${total}`);
-            console.log(`    -> ${candles.length} candles`);
+            const retryNote = attempt > 1 ? ` (attempt ${attempt}/${FETCH_MAX_ATTEMPTS})` : '';
+            console.log(formatWindowLine('Chunk', windowEntry.index, total, windowEntry.gte, windowEntry.lte, `-> ${candles.length} candles (${((Date.now() - attemptStartMs) / 1000).toFixed(1)}s)${retryNote}`));
             return candles;
         } catch (err: any) {
             lastErr = err;
             if (attempt < FETCH_MAX_ATTEMPTS) {
                 // Linear backoff so consecutive failures do not hammer Kibana
                 const backoffMs = FETCH_RETRY_BACKOFF_BASE_MS * attempt;
-                console.warn(`    retrying in ${backoffMs}ms after failure: ${getErrorMessage(err)}`);
+                console.warn(`${tag}: retrying in ${backoffMs}ms after failure: ${getErrorMessage(err)}`);
                 await new Promise((resolve) => setTimeout(resolve, backoffMs));
             } else {
-                console.warn(`    giving up after failure: ${getErrorMessage(err)}`);
+                console.warn(`${tag}: giving up after failure: ${getErrorMessage(err)}`);
             }
         }
     }
@@ -501,9 +501,17 @@ async function fetchCandlesSequentially(fullPoolId: any, assetA: any, assetB: an
     const { manifestPath, manifest, requestKey } = ensureManifest(config, fullPoolId, assetA, assetB, outPath);
     const total = manifest.windows.length;
     const chunkMonths = resolveChunkMonths(config);
+    const bucketMs = Number(config.intervalSeconds) * 1000;
 
     if (total > 1) {
         console.log(`  Auto-splitting fetch into ${total} sequential ${chunkMonths}-month chunks`);
+    }
+
+    // Range-aware local cache: loaded once, consulted per window. Buckets
+    // already on disk are reused; only missing buckets hit Kibana.
+    const localCache = loadLocalChunkCache(outPath, requestKey);
+    if (localCache.files > 0) {
+        console.log(`  Local cache: ${localCache.files} chunk files, ${localCache.byTs.size} buckets — fetching only what is missing`);
     }
 
     for (const windowEntry of manifest.windows) {
@@ -514,7 +522,29 @@ async function fetchCandlesSequentially(fullPoolId: any, assetA: any, assetB: an
             windowEntry.firstTs = cached.firstTs;
             windowEntry.lastTs = cached.lastTs;
             windowEntry.lastError = null;
-            console.log(`  Chunk ${windowEntry.index}/${total}: ${windowEntry.gte} → ${windowEntry.lte} (cached ${cached.candleCount} candles)`);
+            console.log(formatWindowLine('Chunk', windowEntry.index, total, windowEntry.gte, windowEntry.lte, `(cached ${cached.candleCount} candles)`));
+            saveManifest(manifestPath, manifest);
+            continue;
+        }
+
+        // Exact-match miss: try bucket-level reuse from sibling chunks before
+        // falling back to a full window fetch (shared planner in window_cache).
+        const gteMs = Date.parse(String(windowEntry.gte));
+        const lteMs = Date.parse(String(windowEntry.lte));
+        const { reusable, missing, missingHours, windowHours, inputsValid } = planWindowReuse(localCache, {
+            gteMs, lteMs, bucketMs,
+            isTail: windowEntry.index === total,
+        });
+        const reusableNote = reusable.length > 0 ? `, ${reusable.length} buckets local` : '';
+        if (inputsValid && missing.length === 0 && (reusable.length > 0 || localCache.files > 0)) {
+            console.log(formatWindowLine('Chunk', windowEntry.index, total, windowEntry.gte, windowEntry.lte, `(reused ${reusable.length} local buckets, nothing missing)`));
+            persistChunkFile(windowEntry.file, requestKey, windowEntry, reusable, priorQueriedInWindow(windowEntry.file, requestKey, isLpChunkMatch, gteMs, lteMs));
+            windowEntry.status = 'done';
+            windowEntry.candleCount = reusable.length;
+            windowEntry.firstTs = reusable.length > 0 ? new Date(reusable[0][0]).toISOString() : null;
+            windowEntry.lastTs = reusable.length > 0 ? new Date(reusable[reusable.length - 1][0]).toISOString() : null;
+            windowEntry.completedAt = new Date().toISOString();
+            windowEntry.lastError = null;
             saveManifest(manifestPath, manifest);
             continue;
         }
@@ -524,8 +554,48 @@ async function fetchCandlesSequentially(fullPoolId: any, assetA: any, assetB: an
         saveManifest(manifestPath, manifest);
 
         try {
-            const candles = await fetchWindowCandles(fullPoolId, assetA, assetB, config, windowEntry, total);
-            persistChunkFile(windowEntry.file, requestKey, windowEntry, candles);
+            let candles: any[];
+            let queriedRanges: { gte: number; lte: number }[];
+            if (reusable.length > 0 && missing.length > 0 && missingHours <= windowHours / 2 && missing.length <= 3) {
+                // Small gaps: query only the missing sub-ranges, merge over local.
+                console.log(formatWindowLine('Chunk', windowEntry.index, total, windowEntry.gte, windowEntry.lte, `(local cover${reusableNote}; fetching ${missingHours}h in ${missing.length} sub-range(s))`));
+                let mergedLocal: any[] = reusable.slice();
+                for (const m of missing) {
+                    // Extend lte past the final bucket start: the ES range is
+                    // inclusive and m.lte is a bucket *start*, so without this
+                    // the bucket's real trades are cut off and the gap-filler
+                    // freezes it as a zero-volume candle. Over-fetch is safe —
+                    // merged output is clamped to the window below.
+                    const part = await fetchWindowCandles(fullPoolId, assetA, assetB, config, {
+                        ...windowEntry,
+                        gte: new Date(m.gte).toISOString(),
+                        lte: new Date(m.lte + bucketMs).toISOString(),
+                    }, total);
+                    mergedLocal = mergeCandles(mergedLocal, part, {
+                        onCollision: (existing: any, incoming: any) => incoming[5] > existing[5] ? incoming : existing,
+                    });
+                }
+                // Clamp to the window (drops the one-bucket over-fetch above).
+                candles = mergedLocal.filter((c: any) => Number(c[0]) >= gteMs && Number(c[0]) <= lteMs);
+                candles.sort((a: any, b: any) => a[0] - b[0]);
+                // Claimed coverage is the canonical missing ranges (a
+                // conservative subset of what was queried with overlap),
+                // plus previously-proven in-window coverage surviving the rewrite.
+                queriedRanges = missing.map((m: any) => ({ gte: m.gte, lte: m.lte }))
+                    .concat(priorQueriedInWindow(windowEntry.file, requestKey, isLpChunkMatch, gteMs, lteMs));
+            } else {
+                if (reusable.length > 0) {
+                    console.log(formatWindowLine('Chunk', windowEntry.index, total, windowEntry.gte, windowEntry.lte, `(local cover${reusableNote}; gap too large — full window fetch)`));
+                }
+                const fresh = await fetchWindowCandles(fullPoolId, assetA, assetB, config, windowEntry, total);
+                candles = reusable.length > 0
+                    ? mergeCandles(reusable, fresh, {
+                        onCollision: (existing: any, incoming: any) => incoming[5] > existing[5] ? incoming : existing,
+                    }).filter((c: any) => Number(c[0]) >= gteMs && Number(c[0]) <= lteMs).sort((a: any, b: any) => a[0] - b[0])
+                    : fresh;
+                queriedRanges = [{ gte: gteMs, lte: lteMs }];
+            }
+            persistChunkFile(windowEntry.file, requestKey, windowEntry, candles, queriedRanges);
             windowEntry.status = 'done';
             windowEntry.candleCount = candles.length;
             windowEntry.firstTs = candles.length > 0 ? new Date(candles[0][0]).toISOString() : null;
@@ -541,6 +611,7 @@ async function fetchCandlesSequentially(fullPoolId: any, assetA: any, assetB: an
         }
     }
 
+    const mergeStartMs = Date.now();
     let merged: any[] = [];
     for (const windowEntry of manifest.windows) {
         const cached = validateChunkFile(windowEntry.file, requestKey, windowEntry);
@@ -553,9 +624,14 @@ async function fetchCandlesSequentially(fullPoolId: any, assetA: any, assetB: an
                 onCollision: (existing: any, incoming: any) => incoming[5] > existing[5] ? incoming : existing,
             });
     }
+    console.log(`  Merged ${merged.length} candles from ${manifest.windows.length} chunk files (${((Date.now() - mergeStartMs) / 1000).toFixed(1)}s)`);
 
     manifest.status = 'complete';
     saveManifest(manifestPath, manifest);
+    const removed = cleanupOrphanChunkFiles(outPath, requestKey, new Set(manifest.windows.map((w: any) => path.resolve(w.file))));
+    if (removed.length > 0) {
+        console.log(`  Cleaned ${removed.length} orphan chunk file(s): ${removed.map((f: string) => path.basename(f)).join(', ')}`);
+    }
     return merged;
 }
 
@@ -840,5 +916,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     });
 }
 
-export { applyPrecisionOverrides, parseBotsConfig, selectBot, fetchCandlesSequentially, outputPath, buildFetchWindowsFromRange }
+export { applyPrecisionOverrides, parseBotsConfig, selectBot, fetchCandlesSequentially, outputPath, buildFetchWindowsFromRange, findMissingBucketRanges, loadLocalChunkCache, cachedCandlesInRange, pruneImmutableGaps, cleanupOrphanChunkFiles, TAIL_REFRESH_HOURS, IMMUTABLE_WINDOW_AGE_MS }
 

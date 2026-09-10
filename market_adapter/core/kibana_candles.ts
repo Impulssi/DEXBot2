@@ -209,7 +209,7 @@ function hitToTrade(hit: any, { soldAsset, receivedAsset, soldAmountField, recei
     };
 }
 
-async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAsset, receivedAsset, lookbackHours, poolId, timeRange }: any) {
+async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAsset, receivedAsset, lookbackHours, poolId, timeRange, onPage, direction }: any) {
     const size = Math.min(Math.max(1, Number(cfg.kibanaPageSize) || DEFAULT_CONFIG.kibanaPageSize), 10000);
     const retriesRaw = Number(cfg.kibanaPageRetries);
     // kibanaPageRetries is the total number of attempts per page (not retries
@@ -218,10 +218,20 @@ async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAs
     const delayRaw = Number(cfg.kibanaRetryDelayMs);
     const retryDelayMs = Number.isFinite(delayRaw) && delayRaw >= 0 ? delayRaw : DEFAULT_CONFIG.kibanaRetryDelayMs;
     const sourceFields = sourceFieldsForFieldMap(fieldMap);
+    const directionLabel = direction || `${soldAsset?.symbol || soldAsset?.id || '?'}→${receivedAsset?.symbol || receivedAsset?.id || '?'}`;
+    const reportPage = (info: any) => {
+        const cb = typeof onPage === 'function' ? onPage : (typeof cfg?.onPage === 'function' ? cfg.onPage : null);
+        if (cb) {
+            try { cb({ direction: directionLabel, ...info }); } catch (_) { /* progress must never fail the fetch */ }
+        }
+    };
     const trades: any[] = [];
     let searchAfter: any = null;
+    let page = 0;
 
     while (true) {
+        page += 1;
+        const pageStartMs = Date.now();
         const query = buildDirectionalDocumentQuery({
             opType,
             soldAssetField: fieldMap.soldAssetField,
@@ -243,7 +253,9 @@ async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAs
         // same documents.
         let result: any = null;
         let lastErr: any = null;
+        let attempts = 0;
         for (let attempt = 1; attempt <= retries; attempt++) {
+            attempts = attempt;
             try {
                 result = await search(cfg, query);
                 lastErr = null;
@@ -251,11 +263,13 @@ async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAs
             } catch (err: any) {
                 lastErr = err;
                 if (attempt >= retries || !isTransientPageError(err)) throw err;
+                reportPage({ page, event: 'retry', attempt, error: String(err?.message || err || 'unknown') });
                 if (retryDelayMs > 0) await sleep(retryDelayMs * attempt);
             }
         }
         if (lastErr) throw lastErr;
         const hits = result?.hits?.hits || [];
+        reportPage({ page, event: 'page', hits: Array.isArray(hits) ? hits.length : 0, attempts, elapsedMs: Date.now() - pageStartMs, done: !Array.isArray(hits) || hits.length === 0 || hits.length < size });
         if (!Array.isArray(hits) || hits.length === 0) break;
 
         for (const hit of hits) {
@@ -317,6 +331,8 @@ async function fetchKibanaCandles({ opType, fieldMap, assetA, assetB, config = {
             lookbackHours: cfg.lookbackHours,
             poolId,
             timeRange: cfg.timeRange ?? null,
+            onPage: cfg.onPage,
+            direction: `${assetA?.symbol || assetA?.id || '?'}→${assetB?.symbol || assetB?.id || '?'}`,
         }),
         fetchDirectionalTradeDocs({
             search,
@@ -328,6 +344,8 @@ async function fetchKibanaCandles({ opType, fieldMap, assetA, assetB, config = {
             lookbackHours: cfg.lookbackHours,
             poolId,
             timeRange: cfg.timeRange ?? null,
+            onPage: cfg.onPage,
+            direction: `${assetB?.symbol || assetB?.id || '?'}→${assetA?.symbol || assetA?.id || '?'}`,
         }),
     ]);
 

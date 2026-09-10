@@ -10,7 +10,7 @@
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
 import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findCrossedOrder, resolveGapBand, isSlotInRail, priceSlotEqual, resolveBuyFloorUsdt, resolveBuyWindowMode, isDeepShelfId } from './utils/math.js';
-import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes } from './utils/order.js';
+import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, resolveReserveCount, resolveReserveFloorIds, resolveReserveCeilIds } from './utils/order.js';
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -321,6 +321,60 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
     }
 
     return valid;
+}
+
+/**
+ * Pick edge-pinned reserve slots (floor for BUY, ceiling for SELL).
+ * Same rail/min-size gates as _pickVirtualSlotsToActivate, opposite end:
+ * the reserve ladder rests at the grid edge instead of the market window.
+ * @param {Object} manager - OrderManager instance.
+ * @param {string} orderType - ORDER_TYPES value.
+ * @param {number} count - Number of edge slots to pick.
+ * @param {Set<string>} [excludeIds] - Slot ids to skip (already desired).
+ * @returns {Array<Object>} Array of picked edge slots (edge first).
+ * @private
+ */
+function _pickEdgeReserveSlots(manager: any, orderType: any, count: any, excludeIds: any = null): any[] {
+    if (count <= 0) return [];
+    const type = orderType;
+    const edgeDesc = type === ORDER_TYPES.SELL;
+    const resolved = resolveGapBand(manager);
+    const boundaryKnown = resolved.boundaryIdx !== null && resolved.sellStartIdx !== null;
+    const inRail = (slot: any): boolean => isSlotInRail(resolved.boundaryIdx, resolved.gapSlots, type, slot);
+    const typeFilter = boundaryKnown
+        ? (slot: any) => slot && (slot.type === type || slot.type === ORDER_TYPES.SPREAD)
+        : (slot: any) => slot && slot.type === type;
+    const edgeFirst = (Array.from(manager.orders.values()) as any[])
+        .filter(typeFilter)
+        .filter(inRail)
+        .sort((a: any, b: any) => edgeDesc ? b.price - a.price : a.price - b.price);
+    let effectiveMin = 0;
+    try {
+        effectiveMin = getMinOrderSize(type, manager.assets);
+    } catch (e: any) { effectiveMin = 0; }
+    const derivedSizes = _deriveBudgetedSideSizes(manager, type);
+    const picked: any[] = [];
+    for (const slot of edgeFirst) {
+        if (picked.length >= count) break;
+        if (excludeIds && excludeIds.has(slot.id)) continue;
+        if (!slot.orderId && slot.state === ORDER_STATES.VIRTUAL) {
+            const storedSize = Number(slot.size) || 0;
+            let effectiveSize = storedSize;
+            if (effectiveSize < effectiveMin) {
+                const derived = derivedSizes.get(slot.id);
+                if (derived != null && derived >= effectiveMin) {
+                    effectiveSize = derived;
+                }
+            }
+            if (slot.id && effectiveSize >= effectiveMin) {
+                picked.push({
+                    ...(effectiveSize === storedSize ? slot : { ...slot, size: effectiveSize }),
+                    type,
+                });
+            }
+        }
+    }
+    return picked;
 }
 
 
@@ -1706,7 +1760,24 @@ async function _reconcileStartupSide({
 
     const matchedOnGrid = _countActiveOnGrid(manager, orderType);
     const neededSlots = Math.max(0, targetCount - matchedOnGrid);
-    const desiredSlots = _pickVirtualSlotsToActivate(manager, orderType, neededSlots);
+    let desiredSlots = _pickVirtualSlotsToActivate(manager, orderType, neededSlots);
+    // Reserve ladder: the closest-first picker above backfills the middle. Swap
+    // its farthest tail for edge-pinned slots (floor for BUY, ceiling for SELL)
+    // so startup converges to window + edge instead of one contiguous block.
+    let reserveEdgeIds: Set<string> | null = null;
+    const reserveSide = orderType === ORDER_TYPES.SELL ? 'sell' : 'buy';
+    const reserveCount = resolveReserveCount(manager.config, reserveSide);
+    if (reserveCount > 0) {
+        const pickedIds = new Set(desiredSlots.map((s: any) => s?.id).filter(Boolean));
+        const freshEdge = _pickEdgeReserveSlots(manager, orderType, reserveCount, pickedIds);
+        reserveEdgeIds = orderType === ORDER_TYPES.SELL
+            ? resolveReserveCeilIds((Array.from(manager.orders.values()) as any[]), reserveCount)
+            : resolveReserveFloorIds((Array.from(manager.orders.values()) as any[]), reserveCount);
+        if (freshEdge.length > 0) {
+            const keepCount = Math.max(0, neededSlots - freshEdge.length);
+            desiredSlots = [...desiredSlots.slice(0, keepCount), ...freshEdge];
+        }
+    }
 
     const sortedUnmatched = unmatchedSideOrders.slice(0).sort(sortUpdateComparator);
     const updateCount = Math.min(sortedUnmatched.length, desiredSlots.length);
@@ -1929,6 +2000,38 @@ async function _reconcileStartupSide({
             .map((co: any) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
             .filter((x: any) => x.parsed)
             .sort(sortExcessCancelComparator);
+        // Reserve ladder: edge-priced orphans cancel last (they are adoption
+        // candidates at reserve prices, not first-to-cut).
+        if (reserveEdgeIds && reserveEdgeIds.size > 0) {
+            const sidePrecision = orderType === ORDER_TYPES.SELL
+                ? manager.assets?.assetA?.precision
+                : manager.assets?.assetB?.precision;
+            const edgePrices: number[] = [];
+            for (const eid of reserveEdgeIds) {
+                const slot = manager.orders.get(eid);
+                if (slot && Number.isFinite(Number(slot.price))) edgePrices.push(Number(slot.price));
+            }
+            const isEdgePriced = (price: any): boolean => {
+                const p = Number(price);
+                if (!Number.isFinite(p)) return false;
+                return edgePrices.some((ep: number) => {
+                    try {
+                        return priceSlotEqual(ep, p, sidePrecision);
+                    } catch {
+                        return ep === p;
+                    }
+                });
+            };
+            const parked = parsedUnmatched.filter((x: any) => isEdgePriced(x.parsed?.price));
+            if (parked.length > 0 && parked.length < parsedUnmatched.length) {
+                const parkedIds = new Set(parked.map((x: any) => x.chain?.id));
+                parsedUnmatched.sort((a: any, b: any) => {
+                    const pa = parkedIds.has(a.chain?.id) ? 1 : 0;
+                    const pb = parkedIds.has(b.chain?.id) ? 1 : 0;
+                    return pa - pb;
+                });
+            }
+        }
 
         if (planOnly) {
             // In planOnly mode, record the cancellations for Phase 2 execution.
@@ -1974,6 +2077,14 @@ async function _reconcileStartupSide({
                 const activeOrders = manager.getOrdersByTypeAndState(orderType, ORDER_STATES.ACTIVE)
                     .filter((o: any) => o && o.orderId)
                     .sort(sortMatchedCancelComparator);
+                // Reserve ladder: matched edge slots cancel last (static insurance).
+                if (reserveEdgeIds && reserveEdgeIds.size > 0) {
+                    activeOrders.sort((a: any, b: any) => {
+                        const fa = reserveEdgeIds.has(a.id) ? 1 : 0;
+                        const fb = reserveEdgeIds.has(b.id) ? 1 : 0;
+                        return fa - fb;
+                    });
+                }
 
                 for (const o of activeOrders) {
                     if (cancelCount <= 0) break;

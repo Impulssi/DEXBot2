@@ -163,7 +163,8 @@ import {
     parseSlotIndex,
     calculateIdealBoundary,
     assignGridRoles,
-    resolveOnChainRetypeType
+    resolveOnChainRetypeType,
+    resolveReserveCount
 } from './utils/order.js';
 import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry } from './utils/system.js';
 import * as MathUtils from './utils/math.js';
@@ -296,8 +297,8 @@ export async function _getSizingContext(manager: any, side: any, { skipRecalc = 
         // BTS fees are paid for ALL order operations regardless of side, so the
         // BTS-holding side reserves fees for both buy and sell target counts.
         if (budget > 0) {
-            const targetBuy = Math.max(0, manager.config.activeOrders?.buy ?? 1);
-            const targetSell = Math.max(0, manager.config.activeOrders?.sell ?? 1);
+            const targetBuy = Math.max(0, manager.config.activeOrders?.buy ?? 1) + resolveReserveCount(manager.config, 'buy');
+            const targetSell = Math.max(0, manager.config.activeOrders?.sell ?? 1) + resolveReserveCount(manager.config, 'sell');
             const totalTarget = targetBuy + targetSell;
             const btsOrderType = getBtsSide(manager.config?.assetA, manager.config?.assetB);
             const isBtsSide = isBuy ? (btsOrderType === ORDER_TYPES.BUY) : (btsOrderType === ORDER_TYPES.SELL);
@@ -784,6 +785,23 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null,
                             'error'
                         );
                     }
+                    // The rejected value must not survive: storeMasterGrid
+                    // never persists a null boundary, so without an explicit
+                    // erase the poison re-arms this rejection on every boot
+                    // (Sep-9: boundary=96 rejected identically 3 restarts in
+                    // a row). Best-effort — load continues boundary-less
+                    // either way and the next fill batch re-anchors live.
+                    try {
+                        const acct = (manager as any)?.accountOrders;
+                        if (acct && typeof acct.clearPersistedBoundary === 'function') {
+                            await acct.clearPersistedBoundary();
+                            manager.logger?.log?.(
+                                `[GRID-LOAD] Erased poisoned persisted boundary (${boundaryIdx}); ` +
+                                `restart will load boundary-less instead of re-rejecting.`,
+                                'warn'
+                            );
+                        }
+                    } catch { /* load continues boundary-less either way */ }
                 }
             }
 
@@ -1518,13 +1536,20 @@ export function checkAndUpdateGridIfNeeded(manager: any): any {
         for (const s of sides) {
             if (s.grid <= 0) continue;
 
+            const feeActiveOrders = manager.config.activeOrders && typeof manager.config.activeOrders === 'object'
+                ? {
+                    ...manager.config.activeOrders,
+                    buy: Math.max(0, Number(manager.config.activeOrders.buy) || 0) + resolveReserveCount(manager.config, 'buy'),
+                    sell: Math.max(0, Number(manager.config.activeOrders.sell) || 0) + resolveReserveCount(manager.config, 'sell'),
+                }
+                : manager.config.activeOrders;
             const availableFunds = calculateAvailableFundsValue(
                 s.name,
                 manager.accountTotals,
                 manager.funds,
                 manager.config.assetA,
                 manager.config.assetB,
-                manager.config.activeOrders,
+                feeActiveOrders,
                 manager.config.min_BTS_value,
                 manager.config.feeParams ?? null
             );

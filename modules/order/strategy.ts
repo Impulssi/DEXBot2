@@ -52,7 +52,7 @@ import { ORDER_TYPES, ORDER_STATES } from '../constants.js';
 
 import { calculateGapSlots } from './grid.js';
 import { isSlotInRail, resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, isDeepShelfId } from './utils/math.js';
-import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, ensureDeepShelfEntries, isDeepShelfFillOrder, deriveDeepShelfSizes, applyDeepManualSizes } from './utils/order.js';
+import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, ensureDeepShelfEntries, isDeepShelfFillOrder, deriveDeepShelfSizes, applyDeepManualSizes, resolveReserveCount, selectReserveEdgeSlots, isShiftEligibleFill } from './utils/order.js';
 import { assignGridRoles } from './utils/order.js';
 import {
     convertToSpreadPlaceholder,
@@ -121,6 +121,31 @@ class StrategyEngine {
 
             const isPartial = filledOrder.isPartial === true;
             mgr.logger.log(`[STRATEGY] Processing fill: id=${filledOrder.id}, type=${filledOrder.type}, price=${filledOrder.price}, size=${filledOrder.size}, partial=${isPartial}`, 'debug');
+            // Pending-crawl record: this fill's crawl is owed to the boundary
+            // only once a derivation commits it. If the batch aborts, the
+            // broadcast is refused, or the process restarts first, the entry
+            // survives (persisted with the snapshot) so the crawl is applied
+            // by a later derivation or at startup — instead of being lost and
+            // letting reconcile refill the hole same-side (Sep-10: 4 consumed
+            // buys re-bought after restart). Cleared on any accepted
+            // non-null boundary commit. Same eligibility as the crawl itself.
+            if (isShiftEligibleFill(filledOrder)
+                && typeof filledOrder.id === 'string' && filledOrder.id.length > 0
+                && (filledOrder.type === ORDER_TYPES.BUY || filledOrder.type === ORDER_TYPES.SELL)) {
+                const pending = (mgr as any)._pendingFillCrawls;
+                if (Array.isArray(pending)) {
+                    // Slot-level dedupe: a slot with no live order cannot
+                    // refill (and therefore re-fill) while its hole persists,
+                    // so a second entry for the same slotId can only be a
+                    // reprocessed duplicate, never a second owed crawl.
+                    // Replace (keep newest) instead of stacking.
+                    const at = pending.findIndex((e: any) => e && e.slotId === filledOrder.id);
+                    if (at >= 0) pending.splice(at, 1);
+                    if (pending.length > 500) pending.shift();
+                    pending.push({ slotId: filledOrder.id, side: filledOrder.type, ts: Date.now() });
+                    if (typeof (mgr as any)._markGridDirty === 'function') (mgr as any)._markGridDirty();
+                }
+            }
 
             // Buy-delay bookkeeping: any BUY fill (full or delayed-rotation
             // partial) arms the buy-side delay (config buyDelayMinutes,
@@ -280,9 +305,28 @@ class StrategyEngine {
         // have drifted if targetSpreadPercent or gridLimits changed.
         const gapSlots = (this.manager as any)._genesis?.gapSlots ?? this.manager._gapSlots ?? calculateGapSlots(config.incrementPercent, config.targetSpreadPercent, config.gridLimits);
         const crossChunkBudget = (this.manager as any)._boundaryShiftBudget;
-        const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fillsForBoundary, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget);
+        // Anchor recovery on the frozen genesis center when config.startPrice
+        // is an unresolved "pool"/"book" mode string: a fill carries direction
+        // but not position, and an unanchored recovery fabricates a rail-edge
+        // boundary (the slot-77→slot-192 teleport). The numeric config center
+        // still wins when present.
+        const genesisStart = Number((this.manager as any)?._genesis?.startPrice);
+        const boundaryConfig = (!Number.isFinite(Number(config?.startPrice)) && Number.isFinite(genesisStart))
+            ? { ...config, genesisStartPrice: genesisStart }
+            : config;
+        // Deep fills stay excluded (fillsForBoundary above): the rail stays
+        // put while the shelf absorbs. Upstream filters reserve-edge ids
+        // internally too — both gates coexist.
+        const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fillsForBoundary, currentBoundaryIdx, allSlots, boundaryConfig, gapSlots, crossChunkBudget, (this.manager as any)?._pendingFillCrawls);
         if (crossChunkBudget != null) {
             (this.manager as any)._boundaryShiftBudget = remainingBudget;
+        }
+        // Unanchorable (null boundary, no numeric center anywhere): refuse to
+        // plan rotations on fabricated geometry. The COW engine routes this
+        // to a structural resync instead.
+        if (newBoundaryIdx === null || newBoundaryIdx === undefined) {
+            this.manager.logger.log('[COW] calculateTargetGrid: boundary unrecoverable (no numeric center); skipping rotation plan', 'warn');
+            return { targetGrid: new Map(), boundaryIdx: null };
         }
 
         // 2. Assign Roles (Buy/Sell/Spread)
@@ -428,7 +472,7 @@ class StrategyEngine {
         // the Buy-funds allocation (never the wallet total — enforced in
         // fund validation). Delay gate still applies to all shelf levels.
         const deepFinal = applyDeepManualSizes(config, deepShelf, deepSizeById);
-        const buySlotsToUse = [...filteredBuySlots, ...(() => {
+        const buySlotsToUse: any[] = [...filteredBuySlots, ...(() => {
             // Deep shelf append: same floor as the rail (unless manual), same
             // delay deadline. Unsized (0) shelf slots are skipped in place —
             // never walked up.
@@ -452,8 +496,38 @@ class StrategyEngine {
             }
             return gated;
         })()];
-        const buySizes = buySlotsToUse.map((slot: any) => isDeepShelfId(slot.id) ? (deepFinal.sizes.get(slot.id) || 0) : (buySizeById.get(slot.id) || 0));
-        const sellSizes = sellSlots.map((slot: any) => sellSizeById.get(slot.id) || 0);
+        const buySizes: number[] = buySlotsToUse.map((slot: any) => isDeepShelfId(slot.id) ? (deepFinal.sizes.get(slot.id) || 0) : (buySizeById.get(slot.id) || 0));
+        const sellSizes: number[] = sellSlots.map((slot: any) => sellSizeById.get(slot.id) || 0);
+        // Reserve ladder (upstream): edge-pinned insurance orders stay live
+        // alongside the window. Buys pin at the floor (lowest prices), sells
+        // at the ceiling (highest prices). Discontiguous by design — the
+        // middle stays VIRTUAL. Sizes come from the same full-rail curves;
+        // reserve fills never crawl (filtered in deriveTargetBoundary).
+        // Appended after window + shelf; ids cannot collide with either
+        // (reserve skips windowed ids, shelf ids live outside slot-N).
+        const reserveBuySlots = selectReserveEdgeSlots(
+            allBuySortedForSizing.filter((s: any) => inBuyRail(s)),
+            resolveReserveCount(config, 'buy'),
+            new Set(buySlots.map((s: any) => s.id)),
+            'floor'
+        );
+        const reserveSellSlots = selectReserveEdgeSlots(
+            allSellSortedForSizing.filter((s: any) => inSellRail(s)),
+            resolveReserveCount(config, 'sell'),
+            new Set(sellSlots.map((s: any) => s.id)),
+            'ceiling'
+        );
+        const sellSlotsToUse: any[] = [...sellSlots];
+        for (const s of reserveBuySlots) {
+            if (buySlotsToUse.some((b: any) => b.id === s.id)) continue;
+            buySlotsToUse.push(s);
+            buySizes.push(buySizeById.get(s.id) || 0);
+        }
+        for (const s of reserveSellSlots) {
+            if (sellSlotsToUse.some((b: any) => b.id === s.id)) continue;
+            sellSlotsToUse.push(s);
+            sellSizes.push(sellSizeById.get(s.id) || 0);
+        }
 
         // Apply sizes to target grid map
         const targetGrid = new Map();
@@ -477,13 +551,13 @@ class StrategyEngine {
         };
 
         applySizes(buySlotsToUse, buySizes);
-        applySizes(sellSlots, sellSizes);
+        applySizes(sellSlotsToUse, sellSizes);
         
         // Handle slots outside the window: preserve their calculated sizes
         // Window Discipline only controls WHICH orders are placed on-chain,
         // not the grid's fund allocation. Virtual orders must retain their
         // sizes so that funds.virtual reflects the full grid commitment.
-        const windowIds = new Set([...buySlots, ...sellSlots].map((s: any) => s.id));
+        const windowIds = new Set([...buySlotsToUse, ...sellSlotsToUse].map((s: any) => s.id));
         updatedSlots.forEach((slot: any) => {
             if (!windowIds.has(slot.id)) {
                 // Use calculated size from full-rail sizing (preserves fund allocation)

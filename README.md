@@ -209,9 +209,10 @@ Configuration options from `dexbot bot`, stored in `bots.json` in the profiles d
 | **`gridPrice`** | num \| str \| null | Grid reference. Use `"ama"` for the recommended AMA center (`"ama"` picks the pair's default preset; `"ama1"`–`"ama4"` pin fastest to slowest); `null` falls back to `startPrice`; numeric values use that fixed value. |
 | **`incrementPercent`** | number | Geometric step between orders. Default `0.5` = 0.5%. |
 | **`targetSpreadPercent`** | number | Width of the empty spread zone between buy and sell orders. Default `2` = 2%. Profit per completed cycle ≈ `spread - increment - fees`. |
-| **`weightDistribution`** | object | Advanced sizing control per side. Range `-1` to `2`: `-1` = super-valley, `0` = valley, `0.5` = neutral, `1` = mountain (default), `2` = super-mountain. Higher weight = more funds in orders near the market price; lower weight = more funds shifted toward the grid edge. Default `{ "sell": 1.0, "buy": 1.0 }`; leave unchanged for normal setup. |
-| **`botFunds`** | object | Capital: `{ "sell": "100%", "buy": 1000 }`. Numbers or percentage strings |
-| **`activeOrders`** | object | Target active orders per side: `{ "sell": 20, "buy": 20 }` |
+| **`weightDistribution`** | object | Advanced sizing control per side. Range `-1` to `2`: `-1` = super-valley, `0` = valley, `0.5` = neutral, `1` = mountain (default), `2` = super-mountain. Higher weight = more funds in orders near the market price; lower weight = more funds shifted toward the grid edge. Default `{ Sell: 1.0, Buy: 1.0 }`; leave unchanged for normal setup. |
+| **`botFunds`** | object | Capital: `{ Sell: "100%", Buy: 100% }`. Numbers or percentage strings |
+| **`activeOrders`** | object | Target active orders per side: `{ S: 20, B: 20 }` |
+| **`reserveOrders`** | object | Edge-pinned insurance orders resting live outside the active window, to catch fat fingers: `{ S: 0, B: 0 }` |
 
 </details>
 

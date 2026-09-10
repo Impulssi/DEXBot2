@@ -118,6 +118,15 @@ function validateBotEntry(b: any, i: number, src: string): string | null {
             }
         }
     }
+    if ('reserveOrders' in b && b.reserveOrders !== undefined && b.reserveOrders !== null) {
+        if (typeof b.reserveOrders !== 'object' || Array.isArray(b.reserveOrders)) problems.push("'reserveOrders' must be an object {buy, sell}");
+        else {
+            for (const side of ['buy', 'sell']) {
+                const v = (b.reserveOrders as any)[side];
+                if (v !== undefined && (!Number.isInteger(Number(v)) || Number(v) < 0)) problems.push(`'reserveOrders.${side}' must be a non-negative integer`);
+            }
+        }
+    }
 
     if ('botFunds' in b) {
         if (typeof b.botFunds !== 'object' || b.botFunds === null) problems.push("'botFunds' must be an object");

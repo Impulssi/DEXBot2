@@ -26,7 +26,7 @@ Phase 1 does all reasoning in memory under `_gridLock` (fast); Phases 2 and 3 ex
 
 Phase 2 and 3 both respect the `dryRun` flag: when true, no on-chain mutations are attempted — plans are logged but not executed.
 
-`targetCount` (per side, `targetSell`/`targetBuy`) is sourced from bot config and determines how many active orders each side should maintain. The internal `planOnly` flag controls whether `_reconcileStartupSide` records plans for Phase 2 or executes inline — Phase 1 always calls with `planOnly=true`.
+`targetCount` (per side, `targetSell`/`targetBuy`) is sourced from bot config (`activeOrders` window plus `reserveOrders` edge ladder) and determines how many live orders each side should maintain. The internal `planOnly` flag controls whether `_reconcileStartupSide` records plans for Phase 2 or executes inline — Phase 1 always calls with `planOnly=true`.
 
 ```
                     Grid generated

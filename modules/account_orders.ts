@@ -16,9 +16,9 @@
  * 1. AccountOrders(options) - Class for per-bot order persistence
  *    Constructor options: { botKey, ordersDir?, profilesPath? } (botKey required, throws if missing)
  *    Methods:
- *      syncMeta(botConfig), storeMasterGrid(orders, btsFeesOwed, boundaryIdx, assets, debugInputs, recentFillKeys)
- *      loadGrid(forceReload), loadRecentFillKeys(forceReload), loadPersistedAssets(forceReload)
- *      loadBoundaryIdx(forceReload), loadBtsBalance(forceReload), loadBtsFeesOwed(forceReload)
+ *      syncMeta(botConfig), storeMasterGrid(orders, btsFeesOwed, boundaryIdx, assets, debugInputs, recentFillKeys, genesis, gapEvacStreaks, pendingFillCrawls)
+ *      loadGrid(forceReload), loadRecentFillKeys(forceReload), loadPersistedAssets(forceReload), loadPendingFillCrawls(forceReload)
+ *      loadBoundaryIdx(forceReload), loadBtsBalance(forceReload), loadBtsFeesOwed(forceReload), loadGapEvacStreaks(forceReload), loadGenesis(forceReload)
  *      clearGrid()
  *      loadProcessedFills(options), updateProcessedFillsBatch(fills), cleanOldProcessedFills(olderThanMs)
  *      getAssetBalances(forceReload)
@@ -335,7 +335,7 @@ class AccountOrders {
    * @param {Object|null} recentFillKeys - Optional fill key dedup snapshot for crash recovery
    * @param {Object|null} genesis - Optional frozen genesis (priceLevels etc)
    */
-  async storeMasterGrid(orders: any[] = [], btsFeesOwed: any = null, boundaryIdx: any = null, assets: any = null, debugInputs: any = null, recentFillKeys: any = null, genesis: any = null, gapEvacStreaks: any = undefined) {
+  async storeMasterGrid(orders: any[] = [], btsFeesOwed: any = null, boundaryIdx: any = null, assets: any = null, debugInputs: any = null, recentFillKeys: any = null, genesis: any = null, gapEvacStreaks: any = undefined, pendingFillCrawls: any = undefined) {
     // Use AsyncLock to serialize read-modify-write operations
     await this._persistenceLock.acquire(async () => {
       // Reload from disk before writing to prevent race conditions
@@ -400,10 +400,47 @@ class AccountOrders {
           delete (this.data as any).gapEvacStreaks;
         }
       }
+      // Persist pending fill crawls (restart resilience): fills whose
+      // boundary crawl was recorded but never committed. Only sanitized
+      // entries survive; an empty array clears the stored entry so
+      // consumed entries never resurrect after a commit.
+      if (pendingFillCrawls !== undefined) {
+        const sanitized: { slotId: string; side: string; ts: number }[] = [];
+        if (Array.isArray(pendingFillCrawls)) {
+          for (const e of pendingFillCrawls.slice(-500)) {
+            if (e && typeof e.slotId === 'string' && e.slotId.length > 0
+              && (e.side === 'buy' || e.side === 'sell') && Number.isFinite(Number(e.ts))) {
+              sanitized.push({ slotId: e.slotId, side: e.side, ts: Number(e.ts) });
+            }
+          }
+        }
+        if (sanitized.length > 0) {
+          this.data.pendingFillCrawls = sanitized;
+        } else {
+          delete (this.data as any).pendingFillCrawls;
+        }
+      }
 
       const timestamp = nowIso();
       this.data.lastUpdated = timestamp;
       if (this.data.meta) this.data.meta.updatedAt = timestamp;
+      this._persist();
+    });
+  }
+  /**
+   * Erase a poisoned persisted boundary after GRID-LOAD rejects it with no
+   * safe re-derivation. storeMasterGrid deliberately never writes a null
+   * boundary (Number.isFinite guard), so without this the rejected value
+   * survives every flush and re-arms the rejection on every restart.
+   * Explicit-only: normal persists keep passing the live boundary through.
+   * Boot-time only: this reloads from disk inside the lock, discarding any
+   * unsaved in-memory mutations — safe at the GRID-LOAD call site (before
+   * fills mutate state) but do NOT invoke later in the lifecycle.
+   */
+  async clearPersistedBoundary() {
+    await this._persistenceLock.acquire(async () => {
+      this.data = this._loadData() || emptyData();
+      this.data.boundaryIdx = null;
       this._persist();
     });
   }
@@ -443,6 +480,28 @@ class AccountOrders {
       return this.data.gapEvacStreaks;
     }
     return null;
+  }
+
+  /**
+   * Load persisted pending fill crawls for this bot.
+   * @param {boolean} forceReload - If true, reload from disk
+   * @returns {Array} Sanitized pending crawl entries (possibly empty)
+   */
+  loadPendingFillCrawls(forceReload: boolean = false) {
+    if (forceReload) {
+      this.data = this._loadData() || emptyData();
+    }
+    const out: { slotId: string; side: string; ts: number }[] = [];
+    const stored = this.data && (this.data as any).pendingFillCrawls;
+    if (Array.isArray(stored)) {
+      for (const e of stored) {
+        if (e && typeof e.slotId === 'string' && e.slotId.length > 0
+          && (e.side === 'buy' || e.side === 'sell') && Number.isFinite(Number(e.ts))) {
+          out.push({ slotId: e.slotId, side: e.side, ts: Number(e.ts) });
+        }
+      }
+    }
+    return out;
   }
 
   /**

@@ -183,6 +183,7 @@ function resolveMarketAdapterDirs(profilesDir = PROFILES_DIR, projectRoot = PROJ
         DIR: useSourceLayout ? sourceDir : path.join(profilesDir, 'market_adapter'),
         DATA_DIR: dataRoot,
         LP_DATA_DIR: path.join(dataRoot, 'lp'),
+        FEED_DATA_DIR: path.join(dataRoot, 'feed'),
         STATE_DIR: stateRoot,
         STATE_FILE: path.join(stateRoot, 'market_adapter_state.json'),
         CENTERS_FILE: path.join(stateRoot, 'market_adapter_centers.json'),

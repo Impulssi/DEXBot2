@@ -41,6 +41,7 @@ orders against the existing BitShares order book:
 | `incrementPercent` | 0.5 | Price step between grid levels, *geometric* spacing: `s = 1 + inc/100` |
 | `targetSpreadPercent` | 2 | Width of the spread zone between best buy and best sell |
 | `activeOrders` | `{sell: 20, buy: 20}` | Number of live orders kept on each side |
+| `reserveOrders` | `{buy: 0, sell: 0}` | Edge-pinned live orders outside the window (dip/spike insurance, 0 disables per side) |
 | `weightDistribution` | `{sell: 1, buy: 1}` | Geometric weight for order sizing |
 | `botFunds` | — | Capital committed per side |
 | `gridLimits` | — | Price bounds, min order size, dust threshold |

@@ -62,6 +62,7 @@
  *       "weightDistribution": { "sell": 1, "buy": 1 },
  *       "botFunds": { "sell": "100%", "buy": "100%" },
  *       "activeOrders": { "sell": 20, "buy": 20 },
+ *       "reserveOrders": { "buy": 0, "sell": 0 },  // Edge reserves: extra live orders (buy: floor, sell: ceiling)
  *       "debtPolicy": "ignore",       // Debt policy: "ignore", "warn", or "block"
  *       "min_BTS_value": 0,           // Minimum BTS value threshold for operations
  *     }
@@ -514,7 +515,7 @@ function colorPriceRangeValue(value: any): string {
 
 /**
  * Returns quality tier for a range multiplier: green/yellow/orange/red/fixed.
- * Uses RANGE_QUALITY thresholds: green ≥2.0x, yellow ≥1.55x, orange 1.45x–1.55x, red <1.45x.
+ * Thresholds come from RANGE_QUALITY in modules/constants.ts (single source of truth).
  * @param {*} value - Raw range value (e.g. "2x" or numeric).
  * @returns {string} Tier key.
  */
@@ -529,8 +530,8 @@ function getRangeQuality(value: any): string {
 }
 
 /**
- * Colors a range value by quality tier (mountain-style legend):
- *  ≥2.0x green wide, ≥1.55x yellow effeciant, ≥1.45x orange tight, <1.45x red suizidal, fixed → red.
+ * Colors a range value by quality tier (mountain-style legend).
+ * Tiers come from RANGE_QUALITY in modules/constants.ts (single source of truth).
  * @param {string} value - Raw value string.
  * @returns {string} ANSI-colored value.
  */
@@ -548,7 +549,8 @@ function colorRangeValueByQuality(value: string): string {
  * Prints pre-entry legend for Range inputs (mirrors weight mountain legend).
  */
 function printRangeQualityLegend(): void {
-    console.log(`  ${COLORS.green}≥2.0x: wide${COLORS.reset} ←→ ${COLORS.yellowBold}≥1.55x: effeciant${COLORS.reset} ←→ ${COLORS.orange}≥1.45x: tight${COLORS.reset} ←→ ${COLORS.red}<1.45x: suizidal${COLORS.reset}`);
+    const fmt = (v: number): string => (Number.isInteger(v) ? v.toFixed(1) : String(v));
+    console.log(`  ${COLORS.green}≥${fmt(RANGE_QUALITY.GREEN_MIN)}x: wide${COLORS.reset} ←→ ${COLORS.yellowBold}≥${fmt(RANGE_QUALITY.YELLOW_MIN)}x: effeciant${COLORS.reset} ←→ ${COLORS.orange}≥${fmt(RANGE_QUALITY.ORANGE_MIN)}x: tight${COLORS.reset} ←→ ${COLORS.red}<${fmt(RANGE_QUALITY.RED_MAX)}x: suizidal${COLORS.reset}`);
 }
 
 /**
@@ -1065,6 +1067,8 @@ function normalizeBotDraft(base = {}) {
     if (!data.weightDistribution) data.weightDistribution = { ...DEFAULT_CONFIG.weightDistribution };
     if (!data.botFunds) data.botFunds = { ...DEFAULT_CONFIG.botFunds };
     if (!data.activeOrders) data.activeOrders = { ...DEFAULT_CONFIG.activeOrders };
+    if (typeof data.reserveOrders === 'number') data.reserveOrders = { buy: Math.max(0, Math.floor(data.reserveOrders)), sell: 0 };
+    if (data.reserveOrders === undefined || data.reserveOrders === null || typeof data.reserveOrders !== 'object' || Array.isArray(data.reserveOrders)) data.reserveOrders = { ...DEFAULT_CONFIG.reserveOrders };
 
     if (data.active === undefined) data.active = DEFAULT_CONFIG.active;
     if (data.dryRun === undefined) data.dryRun = DEFAULT_CONFIG.dryRun;
@@ -1203,8 +1207,8 @@ async function promptBotData(base = {}) {
              console.log(`${COLORS.yellowBold}1) Pair:${COLORS.reset}       ${COLORS.cyan}${data.assetA || '?'} / ${data.assetB || '?'}${COLORS.reset}`);
              console.log(`${COLORS.yellowBold}2) Identity:${COLORS.reset}   ${COLORS.orange}Name:${COLORS.reset} ${data.name || '?'} , ${COLORS.orange}Account:${COLORS.reset} ${data.preferredAccount || '?'} , ${COLORS.orange}Active:${COLORS.reset} ${colorBooleanFlag(data.active, true)}, ${COLORS.orange}DryRun:${COLORS.reset} ${colorBooleanFlag(data.dryRun, false)}`);
              console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}      ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}], ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${data.poolRef || 'none'}, ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice, data.startPrice)}`);
-              console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%, ${COLORS.orange}Floor:${COLORS.reset} ${data.buyFloorUSDT ?? '?'}, ${COLORS.orange}Delay:${COLORS.reset} ${data.buyDelayMinutes ?? '?'}m, ${COLORS.orange}Win:${COLORS.reset} ${data.buyWindowMode ?? '?'}${Number(data.buyDeepCount) > 0 ? `+${data.buyDeepCount}deep${(Array.isArray(data.buyDeepSizes) && data.buyDeepSizes.some((v: any) => Number(v) > 0)) ? '(manual)' : ''}` : ''}`);
-             console.log(`${COLORS.yellowBold}5) Funding:${COLORS.reset}    ${COLORS.orange}Sell:${COLORS.reset} ${colorPercentageInput(data.botFunds.sell)}, ${COLORS.orange}Buy:${COLORS.reset} ${colorPercentageInput(data.botFunds.buy)} | ${COLORS.orange}Orders:${COLORS.reset} (S:${data.activeOrders.sell}, B:${data.activeOrders.buy})`);
+             console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%, ${COLORS.orange}Floor:${COLORS.reset} ${data.buyFloorUSDT ?? '?'}, ${COLORS.orange}Delay:${COLORS.reset} ${data.buyDelayMinutes ?? '?'}m, ${COLORS.orange}Win:${COLORS.reset} ${data.buyWindowMode ?? '?'}${Number(data.buyDeepCount) > 0 ? `+${data.buyDeepCount}deep${(Array.isArray(data.buyDeepSizes) && data.buyDeepSizes.some((v: any) => Number(v) > 0)) ? '(manual)' : ''}` : ''}`);
+             console.log(`${COLORS.yellowBold}5) Funding:${COLORS.reset}    ${COLORS.orange}Sell:${COLORS.reset} ${colorPercentageInput(data.botFunds.sell)}, ${COLORS.orange}Buy:${COLORS.reset} ${colorPercentageInput(data.botFunds.buy)} | ${COLORS.orange}Orders:${COLORS.reset} (S:${data.activeOrders.sell}, B:${data.activeOrders.buy}) | ${COLORS.orange}Reserve:${COLORS.reset} (S:${data.reserveOrders?.sell ?? 0}, B:${data.reserveOrders?.buy ?? 0})`);
              console.log('--------------------------------------------------');
              console.log(`${COLORS.greenBold}S) Save & Exit${COLORS.reset}`);
              console.log(`${COLORS.white}C) Cancel (Discard changes)${COLORS.reset}`);
@@ -1335,10 +1339,15 @@ async function promptBotData(base = {}) {
                 if (oSell === '\x1b') break;
                 const oBuy = await askIntegerInRange('activeOrders buy count', data.activeOrders.buy, 1, 100);
                 if (oBuy === '\x1b') break;
+                const rBuy = await askIntegerInRange('reserveOrders buy floor count (0 disables)', data.reserveOrders?.buy ?? 0, 0, 20);
+                if (rBuy === '\x1b') break;
+                const rSell = await askIntegerInRange('reserveOrders sell ceiling count (0 disables)', data.reserveOrders?.sell ?? 0, 0, 20);
+                if (rSell === '\x1b') break;
                 data.botFunds.sell = fSell;
                 data.botFunds.buy = fBuy;
                 data.activeOrders.sell = oSell;
                 data.activeOrders.buy = oBuy;
+                data.reserveOrders = { buy: rBuy, sell: rSell };
                 showMenu = true;
                 break;
             case 's':

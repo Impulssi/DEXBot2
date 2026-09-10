@@ -67,7 +67,7 @@ import {
     buildSuccessResult,
     evaluateCommit
 } from './utils/validate.js';
-import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, getSideBudget, getActiveOrdersTotal } from './utils/order.js';
+import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, getSideBudget, getActiveOrdersTotal, resolveReserveCount } from './utils/order.js';
 import { getErrorMessage } from '../utils/errors.js';
 const { toFiniteNumber } = Format;
 
@@ -224,6 +224,28 @@ class COWRebalanceEngine {
 
         const { targetGrid, boundaryIdx: targetBoundary } = this.strategy.calculateTargetGrid(strategyParams);
 
+        // P4 / unanchored plan: the strategy returns a null boundary paired
+        // with an EMPTY target grid only when no numeric center exists to
+        // recover from (e.g. GRID-LOAD rejected the persisted boundary AND
+        // startPrice is an unresolved mode string). Planning rotations here
+        // would fabricate rail-edge geometry — dust-cancel fills included,
+        // even though they deliberately carry isDelayedRotationTrigger when
+        // the boundary is known. Route to a structural resync instead of
+        // broadcasting. (A null boundary with a non-empty target is a
+        // hand-built/boundary-less plan — e.g. unit mocks — and proceeds.)
+        if ((targetBoundary === null || targetBoundary === undefined) && targetGrid.size === 0) {
+            // A genuinely empty grid (no master orders, no fills) has nothing
+            // to heal — plain abort. Anything else is stranded without an
+            // anchor and needs a rebuild.
+            const needsHeal = (masterGrid?.size ?? 0) > 0 || (fills?.length ?? 0) > 0;
+            this.logger?.log('[COW] Plan skipped: boundary unrecoverable (no numeric center)' + (needsHeal ? '; requesting structural resync' : ''), 'warn');
+            return {
+                ...buildAbortedResult('boundary-unrecoverable'),
+                evacReady: [],
+                ...(needsHeal ? { needsResync: true, resyncReason: 'boundary-unrecoverable' } : {}),
+            };
+        }
+
         let dustThresholdPercent = this.config?.gridLimits?.PARTIAL_DUST_THRESHOLD_PERCENTAGE;
         const reconcileResult = reconcileGrid(
             masterGrid,
@@ -283,6 +305,20 @@ class COWRebalanceEngine {
             }
             optimizedActions.length = 0;
             optimizedActions.push(...guarded);
+        }
+        // Rail-edge truncation telemetry: when the planned window runs off
+        // the rail (sellStart past the last slot), one side can never place
+        // — the Sep-10 signature (boundary 209 on a 216-slot rail left 2
+        // sell slots, and the ordinal pairing then teleported the buy rail
+        // 113 slots). Warn only: the cross-guard, fund validation and
+        // boundary-hold still judge the plan; no geometry is refused here.
+        {
+            const railSize = targetGrid?.size ?? 0;
+            const gap = Number(gapSlots) || 0;
+            const sellStart = Number(targetBoundary) + gap + 1;
+            if (Number.isFinite(sellStart) && railSize > 0 && sellStart >= railSize) {
+                this.logger?.log(`[COW] Rail-edge plan: boundary=${targetBoundary} gap=${gap} rail=${railSize} (sellStart=${sellStart}); window truncated, guards still apply`, 'warn');
+            }
         }
         // Refill-slot wire (boundary-hold): surviving hole-CREATEs justify this
         // plan's boundary shift (folded CANCEL+CREATE pairs already became
@@ -510,6 +546,7 @@ class OrderManager {
     _lastStaleTotalsWarnAt: Record<string, number>;
     _orphanFillsCreditedAt: number | null;
     _pendingRecovery: Promise<void> | null;
+    _pendingFillCrawls: { slotId: string; side: string; ts: number }[];
     _recentFillKeysSnapshot: Record<string, number> | null;
     _lastFilledBuyPrice: number | null;
     _lastFilledSellPrice: number | null;
@@ -632,6 +669,7 @@ class OrderManager {
         this._gridDirtyAt = null;
         this._orphanFillsCreditedAt = null;
         this._pendingRecovery = null;
+        this._pendingFillCrawls = [];
         this._recentFillKeysSnapshot = null;
         this._lastStaleTotalsWarnAt = {};
         this._lastFilledBuyPrice = null;
@@ -1711,7 +1749,30 @@ class OrderManager {
         // Reverse for placement order (lowest first)
         validBuys.sort((a: any, b: any) => a.price - b.price);
 
-        return [...validSells, ...validBuys];
+        // Reserve ladder: edge-pinned orders activate alongside the window
+        // without consuming its budget. Buys pin at the floor (lowest first),
+        // sells at the ceiling (highest first). Same min-size gate as the window.
+        const pickEdgeReserves = (orderType: any, count: any, windowed: any[], precision: any, minSizeInt: any, ascending: any): any[] => {
+            const picked: any[] = [];
+            if (count <= 0) return picked;
+            const windowedIds = new Set(windowed.map((o: any) => o.id));
+            const edgeFirst = this.getOrdersByTypeAndState(orderType, ORDER_STATES.VIRTUAL)
+                .sort((a: any, b: any) => ascending ? a.price - b.price : b.price - a.price);
+            for (const o of edgeFirst) {
+                if (picked.length >= count) break;
+                if (windowedIds.has(o.id)) continue;
+                if (floatToBlockchainInt(o.size, precision) >= minSizeInt) {
+                    picked.push(o);
+                    windowedIds.add(o.id);
+                }
+            }
+            picked.sort((a: any, b: any) => ascending ? a.price - b.price : b.price - a.price);
+            return picked;
+        };
+        const reserveBuys = pickEdgeReserves(ORDER_TYPES.BUY, resolveReserveCount(this.config, 'buy'), validBuys, buyPrecision, minBuySizeInt, true);
+        const reserveSells = pickEdgeReserves(ORDER_TYPES.SELL, resolveReserveCount(this.config, 'sell'), validSells, sellPrecision, minSellSizeInt, false);
+
+        return [...validSells, ...reserveSells, ...validBuys, ...reserveBuys];
     }
 
     /**
@@ -2384,6 +2445,19 @@ class OrderManager {
 
                 this.orders = Object.freeze(finalMap);
                 this._setBoundary(commitBoundary);
+                // Pending-crawl bookkeeping: an accepted non-null commit
+                // incorporates (incremental derivation) or subsumes (absolute
+                // recovery anchor) every fill recorded so far, so all pending
+                // crawl entries are consumed here. A gate-rejected commit keeps
+                // the previous boundary — nothing was derived into it — so
+                // pending entries survive for the next derivation. A null
+                // commit (boundary hold) likewise consumes nothing.
+                if (boundaryCheck.ok && commitBoundary !== null && commitBoundary !== undefined) {
+                    if (Array.isArray(this._pendingFillCrawls) && this._pendingFillCrawls.length > 0) {
+                        this._pendingFillCrawls = [];
+                        this._markGridDirty();
+                    }
+                }
                 this._gridVersion++;
                 committed = true;
 
