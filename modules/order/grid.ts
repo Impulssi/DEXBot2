@@ -785,6 +785,23 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null,
                             'error'
                         );
                     }
+                    // The rejected value must not survive: storeMasterGrid
+                    // never persists a null boundary, so without an explicit
+                    // erase the poison re-arms this rejection on every boot
+                    // (Sep-9: boundary=96 rejected identically 3 restarts in
+                    // a row). Best-effort — load continues boundary-less
+                    // either way and the next fill batch re-anchors live.
+                    try {
+                        const acct = (manager as any)?.accountOrders;
+                        if (acct && typeof acct.clearPersistedBoundary === 'function') {
+                            await acct.clearPersistedBoundary();
+                            manager.logger?.log?.(
+                                `[GRID-LOAD] Erased poisoned persisted boundary (${boundaryIdx}); ` +
+                                `restart will load boundary-less instead of re-rejecting.`,
+                                'warn'
+                            );
+                        }
+                    } catch { /* load continues boundary-less either way */ }
                 }
             }
 

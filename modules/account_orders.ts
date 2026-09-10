@@ -407,6 +407,20 @@ class AccountOrders {
       this._persist();
     });
   }
+  /**
+   * Erase a poisoned persisted boundary after GRID-LOAD rejects it with no
+   * safe re-derivation. storeMasterGrid deliberately never writes a null
+   * boundary (Number.isFinite guard), so without this the rejected value
+   * survives every flush and re-arms the rejection on every restart.
+   * Explicit-only: normal persists keep passing the live boundary through.
+   */
+  async clearPersistedBoundary() {
+    await this._persistenceLock.acquire(async () => {
+      this.data = this._loadData() || emptyData();
+      this.data.boundaryIdx = null;
+      this._persist();
+    });
+  }
 
   /**
    * Load the persisted order grid for this bot.

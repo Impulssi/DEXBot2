@@ -1436,7 +1436,14 @@ function checkSizesBeforeMinimum(sizes: any, minSize: any, precision: any) {
 /**
  * Calculate ideal grid boundary based on reference price.
  * Places boundary near reference price with gap spacing in mind.
- * 
+ *
+ * A non-numeric reference (e.g. the unresolved "pool"/"book" mode strings)
+ * makes every `price >= reference` comparison false, which used to resolve
+ * `splitIdx` to `allSlots.length` and fabricate a top-of-rail boundary —
+ * the degenerate all-buy geometry behind the 02:03 slot-77→slot-192 (+58%)
+ * teleport plan. Fail toward rail-center instead; callers with a real
+ * anchor (genesis startPrice, live center) override before calling.
+ *
  * @param {Array<Object>} allSlots - All grid slots sorted by price
  * @param {number} referencePrice - Reference/anchor price
  * @param {number} gapSlots - Number of gap slots between buy and sell
@@ -1444,6 +1451,10 @@ function checkSizesBeforeMinimum(sizes: any, minSize: any, precision: any) {
  */
 function calculateIdealBoundary(allSlots: any, referencePrice: any, gapSlots: any) {
     if (!allSlots || allSlots.length === 0) return -1;
+    if (!Number.isFinite(Number(referencePrice))) {
+        const gap = Number.isFinite(Number(gapSlots)) && Number(gapSlots) >= 0 ? Math.floor(Number(gapSlots)) : 0;
+        return Math.max(0, Math.floor((allSlots.length - 1 - gap) / 2));
+    }
     let splitIdx = allSlots.findIndex((s: any) => s.price >= referencePrice);
     if (splitIdx === -1) splitIdx = allSlots.length;
     const buySpread = Math.floor(gapSlots / 2);
@@ -1805,13 +1816,64 @@ function isShiftEligibleFill(fill: any): boolean {
     return fill?.isPartial !== true || fill?.isDelayedRotationTrigger === true;
 }
 
-function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any, config: any, gapSlots: any, crossChunkBudget?: number | null): { boundaryIdx: number; remainingBudget: number } {
-    let newBoundaryIdx = currentBoundaryIdx;
+function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any, config: any, gapSlots: any, crossChunkBudget?: number | null): { boundaryIdx: number | null; remainingBudget: number } {
+    let newBoundaryIdx: number | null = currentBoundaryIdx;
 
-    // Initial recovery if boundary is undefined
+    // Recovery when the committed boundary is unknown (GRID-LOAD rejected a
+    // poisoned snapshot, re-derivation failed, and no fill has re-anchored
+    // since). Anchor tiers are position signals, weakest last. What must
+    // never happen is fabricating a rail-edge boundary from an unresolved
+    // config mode string: startPrice "pool" NaN-matches every price
+    // comparison, resolving to the rail top (Sep-10: base 213, ceiling 211,
+    // then 209 after 4 buy crawls — teleporting the buy rail 113 slots).
+    let recovered = false;
     if (newBoundaryIdx === undefined || newBoundaryIdx === null) {
-         const referencePrice = config.startPrice;
-         newBoundaryIdx = calculateIdealBoundary(allSlots, referencePrice, gapSlots);
+        // Tier 1 — live fills: gap-side extreme (highest buy / lowest sell,
+        // midpoint when both sides filled). Any fill price, eligible or
+        // dust, is real market position and beats every config guess.
+        let topBuy = -Infinity;
+        let botSell = Infinity;
+        for (const fill of fills ?? []) {
+            const p = Number(fill?.price);
+            if (!Number.isFinite(p)) continue;
+            if (fill?.type === ORDER_TYPES.BUY && p > topBuy) topBuy = p;
+            if (fill?.type === ORDER_TYPES.SELL && p < botSell) botSell = p;
+        }
+        let referencePrice: number | null = null;
+        if (topBuy > -Infinity && botSell < Infinity) referencePrice = (topBuy + botSell) / 2;
+        else if (topBuy > -Infinity) referencePrice = topBuy;
+        else if (botSell < Infinity) referencePrice = botSell;
+        // Tier 2 — explicit numeric config center.
+        if (referencePrice === null) {
+            const direct = Number(config?.startPrice);
+            if (Number.isFinite(direct)) referencePrice = direct;
+        }
+        // Tier 3 — frozen genesis center (forwarded by the strategy when
+        // config.startPrice is an unresolved mode string).
+        if (referencePrice === null) {
+            const genesis = Number((config as any)?.genesisStartPrice);
+            if (Number.isFinite(genesis)) referencePrice = genesis;
+        }
+        // Tier 4 — rail center: bounded and wrong by at most half the rail,
+        // never a rail-edge fabrication. The next fill batch re-anchors
+        // from live prices via Tier 1.
+        if (referencePrice === null && Array.isArray(allSlots) && allSlots.length > 0) {
+            const gap = Number.isFinite(Number(gapSlots)) && Number(gapSlots) >= 0 ? Math.floor(Number(gapSlots)) : 0;
+            const centerIdx = Math.max(0, Math.floor((allSlots.length - 1 - gap) / 2));
+            const centerPrice = Number(allSlots[centerIdx]?.price);
+            if (Number.isFinite(centerPrice)) referencePrice = centerPrice;
+        }
+        if (referencePrice === null) {
+            const fallbackCap = Math.max(
+                Math.floor((config?.activeOrders?.sell ?? 1) / 2),
+                Math.floor((config?.activeOrders?.buy ?? 1) / 2),
+                1
+            );
+            const effectiveBudget = crossChunkBudget ?? fallbackCap;
+            return { boundaryIdx: null, remainingBudget: effectiveBudget };
+        }
+        newBoundaryIdx = calculateIdealBoundary(allSlots, referencePrice, gapSlots);
+        recovered = true;
     }
 
     // Apply shift from fills with rate-limiting (reserve fills excluded: static insurance).
@@ -1840,6 +1902,18 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
     );
     const effectiveBudget = crossChunkBudget ?? fallbackCap;
     const cap = Math.min(Math.abs(effectiveBudget), fallbackCap);
+    if (recovered) {
+        // The anchor already contains this batch's fill information —
+        // crawling would double-count the same fills (Sep-10 batch 1:
+        // dust-sell anchor 97 plus a +1 crawl would have moved it to 98).
+        // The next batch crawls normally from the anchored boundary.
+        return {
+            boundaryIdx: Math.max(0, Math.min(
+                (allSlots.length - gapSlots - 1) >= 0 ? (allSlots.length - gapSlots - 1) : (allSlots.length - 1),
+                newBoundaryIdx as number)),
+            remainingBudget: effectiveBudget,
+        };
+    }
     if (Math.abs(netShift) > cap) {
         netShift = Math.sign(netShift) * cap;
     }

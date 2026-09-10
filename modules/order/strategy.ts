@@ -250,9 +250,25 @@ class StrategyEngine {
         // have drifted if targetSpreadPercent or gridLimits changed.
         const gapSlots = (this.manager as any)._genesis?.gapSlots ?? this.manager._gapSlots ?? calculateGapSlots(config.incrementPercent, config.targetSpreadPercent, config.gridLimits);
         const crossChunkBudget = (this.manager as any)._boundaryShiftBudget;
-        const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots, crossChunkBudget);
+        // Anchor recovery on the frozen genesis center when config.startPrice
+        // is an unresolved "pool"/"book" mode string: a fill carries direction
+        // but not position, and an unanchored recovery fabricates a rail-edge
+        // boundary (the slot-77→slot-192 teleport). The numeric config center
+        // still wins when present.
+        const genesisStart = Number((this.manager as any)?._genesis?.startPrice);
+        const boundaryConfig = (!Number.isFinite(Number(config?.startPrice)) && Number.isFinite(genesisStart))
+            ? { ...config, genesisStartPrice: genesisStart }
+            : config;
+        const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, boundaryConfig, gapSlots, crossChunkBudget);
         if (crossChunkBudget != null) {
             (this.manager as any)._boundaryShiftBudget = remainingBudget;
+        }
+        // Unanchorable (null boundary, no numeric center anywhere): refuse to
+        // plan rotations on fabricated geometry. The COW engine routes this
+        // to a structural resync instead.
+        if (newBoundaryIdx === null || newBoundaryIdx === undefined) {
+            this.manager.logger.log('[COW] calculateTargetGrid: boundary unrecoverable (no numeric center); skipping rotation plan', 'warn');
+            return { targetGrid: new Map(), boundaryIdx: null };
         }
 
         // 2. Assign Roles (Buy/Sell/Spread)

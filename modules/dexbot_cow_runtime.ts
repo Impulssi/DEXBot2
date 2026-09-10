@@ -3141,6 +3141,12 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         bot.manager._setRebalanceState(REBALANCE_STATES.BROADCASTING);
         bot.manager.startBroadcasting();
 
+        // P3 — freeze the guard pivot once per batch: per-action refreshes
+        // mutated the pivot mid-batch (02:03 pivots drifted 0.001523→0.001529
+        // across 20 checks), so early actions were judged against a different
+        // pivot than later ones. The batch summary still reports whether this
+        // freeze moved the pivot under the plan.
+        try { if (refreshLastFillPivotFromQueue(bot)) lastFillGuardPivotRefreshed = true; } catch { /* best-effort */ }
         for (const action of actions) {
             if (action.type === COW_ACTIONS.CANCEL) {
                 try {
@@ -3256,14 +3262,14 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                         const isCorrectionCreate = actionOrigin === 'spread-correction'
                             || (actionOrigin == null && batchOrigin === 'spread-correction');
                         if (!isCorrectionCreate) {
-                            const { check, refreshed } = runLastFillGuardCheck(bot, createPrice, order.size, order.type, lastFillGuardStats);
+                            const { check, refreshed } = runLastFillGuardCheck(bot, createPrice, order.size, order.type, lastFillGuardStats, true);
                             if (refreshed) lastFillGuardPivotRefreshed = true;
                             if (check.blocked) {
                                 lastFillGuardStats.skipped++;
                                 const dir = order.type === ORDER_TYPES.BUY ? 'above' : 'below';
                                 bot.manager.logger.log(
                                     `[LAST-FILL-GUARD] Skipping ${order.type} CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} (halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)}); re-planned after market moves`,
-                                    'warn'
+                                    'debug'
                                 );
                                 if (order.id) skippedCreateSlotIds.add(order.id);
                                 continue;
@@ -3517,7 +3523,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             if (bypassedEvacuation) {
                                 lastFillGuardStats.bypassed++;
                             } else {
-                            const { check, refreshed } = runLastFillGuardCheck(bot, newPrice, newSize, orderType, lastFillGuardStats);
+                            const { check, refreshed } = runLastFillGuardCheck(bot, newPrice, newSize, orderType, lastFillGuardStats, true);
                             if (refreshed) lastFillGuardPivotRefreshed = true;
                             if (check.blocked) {
                                 lastFillGuardStats.skipped++;
@@ -3527,7 +3533,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                 const dir = orderType === ORDER_TYPES.BUY ? 'above' : 'below';
                                 bot.manager.logger.log(
                                     `[LAST-FILL-GUARD] Skipping ${orderType} UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} (halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)})`,
-                                    'warn'
+                                    'debug'
                                 );
                                 continue;
                             }
@@ -3682,10 +3688,10 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                 }
                                 // LAST-FILL GUARD (fallback variant): this CREATE
                                 // replaces a rotation UPDATE at a repriced level,
-                                // so it obeys the same guard with a refreshed
-                                // pivot — no origin bypass, same as rotations.
+                                // so it obeys the same guard against the frozen
+                                // batch pivot — no origin bypass, same as rotations.
                                 try {
-                                    const { check: fbCheck, refreshed: fbRefreshed } = runLastFillGuardCheck(bot, fbPrice, fbSize, fbType, lastFillGuardStats);
+                                    const { check: fbCheck, refreshed: fbRefreshed } = runLastFillGuardCheck(bot, fbPrice, fbSize, fbType, lastFillGuardStats, true);
                                     if (fbRefreshed) lastFillGuardPivotRefreshed = true;
                                     if (fbCheck.blocked) {
                                         lastFillGuardStats.skipped++;
@@ -3695,7 +3701,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                             `${Format.formatPrice6(fbPrice)}: ${fbDir} last filled ` +
                                             `${Format.formatPrice6(fbCheck.pivot)} (halfInc ${fbCheck.halfInc}% thr ` +
                                             `${Format.formatPrice6(fbCheck.threshold)}); re-planned after market moves`,
-                                            'warn'
+                                            'debug'
                                         );
                                         continue;
                                     }
@@ -3753,10 +3759,10 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         // are what incident reconstruction needs. Origin folds in here as
         // mode=bypassed(<origin>); there is no second source of truth.
         // Cold (guard off) is warn, not info — a disabled guard must say so.
-        // pivotRefreshed surfaces whether a mid-broadcast queued fill moved the
-        // pivot under this batch's checks (the refresh itself stays debug).
-        // Note the printed pivot is end-of-batch state: when pivotRefreshed is
-        // true, early actions were checked against the older pivot.
+        // pivotRefreshed surfaces whether the batch-start freeze picked up a
+        // queued fill (the refresh itself stays debug). The pivot is frozen
+        // for the whole batch, so every action was checked against the same
+        // pivot printed here.
         try {
             const totalGuarded = lastFillGuardStats.checked + lastFillGuardStats.bypassed;
             if (totalGuarded > 0) {
@@ -4487,21 +4493,29 @@ async function recoverRefusedCommit(bot: any, chainOrders: any, logPrefix: strin
 }
 
 /**
- * Run the last-fill guard probe: refresh the pivot from still-queued fills,
- * read the durable pivot, and evaluate isLastFillGuardBlocked. Consolidates
- * the identical probe pattern in the CREATE, UPDATE-rotation, and
- * CREATE-fallback guards (origin bypasses and skip logging stay at the
- * call sites, which differ per action kind).
+ * Run the last-fill guard probe: optionally refresh the pivot from
+ * still-queued fills, read the durable pivot, and evaluate
+ * isLastFillGuardBlocked. Consolidates the identical probe pattern in the
+ * CREATE, UPDATE-rotation, and CREATE-fallback guards (origin bypasses and
+ * skip logging stay at the call sites, which differ per action kind).
+ * Batch callers pass skipRefresh=true: the batch-start freeze owns refreshes
+ * so every action in a batch is judged against the same pivot.
  * @param {Object} bot
  * @param {number} price - Target order price
  * @param {number} size - Order size
  * @param {string} type - ORDER_TYPES.BUY/SELL
  * @param {Object} stats - lastFillGuardStats tracker (checked++ here)
+ * @param {boolean} [skipRefresh=false] - Skip the queued-fill pivot refresh
  * @returns {{check: Object, refreshed: boolean}}
  */
-function runLastFillGuardCheck(bot: any, price: number, size: number, type: string, stats: any): { check: any; refreshed: boolean } {
+function runLastFillGuardCheck(bot: any, price: number, size: number, type: string, stats: any, skipRefresh: boolean = false): { check: any; refreshed: boolean } {
     let refreshed = false;
-    try { refreshed = !!refreshLastFillPivotFromQueue(bot); } catch { /* best-effort */ }
+    // The batch-start freeze (see broadcast loop head) owns pivot refreshes;
+    // per-action refreshes are disabled so every action in a batch is judged
+    // against the same pivot. Kept opt-in for non-batch callers.
+    if (!skipRefresh) {
+        try { refreshed = !!refreshLastFillPivotFromQueue(bot); } catch { /* best-effort */ }
+    }
     const lastPrice = (bot.manager as any)?._lastFilledPrice;
     const lastType = (bot.manager as any)?._lastFilledType;
     const inc = resolveLastFillGuardIncrement(bot);
