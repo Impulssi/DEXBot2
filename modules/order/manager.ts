@@ -67,7 +67,7 @@ import {
     buildSuccessResult,
     evaluateCommit
 } from './utils/validate.js';
-import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, getSideBudget, getActiveOrdersTotal, resolveReserveCount } from './utils/order.js';
+import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, getSideBudget, getActiveOrdersTotal, resolveReserveCount, resolveReserveEdgeAnchorPrice, compareReserveEdge } from './utils/order.js';
 import { getErrorMessage } from '../utils/errors.js';
 const { toFiniteNumber } = Format;
 
@@ -1756,8 +1756,11 @@ class OrderManager {
             const picked: any[] = [];
             if (count <= 0) return picked;
             const windowedIds = new Set(windowed.map((o: any) => o.id));
+            // Both edges anchor toward their resolved bound (single source).
+            const edgeAnchor = resolveReserveEdgeAnchorPrice(this.config, ascending ? 'buy' : 'sell');
+            const edge = ascending ? 'floor' : 'ceiling';
             const edgeFirst = this.getOrdersByTypeAndState(orderType, ORDER_STATES.VIRTUAL)
-                .sort((a: any, b: any) => ascending ? a.price - b.price : b.price - a.price);
+                .sort((a: any, b: any) => compareReserveEdge(a, b, edge, edgeAnchor));
             for (const o of edgeFirst) {
                 if (picked.length >= count) break;
                 if (windowedIds.has(o.id)) continue;

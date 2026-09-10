@@ -10,7 +10,7 @@
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
 import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findCrossedOrder, resolveGapBand, isSlotInRail, priceSlotEqual, resolveBuyFloorUsdt, resolveBuyWindowMode, isDeepShelfId } from './utils/math.js';
-import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, resolveReserveCount, resolveReserveFloorIds, resolveReserveCeilIds } from './utils/order.js';
+import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, resolveReserveCount, resolveReserveEdgeAnchorPrice, resolveReserveFloorIds, resolveReserveCeilIds, compareReserveEdge } from './utils/order.js';
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -344,10 +344,14 @@ function _pickEdgeReserveSlots(manager: any, orderType: any, count: any, exclude
     const typeFilter = boundaryKnown
         ? (slot: any) => slot && (slot.type === type || slot.type === ORDER_TYPES.SPREAD)
         : (slot: any) => slot && slot.type === type;
+    // Both edges anchor toward their resolved bound (single source): floor —
+    // nearest at/above minPrice first; ceiling — nearest at/below maxPrice
+    // first. Stale out-of-bound slots sort last.
+    const edgeAnchor = resolveReserveEdgeAnchorPrice(manager.config, edgeDesc ? 'sell' : 'buy');
     const edgeFirst = (Array.from(manager.orders.values()) as any[])
         .filter(typeFilter)
         .filter(inRail)
-        .sort((a: any, b: any) => edgeDesc ? b.price - a.price : a.price - b.price);
+        .sort((a: any, b: any) => compareReserveEdge(a, b, edgeDesc ? 'ceiling' : 'floor', edgeAnchor));
     let effectiveMin = 0;
     try {
         effectiveMin = getMinOrderSize(type, manager.assets);
@@ -1770,9 +1774,10 @@ async function _reconcileStartupSide({
     if (reserveCount > 0) {
         const pickedIds = new Set(desiredSlots.map((s: any) => s?.id).filter(Boolean));
         const freshEdge = _pickEdgeReserveSlots(manager, orderType, reserveCount, pickedIds);
+        const reserveAnchor = resolveReserveEdgeAnchorPrice(manager.config, reserveSide);
         reserveEdgeIds = orderType === ORDER_TYPES.SELL
-            ? resolveReserveCeilIds((Array.from(manager.orders.values()) as any[]), reserveCount)
-            : resolveReserveFloorIds((Array.from(manager.orders.values()) as any[]), reserveCount);
+            ? resolveReserveCeilIds((Array.from(manager.orders.values()) as any[]), reserveCount, reserveAnchor)
+            : resolveReserveFloorIds((Array.from(manager.orders.values()) as any[]), reserveCount, reserveAnchor);
         if (freshEdge.length > 0) {
             const keepCount = Math.max(0, neededSlots - freshEdge.length);
             desiredSlots = [...desiredSlots.slice(0, keepCount), ...freshEdge];

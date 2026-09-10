@@ -13,6 +13,8 @@ const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG } = require('../modules/consta
 const {
     resolveReserveCount,
     resolveReserveOrders,
+    resolveReserveEdgeAnchorPrice,
+    compareReserveEdge,
     resolveReserveFloorIds,
     resolveReserveCeilIds,
     selectReserveEdgeSlots,
@@ -69,6 +71,106 @@ async function runTests() {
             'selector takes ceiling last'
         );
     }
+    console.log(' - edge anchors resolve bounds, selectors hold both insurance ends...');
+    {
+        assert.strictEqual(resolveReserveEdgeAnchorPrice({ minPrice: 80 }, 'buy'), 80, 'numeric minPrice anchors buys');
+        assert.strictEqual(resolveReserveEdgeAnchorPrice({ maxPrice: 120 }, 'sell'), 120, 'numeric maxPrice anchors sells');
+        assert.strictEqual(resolveReserveEdgeAnchorPrice({ minPrice: '2x', startPrice: 100 }, 'buy'), 50, 'relative minPrice resolves via startPrice');
+        assert.strictEqual(resolveReserveEdgeAnchorPrice({ maxPrice: '2x', startPrice: 100 }, 'sell'), 200, 'relative maxPrice resolves via startPrice');
+        assert.strictEqual(resolveReserveEdgeAnchorPrice({}, 'buy'), null, 'missing bound leaves legacy rank behavior');
+        assert.strictEqual(resolveReserveEdgeAnchorPrice({ minPrice: 'x' }, 'buy'), null, 'garbage bound leaves legacy rank behavior');
+        // Stale sub-anchor BUY (price 79 below the 80 anchor): anchored floor
+        // picks hold the dip-insurance end instead of the stale rank-lowest slot.
+        const stale = [
+            { id: 'slot-9', price: 109, type: ORDER_TYPES.SELL },
+            { id: 'slot-s', price: 79, type: ORDER_TYPES.BUY },
+            { id: 'slot-0', price: 80, type: ORDER_TYPES.BUY },
+            { id: 'slot-1', price: 81, type: ORDER_TYPES.BUY },
+            { id: 'slot-2', price: 82, type: ORDER_TYPES.BUY },
+        ];
+        const anchoredFloor = resolveReserveFloorIds(stale, 2, 80);
+        assert(anchoredFloor.has('slot-0') && anchoredFloor.has('slot-1') && anchoredFloor.size === 2, 'floor ids anchor at/above minPrice');
+        const legacyFloor = resolveReserveFloorIds(stale, 2);
+        assert(legacyFloor.has('slot-s') && legacyFloor.has('slot-0'), 'no anchor keeps legacy rank-lowest');
+        const staleAsc = stale.slice().sort((a, b) => a.price - b.price);
+        assert.deepStrictEqual(
+            selectReserveEdgeSlots(staleAsc, 2, new Set(), 'floor', 80).map((s) => s.id),
+            ['slot-0', 'slot-1'],
+            'anchored floor selector skips stale sub-anchor slots'
+        );
+        assert.deepStrictEqual(
+            selectReserveEdgeSlots(staleAsc, 2, new Set(), 'floor').map((s) => s.id),
+            ['slot-s', 'slot-0'],
+            'unanchored floor selector keeps legacy behavior'
+        );
+        assert.deepStrictEqual(
+            selectReserveEdgeSlots(staleAsc, 2, new Set(['slot-0']), 'floor', 80).map((s) => s.id),
+            ['slot-1', 'slot-2'],
+            'anchored floor selector still skips windowed ids'
+        );
+        // Stale supra-anchor SELL (price 111 above the 109 anchor): anchored
+        // ceiling picks hold the spike-insurance end instead of the stale top.
+        const staleSell = [
+            { id: 'slot-8', price: 108, type: ORDER_TYPES.SELL },
+            { id: 'slot-9', price: 109, type: ORDER_TYPES.SELL },
+            { id: 'slot-x', price: 111, type: ORDER_TYPES.SELL },
+        ];
+        const anchoredCeil = resolveReserveCeilIds(staleSell, 1, 109);
+        assert(anchoredCeil.has('slot-9') && anchoredCeil.size === 1, 'ceiling ids anchor at/below maxPrice');
+        const legacyCeil = resolveReserveCeilIds(staleSell, 1);
+        assert(legacyCeil.has('slot-x'), 'no anchor keeps legacy rank-highest');
+        const sellAsc = staleSell.slice().sort((a, b) => a.price - b.price);
+        assert.deepStrictEqual(
+            selectReserveEdgeSlots(sellAsc, 2, new Set(), 'ceiling', 109).map((s) => s.id),
+            ['slot-9', 'slot-8'],
+            'anchored ceiling selector skips stale supra-anchor slots'
+        );
+        assert.deepStrictEqual(
+            selectReserveEdgeSlots(sellAsc, 2, new Set(), 'ceiling').map((s) => s.id),
+            ['slot-x', 'slot-9'],
+            'unanchored ceiling selector keeps legacy behavior'
+        );
+    }
+    console.log(' - compareReserveEdge shared comparator (single source)...');
+    {
+        const rows = [
+            { id: 'sub', price: 79, type: ORDER_TYPES.BUY },
+            { id: 'near-in', price: 80, type: ORDER_TYPES.BUY },
+            { id: 'far-in', price: 82, type: ORDER_TYPES.BUY },
+            { id: 'far-out', price: 78, type: ORDER_TYPES.BUY },
+        ];
+        const sortedFloor = rows.slice().sort((a, b) => compareReserveEdge(a, b, 'floor', 80));
+        assert.deepStrictEqual(
+            sortedFloor.map((s) => s.id),
+            ['near-in', 'far-in', 'sub', 'far-out'],
+            'floor comparator: in-bound nearest first, out-of-bound nearest last'
+        );
+        const sortedNoAnchor = rows.slice().sort((a, b) => compareReserveEdge(a, b, 'floor', null));
+        assert.deepStrictEqual(
+            sortedNoAnchor.map((s) => s.id),
+            ['far-out', 'sub', 'near-in', 'far-in'],
+            'null anchor keeps rank-lowest fallback'
+        );
+        const sellRows = [
+            { id: 'supra', price: 111, type: ORDER_TYPES.SELL },
+            { id: 'near-in', price: 109, type: ORDER_TYPES.SELL },
+            { id: 'far-in', price: 107, type: ORDER_TYPES.SELL },
+            { id: 'far-out', price: 112, type: ORDER_TYPES.SELL },
+        ];
+        const sortedCeil = sellRows.slice().sort((a, b) => compareReserveEdge(a, b, 'ceiling', 109));
+        assert.deepStrictEqual(
+            sortedCeil.map((s) => s.id),
+            ['near-in', 'far-in', 'supra', 'far-out'],
+            'ceiling comparator mirrors floor toward maxPrice'
+        );
+        const sortedNoAnchorCeil = sellRows.slice().sort((a, b) => compareReserveEdge(a, b, 'ceiling', null));
+        assert.deepStrictEqual(
+            sortedNoAnchorCeil.map((s) => s.id),
+            ['far-out', 'supra', 'near-in', 'far-in'],
+            'null anchor keeps rank-highest fallback'
+        );
+    }
+
 
     console.log(' - getActiveOrdersTotal includes both sides...');
     {
