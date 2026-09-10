@@ -2243,20 +2243,29 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         let volumeHoverTip = null;
         // ── Update marker ("updated from here"): vertical line where the
         // latest incremental fetch started, with a date label. Shown only
-        // when the generator was given a marker timestamp.
+        // when the generator was given a marker timestamp. Singleton +
+        // stray-sweep: exactly one instance may exist (a per-draw lookup
+        // can miss under redraw races and would otherwise trail a line
+        // per frame while interacting).
         const UPDATE_MARKER_SEC = Number(payload.updateMarkerTsSec) > 0 ? Number(payload.updateMarkerTsSec) : null;
+        let updateMarkerWrap = null;
         function positionUpdateMarker(u, withLabel) {
             if (!UPDATE_MARKER_SEC || !u || !u.over || !currentCandles.length) return;
-            let wrap = u.root.querySelector(':scope > .um-wrap');
-            if (!wrap) {
+            if (!updateMarkerWrap || updateMarkerWrap.parentNode !== u.root) {
+                if (updateMarkerWrap && updateMarkerWrap.parentNode) updateMarkerWrap.parentNode.removeChild(updateMarkerWrap);
+                try {
+                    const strays = u.root.querySelectorAll(':scope > .um-wrap');
+                    strays.forEach((el) => { if (el.parentNode) el.parentNode.removeChild(el); });
+                } catch (e) {}
                 try { if (getComputedStyle(u.root).position === 'static') u.root.style.position = 'relative'; } catch (e) {}
-                wrap = document.createElement('div');
-                wrap.style.cssText = 'position:absolute;z-index:24;pointer-events:none;';
-                wrap.innerHTML =
+                updateMarkerWrap = document.createElement('div');
+                updateMarkerWrap.style.cssText = 'position:absolute;z-index:24;pointer-events:none;';
+                updateMarkerWrap.innerHTML =
                     '<div class="um-line" style="position:absolute;top:0;height:100%;width:0;border-left:2px dashed #22d3ee;opacity:0.75;"></div>' +
                     '<div class="um-tag" style="position:absolute;top:2px;left:6px;font:600 10px Segoe UI, sans-serif;line-height:15px;color:#22d3ee;white-space:nowrap;"></div>';
-                u.root.appendChild(wrap);
+                u.root.appendChild(updateMarkerWrap);
             }
+            const wrap = updateMarkerWrap;
             const s = u.scales.x || {};
             const sMin = Number.isFinite(s.min) ? s.min : null;
             const sMax = Number.isFinite(s.max) ? s.max : null;
