@@ -51,7 +51,7 @@
 import { ORDER_TYPES, ORDER_STATES } from '../constants.js';
 import { calculateGapSlots } from './grid.js';
 import { isSlotInRail } from './utils/math.js';
-import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, resolveReserveCount, selectReserveEdgeSlots, isShiftEligibleFill } from './utils/order.js';
+import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, resolveReserveCount, resolveReserveEdgeAnchorPrice, selectReserveEdgeSlots, isShiftEligibleFill } from './utils/order.js';
 import { assignGridRoles } from './utils/order.js';
 import {
     convertToSpreadPlaceholder,
@@ -386,17 +386,23 @@ class StrategyEngine {
         // (highest prices). Discontiguous by design — the middle stays VIRTUAL.
         // Sizes come from the same full-rail curves; reserve fills never crawl
         // (filtered in deriveTargetBoundary).
+        // Both edges anchor toward their resolved bound (single source):
+        // floor toward minPrice, ceiling toward maxPrice.
+        const reserveFloorAnchor = resolveReserveEdgeAnchorPrice(config, 'buy');
+        const reserveCeilAnchor = resolveReserveEdgeAnchorPrice(config, 'sell');
         const reserveBuySlots = selectReserveEdgeSlots(
             allBuySortedForSizing.filter((s: any) => inBuyRail(s)),
             resolveReserveCount(config, 'buy'),
             new Set(buySlots.map((s: any) => s.id)),
-            'floor'
+            'floor',
+            reserveFloorAnchor
         );
         const reserveSellSlots = selectReserveEdgeSlots(
             allSellSortedForSizing.filter((s: any) => inSellRail(s)),
             resolveReserveCount(config, 'sell'),
             new Set(sellSlots.map((s: any) => s.id)),
-            'ceiling'
+            'ceiling',
+            reserveCeilAnchor
         );
         const buySlotsAll = [...buySlots, ...reserveBuySlots];
         const sellSlotsAll = [...sellSlots, ...reserveSellSlots];

@@ -60,11 +60,15 @@
  *   - buildDelta(masterGrid, workingGrid) - Build delta actions between grids
  *   - getOrderSize(order) - Extract order size with fallback
  *
- * SECTION 10: STRATEGY CALCULATIONS (6 functions)
+ * SECTION 10: STRATEGY CALCULATIONS (8 functions)
  *   - resolveReserveCount(config, side) - Clamped per-side reserve count (>=0 int, 0 disables)
  *   - resolveReserveOrders(config) - Total reserves buy+sell (fee/count totals)
- *   - resolveReserveFloorIds(allSlots, reserve) - Bottom-N BUY slot ids by price
- *   - resolveReserveCeilIds(allSlots, reserve) - Top-N SELL slot ids by price
+ *   - resolveReserveEdgeAnchorPrice(config, side) - Resolved bound anchor for both edges (buy→minPrice, sell→maxPrice; null when unresolvable)
+ *   - compareReserveEdge(a, b, edge, anchorPrice) - Shared anchored edge comparator (single source for all reserve picks)
+ *   - resolveReserveFloorIds(allSlots, reserve, anchorPrice?) - Floor-anchored reserve set (minPrice-anchored when finite)
+ *   - resolveReserveCeilIds(allSlots, reserve, anchorPrice?) - Ceiling-anchored reserve set (maxPrice-anchored when finite)
+ *   - reserveEdgeIdSet(allSlots, config, orderType) - Edge id set for no-crawl filtering (both edges use their anchor)
+ *   - selectReserveEdgeSlots(sortedAsc, count, excludeIds, edge, anchorPrice?) - Shared position picker (both edges anchor toward their bound)
  *
  * ===============================================================================
  */
@@ -2100,7 +2104,8 @@ function resolveReserveOrders(config: any) {
 
 /**
  * Edge-pinned reserve id set for one side, or null when disabled.
- * Boundary-independent: floor/ceiling by price rank regardless of crawl.
+ * Both edges anchor toward their resolved bound (floor: at/above minPrice
+ * first; ceiling: at/below maxPrice first).
  *
  * @param {Array<Object>} allSlots - All grid slots (need id/price/type)
  * @param {Object} config - Bot configuration
@@ -2112,68 +2117,162 @@ function reserveEdgeIdSet(allSlots: any, config: any, orderType: any): Set<strin
     const n = resolveReserveCount(config, side);
     if (n <= 0) return null;
     return orderType === ORDER_TYPES.SELL
-        ? resolveReserveCeilIds(allSlots, n)
-        : resolveReserveFloorIds(allSlots, n);
+        ? resolveReserveCeilIds(allSlots, n, resolveReserveEdgeAnchorPrice(config, 'sell'))
+        : resolveReserveFloorIds(allSlots, n, resolveReserveEdgeAnchorPrice(config, 'buy'));
 }
 
 /**
- * Bottom-N BUY slot ids by price (floor-anchored reserve set).
- * Boundary-independent: the lowest prices are the floor regardless of crawl.
+ * BUY floor reserve ids anchored toward resolved minPrice (dip-insurance end).
+ * With a finite anchor this picks the N closest at/above the anchor first
+ * (stale sub-anchor slots last); without one it degrades to bottom-N by price.
+ * Boundary-independent: the floor never crawls regardless of boundary moves.
  *
  * @param {Array<Object>} allSlots - All grid slots (need id/price/type)
  * @param {number} reserve - Reserve count
+ * @param {number|null} [anchorPrice] - Resolved minPrice anchor (null = rank-lowest)
  * @returns {Set<string>} Floor slot ids (empty when reserve <= 0)
  */
-function resolveReserveFloorIds(allSlots: any, reserve: any): Set<string> {
+function resolveReserveFloorIds(allSlots: any, reserve: any, anchorPrice: any = null): Set<string> {
     const ids = new Set<string>();
     const n = Math.max(0, Math.floor(Number(reserve) || 0));
     if (n <= 0 || !Array.isArray(allSlots)) return ids;
-    const floor = allSlots
+    const ranked = allSlots
         .filter((s: any) => s && s.id != null && s.price != null && s.type === ORDER_TYPES.BUY)
-        .sort((a: any, b: any) => Number(a.price) - Number(b.price))
-        .slice(0, n);
+        .sort((a: any, b: any) => Number(a.price) - Number(b.price));
+    // NB: Number(null) === 0 is finite — null/undefined must mean "no anchor".
+    const anchor = anchorPrice == null ? Number.NaN : Number(anchorPrice);
+    const floor = !Number.isFinite(anchor)
+        ? ranked.slice(0, n)
+        : [
+            ...ranked.filter((s: any) => Number(s.price) >= anchor),
+            ...ranked.filter((s: any) => Number(s.price) < anchor).reverse(),
+        ].slice(0, n);
     for (const s of floor) ids.add(s.id);
     return ids;
 }
 
 /**
- * Top-N SELL slot ids by price (ceiling-anchored reserve set).
- * Boundary-independent: the highest prices are the ceiling regardless of crawl.
+ * SELL ceiling reserve ids anchored toward resolved maxPrice (spike-insurance end).
+ * With a finite anchor this picks the N closest at/below the anchor first
+ * (stale supra-anchor slots last); without one it degrades to top-N by price.
+ * Boundary-independent: the ceiling never crawls regardless of boundary moves.
  *
  * @param {Array<Object>} allSlots - All grid slots (need id/price/type)
  * @param {number} reserve - Reserve count
+ * @param {number|null} [anchorPrice] - Resolved maxPrice anchor (null = rank-highest)
  * @returns {Set<string>} Ceiling slot ids (empty when reserve <= 0)
  */
-function resolveReserveCeilIds(allSlots: any, reserve: any): Set<string> {
+function resolveReserveCeilIds(allSlots: any, reserve: any, anchorPrice: any = null): Set<string> {
     const ids = new Set<string>();
     const n = Math.max(0, Math.floor(Number(reserve) || 0));
     if (n <= 0 || !Array.isArray(allSlots)) return ids;
-    const ceil = allSlots
+    const ranked = allSlots
         .filter((s: any) => s && s.id != null && s.price != null && s.type === ORDER_TYPES.SELL)
-        .sort((a: any, b: any) => Number(b.price) - Number(a.price))
-        .slice(0, n);
+        .sort((a: any, b: any) => Number(b.price) - Number(a.price));
+    // NB: Number(null) === 0 is finite — null/undefined must mean "no anchor".
+    const anchor = anchorPrice == null ? Number.NaN : Number(anchorPrice);
+    const ceil = !Number.isFinite(anchor)
+        ? ranked.slice(0, n)
+        : [
+            ...ranked.filter((s: any) => Number(s.price) <= anchor),
+            ...ranked.filter((s: any) => Number(s.price) > anchor).reverse(),
+        ].slice(0, n);
     for (const s of ceil) ids.add(s.id);
     return ids;
 }
 
 /**
+ * Resolved bound anchor for reserve edges, both directions (single source).
+ * BUY floor anchors toward minPrice (dip-insurance end), SELL ceiling toward
+ * maxPrice (spike-insurance end). Resolves numeric and "Nx" relative forms
+ * via resolveConfiguredPriceBound (startPrice-anchored); falls back to the
+ * raw numeric bound. Returns null when unresolvable — callers then keep
+ * legacy rank-based behavior.
+ * Known limit: the anchor is the statically resolved config bound
+ * (referenced to config.startPrice), not the gridPrice-referenced or
+ * AMA-adjusted live rail bound — when those differ, sub-/supra-anchor rail
+ * slots rank last and the anchored pick still fills the zone nearest the
+ * anchor.
+ *
+ * @param {Object} config - Bot configuration
+ * @param {string} side - 'buy' or 'sell'
+ * @returns {number|null} Finite anchor price, or null
+ */
+function resolveReserveEdgeAnchorPrice(config: any, side: any): number | null {
+    const isSell = side === 'sell';
+    const bound = isSell ? config?.maxPrice : config?.minPrice;
+    const mode = isSell ? 'max' : 'min';
+    try {
+        const anchor = resolveConfiguredPriceBound(bound, Number.NaN, Number(config?.startPrice), mode);
+        if (Number.isFinite(anchor)) return anchor;
+    } catch (e) { /* fall through to raw bound */ }
+    const raw = Number(bound);
+    return Number.isFinite(raw) ? raw : null;
+}
+
+/**
+ * Shared anchored edge comparator for reserve selection (single source).
+ * With a finite anchor: in-bound slots first, nearest the anchor first
+ * (floor ascending, ceiling descending); stale out-of-bound slots last,
+ * still nearest the anchor first. Without one: plain rank fallback
+ * (floor rank-lowest, ceiling rank-highest).
+ *
+ * @param {Object} a - Slot/order (needs price)
+ * @param {Object} b - Slot/order (needs price)
+ * @param {string} edge - 'floor' or 'ceiling'
+ * @param {number|null} anchorPrice - Resolved bound anchor (null = rank fallback)
+ * @returns {number} Comparator result for Array.prototype.sort
+ */
+function compareReserveEdge(a: any, b: any, edge: any, anchorPrice: any): number {
+    const ceil = edge === 'ceiling';
+    // NB: Number(null) === 0 is finite — null/undefined must mean "no anchor".
+    const anchor = anchorPrice == null ? Number.NaN : Number(anchorPrice);
+    if (!Number.isFinite(anchor)) {
+        return ceil ? Number(b.price) - Number(a.price) : Number(a.price) - Number(b.price);
+    }
+    const pa = Number(a?.price);
+    const pb = Number(b?.price);
+    const aIn = ceil ? pa <= anchor : pa >= anchor;
+    const bIn = ceil ? pb <= anchor : pb >= anchor;
+    if (aIn !== bIn) return aIn ? -1 : 1;
+    if (aIn) return ceil ? pb - pa : pa - pb;
+    return ceil ? pa - pb : pb - pa;
+}
+
+/**
  * Central edge selector: take reserve slots from a price-ascending list,
- * skipping already-windowed ids. floor → first N (buy dip insurance),
- * ceiling → last N (sell spike insurance). Callers pre-filter rail/type and
- * apply their own size gates; this only picks positions.
+ * skipping already-windowed ids. Both edges anchor toward their resolved
+ * bound when finite — floor: nearest at/above minPrice first (stale
+ * sub-anchor slots last); ceiling: nearest at/below maxPrice first (stale
+ * supra-anchor slots last). Callers pre-filter rail/type and apply their own
+ * size gates; this only picks positions.
+ * Keep-low windows: when the window already holds the lowest slots, the
+ * anchored floor pick lands in the sub-floor rail zone nearest minPrice
+ * (windowed ids are excluded first) instead of stacking above the window.
  *
  * @param {Array<Object>} sortedAsc - Slots sorted by price ascending
  * @param {number} count - Reserve count
  * @param {Set<string>|null} excludeIds - Windowed ids to skip
  * @param {string} edge - 'floor' or 'ceiling'
+ * @param {number|null} [anchorPrice] - Resolved bound anchor for the edge (null = rank-based)
  * @returns {Array<Object>} Reserve slots (ascending for floor, descending for ceiling)
  */
-function selectReserveEdgeSlots(sortedAsc: any, count: any, excludeIds: any, edge: any): any[] {
+function selectReserveEdgeSlots(sortedAsc: any, count: any, excludeIds: any, edge: any, anchorPrice: any = null): any[] {
     const n = Math.max(0, Math.floor(Number(count) || 0));
     if (n <= 0 || !Array.isArray(sortedAsc)) return [];
     const avail = sortedAsc.filter((s: any) => s && s.id != null && (!excludeIds || !excludeIds.has(s.id)));
-    if (edge === 'ceiling') return avail.slice(-n).reverse();
-    return avail.slice(0, n);
+    // NB: Number(null) === 0 is finite — null/undefined must mean "no anchor".
+    const anchor = anchorPrice == null ? Number.NaN : Number(anchorPrice);
+    if (!Number.isFinite(anchor)) {
+        // No anchor: plain rank fallback (avail arrives ascending) —
+        // floor rank-lowest, ceiling rank-highest.
+        return edge === 'ceiling' ? avail.slice(-n).reverse() : avail.slice(0, n);
+    }
+    // Anchored: shared comparator — in-bound slots nearest the bound first,
+    // stale out-of-bound slots last.
+    return avail
+        .sort((x: any, y: any) => compareReserveEdge(x, y, edge, anchor))
+        .slice(0, n);
 }
 
 /**
@@ -2445,4 +2544,5 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
 }
 
 export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, resolveReserveFloorIds, resolveReserveCeilIds, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds, reserveEdgeIdSet }
+export { resolveReserveEdgeAnchorPrice, compareReserveEdge };
 
