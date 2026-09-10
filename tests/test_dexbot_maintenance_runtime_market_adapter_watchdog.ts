@@ -446,17 +446,26 @@ async function testSetupBlockchainFetchIntervalRunsWatchdogBeforeDisabledReturn(
 }
 
 async function testWrapperOwnedSkipsAdapterSyncWithoutReadingConfig() {
+    // Wrapper-owned bots skip the ADAPTER drive, but the live bot-config
+    // check (Issue #27 follow-up) still runs: one shared bots.json read per
+    // tick, adapter untouched.
     const previousOwner = process.env.DEXBOT_ADAPTER_OWNER;
     process.env.DEXBOT_ADAPTER_OWNER = 'wrapper';
     Config.pm_exec_path = undefined;
     try {
         const { syncMarketAdapterOnPeriodicConfigCheck } = loadRuntimeWithStubs();
+        let snapshotReads = 0;
         const self = {
             config: { botKey: 'wrapper-owned-bot', name: 'Wrapper Owned Bot' },
-            // Any config read attempt is a failure: wrapper-owned bots must
-            // skip before touching bots.json.
+            _appliedBotConfigFingerprint: null,
             _loadBotsConfigSnapshot: async () => {
-                throw new Error('bots.json must not be read when the wrapper owns the adapter');
+                snapshotReads += 1;
+                return {
+                    exists: true,
+                    fingerprint: '',
+                    activeBots: [{ botKey: 'wrapper-owned-bot', name: 'Wrapper Owned Bot', active: true, gridPrice: 'book' }],
+                    needsMarketAdapter: false,
+                };
             },
             _log: () => {},
             _warn: () => {},
@@ -466,6 +475,11 @@ async function testWrapperOwnedSkipsAdapterSyncWithoutReadingConfig() {
 
         assert.strictEqual(result.skipped, true, 'wrapper-owned bot should skip adapter sync');
         assert.strictEqual(result.reason, 'wrapper-owned', 'skip reason should name the wrapper owner');
+        assert.strictEqual(snapshotReads, 1, 'live bot-config check needs exactly one shared snapshot read');
+        assert.ok(
+            typeof self._appliedBotConfigFingerprint === 'string',
+            'wrapper-owned tick must still seed the live bot-config baseline'
+        );
     } finally {
         if (previousOwner === undefined) delete process.env.DEXBOT_ADAPTER_OWNER;
         else process.env.DEXBOT_ADAPTER_OWNER = previousOwner;
@@ -717,7 +731,9 @@ async function testBotsConfigPollPreseedsOnlyWhenUnchecked() {
     }
 }
 
-async function testBotsConfigPollDisabledWhenWrapperOwned() {
+async function testBotsConfigPollRunsWhenWrapperOwned() {
+    // The per-bot poll now runs in ALL modes: wrapper-owned bots skip only
+    // the adapter drive, the live bot-config check still ticks (Issue #27).
     const previousOwner = process.env.DEXBOT_ADAPTER_OWNER;
     process.env.DEXBOT_ADAPTER_OWNER = 'wrapper';
     Config.pm_exec_path = undefined;
@@ -734,11 +750,13 @@ async function testBotsConfigPollDisabledWhenWrapperOwned() {
 
         setupBotsConfigPollInterval(self);
 
-        assert.strictEqual(self._botsConfigPollInterval, null, 'no per-bot poll timer when wrapper owns the adapter');
+        assert.ok(self._botsConfigPollInterval, 'poll timer must exist even when the wrapper owns the adapter');
         assert.ok(
-            logs.some((msg) => msg.includes('owned by unlock wrapper')),
-            'disabled poll should log the wrapper-ownership reason'
+            logs.some((msg) => msg.includes('live bot-config check')),
+            'poll start should mention the live bot-config check'
         );
+        stopBotsConfigPollInterval(self);
+        assert.strictEqual(self._botsConfigPollInterval, null, 'poll timer should stop cleanly');
 
         // Wrapper-less fallback still polls.
         delete process.env.DEXBOT_ADAPTER_OWNER;
@@ -746,6 +764,440 @@ async function testBotsConfigPollDisabledWhenWrapperOwned() {
         assert.ok(self._botsConfigPollInterval, 'fallback poll timer should exist without a wrapper');
         stopBotsConfigPollInterval(self);
         assert.strictEqual(self._botsConfigPollInterval, null, 'fallback poll timer should stop cleanly');
+    } finally {
+        if (previousOwner === undefined) delete process.env.DEXBOT_ADAPTER_OWNER;
+        else process.env.DEXBOT_ADAPTER_OWNER = previousOwner;
+    }
+}
+
+async function testLiveBotConfigAppliesAllowlistedKeys() {
+    const previousOwner = process.env.DEXBOT_ADAPTER_OWNER;
+    delete process.env.DEXBOT_ADAPTER_OWNER;
+    Config.pm_exec_path = undefined;
+    try {
+        const { checkAndApplyBotConfigChanges } = loadRuntimeWithStubs();
+        const logs = [];
+        const warns = [];
+        const fileEntry: any = {
+            name: 'Live Bot',
+            active: true,
+            gridPrice: 'book',
+            activeOrders: { buy: 5, sell: 5 },
+            reserveOrders: { buy: 0, sell: 0 },
+            botFunds: { buy: '100%', sell: '100%' },
+            weightDistribution: { sell: 1, buy: 1 },
+        };
+        const self: any = {
+            config: {
+                name: 'Live Bot',
+                gridPrice: 'book',
+                activeOrders: { buy: 5, sell: 5 },
+                reserveOrders: { buy: 0, sell: 0 },
+                botFunds: { buy: '100%', sell: '100%' },
+                weightDistribution: { sell: 1, buy: 1 },
+            },
+            manager: { config: {} },
+            _appliedBotConfigFingerprint: null,
+            _appliedBotConfigEntry: null,
+            _loadBotsConfigSnapshot: async () => ({
+                exists: true,
+                fingerprint: '',
+                activeBots: [JSON.parse(JSON.stringify(fileEntry))],
+                needsMarketAdapter: false,
+            }),
+            _log: (msg) => logs.push(String(msg)),
+            _warn: (msg) => warns.push(String(msg)),
+        };
+        self.manager.config = { ...self.config };
+
+        const baseline = await checkAndApplyBotConfigChanges(self, 'unit-test');
+        assert.strictEqual(baseline.reason, 'baseline', 'first check seeds the baseline silently');
+        assert.strictEqual(typeof self._appliedBotConfigFingerprint, 'string', 'baseline fingerprint stored');
+
+        // Simulate a user edit: buy-window 5->7, reserve sell 0->2.
+        fileEntry.activeOrders.buy = 7;
+        fileEntry.reserveOrders.sell = 2;
+        const applied = await checkAndApplyBotConfigChanges(self, 'unit-test');
+        assert.strictEqual(applied.applied, true, 'allowlisted edits must apply live');
+        assert.deepStrictEqual(applied.liveChanges.sort(), ['activeOrders', 'reserveOrders'], 'changed keys reported');
+        assert.strictEqual(self.config.activeOrders.buy, 7, 'bot.config merged');
+        assert.strictEqual(self.manager.config.activeOrders.buy, 7, 'manager.config merged');
+        assert.strictEqual(self.manager.config.reserveOrders.sell, 2, 'reserve toggle merged');
+        assert.ok(
+            logs.some((msg) => msg.includes('no restart needed') && msg.includes('Live Bot')),
+            'live apply must log what changed with a no-restart note'
+        );
+
+        // Unchanged tick stays quiet.
+        logs.length = 0;
+        const quiet = await checkAndApplyBotConfigChanges(self, 'unit-test');
+        assert.strictEqual(quiet.reason, 'unchanged', 'steady state must not re-apply');
+    } finally {
+        if (previousOwner === undefined) delete process.env.DEXBOT_ADAPTER_OWNER;
+        else process.env.DEXBOT_ADAPTER_OWNER = previousOwner;
+    }
+}
+
+async function testLiveBotConfigHintsNonLiveChanges() {
+    const previousOwner = process.env.DEXBOT_ADAPTER_OWNER;
+    delete process.env.DEXBOT_ADAPTER_OWNER;
+    Config.pm_exec_path = undefined;
+    try {
+        const { checkAndApplyBotConfigChanges, buildBotConfigFingerprint } = loadRuntimeWithStubs();
+        const warns = [];
+        const fileEntry: any = {
+            name: 'Geo Bot',
+            active: true,
+            gridPrice: 'book',
+            incrementPercent: 0.3,
+            activeOrders: { buy: 5, sell: 5 },
+        };
+        const self: any = {
+            config: { name: 'Geo Bot', gridPrice: 'book', incrementPercent: 0.3, activeOrders: { buy: 5, sell: 5 } },
+            manager: { config: { name: 'Geo Bot' } },
+            _appliedBotConfigFingerprint: null,
+            _appliedBotConfigEntry: null,
+            _loadBotsConfigSnapshot: async () => ({
+                exists: true,
+                fingerprint: '',
+                activeBots: [JSON.parse(JSON.stringify(fileEntry))],
+                needsMarketAdapter: false,
+            }),
+            _log: () => {},
+            _warn: (msg) => warns.push(String(msg)),
+        };
+
+        await checkAndApplyBotConfigChanges(self, 'unit-test');
+        // Geometry edit: incrementPercent is outside the live allowlist.
+        fileEntry.incrementPercent = 0.9;
+        const result = await checkAndApplyBotConfigChanges(self, 'unit-test');
+        assert.strictEqual(result.applied, false, 'geometry edits must NOT apply live');
+        assert.ok(
+            (result.otherKeys || []).includes('incrementPercent'),
+            'geometry key must be reported for reset/restart'
+        );
+        assert.strictEqual(self.config.incrementPercent, 0.3, 'running config must keep the old geometry');
+        assert.ok(
+            warns.some((msg) => msg.includes('dexbot reset Geo Bot')),
+            'hint must name the reset command for geometry changes'
+        );
+        // Funds-only edits DO move the live fingerprint while the adapter
+        // fingerprint stays put (documents why the 1min adapter check alone
+        // could never pick them up).
+        assert.notStrictEqual(
+            buildBotConfigFingerprint({ ...fileEntry, activeOrders: { buy: 9, sell: 5 } }),
+            buildBotConfigFingerprint({ ...fileEntry, activeOrders: { buy: 5, sell: 5 } }),
+            'live fingerprint must cover buy-window counts'
+        );
+    } finally {
+        if (previousOwner === undefined) delete process.env.DEXBOT_ADAPTER_OWNER;
+        else process.env.DEXBOT_ADAPTER_OWNER = previousOwner;
+    }
+}
+
+async function testLiveBotConfigSkipsCorruptWithoutClobbering() {
+    const previousOwner = process.env.DEXBOT_ADAPTER_OWNER;
+    delete process.env.DEXBOT_ADAPTER_OWNER;
+    Config.pm_exec_path = undefined;
+    try {
+        const { checkAndApplyBotConfigChanges } = loadRuntimeWithStubs();
+        const self: any = {
+            config: { name: 'Live Bot', activeOrders: { buy: 5, sell: 5 } },
+            manager: { config: {} },
+            _appliedBotConfigFingerprint: 'good-fingerprint',
+            _appliedBotConfigEntry: { name: 'Live Bot', activeOrders: { buy: 5, sell: 5 } },
+            _loadBotsConfigSnapshot: async () => ({ corrupt: true }),
+            _log: () => {},
+            _warn: () => {},
+        };
+        const result = await checkAndApplyBotConfigChanges(self, 'unit-test');
+        assert.strictEqual(result.skipped, true, 'corrupt file must skip');
+        assert.strictEqual(self._appliedBotConfigFingerprint, 'good-fingerprint', 'stored fingerprint preserved');
+        assert.strictEqual(self.config.activeOrders.buy, 5, 'running config untouched');
+    } finally {
+        if (previousOwner === undefined) delete process.env.DEXBOT_ADAPTER_OWNER;
+        else process.env.DEXBOT_ADAPTER_OWNER = previousOwner;
+    }
+}
+
+async function testLiveBotConfigBaselineConvergesStartupRace() {
+    // File edited between process config load and the first check: the
+    // baseline must converge the running config, not silently absorb the edit.
+    const previousOwner = process.env.DEXBOT_ADAPTER_OWNER;
+    delete process.env.DEXBOT_ADAPTER_OWNER;
+    Config.pm_exec_path = undefined;
+    try {
+        const { checkAndApplyBotConfigChanges } = loadRuntimeWithStubs();
+        const logs: string[] = [];
+        const self: any = {
+            config: { name: 'Race Bot', activeOrders: { buy: 15, sell: 15 } },
+            manager: { config: { name: 'Race Bot', activeOrders: { buy: 15, sell: 15 } } },
+            _appliedBotConfigFingerprint: null,
+            _appliedBotConfigEntry: null,
+            _loadBotsConfigSnapshot: async () => ({
+                exists: true,
+                fingerprint: '',
+                activeBots: [{ name: 'Race Bot', active: true, activeOrders: { buy: 20, sell: 20 } }],
+                needsMarketAdapter: false,
+            }),
+            _log: (msg: any) => logs.push(String(msg)),
+            _warn: () => {},
+        };
+        const result = await checkAndApplyBotConfigChanges(self, 'unit-test');
+        assert.strictEqual(result.reason, 'baseline', 'first check still reports baseline');
+        assert.strictEqual(result.applied, true, 'startup race edit must converge');
+        assert.strictEqual(self.config.activeOrders.buy, 20, 'bot.config converged to file');
+        assert.strictEqual(self.manager.config.activeOrders.sell, 20, 'manager.config converged to file');
+        assert.ok(
+            logs.some((msg) => msg.includes('startup check')),
+            'race convergence must be logged'
+        );
+    } finally {
+        if (previousOwner === undefined) delete process.env.DEXBOT_ADAPTER_OWNER;
+        else process.env.DEXBOT_ADAPTER_OWNER = previousOwner;
+    }
+}
+
+async function testLiveDebtPolicyTweakAppliesAndReconciles() {
+    const previousOwner = process.env.DEXBOT_ADAPTER_OWNER;
+    delete process.env.DEXBOT_ADAPTER_OWNER;
+    Config.pm_exec_path = undefined;
+    try {
+        const { checkAndApplyBotConfigChanges } = loadRuntimeWithStubs();
+        const logs: string[] = [];
+        const calls: string[] = [];
+        const fileEntry: any = {
+            name: 'Credit Bot',
+            active: true,
+            debtPolicy: {
+                lending: [{
+                    type: 'creditOffer', asset: 'BTS', collateralAsset: 'X',
+                    outputWeight: 1, maxCollateralRatio: 1.5,
+                }],
+            },
+        };
+        const self: any = {
+            config: { name: 'Credit Bot', debtPolicy: JSON.parse(JSON.stringify(fileEntry.debtPolicy)) },
+            manager: { config: {} },
+            _creditRuntime: { config: null },
+            _appliedBotConfigFingerprint: null,
+            _appliedBotConfigEntry: null,
+            _loadBotsConfigSnapshot: async () => ({
+                exists: true,
+                fingerprint: '',
+                activeBots: [JSON.parse(JSON.stringify(fileEntry))],
+                needsMarketAdapter: false,
+            }),
+            _setupCreditRuntime: async () => { calls.push('setup'); },
+            _setupCreditWatchdogInterval: () => { calls.push('watchdog-start'); },
+            _stopCreditWatchdogInterval: () => { calls.push('watchdog-stop'); },
+            _log: (msg: any) => logs.push(String(msg)),
+            _warn: () => {},
+        };
+        self.manager.config = { ...self.config };
+        self._creditRuntime.config = self.config;
+
+        await checkAndApplyBotConfigChanges(self, 'unit-test');
+        fileEntry.debtPolicy.lending[0].maxCollateralRatio = 1.8;
+        const result = await checkAndApplyBotConfigChanges(self, 'unit-test');
+        assert.strictEqual(result.applied, true, 'debtPolicy tweak must apply live');
+        assert.ok((result.liveChanges || []).includes('debtPolicy'), 'debtPolicy reported as live change');
+        assert.strictEqual(self.config.debtPolicy.lending[0].maxCollateralRatio, 1.8, 'bot.config merged');
+        assert.strictEqual(self.manager.config.debtPolicy.lending[0].maxCollateralRatio, 1.8, 'manager.config merged');
+        assert.ok(calls.includes('setup'), 'credit runtime setup must run');
+        assert.ok(calls.includes('watchdog-start'), 'watchdog must rebind to current runtime');
+        assert.ok(!calls.includes('watchdog-stop'), 'watchdog must not stop while enabled');
+        assert.ok(
+            logs.some((msg) => msg.includes('debtPolicy') && msg.includes('no restart needed')),
+            'live apply must log debtPolicy with a no-restart note'
+        );
+    } finally {
+        if (previousOwner === undefined) delete process.env.DEXBOT_ADAPTER_OWNER;
+        else process.env.DEXBOT_ADAPTER_OWNER = previousOwner;
+    }
+}
+
+async function testLiveDebtPolicyMalformedIsHintedNotMerged() {
+    const previousOwner = process.env.DEXBOT_ADAPTER_OWNER;
+    delete process.env.DEXBOT_ADAPTER_OWNER;
+    Config.pm_exec_path = undefined;
+    try {
+        const { checkAndApplyBotConfigChanges } = loadRuntimeWithStubs();
+        const warns: string[] = [];
+        const calls: string[] = [];
+        const fileEntry: any = {
+            name: 'Credit Bot',
+            active: true,
+            debtPolicy: {
+                lending: [{ type: 'creditOffer', asset: 'BTS', collateralAsset: 'X' }],
+            },
+        };
+        const self: any = {
+            config: { name: 'Credit Bot', debtPolicy: JSON.parse(JSON.stringify(fileEntry.debtPolicy)) },
+            manager: { config: {} },
+            _appliedBotConfigFingerprint: null,
+            _appliedBotConfigEntry: null,
+            _loadBotsConfigSnapshot: async () => ({
+                exists: true,
+                fingerprint: '',
+                activeBots: [JSON.parse(JSON.stringify(fileEntry))],
+                needsMarketAdapter: false,
+            }),
+            _setupCreditRuntime: async () => { calls.push('setup'); },
+            _setupCreditWatchdogInterval: () => { calls.push('watchdog-start'); },
+            _stopCreditWatchdogInterval: () => { calls.push('watchdog-stop'); },
+            _log: () => {},
+            _warn: (msg: any) => warns.push(String(msg)),
+        };
+        await checkAndApplyBotConfigChanges(self, 'unit-test');
+        // Break the shape: collateralAsset is required by the enable gate.
+        delete fileEntry.debtPolicy.lending[0].collateralAsset;
+        const result = await checkAndApplyBotConfigChanges(self, 'unit-test');
+        assert.strictEqual(result.applied, false, 'malformed policy must NOT apply live');
+        assert.ok((result.otherKeys || []).includes('debtPolicy'), 'debtPolicy must be hinted for reset/restart');
+        assert.strictEqual(
+            self.config.debtPolicy.lending[0].collateralAsset, 'X',
+            'running config must keep the last good policy'
+        );
+        assert.strictEqual(calls.length, 0, 'no credit reconcile on rejected shape');
+        assert.ok(
+            warns.some((msg) => msg.includes('debtPolicy')),
+            'hint must name debtPolicy'
+        );
+    } finally {
+        if (previousOwner === undefined) delete process.env.DEXBOT_ADAPTER_OWNER;
+        else process.env.DEXBOT_ADAPTER_OWNER = previousOwner;
+    }
+}
+
+async function testLiveDebtPolicyRemovalDisablesWatchdog() {
+    const previousOwner = process.env.DEXBOT_ADAPTER_OWNER;
+    delete process.env.DEXBOT_ADAPTER_OWNER;
+    Config.pm_exec_path = undefined;
+    try {
+        const { checkAndApplyBotConfigChanges } = loadRuntimeWithStubs();
+        const calls: string[] = [];
+        const fileEntry: any = {
+            name: 'Credit Bot',
+            active: true,
+            debtPolicy: {
+                lending: [{ type: 'creditOffer', asset: 'BTS', collateralAsset: 'X' }],
+            },
+        };
+        const self: any = {
+            config: { name: 'Credit Bot', debtPolicy: JSON.parse(JSON.stringify(fileEntry.debtPolicy)) },
+            manager: { config: {} },
+            _creditRuntime: {},
+            _appliedBotConfigFingerprint: null,
+            _appliedBotConfigEntry: null,
+            _loadBotsConfigSnapshot: async () => ({
+                exists: true,
+                fingerprint: '',
+                activeBots: [JSON.parse(JSON.stringify(fileEntry))],
+                needsMarketAdapter: false,
+            }),
+            // Mirror _getCreditRuntime: invalid/absent policy nulls the ref.
+            _setupCreditRuntime: async () => {
+                calls.push('setup');
+                self._creditRuntime = null;
+            },
+            _setupCreditWatchdogInterval: () => { calls.push('watchdog-start'); },
+            _stopCreditWatchdogInterval: () => { calls.push('watchdog-stop'); },
+            _log: () => {},
+            _warn: () => {},
+        };
+        await checkAndApplyBotConfigChanges(self, 'unit-test');
+        delete fileEntry.debtPolicy;
+        const result = await checkAndApplyBotConfigChanges(self, 'unit-test');
+        assert.strictEqual(result.applied, true, 'policy removal applies (disable path)');
+        assert.strictEqual(self.config.debtPolicy, null, 'running policy cleared');
+        assert.ok(calls.includes('watchdog-stop'), 'watchdog interval must stop when disabled');
+        assert.ok(!calls.includes('watchdog-start'), 'watchdog must not start when disabled');
+    } finally {
+        if (previousOwner === undefined) delete process.env.DEXBOT_ADAPTER_OWNER;
+        else process.env.DEXBOT_ADAPTER_OWNER = previousOwner;
+    }
+}
+
+async function testLiveMinBtsValueApplies() {
+    const previousOwner = process.env.DEXBOT_ADAPTER_OWNER;
+    delete process.env.DEXBOT_ADAPTER_OWNER;
+    Config.pm_exec_path = undefined;
+    try {
+        const { checkAndApplyBotConfigChanges } = loadRuntimeWithStubs();
+        const fileEntry: any = { name: 'Fee Bot', active: true, min_BTS_value: 10 };
+        const self: any = {
+            config: { name: 'Fee Bot', min_BTS_value: 10 },
+            manager: { config: { name: 'Fee Bot', min_BTS_value: 10 } },
+            _appliedBotConfigFingerprint: null,
+            _appliedBotConfigEntry: null,
+            _loadBotsConfigSnapshot: async () => ({
+                exists: true,
+                fingerprint: '',
+                activeBots: [JSON.parse(JSON.stringify(fileEntry))],
+                needsMarketAdapter: false,
+            }),
+            _log: () => {},
+            _warn: () => {},
+        };
+        await checkAndApplyBotConfigChanges(self, 'unit-test');
+        fileEntry.min_BTS_value = 25;
+        const result = await checkAndApplyBotConfigChanges(self, 'unit-test');
+        assert.strictEqual(result.applied, true, 'min_BTS_value must apply live');
+        assert.strictEqual(self.config.min_BTS_value, 25, 'bot.config merged');
+        assert.strictEqual(self.manager.config.min_BTS_value, 25, 'manager.config merged');
+    } finally {
+        if (previousOwner === undefined) delete process.env.DEXBOT_ADAPTER_OWNER;
+        else process.env.DEXBOT_ADAPTER_OWNER = previousOwner;
+    }
+}
+
+async function testBaselineDebtPolicyTweakReconciles() {
+    // Startup race: file changed between process load and the first check.
+    // A valid tweak must merge AND reconcile (previously merged without
+    // reconcile, so enable-from-zero in the race window never took effect).
+    const previousOwner = process.env.DEXBOT_ADAPTER_OWNER;
+    delete process.env.DEXBOT_ADAPTER_OWNER;
+    Config.pm_exec_path = undefined;
+    try {
+        const { checkAndApplyBotConfigChanges } = loadRuntimeWithStubs();
+        const calls: string[] = [];
+        const fileEntry: any = {
+            name: 'Credit Bot',
+            active: true,
+            debtPolicy: {
+                lending: [{
+                    type: 'creditOffer', asset: 'BTS', collateralAsset: 'X',
+                    maxCollateralRatio: 1.8,
+                }],
+            },
+        };
+        const self: any = {
+            // Startup config still holds the old threshold.
+            config: { name: 'Credit Bot', debtPolicy: { lending: [{
+                type: 'creditOffer', asset: 'BTS', collateralAsset: 'X',
+                maxCollateralRatio: 1.5,
+            }] } },
+            manager: { config: {} },
+            _appliedBotConfigFingerprint: null,
+            _appliedBotConfigEntry: null,
+            _loadBotsConfigSnapshot: async () => ({
+                exists: true,
+                fingerprint: '',
+                activeBots: [JSON.parse(JSON.stringify(fileEntry))],
+                needsMarketAdapter: false,
+            }),
+            _setupCreditRuntime: async () => { calls.push('setup'); },
+            _setupCreditWatchdogInterval: () => { calls.push('watchdog-start'); },
+            _stopCreditWatchdogInterval: () => { calls.push('watchdog-stop'); },
+            _log: () => {},
+            _warn: () => {},
+        };
+        self.manager.config = { ...self.config };
+        const result = await checkAndApplyBotConfigChanges(self, 'unit-test');
+        assert.strictEqual(result.reason, 'baseline');
+        assert.strictEqual(self.config.debtPolicy.lending[0].maxCollateralRatio, 1.8, 'race tweak merged');
+        assert.ok(calls.includes('setup'), 'credit runtime must reconcile on baseline merge');
     } finally {
         if (previousOwner === undefined) delete process.env.DEXBOT_ADAPTER_OWNER;
         else process.env.DEXBOT_ADAPTER_OWNER = previousOwner;
@@ -761,7 +1213,16 @@ async function main() {
         await testCorruptBotsConfigSkipsSyncWithoutTouchingAdapter();
         await testUnreadableBotsConfigSkipsSyncWithoutTouchingAdapter();
         await testBotsConfigPollPreseedsOnlyWhenUnchecked();
-        await testBotsConfigPollDisabledWhenWrapperOwned();
+        await testBotsConfigPollRunsWhenWrapperOwned();
+        await testLiveBotConfigAppliesAllowlistedKeys();
+        await testLiveBotConfigHintsNonLiveChanges();
+        await testLiveBotConfigSkipsCorruptWithoutClobbering();
+        await testLiveBotConfigBaselineConvergesStartupRace();
+        await testLiveDebtPolicyTweakAppliesAndReconciles();
+        await testLiveDebtPolicyMalformedIsHintedNotMerged();
+        await testLiveDebtPolicyRemovalDisablesWatchdog();
+        await testLiveMinBtsValueApplies();
+        await testBaselineDebtPolicyTweakReconciles();
         await testWatchdogStartsAdapterWhenMissing();
         await testWatchdogSkipsLaunchWhenAdapterNotNeeded();
         await testWatchdogLeavesAdapterStoppedWhenAlreadyAbsent();

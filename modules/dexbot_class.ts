@@ -137,6 +137,9 @@ class DEXBot {
     _botsConfigPollInterval: any;
     _botsConfigPollInFlight: boolean;
     _marketAdapterWatchdogFingerprint: string | null;
+    _appliedBotConfigFingerprint: string | null;
+    _appliedBotConfigEntry: any;
+    _lastBotConfigHintFingerprint: string | null;
     _fillsUnsubscribe: any;
     _triggerWatcher: any;
     _triggerDebounceTimer: any;
@@ -243,6 +246,12 @@ class DEXBot {
         this._botsConfigPollInterval = null;
         this._botsConfigPollInFlight = false;
         this._marketAdapterWatchdogFingerprint = null;
+        // Live bot-config baseline (Issue #27 follow-up): null = never
+        // checked against bots.json. Seeded on the first periodic check;
+        // allowlisted keys merge live, everything else hints reset/restart.
+        this._appliedBotConfigFingerprint = null;
+        this._appliedBotConfigEntry = null;
+        this._lastBotConfigHintFingerprint = null;
         // null = never checked. '' is a valid stored steady-state (no active
         // AMA bots) and must compare equal across ticks — see ?? in
         // syncMarketAdapterOnPeriodicConfigCheck and the === null gate in

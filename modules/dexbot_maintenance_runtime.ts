@@ -13,6 +13,7 @@ import { path } from './path_api.js';
 import * as chainOrders from './chain_orders.js';
 import * as grid from './order/grid.js';
 import { ORDER_STATES, ORDER_TYPES, TIMING, BTS_PRECISION, NATIVE_CLIENT } from './constants.js';
+import { BOT_LIVE_CONFIG_KEYS } from './runtime_settings.js';
 import { acquireIfNotHeld } from './order/async_lock.js';
 const { readOpenOrdersGuarded } = chainOrders;
 import { PATHS } from './paths.js';
@@ -152,6 +153,386 @@ function runtimeConfigNeedsMarketAdapter(snapshot: any, config: any) {
         return usesAmaGridPrice(snapshotBot);
     }
     return usesAmaGridPrice(config);
+}
+
+/**
+ * Live bot-config allowlist (BOT_LIVE_CONFIG_KEYS) is defined once in
+ * runtime_settings.ts (shared with the `dexbot bot` editor hint) and
+ * statically imported above. Everything outside it is hint-only:
+ * geometry needs `dexbot reset <name>`, identity needs a restart.
+ */
+
+/**
+ * Top-level entry keys excluded from the live bot-config fingerprint.
+ * botKey/botIndex are runtime-assigned, accountId is auto-saved next to
+ * preferredAccount after the first chain resolution (not a user edit).
+ */
+const BOT_CONFIG_FINGERPRINT_IGNORED_KEYS = Object.freeze([
+    'botKey',
+    'botIndex',
+    'accountId',
+]);
+
+/**
+ * Deterministic JSON stringify with recursively sorted object keys.
+ * Key order in bots.json must not count as a config change.
+ * @param {any} value - Value to stringify
+ * @returns {string} Stable string representation
+ */
+function stableStringifyForBotConfig(value: any): string {
+    if (value === null || value === undefined) return 'null';
+    if (Array.isArray(value)) {
+        return `[${value.map((v: any) => stableStringifyForBotConfig(v)).join(',')}]`;
+    }
+    if (typeof value === 'object') {
+        const keys = Object.keys(value).filter((k: string) => (value as any)[k] !== undefined).sort();
+        return `{${keys.map((k: string) => `${JSON.stringify(k)}:${stableStringifyForBotConfig((value as any)[k])}`).join(',')}}`;
+    }
+    const serialized = JSON.stringify(value);
+    return serialized === undefined ? 'null' : serialized;
+}
+
+/**
+ * Normalize a raw bots.json entry for fingerprinting: drop volatile keys.
+ * @param {any} entry - Raw bot entry from bots.json
+ * @returns {any} Normalized plain object ({} when entry is missing)
+ */
+function normalizeBotEntryForFingerprint(entry: any): any {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return {};
+    const out: Record<string, any> = {};
+    for (const key of Object.keys(entry)) {
+        if ((BOT_CONFIG_FINGERPRINT_IGNORED_KEYS as readonly string[]).includes(key)) continue;
+        out[key] = (entry as any)[key];
+    }
+    return out;
+}
+
+/**
+ * Build the full-entry fingerprint for one bot (stable across key order and
+ * comment/whitespace edits, since those never reach the parsed entry).
+ * @param {any} entry - Raw bot entry from bots.json
+ * @returns {string} Fingerprint ('' when entry is missing)
+ */
+function buildBotConfigFingerprint(entry: any): string {
+    if (!entry || typeof entry !== 'object') return '';
+    return stableStringifyForBotConfig(normalizeBotEntryForFingerprint(entry));
+}
+
+/**
+ * Plain-data deep clone (bots.json entries are JSON-parsed, always
+ * serializable; the fallback only guards exotic test doubles).
+ * Single helper replacing the previously triplicated inline clones.
+ * @param {any} value - Value to clone
+ * @returns {any} Deep clone (or the original when unserializable)
+ */
+function cloneJsonValue(value: any): any {
+    if (value === undefined) return undefined;
+    try {
+        return JSON.parse(JSON.stringify(value));
+    } catch {
+        return value;
+    }
+}
+
+/**
+ * Merge the given entry keys into the live runtime (bot.config +
+ * manager.config) and refresh the derived weight base when included.
+ * Shared by the live bot-config check (allowlisted keys) — the full
+ * grid-resync path uses replaceBotConfigFromEntryPreservingRuntime below.
+ * Synchronous in-memory merge only: no chain I/O, no fill-lock (assignments
+ * are atomic; maintenance / targeted-reconcile ticks heal shortfalls/excess).
+ * @param {any} bot - DEXBot instance
+ * @param {any} entry - Raw bot entry from bots.json
+ * @param {string[]} keys - Entry keys to merge
+ * @returns {string[]} Merged key names
+ */
+function mergeBotConfigKeysIntoRuntime(bot: any, entry: any, keys: string[]): string[] {
+    const applied: string[] = [];
+    if (!bot?.config || !entry || typeof entry !== 'object') return applied;
+    for (const key of keys) {
+        // A deleted key applies as null (mirrors the former ?? null diff
+        // semantics) so the running config can never keep a stale value.
+        // Cloned twice: bot.config and manager.config must never alias the
+        // same nested object, or a future in-place mutation of one would
+        // silently corrupt the other.
+        const cloned = cloneJsonValue((entry as any)[key] ?? null);
+        bot.config[key] = cloned;
+        if (bot.manager?.config) {
+            bot.manager.config[key] = cloneJsonValue((entry as any)[key] ?? null);
+        }
+        if (key === 'weightDistribution') {
+            bot._baseWeightDistribution = cloned && typeof cloned === 'object' ? { ...cloned } : cloned;
+        }
+        applied.push(key);
+    }
+    return applied;
+}
+
+/**
+ * Full config replace preserving runtime identity (botKey/botIndex) and the
+ * constructor-resolved runtime settings (timing, gridLimits, feeParams,
+ * etc.). Shared single implementation for performGridResync (previously an
+ * inline block duplicating the merge/weights/refresh steps).
+ * @param {any} bot - DEXBot instance
+ * @param {any} updatedBot - Raw bot entry from bots.json
+ * @param {string} contextLabel - Label for the weights-refresh log context
+ */
+function replaceBotConfigFromEntryPreservingRuntime(bot: any, updatedBot: any, contextLabel: string) {
+    const oldKey = bot.config.botKey;
+    const oldIndex = bot.config.botIndex;
+    // Preserve runtime-only properties set by the constructor
+    // (timing, gridLimits, feeParams, etc.) that are not present
+    // in the raw profile from bots.json.
+    const runtimeProps: Record<string, any> = {};
+    for (const key of getRuntimeSettingsKeys()) {
+        if (bot.config[key] !== undefined) {
+            runtimeProps[key] = bot.config[key];
+        }
+    }
+    bot._log(`Reloaded configuration for bot '${bot.config.name}'`);
+    bot.config = { ...updatedBot, botKey: oldKey, botIndex: oldIndex, ...runtimeProps };
+    if (bot.manager?.config) {
+        bot.manager.config = { ...bot.manager.config, ...bot.config };
+    }
+    // bot.config is a new object now: re-point the credit runtime (its getter
+    // reads this.config) so the resync path can't leave it on the stale copy.
+    // The live-merge path mutates in place and never needs this.
+    if (bot._creditRuntime) {
+        bot._creditRuntime.config = bot.config;
+    }
+    bot._baseWeightDistribution = cloneWeightDistribution(
+        updatedBot.weightDistribution,
+        bot._baseWeightDistribution
+    );
+    refreshDynamicWeightDistribution(bot, contextLabel);
+}
+
+/**
+ * Structural gate for live debtPolicy merges (mirrors the credit runtime's
+ * isEnabled gate plus the startup validator's required string fields in
+ * bot_settings.ts). Full numeric validation stays where it belongs:
+ * the `dexbot bot` editor at save time and per-offer at runtime.
+ * null/undefined (policy removal) is safe — it takes the disable path.
+ * @param {any} value - New debtPolicy value from bots.json
+ * @returns {boolean} True when safe to merge live
+ */
+function isDebtPolicyLiveApplySafe(value: any): boolean {
+    if (value === null || value === undefined) return true;
+    if (typeof value !== 'object' || Array.isArray(value)) return false;
+    const lending = (value as any).lending;
+    if (!Array.isArray(lending) || lending.length === 0) return false;
+    return lending.every((item: any) => item && typeof item === 'object'
+        && typeof item.type === 'string' && item.type.length > 0
+        && typeof item.asset === 'string' && item.asset.length > 0
+        && typeof item.collateralAsset === 'string' && item.collateralAsset.length > 0);
+}
+
+/**
+ * Reconcile the credit runtime after a live debtPolicy merge: (re)create +
+ * load state when newly enabled, rebind the watchdog interval to the
+ * current runtime, stop the interval when disabled. loadState is a no-op on
+ * an already-loaded runtime and both maintenance entry points bail while
+ * disabled or in-flight, so this is safe on any tick (bot-level seams
+ * guarded for stripped test doubles).
+ * @param {any} bot - DEXBot instance
+ */
+async function reconcileCreditRuntimeAfterPolicyChange(bot: any) {
+    try {
+        if (typeof bot._setupCreditRuntime === 'function') {
+            await bot._setupCreditRuntime();
+        }
+    } catch (err: any) {
+        bot._warn?.(`Credit runtime setup failed after debtPolicy change: ${getErrorMessage(err)}`);
+        return;
+    }
+    try {
+        if (bot._creditRuntime) {
+            if (typeof bot._setupCreditWatchdogInterval === 'function') {
+                bot._setupCreditWatchdogInterval();
+            }
+        } else if (typeof bot._stopCreditWatchdogInterval === 'function') {
+            bot._stopCreditWatchdogInterval();
+        }
+    } catch (err: any) {
+        bot._warn?.(`Credit watchdog reconcile failed after debtPolicy change: ${getErrorMessage(err)}`);
+    }
+}
+
+/**
+ * Diff two normalized entries in a single pass over the key union.
+ * Replaces the former twin-loop diffLiveBotConfig +
+ * detectNonLiveBotConfigChanges pair.
+ * @param {any} oldNormalized - Previously seen normalized entry
+ * @param {any} newNormalized - New normalized entry
+ * @returns {{liveChanges: Array<{key: string, oldValue: any, newValue: any}>, otherKeys: string[]}} Split changes
+ */
+function diffBotConfigEntries(oldNormalized: any, newNormalized: any): {
+    liveChanges: Array<{ key: string; oldValue: any; newValue: any }>;
+    otherKeys: string[];
+} {
+    const prev = oldNormalized && typeof oldNormalized === 'object' ? oldNormalized : {};
+    const next = newNormalized && typeof newNormalized === 'object' ? newNormalized : {};
+    const liveChanges: Array<{ key: string; oldValue: any; newValue: any }> = [];
+    const otherKeys: string[] = [];
+    for (const key of new Set([...Object.keys(prev), ...Object.keys(next)])) {
+        const before = stableStringifyForBotConfig(prev[key] ?? null);
+        const after = stableStringifyForBotConfig(next[key] ?? null);
+        if (before === after) continue;
+        if ((BOT_LIVE_CONFIG_KEYS as readonly string[]).includes(key)) {
+            liveChanges.push({ key, oldValue: prev[key] ?? null, newValue: next[key] ?? null });
+        } else {
+            otherKeys.push(key);
+        }
+    }
+    return { liveChanges, otherKeys };
+}
+
+/**
+ * Check bots.json for this bot's entry and live-apply allowlisted keys
+ * (BOT_LIVE_CONFIG_KEYS; debtPolicy additionally reconciles the credit
+ * runtime, malformed debtPolicy is hinted instead of merged).
+ * Best-effort and idempotent: synchronous in-memory merge only, no chain
+ * I/O, no fill-lock (assignments are atomic; the existing maintenance /
+ * targeted-reconcile ticks heal shortfalls/excess on the next cycle).
+ * Geometry changes are NOT applied (need `dexbot reset <name>`), identity
+ * changes are NOT applied (need restart) — on the steady-state path both
+ * produce a one-time hint per fingerprint (the fingerprint advances past
+ * hinted keys, malformed debtPolicy included, so a persistently-broken file
+ * warns once until the file changes again). The first-check baseline only
+ * converges the race-safe keys and stays silent on the rest: a geometry
+ * edit landing in the process-load → first-tick window is absorbed into
+ * the baseline with no hint. Corrupt/unreadable files and missing entries
+ * never touch the stored fingerprint (except the missing-entry hint
+ * throttle) so the next tick re-evaluates.
+ * @param {any} bot - DEXBot instance
+ * @param {string} [context='bots-config poll'] - Context label for logging
+ * @param {any} [preloadedSnapshot=null] - Reuse an already-loaded snapshot
+ * @returns {Promise<any>} Result with applied/liveChanges/otherKeys or skipped
+ */
+async function checkAndApplyBotConfigChanges(bot: any, context: any = 'bots-config poll', preloadedSnapshot: any = null): Promise<any> {
+    try {
+        if (!bot || !bot.config) {
+            return { skipped: true, reason: 'missing-config' };
+        }
+        const snapshot = preloadedSnapshot
+            ?? (typeof bot._loadBotsConfigSnapshot === 'function'
+                ? await bot._loadBotsConfigSnapshot()
+                : loadBotsConfigSnapshot());
+        if (!snapshot || snapshot.corrupt || snapshot.readError) {
+            return {
+                skipped: true,
+                reason: snapshot?.corrupt ? 'corrupt-config' : snapshot?.readError ? 'unreadable-config' : 'missing-snapshot',
+            };
+        }
+        const entry = findSnapshotBotForRuntimeConfig(snapshot, bot.config);
+        const botName = String(bot.config?.name || bot.config?.botKey || 'bot');
+        if (!entry) {
+            const missingMarker = `missing:${String(bot.config?.botKey || bot.config?.name || '')}`;
+            if (bot._lastBotConfigHintFingerprint !== missingMarker) {
+                bot._lastBotConfigHintFingerprint = missingMarker;
+                bot._warn?.(
+                    `bots.json no longer contains an active entry for '${botName}' during ${context}; ` +
+                    `roster changes need a stop/start.`
+                );
+            }
+            return { skipped: true, reason: 'bot-not-found' };
+        }
+        const normalized = normalizeBotEntryForFingerprint(entry);
+        const fingerprint = stableStringifyForBotConfig(normalized);
+        if (bot._appliedBotConfigFingerprint === null || bot._appliedBotConfigFingerprint === undefined) {
+            bot._appliedBotConfigFingerprint = fingerprint;
+            bot._appliedBotConfigEntry = normalized;
+            // Startup race: the file may have changed between process config
+            // load and this first check. Converge the race-safe keys so the
+            // running bot can never sit on a value the file no longer
+            // contains. weightDistribution is excluded —
+            // refreshDynamicWeightDistribution owns the live value at runtime.
+            const racePrev: Record<string, any> = {};
+            for (const key of (BOT_LIVE_CONFIG_KEYS as readonly string[])) {
+                if (key === 'weightDistribution') continue;
+                racePrev[key] = bot.config?.[key];
+            }
+            const raceDiff = diffBotConfigEntries(racePrev, normalized);
+            // Same invariant as the steady-state path: a malformed debtPolicy
+            // never reaches the runtime (warn once; the next save re-evaluates).
+            const raceLive = raceDiff.liveChanges.filter((c: any) =>
+                c.key !== 'debtPolicy' || isDebtPolicyLiveApplySafe(c.newValue));
+            if (raceLive.length !== raceDiff.liveChanges.length) {
+                bot._warn?.(
+                    `bots.json debtPolicy for '${botName}' failed validation at startup check; ` +
+                    `keeping startup policy — fix the shape or run 'dexbot reset ${botName}'.`
+                );
+            }
+            const raceApplied = mergeBotConfigKeysIntoRuntime(bot, entry, raceLive.map((c: any) => c.key));
+            if (raceApplied.includes('debtPolicy')) {
+                await reconcileCreditRuntimeAfterPolicyChange(bot);
+            }
+            if (raceApplied.length > 0) {
+                bot._log?.(
+                    `Picked up bots.json changes for '${botName}' at startup check (no restart needed): ${raceApplied.join(', ')}.`,
+                    'info'
+                );
+            }
+            return { applied: raceApplied.length > 0, reason: 'baseline', fingerprint, liveChanges: raceApplied };
+        }
+        if (fingerprint === bot._appliedBotConfigFingerprint) {
+            return { applied: false, reason: 'unchanged', fingerprint };
+        }
+        const { liveChanges: rawLiveChanges, otherKeys: rawOtherKeys } = diffBotConfigEntries(bot._appliedBotConfigEntry, normalized);
+        // Malformed debtPolicy never reaches the runtime: hint reset/restart
+        // instead of merging garbage the credit cycle would choke on.
+        const liveChanges = rawLiveChanges.filter((c: any) =>
+            c.key !== 'debtPolicy' || isDebtPolicyLiveApplySafe(c.newValue));
+        const otherKeys = [...rawOtherKeys];
+        for (const c of rawLiveChanges) {
+            if (c.key === 'debtPolicy' && !isDebtPolicyLiveApplySafe(c.newValue) && !otherKeys.includes('debtPolicy')) {
+                otherKeys.push('debtPolicy');
+            }
+        }
+        const appliedKeys = mergeBotConfigKeysIntoRuntime(bot, entry, liveChanges.map((c: any) => c.key));
+        if (appliedKeys.includes('debtPolicy')) {
+            await reconcileCreditRuntimeAfterPolicyChange(bot);
+        }
+        if (appliedKeys.includes('weightDistribution')) {
+            // Same as the resync path: the file value is the base, the live
+            // effective weights (when whitelisted/ready) take precedence in
+            // bot/manager config immediately instead of next tick.
+            refreshDynamicWeightDistribution(bot, context);
+        }
+        bot._appliedBotConfigFingerprint = fingerprint;
+        bot._appliedBotConfigEntry = normalized;
+        if (liveChanges.length > 0) {
+            const summary = liveChanges
+                .map((c: any) => `${c.key} ${stableStringifyForBotConfig(c.oldValue)}->${stableStringifyForBotConfig(c.newValue)}`)
+                .join('; ');
+            bot._log?.(
+                `Applied bots.json changes for '${botName}' live during ${context} (no restart needed): ${summary}. ` +
+                `Targeted maintenance will place missing / cancel excess orders.`,
+                'info'
+            );
+        }
+        if (otherKeys.length > 0) {
+            const shown = otherKeys.slice(0, 8).join(', ');
+            const suffix = otherKeys.length > 8 ? ` (+${otherKeys.length - 8} more)` : '';
+            bot._warn?.(
+                `bots.json changed ${shown}${suffix} for '${botName}' during ${context}; ` +
+                `these were NOT applied live — run 'dexbot reset ${botName}' for grid geometry ` +
+                `or restart for market/account identity.`
+            );
+        }
+        if (liveChanges.length === 0 && otherKeys.length === 0) {
+            bot._log?.(
+                `Detected bots.json bookkeeping change for '${botName}' during ${context}; no tradable setting changed.`,
+                'debug'
+            );
+        }
+        return { applied: liveChanges.length > 0, liveChanges: liveChanges.map((c: any) => c.key), otherKeys, fingerprint };
+    } catch (err: any) {
+        try {
+            bot?._warn?.(`Bot-config live check failed during ${context}: ${getErrorMessage(err)}`);
+        } catch { /* logging must never break the tick */ }
+        return { skipped: true, reason: 'error', error: getErrorMessage(err) };
+    }
 }
 
 function countLiveGridOrders(manager: any, type: any) {
@@ -409,13 +790,33 @@ async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = '
     if (typeof bot._syncMarketAdapterHook === 'function') {
         return await bot._syncMarketAdapterHook(context);
     }
+    // Single bots.json read shared by the live bot-config check and the
+    // adapter drive below (one read per tick, not two). Throwing reads
+    // (transient I/O) behave like corrupt: skip everything, keep stored
+    // fingerprints, retry next tick.
+    let snapshot: any = null;
+    try {
+        snapshot = typeof bot._loadBotsConfigSnapshot === 'function'
+            ? await bot._loadBotsConfigSnapshot()
+            : loadBotsConfigSnapshot();
+    } catch (err: any) {
+        bot._warn(`Ignoring unreadable bots.json during ${context}; keeping previous market adapter state.`);
+        return { skipped: true, reason: 'unreadable-config' };
+    }
+    // Live bot-config check runs on EVERY path (including wrapper-owned):
+    // no adapter driving, best-effort. It live-applies allowlisted keys
+    // (BOT_LIVE_CONFIG_KEYS) and hints
+    // reset/restart for everything else (Issue #27 follow-up).
+    try {
+        await checkAndApplyBotConfigChanges(bot, context, snapshot);
+    } catch { /* checkAndApply never throws; belt-and-suspenders */ }
     // Centralized ownership: in monolithic mode the unlock wrapper watchdog
-    // (shared 1min tick) is the sole market-adapter spawner. A per-bot sync here would
-    // re-read bots.json and re-drive the adapter N times (once per bot) and
-    // fight the wrapper over the adapter child, so bots skip it entirely and
-    // act as pure adapter-output consumers. Wrapper-less modes (dexbot test
-    // one-shot, isolated supervisor, PM2) keep the in-bot fallback below.
-    // Checked before any file I/O so the skip also removes the duplicate read.
+    // (shared 1min tick) is the sole market-adapter spawner. A per-bot drive here would
+    // re-drive the adapter N times (once per bot) and fight the wrapper over
+    // the adapter child, so bots skip the adapter drive entirely and act as
+    // pure adapter-output consumers. The live bot-config check above still
+    // ran. Wrapper-less modes (dexbot test one-shot, isolated supervisor,
+    // PM2) keep the in-bot fallback below.
     if (!isPm2Runtime() && isWrapperAdapterOwner()) {
         return { skipped: true, reason: 'wrapper-owned' };
     }
@@ -426,9 +827,6 @@ async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = '
     bot._marketAdapterWatchdogInFlight = true;
 
     try {
-        const snapshot = typeof bot._loadBotsConfigSnapshot === 'function'
-            ? await bot._loadBotsConfigSnapshot()
-            : loadBotsConfigSnapshot();
         // Corrupt/unreadable bots.json must not move the adapter: previously
         // the parse/read throw aborted the check and left the adapter alone.
         // Keep that behavior by skipping the sync without touching the stored
@@ -843,25 +1241,7 @@ function performGridResync(bot: any, options: {
                 const updatedBot = allBotsConfig.find((b: any) => isSameBotName(b.name, myName));
 
                 if (updatedBot) {
-                    self._log(`Reloaded configuration for bot '${myName}'`);
-                    const oldKey = self.config.botKey;
-                    const oldIndex = self.config.botIndex;
-                    // Preserve runtime-only properties set by the constructor
-                    // (timing, gridLimits, feeParams, etc.) that are not present
-                    // in the raw profile from bots.json.
-                    const runtimeProps: Record<string, any> = {};
-                    for (const key of getRuntimeSettingsKeys()) {
-                        if (self.config[key] !== undefined) {
-                            runtimeProps[key] = self.config[key];
-                        }
-                    }
-                    self.config = { ...updatedBot, botKey: oldKey, botIndex: oldIndex, ...runtimeProps };
-                    self.manager.config = { ...self.manager.config, ...self.config };
-                    self._baseWeightDistribution = cloneWeightDistribution(
-                        updatedBot.weightDistribution,
-                        self._baseWeightDistribution
-                    );
-                    refreshDynamicWeightDistribution(self, 'grid resync');
+                    replaceBotConfigFromEntryPreservingRuntime(self, updatedBot, 'grid resync');
                 }
             } catch (e: any) {
                 self._warn(`Failed to reload config during resync (using current settings): ${getErrorMessage(e)}`);
@@ -1373,17 +1753,15 @@ function stopBlockchainFetchInterval(bot: any) {
 }
 
 /**
- * Set up the periodic bots.json fingerprint poll interval.
- * Fallback config-change detector for wrapper-less modes (dexbot test
- * one-shot, isolated supervisor, PM2): decoupled from the heavy blockchain
- * fetch interval (default 240min) so config changes are visible within
- * BOTS_CONFIG_POLL_INTERVAL_MS (default 1min, shared with the wrapper
- * watchdog interval).
- * In monolithic mode the unlock wrapper watchdog already polls bots.json
- * on the same shared interval as the sole adapter owner, so no per-bot poll
- * is created here.
- * Uses the shared fingerprint via syncMarketAdapterOnPeriodicConfigCheck so
- * the market adapter start/stop logic stays in one place.
+ * Set up the periodic bots.json poll interval.
+ * Runs in ALL modes (including wrapper-owned monolithic): the tick drives
+ * syncMarketAdapterOnPeriodicConfigCheck, which always runs the live
+ * bot-config check (allowlisted keys applied without restart, Issue #27
+ * follow-up) and additionally drives the market adapter only in
+ * wrapper-less modes (dexbot test one-shot, isolated supervisor, PM2).
+ * Decoupled from the heavy blockchain fetch interval (default 240min) so
+ * config changes are visible within BOTS_CONFIG_POLL_INTERVAL_MS
+ * (default 1min, shared with the wrapper watchdog interval).
  * @param {import('./dexbot_class.js').DEXBot} bot
  */
 function setupBotsConfigPollInterval(bot: any) {
@@ -1393,14 +1771,15 @@ function setupBotsConfigPollInterval(bot: any) {
         intervalMs = Number(TIMING.BOTS_CONFIG_POLL_INTERVAL_MS);
     }
     if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
-        bot._log(`Bots-config poll interval disabled (value: ${intervalMs}). Fingerprint changes will only be seen on blockchain fetch ticks.`);
+        bot._log(`Bots-config poll interval disabled (value: ${intervalMs}). Adapter and live bot-config changes will only be seen on blockchain fetch ticks.`);
         return;
     }
 
-    if (!isPm2Runtime() && isWrapperAdapterOwner()) {
-        bot._log('Bots-config poll disabled (market adapter owned by unlock wrapper).');
-        return;
-    }
+    // NOTE: no wrapper-owned early return here on purpose. The adapter drive
+    // inside syncMarketAdapterOnPeriodicConfigCheck still skips when the
+    // wrapper owns it, but the live bot-config check at the top of that
+    // function must run for every bot (otherwise monolithic bots would never
+    // pick up bots.json edits until the 240min blockchain fetch tick).
 
     // Ensure the fingerprint exists before the first interval fires.
     // setupBlockchainFetchInterval already fires syncMarketAdapterOnPeriodicConfigCheck
@@ -1436,7 +1815,7 @@ function setupBotsConfigPollInterval(bot: any) {
         bot._botsConfigPollInterval.unref();
     }
 
-    bot._log(`Started bots-config poll interval: every ${Math.round(intervalMs / 1000)}s (fingerprint check)`);
+    bot._log(`Started bots-config poll interval: every ${Math.round(intervalMs / 1000)}s (adapter fingerprint + live bot-config check)`);
 }
 
 /**
@@ -2583,12 +2962,14 @@ async function syncOpenOrdersAndProcessFillsImpl(bot: any, tag: any) {
         return { syncResult: null, aborted: true, hasUnmatched: -1, openOrders: null };
     }
 }
-export { loadBotsConfigSnapshot, isWrapperAdapterOwner, refreshDynamicWeightDistribution, performGridResync, updateBotGridResetMetadata, handlePendingTriggerReset, setupTriggerFileDetection, performPeriodicGridChecks, isOpenOrdersSyncLoopEnabled, startOpenOrdersSyncLoop, stopOpenOrdersSyncLoop, setupBlockchainFetchInterval, stopBlockchainFetchInterval, setupBotsConfigPollInterval, stopBotsConfigPollInterval, executeMaintenanceLogic, cancelDustOrders, isOrderDoesNotExistError, runGridMaintenance, stopMarketAdapterPm2, releaseMarketAdapterRuntime, syncMarketAdapterOnPeriodicConfigCheck, findSnapshotBotForRuntimeConfig, runtimeConfigNeedsMarketAdapter, usesAmaGridPrice, checkBtsBalanceAndAcquire, acquireBts, runDustHealthCheck, setupDustHealthCheckInterval, requestGridReset, wireStructuralGridResyncRequest, getPipelineSignals, markGridActivity, getMetrics, syncOpenOrdersAndProcessFills };
+export { loadBotsConfigSnapshot, isWrapperAdapterOwner, checkAndApplyBotConfigChanges, buildBotConfigFingerprint, refreshDynamicWeightDistribution, performGridResync, updateBotGridResetMetadata, handlePendingTriggerReset, setupTriggerFileDetection, performPeriodicGridChecks, isOpenOrdersSyncLoopEnabled, startOpenOrdersSyncLoop, stopOpenOrdersSyncLoop, setupBlockchainFetchInterval, stopBlockchainFetchInterval, setupBotsConfigPollInterval, stopBotsConfigPollInterval, executeMaintenanceLogic, cancelDustOrders, isOrderDoesNotExistError, runGridMaintenance, stopMarketAdapterPm2, releaseMarketAdapterRuntime, syncMarketAdapterOnPeriodicConfigCheck, findSnapshotBotForRuntimeConfig, runtimeConfigNeedsMarketAdapter, usesAmaGridPrice, checkBtsBalanceAndAcquire, acquireBts, runDustHealthCheck, setupDustHealthCheckInterval, requestGridReset, wireStructuralGridResyncRequest, getPipelineSignals, markGridActivity, getMetrics, syncOpenOrdersAndProcessFills };
 
 
 export default {
     loadBotsConfigSnapshot,
     isWrapperAdapterOwner,
+    checkAndApplyBotConfigChanges,
+    buildBotConfigFingerprint,
     refreshDynamicWeightDistribution,
     performGridResync,
     updateBotGridResetMetadata,

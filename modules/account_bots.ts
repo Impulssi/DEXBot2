@@ -94,6 +94,7 @@ import { PATHS } from './paths.js';
 import { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } from './general_settings.js';
 import { parseJsonWithComments } from './order/utils/system.js';
 import { assertNoDuplicateBotKeys, loadSettingsFile } from './bot_settings.js';
+import { BOT_LIVE_CONFIG_KEYS } from './runtime_settings.js';
 import { mergeSettings } from './settings_merge.js';
 import { getErrorMessage } from './utils/errors.js';
 import { roundToDecimals, parseRelativeMultiplier } from './order/utils/math.js';
@@ -1506,6 +1507,8 @@ async function main() {
                             config.bots[idx] = entry;
                             saveBotsConfig(config, filePath);
                             console.log(`saved settings '${entry.name}' in ${path.basename(filePath)}.\n`);
+                            console.log(`Live pickup (~1min, no restart): ${(BOT_LIVE_CONFIG_KEYS as readonly string[]).join(' / ')}.`);
+                            console.log(`Grid geometry needs 'dexbot reset ${entry.name}'; market/account changes need a restart.\n`);
                         }
                     } catch (err: any) {
                         console.log(`\n❌ Invalid input: ${getErrorMessage(err)}\n`);
