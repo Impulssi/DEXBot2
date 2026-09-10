@@ -1439,9 +1439,13 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             let start = Math.max(0, lowerBound(xs, minX) - 1);
             let end = Math.min(xs.length, lowerBound(xs, maxX) + 2);
             let max = 0;
+            // USDT-volyymi (volume x close) — samalla muunnoksella kuin piirretaan.
             for (let i = start; i < end; i++) {
-                const v = currentCandles[i]?.volume;
-                if (Number.isFinite(v) && v > max) max = v;
+                const c = currentCandles[i];
+                if (!c) continue;
+                const v = Number(c.volume);
+                const p = Number(c.close);
+                if (Number.isFinite(v) && Number.isFinite(p) && v * p > max) max = v * p;
             }
             if (!Number.isFinite(max) || max <= 0) return [0, 1];
             return [0, max * 1.15];
@@ -1565,7 +1569,11 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             document.getElementById('legend-delta').textContent = Number.isFinite(delta)
                 ? ((delta >= 0 ? '+' : '') + fmtPrice(delta))
                 : '-';
-            document.getElementById('legend-volume').textContent = fmtVolume(c.volume);
+            document.getElementById('legend-volume').textContent = (() => {
+                const vv = Number(c.volume), pp = Number(c.close);
+                const volUsdt = Number.isFinite(vv) && Number.isFinite(pp) ? vv * pp : null;
+                return volUsdt != null ? fmtVolume(volUsdt) + ' $' : '-';
+            })();
             document.getElementById('legend-scale').textContent = currentPriceScale === 'linear' ? 'Linear' : 'Log';
             document.getElementById('legend-sma').textContent = Number.isFinite(currentSma[idx]) ? fmtPrice(currentSma[idx]) : (smaPending ? '...' : '-');
             document.getElementById('legend-ama').textContent = Number.isFinite(currentAma[idx]) ? fmtPrice(currentAma[idx]) : '-';
@@ -1867,9 +1875,17 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 currentSmaInitOff,
                 currentAmaOff,
             ];
+            // Volyymi USDT-arvona (volume x close) — samalla muunnoksella kuin
+            // piirretaan, muuten vanhojen aikojen hintatason erot venyttavat
+            // skaalan turhaksi. Kaikki volume-naytto (pylvaat, akseli,
+            // legenda, max/hover) on USDT:na.
             currentVolumeData = [
                 currentCandles.map((c) => c.time),
-                currentCandles.map((c) => c.volume),
+                currentCandles.map((c) => {
+                    const v = Number(c.volume);
+                    const p = Number(c.close);
+                    return Number.isFinite(v) && Number.isFinite(p) ? v * p : 0;
+                }),
             ];
             return {
                 priceData: currentPriceData,
@@ -1972,7 +1988,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 ],
                 axes: [
                     makeTimeAxis(true),
-                    { scale: 'y', side: 1, size: 84, space: 22, stroke: '#ffffff', grid: { show: false }, ticks: { stroke: '#30363d', width: 1 }, font: '600 12px Segoe UI, sans-serif', values: (u, vals) => vals.map((v) => (v == null ? '' : fmtVolume(v))) },
+                    { scale: 'y', side: 1, size: 84, space: 22, stroke: '#ffffff', grid: { show: false }, ticks: { stroke: '#30363d', width: 1 }, font: '600 12px Segoe UI, sans-serif', values: (u, vals) => vals.map((v) => (v == null ? '' : fmtVolume(v) + ' $')) },
                 ],
                 hooks: {
                     draw: [(u) => positionVolumeMax(u)],
