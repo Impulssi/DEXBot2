@@ -597,6 +597,10 @@ class AccountOrders {
       this.data.grid = [];
       this.data.btsFeesOwed = 0;
       this.data.boundaryIdx = null;
+      // Snapshot wipe takes the boundary bookkeeping with it: owed fill crawls
+      // are relative deltas against the deleted boundary/grid, so a rebuilt
+      // generation must not inherit them (the rebuild re-anchors absolutely).
+      delete (this.data as any).pendingFillCrawls;
       this.data.lastUpdated = nowIso();
       this._persist();
       return true;

@@ -1288,6 +1288,13 @@ export async function initializeGrid(manager: any): Promise<void> {
         manager._gapSlots = gapSlots;
         if (genesis) manager._genesis = genesis;
 
+        // A rebuilt grid is a NEW generation: the boundary below is re-derived
+        // absolutely from the fresh price ladder, so owed fill crawls recorded
+        // against the previous generation must not survive — their relative
+        // deltas would shift the new anchor again for movement it already
+        // contains (and their slot ids now name different prices).
+        manager._clearPendingFillCrawls?.('grid rebuild');
+
         // RC-8: Update boundary with notification to dependent systems
         // Persist master boundary for StrategyEngine
         if (manager.boundaryIdx !== boundaryIdx) {
@@ -1664,7 +1671,11 @@ export async function _recalculateGridOrderSizesFromBlockchain(manager: any, ord
         // geometric progression including empties, then re-type the picked slot
         // to BUY/SELL before placement.  The COW boundary-shift path re-types
         // the working grid by geometry first, so crossers stay in the correct
-        // side's denominator.
+        // side's denominator.  Reserve edge slots are deliberately excluded from
+        // that startup re-derivation: they activate only with the size the
+        // target-grid sizing pipeline has already written (exact values, one
+        // sizing rule), and an unsized reserve waits for that pipeline instead
+        // of being placed with a locally guessed size.
         const orderSource = collectActions ? workingGrid : manager.orders;
         const allSideSlots = (Array.from(orderSource.values()) as Order[])
             .filter((o: any) => o.type === orderType)

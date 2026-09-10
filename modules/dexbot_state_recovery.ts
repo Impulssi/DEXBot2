@@ -8,7 +8,7 @@ import { ORDER_TYPES, TIMING } from './constants.js';
 import * as Format from './order/format.js';
 import * as grid from './order/grid.js';
 import { convertToSpreadPlaceholder, parseChainOrder } from './order/utils/order.js';
-import { restoreGapEvacStreaks } from './order/utils/system.js';
+import { restoreGapEvacStreaks, applyPersistedPendingCrawls } from './order/utils/system.js';
 import { blockchainToFloat, calculateGapSlots, validatePersistedBoundary } from './order/utils/math.js';
 import { hasExecutableActions } from './order/utils/validate.js';
 import { getErrorMessage } from './utils/errors.js';
@@ -368,6 +368,24 @@ async function recoverFromPersistedGrid(bot: any) {
             bot.manager.logger.log(`[GAP-EVAC] Restored ${restoredStreaks} persisted in-band streak(s) during recovery reload`, 'info');
         }
 
+        // Same contract as the startup resume path: fills recorded but never
+        // committed owe their crawl to the restored boundary, so apply the
+        // stored records BEFORE sync/reconcile — and before the persistGrid
+        // below, which would otherwise write the empty in-memory array and
+        // erase the owed crawls from disk without ever applying them. Shared
+        // helper, so startup and recovery cannot drift.
+        try {
+            await applyPersistedPendingCrawls(bot, {
+                forceReload: true,
+                log: (message: string, level?: any) => bot.manager.logger.log(message, level)
+            });
+        } catch (pendingErr: any) {
+            bot.manager.logger.log(
+                `[BOUNDARY] Pending-crawl application failed during recovery reload (${getErrorMessage(pendingErr)}); continuing with the restored boundary`,
+                'warn'
+            );
+        }
+
         if (await bot._rejectCorruptedGridSnapshot('recovery')) {
             // P4: rejected snapshot's boundary must not survive for rebuild.
             // clearGrid() already wiped persisted boundaryIdx; also clear the
@@ -624,6 +642,12 @@ async function rejectCorruptedGridSnapshot(bot: any, context: any) {
         (bot.manager as any)._restoreBoundary?.(null);
     } catch {}
     (bot.manager as any).boundaryIdx = null;
+    // Owed crawls belonged to the rejected generation: the rebuild re-anchors
+    // the boundary absolutely, so applying their relative deltas would
+    // double-count the movement the new anchor already contains. clearGrid()
+    // wiped the persisted copy; drop the in-memory record (marks the grid
+    // dirty so the wipe reaches disk on the next flush too).
+    (bot.manager as any)._clearPendingFillCrawls?.('grid snapshot rejected');
     return true;
 }
 

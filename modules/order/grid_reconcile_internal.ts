@@ -10,7 +10,7 @@
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
 import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findCrossedOrder, resolveGapBand, isSlotInRail, priceSlotEqual, resolveBuyFloorUsdt, resolveBuyWindowMode, isDeepShelfId } from './utils/math.js';
-import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, resolveReserveCount, resolveReserveEdgeAnchorPrice, resolveReserveFloorIds, resolveReserveCeilIds, compareReserveEdge } from './utils/order.js';
+import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, reserveEdgeIdSet, compareReserveEdge } from './utils/order.js';
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -325,8 +325,11 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
 
 /**
  * Pick edge-pinned reserve slots (floor for BUY, ceiling for SELL).
- * Same rail/min-size gates as _pickVirtualSlotsToActivate, opposite end:
+ * Same rail membership gate as _pickVirtualSlotsToActivate, opposite end:
  * the reserve ladder rests at the grid edge instead of the market window.
+ * Size gate is STRICTER than that picker's — reserves activate only with
+ * their own stored size (>= min order size), never a locally derived one,
+ * so an unsized edge slot waits for the target-grid sizing pipeline.
  * @param {Object} manager - OrderManager instance.
  * @param {string} orderType - ORDER_TYPES value.
  * @param {number} count - Number of edge slots to pick.
@@ -344,10 +347,10 @@ function _pickEdgeReserveSlots(manager: any, orderType: any, count: any, exclude
     const typeFilter = boundaryKnown
         ? (slot: any) => slot && (slot.type === type || slot.type === ORDER_TYPES.SPREAD)
         : (slot: any) => slot && slot.type === type;
-    // Both edges anchor toward their resolved bound (single source): floor —
-    // nearest at/above minPrice first; ceiling — nearest at/below maxPrice
-    // first. Stale out-of-bound slots sort last.
-    const edgeAnchor = resolveReserveEdgeAnchorPrice(manager.config, edgeDesc ? 'sell' : 'buy');
+    // Both edges anchor at the live grid's own edge (ladder/rail extreme):
+    // floor — nearest at/above the live floor first; ceiling — nearest
+    // at/below the live ceiling first. Stale out-of-grid slots sort last.
+    const edgeAnchor = resolveLiveReserveEdgeAnchorPrice(manager, edgeDesc ? 'sell' : 'buy');
     const edgeFirst = (Array.from(manager.orders.values()) as any[])
         .filter(typeFilter)
         .filter(inRail)
@@ -356,25 +359,23 @@ function _pickEdgeReserveSlots(manager: any, orderType: any, count: any, exclude
     try {
         effectiveMin = getMinOrderSize(type, manager.assets);
     } catch (e: any) { effectiveMin = 0; }
-    const derivedSizes = _deriveBudgetedSideSizes(manager, type);
     const picked: any[] = [];
     for (const slot of edgeFirst) {
         if (picked.length >= count) break;
         if (excludeIds && excludeIds.has(slot.id)) continue;
         if (!slot.orderId && slot.state === ORDER_STATES.VIRTUAL) {
+            // Exact sizes only: a reserve is activated solely with the size the
+            // grid already carries (written by the target-grid sizing pipeline
+            // and persisted with the slot). No local re-derivation — a second
+            // sizing rule here could place the reserve with a size the target
+            // grid then has to correct on the next cycle. An unsized slot
+            // simply waits for the sizing pipeline instead of being guessed.
             const storedSize = Number(slot.size) || 0;
-            let effectiveSize = storedSize;
-            if (effectiveSize < effectiveMin) {
-                const derived = derivedSizes.get(slot.id);
-                if (derived != null && derived >= effectiveMin) {
-                    effectiveSize = derived;
-                }
-            }
-            if (slot.id && effectiveSize >= effectiveMin) {
-                picked.push({
-                    ...(effectiveSize === storedSize ? slot : { ...slot, size: effectiveSize }),
-                    type,
-                });
+            if (slot.id && storedSize >= effectiveMin) {
+                // Re-type the picked slot to the activation side (empty slots are
+                // stored SPREAD / side-neutral; a placed order must carry the
+                // concrete BUY/SELL rail type).
+                picked.push({ ...slot, type });
             }
         }
     }
@@ -1774,14 +1775,25 @@ async function _reconcileStartupSide({
     if (reserveCount > 0) {
         const pickedIds = new Set(desiredSlots.map((s: any) => s?.id).filter(Boolean));
         const freshEdge = _pickEdgeReserveSlots(manager, orderType, reserveCount, pickedIds);
-        const reserveAnchor = resolveReserveEdgeAnchorPrice(manager.config, reserveSide);
-        reserveEdgeIds = orderType === ORDER_TYPES.SELL
-            ? resolveReserveCeilIds((Array.from(manager.orders.values()) as any[]), reserveCount, reserveAnchor)
-            : resolveReserveFloorIds((Array.from(manager.orders.values()) as any[]), reserveCount, reserveAnchor);
-        if (freshEdge.length > 0) {
-            const keepCount = Math.max(0, neededSlots - freshEdge.length);
-            desiredSlots = [...desiredSlots.slice(0, keepCount), ...freshEdge];
-        }
+        const reserveAnchor = resolveLiveReserveEdgeAnchorPrice(manager, reserveSide);
+        reserveEdgeIds = reserveEdgeIdSet((Array.from(manager.orders.values()) as any[]), manager.config, orderType, reserveAnchor);
+        // Window first, then the ready edge reserves. Only the reserve share
+        // still MISSING on-chain is held back for the edge (a live reserve is
+        // already part of matchedOnGrid and must not shrink the window plan), so
+        // an edge pick that is not activatable yet (exact-size rule) leaves its
+        // slot unplanned: the target-grid pipeline then creates it at the edge
+        // with its own sizes, instead of the plan filling it with a middle
+        // window slot that the next cycle would have to rotate out.
+        // Note: if the window picker itself took an edge/reserve slot (only
+        // when the rail is too short to fill the window closer to market),
+        // that slot is not a placed reserve, so the plan comes out one short
+        // here and the target grid settles it on the next cycle.
+        const liveReserves = reserveEdgeIds
+            ? [...reserveEdgeIds].filter((id) => isOrderPlaced(manager.orders.get(id))).length
+            : 0;
+        const missingReserves = Math.max(0, reserveCount - liveReserves);
+        const keepCount = Math.max(0, neededSlots - missingReserves);
+        desiredSlots = [...desiredSlots.slice(0, keepCount), ...freshEdge];
     }
 
     const sortedUnmatched = unmatchedSideOrders.slice(0).sort(sortUpdateComparator);

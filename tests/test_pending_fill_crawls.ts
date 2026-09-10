@@ -27,8 +27,14 @@ const StrategyEngine = require('../modules/order/strategy').default;
 const {
     deriveTargetBoundary,
     consumePendingFillCrawls,
+    reserveEdgeIdSet,
+    resolveLiveReserveEdgeAnchorPrice,
 } = require('../modules/order/utils/order');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { OrderManager } = require('../modules/order/manager');
+const { WorkingGrid } = require('../modules/order/working_grid');
+const { applyPersistedPendingCrawls } = require('../modules/order/utils/system');
+const { loadGrid } = require('../modules/order/grid');
 
 const GAP = 4;
 const N_SLOTS = 216;
@@ -89,7 +95,7 @@ function buildMaster(extraPlaced = []) {
     return orders;
 }
 
-function mockManager(boundary, orders, pending, config = CFG): any {
+function mockManager(boundary, orders, pending, config: any = CFG): any {
     return {
         boundaryIdx: boundary,
         orders,
@@ -226,6 +232,31 @@ async function testConsume_DropsUnsafe() {
     console.log('✓ PEND-008 passed');
 }
 
+async function testConsume_LiveAnchorClassifies() {
+    console.log('\n[PEND-011] startup classifies reserves with the live anchor, not the config fallback...');
+    // Stale leftover: a BUY-typed VIRTUAL slot left above the buy rail by an
+    // older bound, priced below the live floor. The live run (finite live
+    // anchor) ranks it out of the reserve set, so its crawl is owed; the
+    // config-bound fallback is null for mode-string bounds, and plain rank
+    // would make it a reserve and drop the crawl.
+    const orders = buildMaster();
+    Object.assign(orders.get('slot-210'), {
+        type: ORDER_TYPES.BUY, state: ORDER_STATES.VIRTUAL, orderId: '', price: 0.0005, size: 0,
+    });
+    const mgr = mockManager(96, orders, [{ slotId: 'slot-210', side: ORDER_TYPES.BUY, ts: 1 }],
+        { ...CFG, reserveOrders: { buy: 2, sell: 0 } });
+    const allSlots = Array.from(orders.values());
+    const liveAnchor = resolveLiveReserveEdgeAnchorPrice(mgr, 'buy');
+    const liveReserveIds = reserveEdgeIdSet(allSlots, mgr.config, ORDER_TYPES.BUY, liveAnchor);
+    const configAnchorIds = reserveEdgeIdSet(allSlots, mgr.config, ORDER_TYPES.BUY);
+    assert.ok(!liveReserveIds.has('slot-210'), 'live anchor must not rank the stale leftover as a reserve');
+    assert.ok(configAnchorIds.has('slot-210'), 'config fallback would (the drift this pins down)');
+    const result = consumePendingFillCrawls(mgr);
+    assert.strictEqual(result.applied, true, `live-anchored classification must apply the crawl (${result.reason ?? 'no reason'})`);
+    assert.strictEqual(result.to, 95, `one owed buy must crawl 96 -> 95 (got ${result.to})`);
+    console.log('✓ PEND-011 passed');
+}
+
 async function testPersist_RoundTripAndClear() {
     console.log('\n[PEND-009] storeMasterGrid sanitizes, round-trips, and clears pending crawls...');
     const botKey = createBotKey({ name: 'pending-crawl-test' }, 0);
@@ -280,6 +311,283 @@ async function testRecord_PushDedupesSlot() {
     console.log('✓ PEND-010 passed');
 }
 
+// Fake bot for applyPersistedPendingCrawls: the store is a canned array and the
+// manager is the same shape the consume tests use, plus a persistGrid spy.
+function makeApplyBot(boundary, orders, persisted, config = CFG) {
+    const manager = mockManager(boundary, orders, [], config);
+    let persistCalls = 0;
+    manager.persistGrid = async () => { persistCalls += 1; };
+    const loadCalls = [];
+    const bot = {
+        accountOrders: {
+            loadPendingFillCrawls(forceReload) { loadCalls.push(forceReload); return persisted; },
+        },
+        manager,
+    };
+    return { bot, manager, loadCalls, getPersistCalls: () => persistCalls };
+}
+
+async function testApplyPersisted_AppliesAndPersists() {
+    console.log('\n[PEND-012] applyPersistedPendingCrawls applies owed crawls and persists before reconcile...');
+    const { bot, manager, loadCalls, getPersistCalls } = makeApplyBot(96, buildMaster(), [
+        { slotId: 'slot-93', side: 'buy', ts: 1 },
+        { slotId: 'slot-94', side: 'buy', ts: 2 },
+    ]);
+    const lines = [];
+    const result = await applyPersistedPendingCrawls(bot, { log: (msg, level) => lines.push({ msg, level }) });
+    assert.strictEqual(result.applied, true, `must apply (${result.reason ?? 'no reason'})`);
+    assert.strictEqual(result.from, 96, 'must start from the restored boundary');
+    assert.strictEqual(result.to, 94, `2 owed buys must crawl 96 -> 94 (got ${result.to})`);
+    assert.strictEqual(result.count, 2, 'both persisted entries owed');
+    assert.strictEqual(manager.boundaryIdx, 94, 'boundary must move by the expected delta');
+    assert.deepStrictEqual(manager._pendingFillCrawls, [], 'applied entries must clear');
+    assert.strictEqual(getPersistCalls(), 1, 'persistGrid awaited exactly once');
+    assert.deepStrictEqual(loadCalls, [false], 'store read with forceReload=false');
+    const applied = lines.find((l) => String(l.msg).includes(
+        '[BOUNDARY] Applied 2 pending fill crawl(s): boundary 96 -> 94; persisting before reconcile'));
+    assert.ok(applied, `log sink must receive the applied line (got ${JSON.stringify(lines)})`);
+    assert.strictEqual(applied.level, 'warn', 'applied line is a warn');
+    console.log('✓ PEND-012 passed');
+}
+
+async function testApplyPersisted_NoOpOnEmptyStore() {
+    console.log('\n[PEND-013] applyPersistedPendingCrawls is a no-op on an empty store...');
+    const { bot, manager, loadCalls, getPersistCalls } = makeApplyBot(96, buildMaster(), []);
+    const lines = [];
+    const result = await applyPersistedPendingCrawls(bot, { log: (msg, level) => lines.push({ msg, level }) });
+    assert.strictEqual(result.applied, false, 'nothing persisted means nothing to apply');
+    assert.strictEqual(getPersistCalls(), 0, 'no persistGrid call without an apply');
+    assert.strictEqual(manager.boundaryIdx, 96, 'boundary must stay put');
+    assert.deepStrictEqual(manager._pendingFillCrawls, [], 'no entries seeded');
+    assert.deepStrictEqual(loadCalls, [false], 'store still read');
+    assert.strictEqual(lines.length, 0, `empty store must not log (got ${JSON.stringify(lines)})`);
+    console.log('✓ PEND-013 passed');
+}
+
+// Minimal real-manager fixture for _commitWorkingGrid: six virtual slots, a
+// finite boundary (2) with a one-slot gap, and one owed crawl. All slots are
+// VIRTUAL (no orderId), so the boundary gate only checks geometry — the point
+// here is the pending-crawl bookkeeping, not placed-order validation.
+function createCommitFixture() {
+    const manager = new OrderManager({
+        assetA: 'BTS', assetB: 'USD', startPrice: 1, incrementPercent: 0.5,
+        logging: { level: 'error' },
+    });
+    const logs = [];
+    manager.logger = { log: (msg, level) => logs.push({ msg: String(msg), level }) };
+    manager.assets = {
+        assetA: { id: '1.3.0', precision: 8 },
+        assetB: { id: '1.3.121', precision: 5 },
+    };
+    manager.recalculateFunds = async () => { /* commit fixture: no accounting */ };
+    manager._gapSlots = 1;
+    manager.boundaryIdx = 2;
+    manager._gridVersion = 3;
+
+    const master = new Map();
+    for (let i = 0; i < 6; i++) {
+        master.set(`slot-${i}`, {
+            id: `slot-${i}`,
+            type: i <= 2 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL,
+            state: ORDER_STATES.VIRTUAL,
+            price: 1 + i * 0.01,
+            size: 0,
+            orderId: '',
+        });
+    }
+    manager.orders = Object.freeze(master);
+    for (const [id, order] of master) {
+        manager._ordersByState[order.state].add(id);
+        manager._ordersByType[order.type].add(id);
+    }
+    manager._pendingFillCrawls = [{ slotId: 'slot-2', side: ORDER_TYPES.BUY, ts: 1 }];
+    return { manager, logs };
+}
+
+function buildCommitWorkingGrid(manager) {
+    const workingGrid = new WorkingGrid(manager.orders, { baseVersion: manager._gridVersion });
+    workingGrid.set('slot-0', { ...manager.orders.get('slot-0'), price: 1.5 });
+    return workingGrid;
+}
+
+async function testCommit_BoundaryHeldKeepsOwedCrawls() {
+    console.log('\n[PEND-014] a held-boundary commit keeps owed crawls...');
+    const { manager, logs } = createCommitFixture();
+    const workingGrid = buildCommitWorkingGrid(manager);
+    const accepted = await manager._commitWorkingGrid(
+        workingGrid, workingGrid.getIndexes(), manager.boundaryIdx, { boundaryHeld: true });
+    assert.strictEqual(accepted, true, 'commit must be accepted');
+    assert.strictEqual(manager.boundaryIdx, 2, 'held commit keeps the committed boundary');
+    assert.strictEqual(manager._pendingFillCrawls.length, 1, 'held boundary derived nothing — crawls stay owed');
+    assert.strictEqual(manager._pendingFillCrawls[0].slotId, 'slot-2', 'the owed entry survives intact');
+    assert.ok(!logs.some((l) => l.msg.includes('Dropped')), 'no drop line for a held boundary');
+    console.log('✓ PEND-014 passed');
+}
+
+async function testCommit_AppliedBoundaryClearsOwedCrawls() {
+    console.log('\n[PEND-015] a control commit that advances the boundary clears owed crawls...');
+    const { manager, logs } = createCommitFixture();
+    const workingGrid = buildCommitWorkingGrid(manager);
+    const advanced = manager.boundaryIdx + 1;
+    const accepted = await manager._commitWorkingGrid(
+        workingGrid, workingGrid.getIndexes(), advanced);
+    assert.strictEqual(accepted, true, 'commit must be accepted');
+    assert.strictEqual(manager.boundaryIdx, advanced, 'boundary must actually advance');
+    assert.deepStrictEqual(manager._pendingFillCrawls, [], 'an applied boundary consumes the owed crawls');
+    assert.ok(logs.some((l) => l.msg.includes('Dropped 1 owed fill crawl(s) (boundary commit)')),
+        'drop is logged at commit');
+    console.log('✓ PEND-015 passed');
+}
+
+async function testClearGrid_WipesPersistedCrawls() {
+    console.log('\n[PEND-016] clearGrid wipes persisted crawls (rebuild re-anchors absolutely)...');
+    const botKey = createBotKey({ name: 'pending-crawl-clear-test' }, 0);
+    const accountOrders = new AccountOrders({ botKey });
+    try {
+        await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, [
+            { slotId: 'slot-93', side: 'buy', ts: 1 },
+            { slotId: 'slot-94', side: 'sell', ts: 2 },
+        ]);
+        assert.strictEqual(accountOrders.loadPendingFillCrawls().length, 2, 'entries stored');
+        await accountOrders.clearGrid();
+        assert.deepStrictEqual(accountOrders.loadPendingFillCrawls(), [],
+            'clearGrid must drop persisted crawls so the next generation cannot inherit them');
+        const onDisk = fs.readFileSync(`profiles/orders/${botKey}.json`, 'utf8');
+        assert.ok(!onDisk.includes('pendingFillCrawls'),
+            'the persisted pendingFillCrawls key must be gone from disk, not merely shadowed in memory');
+    } finally {
+        try { fs.unlinkSync(`profiles/orders/${botKey}.json`); } catch { /* absent */ }
+    }
+    console.log('✓ PEND-016 passed');
+}
+
+async function testClearPending_DirtyOnlyWhenClearing() {
+    console.log('\n[PEND-017] _clearPendingFillCrawls clears and marks dirty; empty is a no-op...');
+    const manager = new OrderManager({ assetA: 'BTS', assetB: 'USD', startPrice: 1, logging: { level: 'error' } });
+    manager.logger = { log() {} };
+    manager._pendingFillCrawls = [{ slotId: 'slot-93', side: ORDER_TYPES.BUY, ts: 1 }];
+    manager._gridDirtyAt = null;
+    manager._clearPendingFillCrawls('unit');
+    assert.deepStrictEqual(manager._pendingFillCrawls, [], 'non-empty array must clear');
+    assert.notStrictEqual(manager._gridDirtyAt, null, 'clearing must mark the grid dirty');
+
+    manager._gridDirtyAt = null;
+    manager._clearPendingFillCrawls('unit-empty');
+    assert.deepStrictEqual(manager._pendingFillCrawls, [], 'still empty');
+    assert.strictEqual(manager._gridDirtyAt, null, 'empty array must not mark the grid dirty');
+    console.log('✓ PEND-017 passed');
+}
+
+// [PEND-018] The relative-delta ledger is only safe because (orders, boundary,
+// pendingFillCrawls) are ONE persisted generation: storeMasterGrid writes all
+// three under a single lock, and every reload path re-reads them from that same
+// generation. This pins the consequence the pairing buys — a commit whose
+// persist is skipped (persist-guard retry path) does not double-count on
+// restart: the restart replays the commit exactly once, because disk still
+// holds the PRE-commit grid + boundary + crawls together. Uses the real
+// AccountOrders store, real loadGrid, real _commitWorkingGrid and the real
+// applyPersistedPendingCrawls helper.
+const GEOM_CFG = {
+    startPrice: 1,
+    incrementPercent: 0.5,
+    targetSpreadPercent: 2.5,   // calculateGapSlots(0.5, 2.5) === GAP
+    activeOrders: { buy: 20, sell: 20 },
+};
+
+function buildPersistableMaster(count) {
+    const arr = [];
+    for (let i = 0; i < count; i++) {
+        let type = ORDER_TYPES.BUY;
+        let state = ORDER_STATES.ACTIVE;
+        let orderId = `1.7.${1000 + i}`;
+        let size = 100;
+        if (i >= 93 && i <= 96) { state = ORDER_STATES.VIRTUAL; orderId = ''; size = 0; }
+        else if (i >= 97 && i <= 100) { type = ORDER_TYPES.SPREAD; state = ORDER_STATES.VIRTUAL; orderId = ''; size = 0; }
+        else if (i >= 101) { type = ORDER_TYPES.SELL; }
+        arr.push({ id: `slot-${i}`, price: 0.001 + i * 0.000004, type, state, orderId, size });
+    }
+    return arr;
+}
+
+function createGeomManager() {
+    const manager = new OrderManager({
+        assetA: 'BTS', assetB: 'USD', ...GEOM_CFG, logging: { level: 'error' },
+    });
+    manager.logger = { log() {} };
+    manager.recalculateFunds = async () => { /* commit fixture: no accounting */ };
+    // Commit-time delta comparison needs both precisions; loadGrid() would
+    // otherwise run a real blockchain asset-metadata lookup. This fixture
+    // asserts store/memory generation pairing, not asset discovery.
+    manager.assets = {
+        assetA: { id: '1.3.0', precision: 8 },
+        assetB: { id: '1.3.121', precision: 5 },
+    };
+    manager._initializeAssets = async () => manager.assets;
+    return manager;
+}
+
+async function testPersistSkip_RestartReplaysCommitOnce() {
+    console.log('\n[PEND-018] skipped persist after a commit replays exactly once on restart...');
+    const botKey = createBotKey({ name: 'pending-crawl-generation-test' }, 0);
+    const accountOrders = new AccountOrders({ botKey });
+    const persistedPath = `profiles/orders/${botKey}.json`;
+    const B0 = 96;
+    const B1 = 94;
+    try {
+        // Generation on disk: boundary 96 with two owed buy crawls (93, 94).
+        await accountOrders.storeMasterGrid(buildPersistableMaster(N_SLOTS), 0, B0,
+            null, null, null, null, undefined, [
+                { slotId: 'slot-93', side: ORDER_TYPES.BUY, ts: 1 },
+                { slotId: 'slot-94', side: ORDER_TYPES.BUY, ts: 2 },
+            ]);
+        assert.strictEqual(accountOrders.loadBoundaryIdx(true), B0, 'fixture boundary persisted');
+        assert.strictEqual(accountOrders.loadPendingFillCrawls(true).length, 2, 'fixture crawls persisted');
+
+        // Live run: the generation is loaded and the crawls are owed in memory.
+        const live = createGeomManager();
+        live.accountOrders = accountOrders;
+        await loadGrid(live, accountOrders.loadGrid(true), accountOrders.loadBoundaryIdx(true),
+            accountOrders.loadGenesis?.(true) ?? null);
+        assert.strictEqual(live.boundaryIdx, B0, 'persisted boundary must load as-is');
+        assert.strictEqual(live._gapSlots, GAP, 'config must yield the fixture geometry');
+        live._pendingFillCrawls = accountOrders.loadPendingFillCrawls(true).map((e) => ({ ...e }));
+
+        // Accepted commit consumes the owed movement (96 -> 94).
+        const workingGrid = new WorkingGrid(live.orders, { baseVersion: live._gridVersion });
+        workingGrid.set('slot-0', { ...live.orders.get('slot-0'), size: 101 });
+        const accepted = await live._commitWorkingGrid(
+            workingGrid, workingGrid.getIndexes(), B1, { skipRecalc: true });
+        assert.strictEqual(accepted, true, 'commit must be accepted');
+        assert.strictEqual(live.boundaryIdx, B1, 'commit applies the owed crawl');
+        assert.deepStrictEqual(live._pendingFillCrawls, [], 'commit consumes the owed crawls in memory');
+
+        // Persist SKIPPED (persist-guard retry path): disk keeps the OLD
+        // generation, which is exactly why the restart cannot double-count.
+        assert.strictEqual(accountOrders.loadBoundaryIdx(true), B0, 'skipped persist leaves the old boundary');
+        assert.strictEqual(accountOrders.loadPendingFillCrawls(true).length, 2, 'skipped persist leaves the old crawls');
+
+        // Restart from disk: the crawls apply onto the boundary they were
+        // recorded against, reproducing the committed boundary exactly once.
+        const restarted = createGeomManager();
+        restarted.accountOrders = accountOrders;
+        await loadGrid(restarted, accountOrders.loadGrid(true), accountOrders.loadBoundaryIdx(true),
+            accountOrders.loadGenesis?.(true) ?? null);
+        const res = await applyPersistedPendingCrawls(
+            { accountOrders, manager: restarted },
+            { forceReload: true, log: () => { /* silence */ } });
+        assert.strictEqual(res.applied, true, `restart must apply the persisted crawls (${res.reason ?? 'ok'})`);
+        assert.strictEqual(res.from, B0, 'replay starts from the persisted boundary');
+        assert.strictEqual(res.to, B1, 'replay lands on the committed boundary');
+        assert.strictEqual(restarted.boundaryIdx, B1,
+            'restart replays the commit once (94 = replay, 92 = double count, 96 = lost)');
+        assert.strictEqual(accountOrders.loadBoundaryIdx(true), B1, 'replayed boundary reaches disk');
+        assert.deepStrictEqual(accountOrders.loadPendingFillCrawls(true), [], 'consumed crawls leave disk too');
+    } finally {
+        try { fs.unlinkSync(persistedPath); } catch { /* absent */ }
+    }
+    console.log('✓ PEND-018 passed');
+}
+
 async function main() {
     await testPending_IncorporatedIncrementally();
     await testPending_CurrentBatchDeduped();
@@ -289,8 +597,16 @@ async function main() {
     await testConsume_AppliesOntoRestored();
     await testConsume_DropsOnNull();
     await testConsume_DropsUnsafe();
+    await testConsume_LiveAnchorClassifies();
     await testPersist_RoundTripAndClear();
     await testRecord_PushDedupesSlot();
+    await testApplyPersisted_AppliesAndPersists();
+    await testApplyPersisted_NoOpOnEmptyStore();
+    await testCommit_BoundaryHeldKeepsOwedCrawls();
+    await testCommit_AppliedBoundaryClearsOwedCrawls();
+    await testClearGrid_WipesPersistedCrawls();
+    await testClearPending_DirtyOnlyWhenClearing();
+    await testPersistSkip_RestartReplaysCommitOnce();
     console.log('\nAll pending-crawl tests passed.');
 }
 

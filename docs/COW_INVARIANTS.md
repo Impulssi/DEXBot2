@@ -56,6 +56,20 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 - `INV-COW-005` Grid regeneration bumps `_gridVersion`
   - `_clearOrderCachesLogic` must bump `_gridVersion` so an in-flight COW plan (baseVersion from the pre-swap grid) is refused at commit instead of committing over a regenerated zero-slot grid.
 
+- `INV-COW-006` Boundary moves only on fills and same-batch spread promotion
+  - Fund changes never move the boundary. Only boundary crawl (`deriveTargetBoundary`, `order/utils/order.ts`) and spread promotion move it, and promotion shifts it only onto orders placed in the same atomic batch (`prepareSpreadCorrectionOrders`).
+  - Funds drive order sizing/budget allocation only; `syncBoundaryToFunds`/`calculateFundDrivenBoundary` are deleted (1.5.3).
+
+- `INV-COW-007` Boundary hold on guard-skipped refills
+  - When a slot on the plan's refill wire (`collectRefillSlotIds`: the plan's CREATE ids minus reserve-ladder edge ids) was guard-skipped at broadcast (`skippedUpdateSlotIds` ∪ `clampedUpdateSlotIds` ∪ `skippedCreateSlotIds`), `resolveRefillBoundaryHold` keeps the COMMITTED boundary instead of committing the plan's shifted one over the stranded rail hole; the grid still commits.
+  - Reserve-ladder CREATEs are excluded because reserves are static edge insurance whose fills never crawl — a skipped reserve must not pin geometry.
+  - The hold rides to the commit as `options.boundaryHeld`, which suppresses the pending-crawl clear.
+
+- `INV-COW-008` Owed fill crawls survive unapplied commits
+  - `order/strategy.ts` records a crawl per shift-eligible fill at intake (slot-level dedupe, capped at 500); `deriveTargetBoundary` folds still-owed `_pendingFillCrawls` into the next derivation, excluding the current batch's slots and reserve slots.
+  - `_commitWorkingGrid` clears them only when the plan's boundary was actually applied — a held boundary (`boundaryHeld`), a gate-rejected boundary, and a null boundary all leave them owed.
+  - `consumePendingFillCrawls` applies them onto a restored finite boundary; `applyPersistedPendingCrawls` is the shared startup/recovery wrapper used before sync/reconcile; `_clearPendingFillCrawls` drops them when the boundary is re-anchored (grid rebuild via `initializeGrid`, rejected snapshot via `rejectCorruptedGridSnapshot`, persisted snapshot wipe via `AccountOrders.clearGrid`).
+
 - `INV-PROJ-001` New projected orders remain virtual
   - Orders projected into empty slots must be `VIRTUAL` with no `orderId` until chain confirmation.
 
