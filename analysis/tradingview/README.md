@@ -201,7 +201,7 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 - The AMA controls start with the bot-specific AMA, then pair-specific entry from `profiles/market_profiles.json` when available, falling back to AMA3 values from `modules/constants.ts`.
 - The AMA `Reset` button restores the HTML defaults, not the browser-stored overrides.
 - The pair switcher inverts the candles client-side, so you can inspect both `A/B` and `B/A` views from one export.
-- Indicator, timeframe, and scale changes are persisted in browser `localStorage` for the generated HTML.
+- Indicator, timeframe, and scale changes are persisted in browser `localStorage` per pool/pair chart (`dexbot2-tradingview-uplot-v3:<pool>:<A>_<B>:<baseSecs|base>`); cursor sync between the price/volume panes uses a separate constant key.
 - The price axis defaults to log base `10`, with a toolbar switch for `Log` / `Linear`.
 - If you regenerate the HTML and then open it later, no CDN access is needed — `uPlot` is loaded from the vendored local copy at `analysis/uplot/`.
 

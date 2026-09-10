@@ -112,7 +112,7 @@ async function main() {
             return;
         }
 
-        const { source, botKey, amaConfig } = resolveSource({ ...config.source.config, type: config.source.type }, { quiet: config.quiet });
+        const { source, botKey, amaConfig, meta: sourceMeta } = resolveSource({ ...config.source.config, type: config.source.type }, { quiet: config.quiet });
         if (!config.quiet) console.log(`[TradingView] Loading candles from ${source.name}...`);
 
         const candles = await source.fetchCandles();
@@ -124,7 +124,9 @@ async function main() {
         const filePath = config.source.config.filePath;
         const rawJson = isJsonSource ? loadJsonMeta(filePath) : { meta: null, candles: null };
         const botMeta = botKey ? loadBotMeta(botKey) : null;
-        const jsonMeta = rawJson.meta || (botMeta ? {
+        // Prefer meta from the actual candle file (has pool + asset ids) over
+        // the bots.json fallback, which only knows the asset symbols.
+        const jsonMeta = rawJson.meta || sourceMeta || (botMeta ? {
             assetA: { symbol: botMeta.assetA },
             assetB: { symbol: botMeta.assetB },
             intervalSeconds: 3600,

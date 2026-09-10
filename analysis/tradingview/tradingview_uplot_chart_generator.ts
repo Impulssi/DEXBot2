@@ -88,6 +88,27 @@ function resolveAmaDefaults({ meta, data, marketProfiles }: any = {}) {
     };
 }
 
+const TRADINGVIEW_PREFS_KEY_PREFIX = 'dexbot2-tradingview-uplot-v3';
+const TRADINGVIEW_SYNC_KEY = 'dexbot2-tradingview-sync';
+
+function sanitizeStorageComponent(value: any, fallback: string) {
+    // Objects (e.g. a meta asset node missing both id and symbol) stringify to
+    // "[object Object]", which would collapse distinct assets onto one key.
+    if (value == null || typeof value === 'object') return fallback;
+    const raw = String(value).trim();
+    const cleaned = raw.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '');
+    return cleaned || fallback;
+}
+
+// Prefer asset ids over symbols: ids are immutable, symbols can be relabeled.
+function resolveChartStorageKey(meta: any = {}, baseIntervalSeconds: any = 0) {
+    const pool = sanitizeStorageComponent(meta?.pool ?? meta?.poolId, 'nipool');
+    const assetA = sanitizeStorageComponent(meta?.assetA?.id ?? meta?.assetA?.symbol ?? meta?.assetA, 'assetA');
+    const assetB = sanitizeStorageComponent(meta?.assetB?.id ?? meta?.assetB?.symbol ?? meta?.assetB, 'assetB');
+    const interval = Number(baseIntervalSeconds) > 0 ? Math.round(Number(baseIntervalSeconds)) : 0;
+    return `${TRADINGVIEW_PREFS_KEY_PREFIX}:${pool}:${assetA}_${assetB}:${interval || 'base'}`;
+}
+
 function generateHTML(data: any, title: any = 'TradingView Style Research') {
     const rawCandles = Array.isArray(data.candles) ? data.candles : [];
     const candles = rawCandles.map(normalizeCandle).filter(Boolean);
@@ -168,8 +189,13 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         ? `${Math.round(baseIntervalSeconds / 86400)}d`
         : `${Math.round(baseIntervalSeconds / 3600)}h`;
     const defaultPairMode = data.defaultPairMode === 'inverse' ? 'inverse' : 'normal';
+    const storageKey = typeof data.storageKey === 'string' && data.storageKey.length > 0
+        ? data.storageKey
+        : resolveChartStorageKey(meta, baseIntervalSeconds);
 
     const payload = {
+        storageKey,
+        syncKey: TRADINGVIEW_SYNC_KEY,
         candles,
         timeframes,
         defaultTimeframe: defaultTimeframe.label,
@@ -583,7 +609,12 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         const baseCloseValues = baseCandles.map((c) => c.close);
         const timeframes = Array.isArray(payload.timeframes) ? payload.timeframes.slice() : [];
         const timeframeMap = new Map(timeframes.map((item) => [item.label, item]));
-        const STORAGE_KEY = 'dexbot2-tradingview-uplot-v2';
+        const STORAGE_KEY = typeof payload.storageKey === 'string' && payload.storageKey.length > 0
+            ? payload.storageKey
+            : 'dexbot2-tradingview-uplot-v3:default';
+        const SYNC_KEY = typeof payload.syncKey === 'string' && payload.syncKey.length > 0
+            ? payload.syncKey
+            : 'dexbot2-tradingview-sync';
 
         const state = loadState();
         let currentTimeframe = state.timeframe || payload.defaultTimeframe || '1h';
@@ -1739,7 +1770,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 padding: [14, 8, 8, 8],
                 legend: { show: false },
                 select: { show: false },
-                cursor: { sync: { key: STORAGE_KEY, setSeries: false, scales: ['x', null] }, drag: { x: false, y: false, setScale: false }, focus: { prox: 20 } },
+                cursor: { sync: { key: SYNC_KEY, setSeries: false, scales: ['x', null] }, drag: { x: false, y: false, setScale: false }, focus: { prox: 20 } },
                 scales: {
                     x: { time: true },
                     y: {
@@ -1806,7 +1837,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 padding: [6, 8, 8, 8],
                 legend: { show: false },
                 select: { show: false },
-                cursor: { sync: { key: STORAGE_KEY, setSeries: false, scales: ['x', null] }, drag: { x: false, y: false, setScale: false }, focus: { prox: 20 } },
+                cursor: { sync: { key: SYNC_KEY, setSeries: false, scales: ['x', null] }, drag: { x: false, y: false, setScale: false }, focus: { prox: 20 } },
                 scales: {
                     x: { time: true },
                     y: {
@@ -2302,5 +2333,5 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
 </html>`;
 }
 
-export { generateHTML, normalizeCandle, loadMarketProfiles }
+export { generateHTML, normalizeCandle, loadMarketProfiles, resolveChartStorageKey, sanitizeStorageComponent, TRADINGVIEW_PREFS_KEY_PREFIX, TRADINGVIEW_SYNC_KEY }
 

@@ -6,6 +6,7 @@ import { MARKET_ADAPTER } from '../modules/constants.js';
 import { createSource } from './price_sources.js';
 import { resolveCandleFile, resolveAmaConfig, resolveAmaKey, loadBotSettings, computeBotKey } from './bot_key_utils.js';
 import { findLatestLpData } from '../market_adapter/utils/data_discovery.js';
+import { loadCandleFile } from './math_utils.js';
 
 const INTERVAL_LABEL = MARKET_ADAPTER.RUNTIME_DEFAULTS.intervalLabel;
 
@@ -21,6 +22,9 @@ interface SourceResolution {
     botKey?: string;
     amaConfig: { erPeriod: number; fastPeriod: number; slowPeriod: number; erSmoothPeriod: number };
     amaKey: string;
+    // Candle-file meta when the source is backed by a JSON file (pool id,
+    // asset ids/symbols, intervalSeconds); null for the centers-file fallback.
+    meta: any;
 }
 
 function listAvailableBots(): void {
@@ -53,6 +57,7 @@ function resolveSource(config: SourceConfig, options: { quiet?: boolean } = {}):
                 botKey: config.botKey,
                 amaConfig: resolveAmaConfig(config.botKey),
                 amaKey: resolveAmaKey(config.botKey),
+                meta: loadCandleFile(candleFile).meta,
             };
         }
 
@@ -64,6 +69,7 @@ function resolveSource(config: SourceConfig, options: { quiet?: boolean } = {}):
             botKey: config.botKey,
             amaConfig: resolveAmaConfig(config.botKey),
             amaKey: resolveAmaKey(config.botKey),
+            meta: null,
         };
     }
 
@@ -79,10 +85,11 @@ function resolveSource(config: SourceConfig, options: { quiet?: boolean } = {}):
             }
         }
         const source = createSource('json', { filePath: filePath! });
+        const meta = loadCandleFile(filePath).meta;
         if (config.botKey) {
-            return { source, botKey: config.botKey, amaConfig: resolveAmaConfig(config.botKey), amaKey: resolveAmaKey(config.botKey) };
+            return { source, botKey: config.botKey, amaConfig: resolveAmaConfig(config.botKey), amaKey: resolveAmaKey(config.botKey), meta };
         }
-        return { source, amaConfig: resolveAmaConfig(''), amaKey: 'AMA3' };
+        return { source, amaConfig: resolveAmaConfig(''), amaKey: 'AMA3', meta };
     }
 
     throw new Error(`[Source] Unknown source type: ${config.type}. Use 'market_adapter' or 'json'.`);
