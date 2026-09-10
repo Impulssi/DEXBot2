@@ -2840,7 +2840,7 @@ async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
     // the frozen rail): they can never be adopted and collide with nothing,
     // so they must not block CREATES — otherwise one dip-protection hold
     // freezes the whole grid. Only adoptable/cancellable orphans block.
-    const blockingUnmatched = unmatchedChainOrders.filter((u: any) => u?.reason !== 'out-of-grid-deferred');
+    const blockingUnmatched = unmatchedChainOrders.filter((u: any) => !orderUtils.isNonBlockingUnmatchedOrder(u));
     const pendingBroadcasts: any[] = getPendingBroadcasts(bot);
     if (hasCreateActions && (blockingUnmatched.length > 0 || pendingBroadcasts.length > 0)) {
         if (pendingBroadcasts.length > 0) {

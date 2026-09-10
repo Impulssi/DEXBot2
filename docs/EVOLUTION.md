@@ -114,7 +114,7 @@ Compact, era-level view; per-release commit detail lives in [CHANGELOG.md](../CH
 | v1.5.1 → v1.5.2 | 10 | Sync rejection handling across pass-1/pass-2 adoption, crossing-guard candidate sharing, empty-read confirmation, broadcast-price CREATE validation, stamped gap-evacuation re-proof, credit whole-account display + expiry, offline export fill-block derivation |
 | v1.5.2 → v1.5.3 | 6 | Boundary ownership hardening (fund-driven sync removal, guard-skipped refill hold), COW broadcast/reconcile dedup, TradingView bot-grid range highlight, createOrder unknown-id materialize-or-error, curve-comparison docs |
 | v1.5.3 → v1.5.4 | 3 | Out-of-grid orphan deferral (no adopt/no cancel holds), hold-unblocked creates/refills/recovery, range-band color convention fix |
-| v1.5.4 → Unreleased | 3 | Per-side reserve ladder (edge-pinned dip/spike insurance), range-band grid parity on grid-less charts, orange range zone widened to 1.40x |
+| v1.5.4 → Unreleased | 12 | Per-side reserve ladder (edge-pinned dip/spike insurance) anchored at resolved bounds + live-grid rail edges with single-source ordering and exact-size activation, owed-crawl persistence across refused broadcasts/restarts + hold-aware reload-safe lifecycle, fill-anchored boundary recovery + poisoned persisted-boundary erase, startup rail gate + static-center crawl fold, all `*-deferred` holds non-blocking + hold metrics surfaced, opt-in MPA price-feed charts + range-aware shared candle cache, range-band span parity on grid-less charts, orange range zone widened to 1.40x, docs reserve-ladder sweep |
 
 ---
 

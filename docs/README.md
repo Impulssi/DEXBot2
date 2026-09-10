@@ -100,7 +100,6 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Module Responsibilities**: Detailed breakdown of the **Manager**, **Accountant**, **Strategy**, **Grid**, **FillRuntime**, and **MaintenanceRuntime** modules.
 - **Copy-on-Write Pattern**: Safe concurrent rebalancing with isolated working grids (see [COPY_ON_WRITE_MASTER_PLAN.md](COPY_ON_WRITE_MASTER_PLAN.md))
 - **Fill Processing Pipeline**: Fixed-cap batch fill processing (1-4 fills per broadcast; documented Feb 7 29-fill scenario: ~24s)
-- **Fund-Driven Boundary Sync**: Automatic grid alignment with inventory distribution
 - **Spread Correction**: Conservative, fund-aware maintenance of constant spread width
 - **Periodic Market Price Refresh**: Background 4-hour price updates
 - **Pipeline Safety & Diagnostics**: 5-minute timeout safeguard and health monitoring
@@ -130,7 +129,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Signal Concepts**: Dynamic weights, regime detection, derivative signals, and market adapter integration
 - **Debt Policy**: Native MPA and credit offer configuration and runtime rules
 - **Common Tasks**: Practical "how-to" guides for adding features or fixing bugs.
-- **Glossary**: Definitions of project-specific terminology (e.g., "Virtual Orders", "Rotation", "Pipeline Safety", "Fund-Driven Boundary", "WorkingGrid", "COW Commit", "Dynamic Weight", "Regime Detection").
+- **Glossary**: Definitions of project-specific terminology (e.g., "Virtual Orders", "Rotation", "Pipeline Safety", "WorkingGrid", "COW Commit", "Dynamic Weight", "Regime Detection").
 
 ### 🔄 [Workflow](WORKFLOW.md)
 *How we build and release.*

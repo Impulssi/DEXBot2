@@ -1262,6 +1262,27 @@ function formatUnmatchedChainOrder(order: any) {
 }
 
 /**
+ * Whether an unmatched chain-order entry is a deliberate hold that must NOT
+ * block CREATEs or snapshot recovery.
+ *
+ * Deferred entries (`reason` suffixed `-deferred`) are permanently
+ * non-adoptable and non-cancellable: an out-of-grid hold sits outside the
+ * frozen rail, and a boundary-unknown hold is re-evaluated once the boundary
+ * commits. Treating one as a blocker freezes the whole grid (a single
+ * dip-protection hold would stop every CREATE) and forces a full reset on
+ * recovery. Classification is by the shared `-deferred` suffix, not an exact
+ * reason string, so a new defer reason cannot silently regress into a
+ * permanent blocker.
+ *
+ * @param {Object} order - Unmatched chain order entry.
+ * @returns {boolean} True when the entry is a non-blocking deferred hold.
+ */
+function isNonBlockingUnmatchedOrder(order: any): boolean {
+    const reason = order?.reason;
+    return typeof reason === 'string' && reason.endsWith('-deferred');
+}
+
+/**
  * Check if order is on blockchain (ACTIVE or PARTIAL state).
  * 
  * @param {Object} order - Order to check
@@ -1857,6 +1878,31 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
         if (referencePrice === null) {
             const genesis = Number((config as any)?.genesisStartPrice);
             if (Number.isFinite(genesis)) referencePrice = genesis;
+        }
+        // Stale-center guard: a Tier-2 numeric config center or a Tier-3
+        // genesis center that falls outside the live rail would clamp
+        // calculateIdealBoundary onto an edge slot — the same rail-edge
+        // fabrication the mode-string fix prevents, just from a stale numeric
+        // value. Drop such a reference so the bounded Tier-4 rail center is
+        // used instead. Tier-1 fill anchors are exempt: a real (possibly
+        // out-of-grid) fill price is live market position and wins everywhere.
+        if (!anchoredFromFills && referencePrice !== null && Array.isArray(allSlots) && allSlots.length > 0) {
+            let railMin = Infinity;
+            let railMax = -Infinity;
+            for (const s of allSlots) {
+                const p = Number(s?.price);
+                if (!Number.isFinite(p)) continue;
+                if (p < railMin) railMin = p;
+                if (p > railMax) railMax = p;
+            }
+            if ((Number.isFinite(railMin) && referencePrice < railMin)
+                || (Number.isFinite(railMax) && referencePrice > railMax)) {
+                orderLogger.debug(
+                    `deriveTargetBoundary: recovery center ${referencePrice} outside live rail ` +
+                    `[${railMin}, ${railMax}]; using bounded rail center instead of pinning an edge`
+                );
+                referencePrice = null;
+            }
         }
         // Tier 4 — rail center: bounded and wrong by at most half the rail,
         // never a rail-edge fabrication. The next fill batch re-anchors
@@ -2640,6 +2686,6 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
     return { masterIds: [...masterIds], createIds: [...createIds], all: [...all] };
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, deriveTargetBoundary, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds, reserveEdgeIdSet }
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isNonBlockingUnmatchedOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, deriveTargetBoundary, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds, reserveEdgeIdSet }
 export { resolveReserveEdgeAnchorPrice, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge, collectRefillSlotIds };
 

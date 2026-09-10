@@ -49,7 +49,9 @@ import {
     isExplicitZeroAllocation,
     floatToBlockchainInt,
     validateBoundaryCommit,
-    resolveGapSlots
+    resolveGapSlots,
+    resolveGapBand,
+    isSlotInRail
 } from './utils/math.js';
 import {
     validateOrder,
@@ -1636,11 +1638,22 @@ class OrderManager {
         const minSellSizeInt = floatToBlockchainInt(minSellSize, sellPrecision);
         const minBuySizeInt = floatToBlockchainInt(minBuySize, buyPrecision);
 
+        // Rail membership by geometry (shared isSlotInRail), mirroring the
+        // reconcile pickers (_pickVirtualSlotsToActivate / _pickEdgeReserveSlots).
+        // A freshly generated grid's roles never need this, but the gate keeps
+        // the startup placement path and the runtime activation path from
+        // diverging: a slot whose stored type is stale relative to the current
+        // boundary must not be placed on the wrong rail.
+        const resolved = resolveGapBand(this);
+        const inRailFor = (type: any, o: any): boolean =>
+            isSlotInRail(resolved.boundaryIdx, resolved.gapSlots, type, o);
+
         // Get closest virtual sells (lowest prices first = closest to market),
         // selecting up to sellCount orders that pass the minimum-size filter.
         // Scan the full sorted rail instead of slicing first so sub-min slots
         // don't consume activation budget (mirrors _pickVirtualSlotsToActivate).
         const sellsClosestFirst = this.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.VIRTUAL)
+            .filter((o: any) => inRailFor(ORDER_TYPES.SELL, o))
             .sort((a: any, b: any) => a.price - b.price);
         const validSells: any[] = [];
         for (const o of sellsClosestFirst) {
@@ -1655,6 +1668,7 @@ class OrderManager {
         // Get closest virtual buys (highest prices first = closest to market),
         // selecting up to buyCount orders that pass the minimum-size filter.
         const buysClosestFirst = this.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.VIRTUAL)
+            .filter((o: any) => inRailFor(ORDER_TYPES.BUY, o))
             .sort((a: any, b: any) => b.price - a.price);
         const validBuys: any[] = [];
         for (const o of buysClosestFirst) {
@@ -1677,6 +1691,7 @@ class OrderManager {
             const edgeAnchor = resolveLiveReserveEdgeAnchorPrice(this, ascending ? 'buy' : 'sell');
             const edge = ascending ? 'floor' : 'ceiling';
             const edgeFirst = this.getOrdersByTypeAndState(orderType, ORDER_STATES.VIRTUAL)
+                .filter((o: any) => inRailFor(orderType, o))
                 .sort((a: any, b: any) => compareReserveEdge(a, b, edge, edgeAnchor));
             for (const o of edgeFirst) {
                 if (picked.length >= count) break;

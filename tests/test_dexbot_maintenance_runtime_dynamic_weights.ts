@@ -55,6 +55,7 @@ const NAMES = {
         'getSideBudget', 'hasOnChainId', 'isCrossingCheckCandidate', 'isEmptyGridSlot',
         'isOrderGoneErrorMessage', 'isOrderHealthy', 'isOrderOnChain',
         'isOrderPlaced', 'isOrderVirtual', 'isPhantomOrder', 'isShiftEligibleFill',
+        'isNonBlockingUnmatchedOrder',
         'isSlotAvailable', 'parseChainOrder', 'parseSlotIndex', 'reserveEdgeIdSet',
         'resolveConfiguredPriceBound', 'resolveLiveReserveEdgeAnchorPrice',
         'resolveOnChainRetypeType', 'resolveReserveCount',

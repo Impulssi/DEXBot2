@@ -164,7 +164,9 @@ import {
     calculateIdealBoundary,
     assignGridRoles,
     resolveOnChainRetypeType,
-    resolveReserveCount
+    resolveReserveCount,
+    reserveEdgeIdSet,
+    resolveLiveReserveEdgeAnchorPrice
 } from './utils/order.js';
 import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry } from './utils/system.js';
 import * as MathUtils from './utils/math.js';
@@ -1253,6 +1255,65 @@ export async function initializeGrid(manager: any): Promise<void> {
                 'info'
             );
             resolvedMinP = guard.minPrice;
+        }
+
+        // P4 / unanchored rebuild anchor: when the new generation is centered
+        // on a static config value (not a live market source), owed fill
+        // crawls carry the only fresh market direction — fold their net
+        // direction into the rebuild center before the ladder is generated.
+        // A live center already contains the movement, so its owed crawls are
+        // dropped as a stale generation (see the clear below).
+        const owedCrawls = Array.isArray((manager as any)._pendingFillCrawls)
+            ? (manager as any)._pendingFillCrawls
+            : [];
+        // Whether the ladder CENTER already reflects current market movement.
+        // gpSource describes the gridPrice/bounds reference, NOT the center:
+        // the center is gridStartPrice, built from mp (config.startPrice).
+        // Only a derived startPrice (a non-numeric mode like "pool"/"book"
+        // resolved to a fresh number above) or an AMA-driven center is live:
+        // with gpSource === "ama" the center itself is still mp * (1 +
+        // offset), but the offset comes from the live AMA snapshot, so the
+        // center moves with the market. A numeric startPrice with a live
+        // gridPrice still has a static center — a live gridPrice (bounds
+        // reference only) does not make that static center fresh.
+        const startPriceWasDerived = typeof mpRaw !== 'number' || Number.isNaN(Number(mpRaw));
+        const centerIsLive = startPriceWasDerived || gpSource === 'ama';
+        if (owedCrawls.length > 0 && !centerIsLive) {
+            // Reserve fills never crawl (static insurance). Classify them
+            // against the OLD generation (manager.orders is replaced below)
+            // with the same live anchors the runtime derivation uses, so the
+            // fold can never be driven by a reserve fill.
+            const oldSlots = Array.from(manager.orders?.values?.() ?? []) as any[];
+            const edgeAnchors = {
+                buy: resolveLiveReserveEdgeAnchorPrice(manager, 'buy'),
+                sell: resolveLiveReserveEdgeAnchorPrice(manager, 'sell')
+            };
+            const reserveBuyIds = reserveEdgeIdSet(oldSlots, manager.config, ORDER_TYPES.BUY, edgeAnchors.buy);
+            const reserveSellIds = reserveEdgeIdSet(oldSlots, manager.config, ORDER_TYPES.SELL, edgeAnchors.sell);
+            let netShift = 0;
+            for (const e of owedCrawls) {
+                if (e?.side === ORDER_TYPES.BUY && reserveBuyIds?.has(e.slotId)) continue;
+                if (e?.side === ORDER_TYPES.SELL && reserveSellIds?.has(e.slotId)) continue;
+                if (e?.side === ORDER_TYPES.SELL) netShift++;
+                else if (e?.side === ORDER_TYPES.BUY) netShift--;
+            }
+            const stepPct = Number(manager.config?.incrementPercent);
+            if (netShift !== 0 && Number.isFinite(stepPct) && stepPct > 0) {
+                // One crawl moves the boundary one slot; the geometric ladder
+                // step is incrementPercent, so shift the center by netShift steps.
+                const folded = gridStartPrice * Math.pow(1 + stepPct / 100, netShift);
+                // Re-clamp to the post-guard resolved bounds so a fold cannot
+                // push the center outside the rail it is about to generate.
+                const clampMin = Number.isFinite(Number(resolvedMinP)) ? Number(resolvedMinP) : rMinP;
+                const clampMax = Number.isFinite(Number(resolvedMaxP)) ? Number(resolvedMaxP) : rMaxP;
+                gridStartPrice = Math.max(clampMin, Math.min(clampMax, folded));
+                manager.config.startPrice = gridStartPrice;
+                manager.logger?.log?.(
+                    `[BOUNDARY] Folded ${owedCrawls.length} owed fill crawl(s) (net ${netShift}) into ` +
+                    `static grid center -> ${gridStartPrice.toFixed(8)}`,
+                    'info'
+                );
+            }
         }
 
         manager.config.minPrice = resolvedMinP;

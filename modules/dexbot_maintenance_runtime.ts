@@ -61,6 +61,7 @@ function scheduleFillConsumerRestartFn(...args: any) { return require('./dexbot_
 function reconcileGridOrders(...args: any) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
 function resolveReserveCount(...args: any) { return require('./order/utils/order').resolveReserveCount(...args); }
 function formatUnmatchedChainOrder(...args: any) { return require('./order/utils/order').formatUnmatchedChainOrder(...args); }
+function isNonBlockingUnmatchedOrder(...args: any) { return require('./order/utils/order').isNonBlockingUnmatchedOrder(...args); }
 function getSideBudget(...args: any) { return require('./order/utils/order').getSideBudget(...args); }
 function getActiveOrdersTotal(config: any) { return require('./order/utils/order').getActiveOrdersTotal(config); }
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
@@ -1087,6 +1088,29 @@ async function performPeriodicGridChecks(bot: any) {
     } else {
         await runGridMaintenance(bot, 'periodic');
     }
+    logDeferredHoldSummary(bot);
+}
+
+/**
+ * Summarize deliberate deferred holds once per count change. The per-order
+ * sync logs report each hold when it first appears; this surfaces the running
+ * total (funds stay locked until an operator clears them) without re-logging
+ * the same count every tick.
+ *
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ */
+function logDeferredHoldSummary(bot: any) {
+    const unmatched = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
+        ? bot.manager._lastUnmatchedChainOrders
+        : [];
+    const held = unmatched.filter((u: any) => isNonBlockingUnmatchedOrder(u)).length;
+    if (held === 0) {
+        bot._lastHeldChainOrderCount = 0;
+        return;
+    }
+    if (held === bot._lastHeldChainOrderCount) return;
+    bot._lastHeldChainOrderCount = held;
+    bot._log?.(`[HOLD] ${held} deferred chain order(s) held outside the active pipeline (funds stay locked until cleared)`, 'warn');
 }
 
 /**
@@ -2456,6 +2480,14 @@ function markGridActivity(bot: any, reason: any = 'activity') {
  */
 function getMetrics(bot: any) {
     bot.manager?._cleanExpiredLocks?.();
+    const unmatched = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
+        ? bot.manager._lastUnmatchedChainOrders
+        : [];
+    // Deliberate holds (reason suffixed `-deferred`) never block the pipeline,
+    // but they DO lock funds until an operator clears them. Surface the split
+    // so the permanent holds are visible in status/metrics instead of only in
+    // per-order sync logs.
+    const heldUnmatched = unmatched.filter((u: any) => isNonBlockingUnmatchedOrder(u));
     return {
         ...bot._metrics,
         queueDepth: bot._incomingFillQueue.length,
@@ -2463,7 +2495,10 @@ function getMetrics(bot: any) {
         divergenceLockActive: bot.manager?._divergenceLock?.isLocked() || false,
         shadowLocksActive: bot.manager?.shadowOrderIds?.size || 0,
         recoveryExhaustedAt: bot.manager?._recoveryExhaustedAt || null,
-        recentFillsTracked: bot._recentlyProcessedFills.size
+        recentFillsTracked: bot._recentlyProcessedFills.size,
+        unmatchedChainOrders: unmatched.length,
+        heldChainOrders: heldUnmatched.length,
+        blockingChainOrders: unmatched.length - heldUnmatched.length
     };
 }
 
