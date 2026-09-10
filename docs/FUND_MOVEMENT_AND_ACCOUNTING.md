@@ -144,23 +144,35 @@ FILL_PROCESSING: {
 
 **Residual Dust Cancellation** (post-1.4.12): After a sub-dust fill leaves a residual order on chain (e.g. the quote-side value truncates to 0 on `bitshares-core` `maybe_cull_small_order`), the fill runtime explicitly cancels those residuals via `cancelResidualOrders()` (`dexbot_fill_runtime.ts:74`, `[RESIDUAL]` tag) so a leftover of ≥1 base unit cannot be re-adopted into a grid slot by maintenance.
 
-#### Grid Regeneration Trigger (Available Funds Ratio)
+#### Grid Regeneration Trigger (Available Funds Ratio — bidirectional)
 
-The grid regenerates when accumulated proceeds create a significant funding imbalance. This is detected using the **Available Funds Ratio**:
+The grid regenerates when accumulated proceeds create a significant funding imbalance — in either direction. This is detected using the **Available Funds Ratio** (grow leg) plus an over-allocation leg (shrink leg), all sharing `GRID_REGENERATION_PERCENTAGE` (default: 3%):
 
 ```
-ratio = (availableFunds / allocatedCapital) * 100
+GROW:   ratio = (availableFunds / allocatedCapital) * 100
+        IF ratio >= GRID_REGENERATION_PERCENTAGE (default: 3%):
+            → Trigger grid regeneration (deploy proceeds)
 
-IF ratio >= GRID_REGENERATION_PERCENTAGE (default: 3%):
-    → Trigger grid regeneration
+SHRINK: overAlloc = (gridTracked - allocatedCapital) / allocatedCapital * 100
+        (`gridTracked` = funds.total.grid: ACTIVE + PARTIAL + VIRTUAL planned size)
+        IF overAlloc >= threshold:
+            → Trigger grid regeneration (resize affected orders down)
 ```
 
-**How It Works**:
+Deliberately no per-side chain-total-drop leg: a normal fill moves value across sides (pays one asset, receives the other — see `recordFillBalances`), so one side's total routinely drops ≥3% on ordinary fills, and the fill pipeline already re-sizes from the post-fill budget.
+
+**How It Works (grow)**:
 1. Fill occurs → proceeds added to `chainFree`
 2. `calculateAvailableFundsValue()` computes true spending power (chainFree minus reservations)
 3. Grid divergence check compares this ratio against allocated capital in active orders
 4. If ratio exceeds 3%, the grid has accumulated enough proceeds to warrant redeployment
 5. Grid regeneration recalculates all order sizes and applies new placements
+
+**How It Works (shrink)**:
+1. External removal (manual transfer/withdrawal) → `chainTotal` drops → `funds.allocated` (chainTotal × `botFunds`%) drops while the grid-tracked size stays put
+2. Divergence check flags the side when grid-tracked size exceeds the allocation by ≥ 3% (slow bleeds accumulate across ticks: the grid stays fixed while the allocation sinks)
+3. The same regeneration path runs: `_recalculateGridOrderSizesFromBlockchain` recomputes geometric ideals on the smaller budget and queues `UPDATE` actions shrinking affected on-chain orders (`delta < 0` releases the difference back to free balance on chain)
+4. Under-deployed grids (grid-tracked size still within the shrunken allocation) correctly do NOT trigger — their orders remain fully funded
 
 #### Recovery Retry System
 

@@ -26,7 +26,7 @@ rebuild around that snapshot.
 | **AMA Center Move** | Market adapter | Current AMA center moves past the configured delta threshold | Write `dynamicgrid.json`, then write a trigger file | Full grid resync around the new accepted AMA center |
 | **AMA Slope Range Move** | Market adapter | Range-scaling bot's accepted AMA-slope baseline moves past threshold | Write range-scaling fields to `dynamicgrid.json`, then write a trigger file | Full grid resync with updated asymmetric range/offset data |
 | **RMS Structural Divergence** | Bot runtime maintenance | Current grid shape diverges from persisted/on-chain grid by RMS threshold | Refresh `gridCenterPrice` from latest `amaCenterPrice`, then run full grid resync | Full grid resync from latest market-adapter snapshot |
-| **Available-Funds Resize** | Bot runtime maintenance | Filled-order proceeds exceed `GRID_REGENERATION_PERCENTAGE` | Recalculate affected side/order sizes through maintenance logic | Order-size/grid maintenance update, not an AMA recenter trigger |
+| **Available-Funds Resize** | Bot runtime maintenance | Filled-order proceeds exceed `GRID_REGENERATION_PERCENTAGE` (grow), or grid-tracked size exceeds allocation by that threshold after fund removal (shrink) | Recalculate affected side/order sizes through maintenance logic | Order-size/grid maintenance update, not an AMA recenter trigger |
 
 Each source is evaluated independently. Market-adapter full-resync requests are
 serialized through `profiles/recalculate.<botKey>.trigger`. Runtime maintenance
@@ -433,11 +433,9 @@ GRID_LIMITS: {
 ```
 
 **Parameters:**
-- `GRID_REGENERATION_PERCENTAGE`: Percentage of allocated capital that can accumulate as free funds before triggering a size recalculation
-  - Default: `3%`
-  - Example: 20 orders × 100 BTS = 2000 BTS grid
-    - Triggers when availableFunds ≥ 60 BTS (3% of 2000)
-    - Allows ~3 fill-proceeds to accumulate before resize
+- `GRID_REGENERATION_PERCENTAGE`: Bidirectional threshold for size recalculation (default: `3%`)
+  - Grow: free funds accumulate to ≥3% of allocated capital (e.g. availableFunds ≥ 60 BTS on a 2000 BTS grid)
+  - Shrink: grid-tracked size (ACTIVE + PARTIAL + VIRTUAL) exceeds allocation by ≥3% (external fund removal resizes affected orders down; per-side chain totals are not used — fills move value across sides)
 
 ### How It Works
 
@@ -448,6 +446,7 @@ GRID_LIMITS: {
    - Recalculates order sizes to incorporate freed capital
    - Maintains asymmetric fills (BUY fills don't trigger SELL resize)
 4. After the resize, available funds are re-allocated into active orders
+5. Mirror (shrink): when `(gridTracked - allocated) / allocated × 100 >= threshold` (external fund removal), the same path resizes affected orders down
 
 ### When to Adjust
 

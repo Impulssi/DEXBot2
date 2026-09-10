@@ -499,7 +499,16 @@ let GRID_LIMITS = {
     ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER: 4,
 
     // GRID_REGENERATION_PERCENTAGE: Trigger threshold for automatic grid size recalculation.
-    // Formula: IF (availableFunds / allocatedCapital) × 100 ≥ threshold → regenerate
+    // Works in BOTH directions (bidirectional), sharing one threshold:
+    //   GROW: IF (availableFunds / allocatedCapital) x 100 >= threshold -> regenerate
+    //     After fills, free balance rises relative to allocated grid capital.
+    //   SHRINK: IF (gridTracked - allocatedCapital) / allocatedCapital x 100 >= threshold
+    //     -> regenerate. After external fund removal the grid-tracked size
+    //     (ACTIVE + PARTIAL + VIRTUAL) stays put while the allocation sinks, so
+    //     affected orders are resized down (limit_order_update to a smaller size,
+    //     which releases funds back on chain). Deliberately NOT based on per-side
+    //     chain-total drops: a normal fill moves value across sides (pays one
+    //     asset, receives the other), so fill handling owns that resize.
     // Rationale: After fills, free balance rises relative to allocated grid capital.
     //   - 3% = regen triggered when available funds represent ≥3% of side allocation
     //   - This allows gradual accumulation while preventing lag during high-fill periods

@@ -1590,11 +1590,17 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
      * @returns {any}
      */
 export function checkAndUpdateGridIfNeeded(manager: any): any {
-        const threshold = manager.config?.gridLimits?.GRID_REGENERATION_PERCENTAGE;
+        const rawThreshold = manager.config?.gridLimits?.GRID_REGENERATION_PERCENTAGE;
+        // NOTE: a configured 0 (or non-numeric) falls back to the global default
+        // instead of disabling. 0 never worked as "disable" (ratio >= 0 is always
+        // true, i.e. constant regen), so no working configuration is broken by this.
+        const threshold = (Number.isFinite(Number(rawThreshold)) && Number(rawThreshold) > 0)
+            ? Number(rawThreshold)
+            : GRID_LIMITS.GRID_REGENERATION_PERCENTAGE;
         const chainSnap = manager.getChainFundsSnapshot();
         const gridBuy = Number(manager.funds?.total?.grid?.buy || 0);
         const gridSell = Number(manager.funds?.total?.grid?.sell || 0);
-        const result = { buyUpdated: false, sellUpdated: false };
+        const result = { buyUpdated: false, sellUpdated: false, buyShrink: false, sellShrink: false };
 
         const sides = [
             { name: 'buy', grid: gridBuy, orderType: ORDER_TYPES.BUY },
@@ -1627,16 +1633,40 @@ export function checkAndUpdateGridIfNeeded(manager: any): any {
             const denominator = (allocated > 0) ? allocated : (s.grid + availableFunds);
             const ratio = (denominator > 0) ? (availableFunds / denominator) * 100 : 0;
 
+            // DOWNSIDE: grid-tracked size exceeds the (botFunds-capped) allocation,
+            // so the side must shrink toward the new budget via the same resize path.
+            // s.grid is funds.total.grid (ACTIVE + PARTIAL + VIRTUAL — planned size,
+            // not just on-chain committed). Deliberately NOT based on per-side
+            // chain-total drops: a normal fill moves value across sides (pays one
+            // asset, receives the other), so one side's total routinely drops >=3%
+            // on ordinary fills — and the fill pipeline already re-sizes from the
+            // post-fill budget. External removal is caught here because the
+            // committed/planned grid stays put while the allocation sinks.
+            // NOTE: with an explicit 0 allocation the shared fallback denominator
+            // yields overAlloc ≈ +100%, i.e. a 0%-funded side holding size always
+            // triggers — which is the desired unwind (zero budget sizes everything
+            // to 0 and the correction pass cancels the surplus; self-clearing).
+            const overAlloc = (denominator > 0) ? ((s.grid - allocated) / denominator) * 100 : 0;
+
+            const growTrigger = ratio >= threshold;
+            const shrinkTrigger = overAlloc >= threshold;
+
             manager.logger?.log?.(
-                `[DIVERGENCE] ${s.name.toUpperCase()} ratio check: availableFunds=${availableFunds.toFixed(5)}, allocated=${allocated.toFixed(5)}, ratio=${ratio.toFixed(4)}% (threshold=${threshold}%) → ${ratio >= threshold ? 'TRIGGER' : 'no trigger'}`,
+                `[DIVERGENCE] ${s.name.toUpperCase()} ratio check: availableFunds=${availableFunds.toFixed(5)}, allocated=${allocated.toFixed(5)}, ratio=${ratio.toFixed(4)}% (threshold=${threshold}%) → ${growTrigger ? 'TRIGGER-GROW' : 'no trigger'} | overAlloc=${overAlloc.toFixed(4)}% → ${shrinkTrigger ? 'TRIGGER-SHRINK' : 'no trigger'}`,
                 'debug'
             );
 
-            if (ratio >= threshold) {
+            if (growTrigger || shrinkTrigger) {
                 // RC-3: Use Set for automatic duplicate prevention
                 if (!(manager._gridSidesUpdated instanceof Set)) manager._gridSidesUpdated = new Set();
                 manager._gridSidesUpdated.add(s.orderType);
-                if (s.name === 'buy') result.buyUpdated = true; else result.sellUpdated = true;
+                if (s.name === 'buy') {
+                    result.buyUpdated = true;
+                    if (shrinkTrigger) result.buyShrink = true;
+                } else {
+                    result.sellUpdated = true;
+                    if (shrinkTrigger) result.sellShrink = true;
+                }
             }
         }
         return result;
@@ -2101,8 +2131,8 @@ export async function monitorDivergence(manager: any, calculatedGrid: any, persi
             const { getOrderTypeFromUpdatedFlags } = require('./utils/order');
             return {
                 needsUpdate: true,
-                buy: { updated: ratioResult.buyUpdated, ratio: ratioResult.buyUpdated, rms: false, metric: 0 },
-                sell: { updated: ratioResult.sellUpdated, ratio: ratioResult.sellUpdated, rms: false, metric: 0 },
+                buy: { updated: ratioResult.buyUpdated, ratio: ratioResult.buyUpdated, rms: false, metric: 0, shrink: ratioResult.buyShrink === true },
+                sell: { updated: ratioResult.sellUpdated, ratio: ratioResult.sellUpdated, rms: false, metric: 0, shrink: ratioResult.sellShrink === true },
                 orderType: getOrderTypeFromUpdatedFlags(ratioResult.buyUpdated, ratioResult.sellUpdated)
             };
         }
@@ -2117,8 +2147,8 @@ export async function monitorDivergence(manager: any, calculatedGrid: any, persi
         
         return {
             needsUpdate: buyUpdated || sellUpdated,
-            buy: { updated: buyUpdated, ratio: ratioResult.buyUpdated, rms: rmsResult.buy.updated, metric: rmsResult.buy.metric },
-            sell: { updated: sellUpdated, ratio: ratioResult.sellUpdated, rms: rmsResult.sell.updated, metric: rmsResult.sell.metric },
+            buy: { updated: buyUpdated, ratio: ratioResult.buyUpdated, rms: rmsResult.buy.updated, metric: rmsResult.buy.metric, shrink: ratioResult.buyShrink === true },
+            sell: { updated: sellUpdated, ratio: ratioResult.sellUpdated, rms: rmsResult.sell.updated, metric: rmsResult.sell.metric, shrink: ratioResult.sellShrink === true },
             orderType: getOrderTypeFromUpdatedFlags(buyUpdated, sellUpdated)
         };
     }

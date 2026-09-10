@@ -10,7 +10,7 @@ const assert = require('assert');
 const { PATHS } = require('../modules/paths');;
 const fs = require('fs');
 const path = require('path');
-const { calculateGapSlots, _getSizingContext, createOrderGrid, initializeGrid, checkAndUpdateGridIfNeeded, hasAnyDust } = require('../modules/order/grid');
+const { calculateGapSlots, _getSizingContext, createOrderGrid, initializeGrid, checkAndUpdateGridIfNeeded, monitorDivergence, hasAnyDust } = require('../modules/order/grid');
 const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, GRID_LIMITS, BUILD_DIR } = require('../modules/constants');
 const { OrderManager } = require('../modules/order/manager');
 const { allocateFundsByWeights, getSingleDustThreshold, calculateOrderCreationFees } = require('../modules/order/utils/math');
@@ -312,6 +312,78 @@ async function runTests() {
         mockManager.accountTotals.buyFree = 2;
         const below = checkAndUpdateGridIfNeeded(mockManager);
         assert.strictEqual(below.buyUpdated, false, 'Available funds below threshold (<2%) should not trigger update');
+    }
+
+    console.log(' - Testing fund-removal (shrink) trigger is bidirectional...');
+    {
+        const shrinkManager = {
+            config: {
+                assetA: 'USD',
+                assetB: 'EUR',
+                activeOrders: { buy: 10, sell: 10 },
+                gridLimits: { GRID_REGENERATION_PERCENTAGE: 3 }
+            },
+            funds: {
+                total: { grid: { buy: 100, sell: 100 } },
+                virtual: { buy: 0, sell: 0 },
+                btsFeesOwed: 0
+            },
+            accountTotals: { buyFree: 0, sellFree: 0 },
+            _gridSidesUpdated: new Set(),
+            getChainFundsSnapshot() {
+                return {
+                    allocatedBuy: this._allocB,
+                    allocatedSell: this._allocS,
+                    chainTotalBuy: this._allocB,
+                    chainTotalSell: this._allocS
+                };
+            },
+            _allocB: 100,
+            _allocS: 100
+        };
+
+        // Baseline tick at full funding: no trigger either direction.
+        const normal = checkAndUpdateGridIfNeeded(shrinkManager);
+        assert.strictEqual(normal.buyUpdated, false, 'Fully-funded grid must not trigger');
+        assert.strictEqual(normal.sellUpdated, false, 'Fully-funded grid must not trigger');
+
+        // 10% withdrawal: grid-tracked size exceeds allocation -> shrink trigger both sides.
+        shrinkManager._allocB = 90;
+        shrinkManager._allocS = 90;
+        const withdrawn = checkAndUpdateGridIfNeeded(shrinkManager);
+        assert.strictEqual(withdrawn.buyUpdated, true, '10% fund removal should trigger buy-side shrink');
+        assert.strictEqual(withdrawn.sellUpdated, true, '10% fund removal should trigger sell-side shrink');
+        assert.strictEqual(withdrawn.buyShrink, true, 'Withdrawal trigger must be flagged as shrink');
+        assert.strictEqual(withdrawn.sellShrink, true, 'Sell-side withdrawal must also flag shrink');
+        assert.ok(shrinkManager._gridSidesUpdated.has('buy'), 'Buy side must be flagged for resize');
+        assert.ok(shrinkManager._gridSidesUpdated.has('sell'), 'Sell side must be flagged for resize');
+
+        // Shrink flags must survive monitorDivergence for the operator log.
+        shrinkManager._gridSidesUpdated = new Set();
+        const diverged = await monitorDivergence(shrinkManager, [], []);
+        assert.strictEqual(diverged.needsUpdate, true, 'Shrink must request a divergence update');
+        assert.strictEqual(diverged.buy.shrink, true, 'Shrink flag must reach the divergence result');
+        assert.strictEqual(diverged.sell.shrink, true, 'Sell-side shrink flag must reach the divergence result');
+        assert.strictEqual(diverged.buy.ratio, true, 'Shrink travels the ratio leg');
+
+        // 2% dip stays inside the deadband: no trigger.
+        shrinkManager._allocB = 98;
+        shrinkManager._allocS = 98;
+        shrinkManager._gridSidesUpdated = new Set();
+        const dip = checkAndUpdateGridIfNeeded(shrinkManager);
+        assert.strictEqual(dip.buyUpdated, false, '2% dip below threshold must not trigger');
+
+        // Post-fill state: fill pipeline already re-sized the grid to the new
+        // budget (both down 5%, grid back in line) -> no spurious re-trigger.
+        // (A raw fill moves value across sides, so per-side totals alone must
+        // never drive the shrink leg.)
+        shrinkManager.funds.total.grid = { buy: 95, sell: 95 };
+        shrinkManager._allocB = 95;
+        shrinkManager._allocS = 95;
+        shrinkManager._gridSidesUpdated = new Set();
+        const settled = checkAndUpdateGridIfNeeded(shrinkManager);
+        assert.strictEqual(settled.buyUpdated, false, 'Re-sized post-fill grid must not re-trigger');
+        assert.strictEqual(settled.sellUpdated, false, 'Re-sized post-fill grid must not re-trigger');
     }
 
     console.log(' - Testing initializeGrid with case-insensitive AMA mode and out-of-bounds startPrice...');

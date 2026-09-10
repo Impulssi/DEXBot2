@@ -2172,7 +2172,9 @@ async function executeMaintenanceLogic(bot: any, context: any) {
             if (divergence.needsUpdate) {
                 const hasRmsDivergence = !!(divergence.buy.rms || divergence.sell.rms);
                 if (divergence.buy.ratio || divergence.sell.ratio) {
-                    bot._log(`Grid update triggered by funds during ${context} (buy: ${divergence.buy.ratio}, sell: ${divergence.sell.ratio})`);
+                    const buyDir = divergence.buy.shrink ? '/shrink' : '';
+                    const sellDir = divergence.sell.shrink ? '/shrink' : '';
+                    bot._log(`Grid update triggered by funds during ${context} (buy: ${divergence.buy.ratio}${buyDir}, sell: ${divergence.sell.ratio}${sellDir})`);
                 }
                 if (hasRmsDivergence) {
                     bot._log(`Grid update triggered by structural divergence during ${context}: buy=${Format.formatPrice6(divergence.buy.metric)}, sell=${Format.formatPrice6(divergence.sell.metric)}`);
