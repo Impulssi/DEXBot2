@@ -24,6 +24,7 @@ function buildFillKey(...args: any) { return require('./order/utils/order').buil
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
 function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
 function restoreGapEvacStreaks(...args: any) { return require('./order/utils/system').restoreGapEvacStreaks(...args); }
+function consumePendingFillCrawls(...args: any) { return require('./order/utils/order').consumePendingFillCrawls(...args); }
 function startupSleep(...args: any) { return require('./order/utils/system').sleep(...args); }
 const storage = getStorage();
 function attemptResumePersistedGridByPriceMatch(...args: any) { return require('./order/grid_reconcile').attemptResumePersistedGridByPriceMatch(...args); }
@@ -581,6 +582,33 @@ async function finishStartupSequence(bot: any, startupState: any) {
                     const restoredStreaks = restoreGapEvacStreaks(bot.manager, persistedGapEvacStreaks);
                     if (restoredStreaks > 0) {
                         bot._log(`[GAP-EVAC] Restored ${restoredStreaks} persisted in-band streak(s) from snapshot`);
+                    }
+                    // Pending-crawl application: fills recorded but never
+                    // committed before shutdown (refused broadcast, aborted
+                    // plan) owe their crawl to the restored boundary. Apply
+                    // before sync/reconcile so holes left by consumed fills
+                    // fall into the gap instead of being refilled same-side
+                    // (Sep-10: 4 consumed buys re-bought after restart).
+                    // Best-effort: reconcile proceeds with the restored
+                    // boundary either way.
+                    try {
+                        const persistedPending = typeof bot.accountOrders?.loadPendingFillCrawls === 'function'
+                            ? bot.accountOrders.loadPendingFillCrawls() ?? []
+                            : [];
+                        if (Array.isArray(persistedPending) && persistedPending.length > 0
+                            && Array.isArray(bot.manager?._pendingFillCrawls)) {
+                            bot.manager._pendingFillCrawls = persistedPending;
+                        }
+                        const pendingResult = consumePendingFillCrawls(bot.manager);
+                        if (pendingResult?.applied) {
+                            bot._log(`[BOUNDARY] Applied ${pendingResult.count} pending fill crawl(s): boundary ${pendingResult.from} -> ${pendingResult.to}; persisting before reconcile`, 'warn');
+                            await bot.manager.persistGrid();
+                        } else if (pendingResult?.reason && pendingResult.reason !== 'nothing-owed'
+                            && pendingResult.reason !== 'no-op' && pendingResult.reason !== 'null-boundary') {
+                            bot._log(`[BOUNDARY] Pending fill crawls dropped (${pendingResult.reason})`, 'warn');
+                        }
+                    } catch (pendingErr) {
+                        bot._log(`[BOUNDARY] Pending-crawl application failed (${pendingErr}); continuing with restored boundary`, 'warn');
                     }
                     let startupChainOpenOrders = chainOpenOrders;
                     if (chainReadTruncated) {

@@ -896,6 +896,19 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
         const gapEvacStreaks = manager._gapEvacStreaks instanceof Map
             ? Object.fromEntries([...manager._gapEvacStreaks.entries()].filter(([, n]) => Number.isFinite(Number(n)) && Number(n) > 0))
             : undefined;
+        // Pending fill crawls (restart resilience): fills whose boundary
+        // crawl was recorded but never committed. Plain-array snapshot of
+        // manager._pendingFillCrawls, sanitized and length-capped; an empty
+        // array persists as cleared so consumed entries never resurrect.
+        // Non-array (legacy callers) passes undefined so storeMasterGrid
+        // leaves previously stored entries untouched.
+        const pendingFillCrawls = Array.isArray((manager as any)._pendingFillCrawls)
+            ? (manager as any)._pendingFillCrawls
+                .filter((e: any) => e && typeof e.slotId === 'string' && e.slotId.length > 0
+                    && (e.side === 'buy' || e.side === 'sell') && Number.isFinite(Number(e.ts)))
+                .slice(-500)
+                .map((e: any) => ({ slotId: e.slotId, side: e.side, ts: Number(e.ts) }))
+            : undefined;
         await accountOrders.storeMasterGrid(
             orders,
             btsFeesOwed,
@@ -909,7 +922,8 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
             },
             fillKeys,
             genesis,
-            gapEvacStreaks
+            gapEvacStreaks,
+            pendingFillCrawls
         );
         return true;
     } catch (e: any) {

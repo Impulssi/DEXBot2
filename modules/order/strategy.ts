@@ -51,7 +51,7 @@
 import { ORDER_TYPES, ORDER_STATES } from '../constants.js';
 import { calculateGapSlots } from './grid.js';
 import { isSlotInRail } from './utils/math.js';
-import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, resolveReserveCount, selectReserveEdgeSlots } from './utils/order.js';
+import { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, resolveReserveCount, selectReserveEdgeSlots, isShiftEligibleFill } from './utils/order.js';
 import { assignGridRoles } from './utils/order.js';
 import {
     convertToSpreadPlaceholder,
@@ -120,6 +120,31 @@ class StrategyEngine {
 
             const isPartial = filledOrder.isPartial === true;
             mgr.logger.log(`[STRATEGY] Processing fill: id=${filledOrder.id}, type=${filledOrder.type}, price=${filledOrder.price}, size=${filledOrder.size}, partial=${isPartial}`, 'debug');
+            // Pending-crawl record: this fill's crawl is owed to the boundary
+            // only once a derivation commits it. If the batch aborts, the
+            // broadcast is refused, or the process restarts first, the entry
+            // survives (persisted with the snapshot) so the crawl is applied
+            // by a later derivation or at startup — instead of being lost and
+            // letting reconcile refill the hole same-side (Sep-10: 4 consumed
+            // buys re-bought after restart). Cleared on any accepted
+            // non-null boundary commit. Same eligibility as the crawl itself.
+            if (isShiftEligibleFill(filledOrder)
+                && typeof filledOrder.id === 'string' && filledOrder.id.length > 0
+                && (filledOrder.type === ORDER_TYPES.BUY || filledOrder.type === ORDER_TYPES.SELL)) {
+                const pending = (mgr as any)._pendingFillCrawls;
+                if (Array.isArray(pending)) {
+                    // Slot-level dedupe: a slot with no live order cannot
+                    // refill (and therefore re-fill) while its hole persists,
+                    // so a second entry for the same slotId can only be a
+                    // reprocessed duplicate, never a second owed crawl.
+                    // Replace (keep newest) instead of stacking.
+                    const at = pending.findIndex((e: any) => e && e.slotId === filledOrder.id);
+                    if (at >= 0) pending.splice(at, 1);
+                    if (pending.length > 500) pending.shift();
+                    pending.push({ slotId: filledOrder.id, side: filledOrder.type, ts: Date.now() });
+                    if (typeof (mgr as any)._markGridDirty === 'function') (mgr as any)._markGridDirty();
+                }
+            }
 
             if (!isPartial || filledOrder.isDelayedRotationTrigger) {
                 const currentSlot = mgr.orders.get(filledOrder.id);
@@ -259,7 +284,7 @@ class StrategyEngine {
         const boundaryConfig = (!Number.isFinite(Number(config?.startPrice)) && Number.isFinite(genesisStart))
             ? { ...config, genesisStartPrice: genesisStart }
             : config;
-        const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, boundaryConfig, gapSlots, crossChunkBudget);
+        const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, boundaryConfig, gapSlots, crossChunkBudget, (this.manager as any)?._pendingFillCrawls);
         if (crossChunkBudget != null) {
             (this.manager as any)._boundaryShiftBudget = remainingBudget;
         }

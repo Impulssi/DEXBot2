@@ -1816,7 +1816,7 @@ function isShiftEligibleFill(fill: any): boolean {
     return fill?.isPartial !== true || fill?.isDelayedRotationTrigger === true;
 }
 
-function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any, config: any, gapSlots: any, crossChunkBudget?: number | null): { boundaryIdx: number | null; remainingBudget: number } {
+function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any, config: any, gapSlots: any, crossChunkBudget?: number | null, pendingCrawls?: any[]): { boundaryIdx: number | null; remainingBudget: number } {
     let newBoundaryIdx: number | null = currentBoundaryIdx;
 
     // Recovery when the committed boundary is unknown (GRID-LOAD rejected a
@@ -1827,6 +1827,7 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
     // comparison, resolving to the rail top (Sep-10: base 213, ceiling 211,
     // then 209 after 4 buy crawls — teleporting the buy rail 113 slots).
     let recovered = false;
+    let anchoredFromFills = false;
     if (newBoundaryIdx === undefined || newBoundaryIdx === null) {
         // Tier 1 — live fills: gap-side extreme (highest buy / lowest sell,
         // midpoint when both sides filled). Any fill price, eligible or
@@ -1840,9 +1841,9 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
             if (fill?.type === ORDER_TYPES.SELL && p < botSell) botSell = p;
         }
         let referencePrice: number | null = null;
-        if (topBuy > -Infinity && botSell < Infinity) referencePrice = (topBuy + botSell) / 2;
-        else if (topBuy > -Infinity) referencePrice = topBuy;
-        else if (botSell < Infinity) referencePrice = botSell;
+        if (topBuy > -Infinity && botSell < Infinity) { referencePrice = (topBuy + botSell) / 2; anchoredFromFills = true; }
+        else if (topBuy > -Infinity) { referencePrice = topBuy; anchoredFromFills = true; }
+        else if (botSell < Infinity) { referencePrice = botSell; anchoredFromFills = true; }
         // Tier 2 — explicit numeric config center.
         if (referencePrice === null) {
             const direct = Number(config?.startPrice);
@@ -1873,6 +1874,17 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
             return { boundaryIdx: null, remainingBudget: effectiveBudget };
         }
         newBoundaryIdx = calculateIdealBoundary(allSlots, referencePrice, gapSlots);
+        if (!Number.isFinite(newBoundaryIdx) || (newBoundaryIdx as number) < 0) {
+            // Empty slot list with a Tier 1-3 reference: no honest index
+            // exists (calculateIdealBoundary returns -1). Stay null rather
+            // than letting the clamp below fabricate a slot-0 boundary.
+            const fallbackCap = Math.max(
+                Math.floor((config?.activeOrders?.sell ?? 1) / 2),
+                Math.floor((config?.activeOrders?.buy ?? 1) / 2),
+                1
+            );
+            return { boundaryIdx: null, remainingBudget: crossChunkBudget ?? fallbackCap };
+        }
         recovered = true;
     }
 
@@ -1882,12 +1894,38 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
     // boundary — they are static fat-finger insurance, not market movement.
     const reserveBuyIds = reserveEdgeIdSet(allSlots, config, ORDER_TYPES.BUY);
     const reserveSellIds = reserveEdgeIdSet(allSlots, config, ORDER_TYPES.SELL);
+    // Pending crawls: fills recorded by earlier batches whose derivation
+    // never committed (refused broadcast, P4 abort, or pre-restart loss —
+    // the Sep-10 case: 4 fills consumed under a null boundary, crawl lost,
+    // restart refilled the holes same-side). Entries for slots in the
+    // CURRENT batch are excluded — those fills crawl below as usual;
+    // anything older is still owed and shifts here. Reserve-slot entries
+    // never crawl (static insurance), same as live fills.
+    const currentSlotIds = new Set(
+        (fills ?? []).map((f: any) => f?.id).filter((id: any) => typeof id === 'string' && id.length > 0)
+    );
+    const owedPending = (pendingCrawls ?? []).filter((e: any) => e
+        && typeof e.slotId === 'string' && e.slotId.length > 0
+        && !currentSlotIds.has(e.slotId)
+        && (e.side === ORDER_TYPES.BUY || e.side === ORDER_TYPES.SELL)
+        && !(e.side === ORDER_TYPES.BUY && reserveBuyIds && reserveBuyIds.has(e.slotId))
+        && !(e.side === ORDER_TYPES.SELL && reserveSellIds && reserveSellIds.has(e.slotId)));
     for (const fill of fills) {
         if (!isShiftEligibleFill(fill)) continue;
         if (fill && fill.type === ORDER_TYPES.BUY && reserveBuyIds && reserveBuyIds.has(fill.id)) continue;
         if (fill && fill.type === ORDER_TYPES.SELL && reserveSellIds && reserveSellIds.has(fill.id)) continue;
         if (fill.type === ORDER_TYPES.SELL) netShift++;
         else if (fill.type === ORDER_TYPES.BUY) netShift--;
+    }
+    if (!anchoredFromFills) {
+        // Owed deltas from earlier uncommitted batches shift on top of the
+        // current fills. Skipped under an absolute fill anchor: the anchor
+        // positions from live market prices, which already reflect all
+        // consumed fills — shifting again would double-count.
+        for (const e of owedPending) {
+            if (e.side === ORDER_TYPES.SELL) netShift++;
+            else netShift--;
+        }
     }
 
     // Cap cumulative shift to prevent overreaction from burst fills.
@@ -1902,7 +1940,7 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
     );
     const effectiveBudget = crossChunkBudget ?? fallbackCap;
     const cap = Math.min(Math.abs(effectiveBudget), fallbackCap);
-    if (recovered) {
+    if (recovered && anchoredFromFills) {
         // The anchor already contains this batch's fill information —
         // crawling would double-count the same fills (Sep-10 batch 1:
         // dust-sell anchor 97 plus a +1 crawl would have moved it to 98).
@@ -1933,6 +1971,105 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
         boundaryIdx: Math.max(0, Math.min(ceiling, newBoundaryIdx)),
         remainingBudget,
     };
+}
+
+/**
+ * Apply recorded-but-uncommitted fill crawls to the committed boundary.
+ * Fills are recorded at intake (strategy) and consumed by derivation on
+ * commit — but a refused broadcast, a plan abort, or a restart in between
+ * leaves their crawl owed and the boundary stale. The next derivation
+ * incorporates them in-run (pendingCrawls param); this consumes them onto
+ * a restored boundary at startup, before reconcile refills holes.
+ *
+ * Safety: entries are relative deltas, so they apply only onto a FINITE
+ * restored boundary (a null boundary is re-anchored absolutely from live
+ * fill prices instead — subsuming every owed delta). The candidate is
+ * validated placed-order-aware like GRID-LOAD; on failure the entries are
+ * dropped rather than stranding live orders. Commits clear the record, so
+ * entries present here predate every commit since recording — always owed.
+ *
+ * @param {any} manager - OrderManager (boundaryIdx, orders, config restored)
+ * @returns {{applied: boolean, from?: number, to?: number, count?: number, reason?: string}}
+ */
+export function consumePendingFillCrawls(manager: any): { applied: boolean; from?: number; to?: number; count?: number; reason?: string } {
+    const pending = Array.isArray(manager?._pendingFillCrawls) ? manager._pendingFillCrawls : [];
+    if (pending.length === 0) return { applied: false };
+    // Clearing marks the grid dirty so the cleared record reaches disk on
+    // the next flush — including drop paths (unsafe/null/no-op), whose
+    // decisions re-derive identically but whose stale disk entries would
+    // otherwise linger until an unrelated write.
+    const clear = () => {
+        manager._pendingFillCrawls = [];
+        if (typeof manager?._markGridDirty === 'function') {
+            try { manager._markGridDirty(); } catch { /* best-effort */ }
+        }
+    };
+    // NB: Number(null) === 0 — check null/undefined explicitly, or a
+    // boundary-less manager would "apply" onto slot 0.
+    if (manager?.boundaryIdx === null || manager?.boundaryIdx === undefined) {
+        clear();
+        return { applied: false, reason: 'null-boundary' };
+    }
+    const boundary = Number(manager?.boundaryIdx);
+    if (!Number.isFinite(boundary)) {
+        clear();
+        return { applied: false, reason: 'null-boundary' };
+    }
+    const config = manager?.config ?? {};
+    const slots = Array.from(manager?.orders instanceof Map ? manager.orders.values() : []) as any[];
+    const reserveBuyIds = reserveEdgeIdSet(slots, config, ORDER_TYPES.BUY);
+    const reserveSellIds = reserveEdgeIdSet(slots, config, ORDER_TYPES.SELL);
+    let netShift = 0;
+    let count = 0;
+    for (const e of pending) {
+        if (!e || typeof e.slotId !== 'string' || e.slotId.length === 0) continue;
+        if (e.side !== ORDER_TYPES.BUY && e.side !== ORDER_TYPES.SELL) continue;
+        if (e.side === ORDER_TYPES.BUY && reserveBuyIds && reserveBuyIds.has(e.slotId)) continue;
+        if (e.side === ORDER_TYPES.SELL && reserveSellIds && reserveSellIds.has(e.slotId)) continue;
+        netShift += e.side === ORDER_TYPES.SELL ? 1 : -1;
+        count++;
+    }
+    if (count === 0) {
+        clear();
+        return { applied: false, reason: 'nothing-owed' };
+    }
+    const fallbackCap = Math.max(
+        Math.floor((config?.activeOrders?.sell ?? 1) / 2),
+        Math.floor((config?.activeOrders?.buy ?? 1) / 2),
+        1
+    );
+    if (Math.abs(netShift) > fallbackCap) netShift = Math.sign(netShift) * fallbackCap;
+    let gapSlots = Number(manager?._gapSlots);
+    if (!Number.isFinite(gapSlots)) {
+        try {
+            gapSlots = MathUtils.calculateGapSlots(config?.incrementPercent, config?.targetSpreadPercent, config?.gridLimits);
+        } catch {
+            gapSlots = 0;
+        }
+    }
+    const ceiling = (slots.length - gapSlots - 1) >= 0 ? (slots.length - gapSlots - 1) : (slots.length - 1);
+    const candidate = Math.max(0, Math.min(ceiling, boundary + netShift));
+    if (candidate === boundary) {
+        clear();
+        return { applied: false, reason: 'no-op' };
+    }
+    let check: any = { ok: true };
+    try {
+        check = MathUtils.validatePersistedBoundary(candidate, slots, gapSlots);
+    } catch (err) {
+        check = { ok: false, reason: 'validator-threw', detail: String((err as any)?.message ?? err) };
+    }
+    if (!check || check.ok !== true) {
+        clear();
+        return { applied: false, reason: `unsafe: ${check?.reason ?? 'unknown'}${check?.detail ? ` ${check.detail}` : ''}` };
+    }
+    try {
+        manager._restoreBoundary(candidate);
+    } catch {
+        return { applied: false, reason: 'restore-failed' };
+    }
+    clear();
+    return { applied: true, from: boundary, to: candidate, count };
 }
 
 /**
@@ -2307,5 +2444,5 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
     return { masterIds: [...masterIds], createIds: [...createIds], all: [...all] };
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, resolveReserveFloorIds, resolveReserveCeilIds, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds }
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, resolveReserveFloorIds, resolveReserveCeilIds, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds, reserveEdgeIdSet }
 

@@ -1,7 +1,7 @@
 /**
  * Boundary-anchor recovery + rail-edge telemetry.
  *
- * Production incident (BTS-USDT 2026-09-10 02:03): after GRID-LOAD rejected
+ * Production incident (<market-pair>): after GRID-LOAD rejected
  * the persisted boundary (96, sell stranded in-band) with no safe
  * re-derivation, the committed boundary stayed null — and the Sep-9 removal
  * of the fund-driven writer left fills as the only boundary mover. The first
@@ -17,8 +17,9 @@
  *
  * The fix anchors recovery from live fill prices (gap-side extreme), then
  * numeric config, genesis, rail-center — never a rail-edge fabrication —
- * skips the crawl on recovery batches (the anchor already contains the
- * fill info; crawling would double-count), and erases the poisoned snapshot
+ * skips the crawl on fill-anchored recovery batches (the anchor already
+ * contains the fill info; crawling would double-count; genesis/rail-center
+ * anchors still crawl), and erases the poisoned snapshot
  * value on unrecoverable GRID-LOAD rejection. No rotation-distance filter:
  * with an honest anchor the teleport never plans in the first place.
  */
@@ -82,8 +83,10 @@ async function testP0c_NullBoundaryWithoutPricedAnchorFallsToCenter() {
         GAP,
         null
     );
-    assert.strictEqual(boundaryIdx, Math.floor((N_SLOTS - 1 - GAP) / 2) - Math.floor(GAP / 2) - 1,
-        'center fallback must stay mid-rail, never rail-top');
+    // Center anchor (102) plus the eligible dust-sell crawl (+1): non-fill
+    // anchors fall through to the crawl, only Tier-1 fill anchors skip it.
+    assert.strictEqual(boundaryIdx, Math.floor((N_SLOTS - 1 - GAP) / 2) - Math.floor(GAP / 2) - 1 + 1,
+        'center fallback plus fill crawl must stay mid-rail, never rail-top');
     console.log('✓ ANCHOR-003 passed');
 }
 
@@ -100,10 +103,10 @@ async function testP0d_GenesisAnchorRecoversHonestBoundary() {
         null
     );
     const split = slots.findIndex((s) => s.price >= genesisStart);
-    // No crawl on recovery batches: the anchor already contains the fill
-    // information, crawling would double-count it.
-    assert.strictEqual(boundaryIdx, split - Math.floor(GAP / 2) - 1,
-        'genesis-anchored recovery must land on the honest center with no extra crawl');
+    // Genesis anchor plus the eligible dust-sell crawl (+1): non-fill
+    // anchors fall through to the crawl, only Tier-1 fill anchors skip it.
+    assert.strictEqual(boundaryIdx, split - Math.floor(GAP / 2) - 1 + 1,
+        'genesis-anchored recovery plus fill crawl must land near the honest center');
     console.log('✓ ANCHOR-004 passed');
 }
 

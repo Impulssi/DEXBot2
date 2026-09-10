@@ -1034,6 +1034,7 @@ class DEXBot {
      */
     async _executeBatchIfNeeded(rebalanceResult: any, contextLabel: any = 'rebalance') {
         if (!hasExecutableActions(rebalanceResult)) {
+            this.manager?.logger?.log?.(`[COW] No actions needed for ${contextLabel}`, 'debug');
             // Structural-resync request from the plan path (unrecoverable
             // boundary, rail-edge target, over-distance rotations): the plan
             // was refused before broadcast, so trigger the rebuild here where

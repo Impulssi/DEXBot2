@@ -493,6 +493,7 @@ class OrderManager {
     _lastStaleTotalsWarnAt: Record<string, number>;
     _orphanFillsCreditedAt: number | null;
     _pendingRecovery: Promise<void> | null;
+    _pendingFillCrawls: { slotId: string; side: string; ts: number }[];
     _recentFillKeysSnapshot: Record<string, number> | null;
     _lastFilledBuyPrice: number | null;
     _lastFilledSellPrice: number | null;
@@ -615,6 +616,7 @@ class OrderManager {
         this._gridDirtyAt = null;
         this._orphanFillsCreditedAt = null;
         this._pendingRecovery = null;
+        this._pendingFillCrawls = [];
         this._recentFillKeysSnapshot = null;
         this._lastStaleTotalsWarnAt = {};
         this._lastFilledBuyPrice = null;
@@ -2347,6 +2349,19 @@ class OrderManager {
 
                 this.orders = Object.freeze(finalMap);
                 this._setBoundary(commitBoundary);
+                // Pending-crawl bookkeeping: an accepted non-null commit
+                // incorporates (incremental derivation) or subsumes (absolute
+                // recovery anchor) every fill recorded so far, so all pending
+                // crawl entries are consumed here. A gate-rejected commit keeps
+                // the previous boundary — nothing was derived into it — so
+                // pending entries survive for the next derivation. A null
+                // commit (boundary hold) likewise consumes nothing.
+                if (boundaryCheck.ok && commitBoundary !== null && commitBoundary !== undefined) {
+                    if (Array.isArray(this._pendingFillCrawls) && this._pendingFillCrawls.length > 0) {
+                        this._pendingFillCrawls = [];
+                        this._markGridDirty();
+                    }
+                }
                 this._gridVersion++;
                 committed = true;
 
