@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.5.4 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.6.0 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
  - **Growth Phase**: 2,141 commits over ~9 active months
 - **Code Maturity**: Evolution from basic utilities to a ~100,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 248 automated test files
-- **Releases**: 103 release entries (v0.1.0 to v1.5.4)
+- **Releases**: 104 release entries (v0.1.0 to v1.6.0)
 
 ---
 
@@ -113,13 +113,12 @@ Compact, era-level view; per-release commit detail lives in [CHANGELOG.md](../CH
 | v1.5.0 → v1.5.1 | 11 | Gap-evacuation guard allowance + rail-typed holes, persisted streaks with cancel-only teeth, vacated-rail refill, adoption/accounting/duplicate-guard hardening |
 | v1.5.1 → v1.5.2 | 10 | Sync rejection handling across pass-1/pass-2 adoption, crossing-guard candidate sharing, empty-read confirmation, broadcast-price CREATE validation, stamped gap-evacuation re-proof, credit whole-account display + expiry, offline export fill-block derivation |
 | v1.5.2 → v1.5.3 | 6 | Boundary ownership hardening (fund-driven sync removal, guard-skipped refill hold), COW broadcast/reconcile dedup, TradingView bot-grid range highlight, createOrder unknown-id materialize-or-error, curve-comparison docs |
-| v1.5.3 → v1.5.4 | 3 | Out-of-grid orphan deferral (no adopt/no cancel holds), hold-unblocked creates/refills/recovery, range-band color convention fix |
-| v1.5.4 → Unreleased | 12 | Per-side reserve ladder (edge-pinned dip/spike insurance) anchored at resolved bounds + live-grid rail edges with single-source ordering and exact-size activation, owed-crawl persistence across refused broadcasts/restarts + hold-aware reload-safe lifecycle, fill-anchored boundary recovery + poisoned persisted-boundary erase, startup rail gate + static-center crawl fold, all `*-deferred` holds non-blocking + hold metrics surfaced, opt-in MPA price-feed charts + range-aware shared candle cache, range-band span parity on grid-less charts, orange range zone widened to 1.40x, docs reserve-ladder sweep |
+| v1.5.3 → v1.6.0 | 23 | Node-failure strike ledger and broadcast-deferred fill rebalancing, trust-chain free-balance heal with deferred-drain tolerance, bidirectional grid-regeneration trigger, TradingView order overlay and chart pref namespacing, credit short-offer id display, live-config pickup (issue #27), reserve ladder anchored at resolved bounds + live-grid rail edges with single-source ordering and exact-size activation, owed-crawl persistence across refused broadcasts/restarts + hold-aware reload-safe lifecycle, fill-anchored boundary recovery + poisoned persisted-boundary erase, startup rail gate + static-center crawl fold, all `*-deferred` holds non-blocking + hold metrics surfaced, opt-in MPA price-feed charts + range-aware shared candle cache, range-band span parity on grid-less charts, orange range zone widened to 1.40x, docs reserve-ladder sweep |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: September 09, 2026
-**Total Commits**: 2,180
-**Date Range**: December 2, 2025 – September 09, 2026
+**Last Updated**: September 11, 2026
+**Total Commits**: 2,196
+**Date Range**: December 2, 2025 – September 11, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)
