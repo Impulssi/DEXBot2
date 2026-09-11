@@ -1227,7 +1227,22 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                     continue;
                 }
 
-                const newSize = toFiniteNumber(slot.size);
+                let newSize = toFiniteNumber(slot.size);
+                // Deep shelf: manual sizes win over the curve on updates too.
+                // Placements apply them at all sites, but the working grid
+                // carries curve sizes — without this override any budget
+                // change resizes live manual deeps down to curve (and the
+                // grid/chain mismatch would re-queue the update every pass,
+                // so the manual size is written back to the working slot).
+                if (MathUtils.isDeepShelfId(slot.id)) {
+                    const manual = MathUtils.resolveBuyDeepSizes(manager.config);
+                    const deepIdx = Number(String(slot.id).split('-')[1]);
+                    const manualSize = Number.isFinite(deepIdx) ? Number(manual[deepIdx] || 0) : 0;
+                    if (manualSize > 0) {
+                        newSize = manualSize;
+                        try { (slot as any).size = manualSize; } catch { /* queued size still applies */ }
+                    }
+                }
                 const currentSize = toFiniteNumber(onChainOrder.size);
                 const sizeChanged = Number.isFinite(sidePrecision)
                     ? MathUtils.floatToBlockchainInt(newSize, sidePrecision) !== MathUtils.floatToBlockchainInt(currentSize, sidePrecision)
