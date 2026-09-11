@@ -42,7 +42,9 @@ The sections below cover manual usage (explicit candle files, direct runner flag
 - Range-scale switch: fit the price axis to the range band
 - VWMA overlay
 - Order overlay for bot charts (active grid buys/sells as dashed levels, reserve line at the lowest grid buy, ceiling line at the highest grid sell, spread label; pair-aware, toggle in-chart)
-- Market panel (top-right): `Market` + best `BUY`/`SELL` levels with distance-to-market %
+- Market panel (top-right): `SELL` / `Market` / `BUY` rows with distance-to-market %
+- Range panel (bottom-right, smaller type): visible-window candle High/Low (red/green, mirroring the SELL/BUY badge)
+- Volume badge (bottom-right of the volume chart, same small type): visible-window max volume
 - Bottom volume panel with `Volume` toggle and per-bar hover tooltip
 - Crosshair legend with current candle values
 

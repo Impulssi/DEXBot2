@@ -124,6 +124,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         { label: '4h', seconds: 14400 },
         { label: '1d', seconds: 86400 },
         { label: '1w', seconds: 604800 },
+        { label: '1M', seconds: 2592000, calendar: 'month' },
     ].map((item: any) => ({ ...item, enabled: item.seconds >= baseIntervalSeconds }));
 
     const defaultTimeframe = timeframes.find((item: any) => item.label === data.defaultTimeframe && item.enabled)
@@ -479,11 +480,11 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             background: rgba(10,14,20,0.72);
             backdrop-filter: blur(10px);
         }
-        .legend-line { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; font-size: 11px; }
+        .legend-line { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; font-size: 12px; }
         .legend-line + .legend-line { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.06); }
         .legend-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
         .legend-dot { width: 10px; height: 10px; border-radius: 999px; flex: 0 0 auto; }
-        .legend-label { color: #8290a2; text-transform: uppercase; letter-spacing: 0.45px; font-size: 10px; }
+        .legend-label { color: #8290a2; text-transform: uppercase; letter-spacing: 0.45px; font-size: 12px; }
         .legend-value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #eef4fb; font-weight: 700; }
         .status { display: inline-flex; align-items: center; gap: 8px; font-size: 10px; color: #8290a2; text-transform: uppercase; letter-spacing: 0.5px; }
         .pill { border: 1px solid rgba(255,255,255,0.06); border-radius: 999px; padding: 4px 8px; background: rgba(255,255,255,0.03); }
@@ -692,6 +693,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         let lastCandleKey = null;
         let pendingRange = null;
         let pendingRangeRaf = 0;
+        let rangePanelRaf = 0;
         let xMin = 0;
         let xMax = 0;
         let smaWorker = null;
@@ -944,6 +946,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 ticks: { stroke: '#30363d', width: 1 },
                 font: '11px Segoe UI, sans-serif',
                 values: showLabels ? (u, vals) => {
+                    if (String(currentTimeframe) === '1M') {
+                        return vals.map((ts) => new Date(ts * 1000).toLocaleString(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' }));
+                    }
                     const xScale = u.scales.x || {};
                     const spanSec = Number.isFinite(xScale.min) && Number.isFinite(xScale.max)
                         ? Math.max(0, xScale.max - xScale.min)
@@ -1035,9 +1040,10 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             seriesCache.set(key, state);
             return state;
         }
-        function aggregateCandles(rows, seconds) {
+        function aggregateCandles(rows, seconds, label) {
+            const monthly = String(label || '') === '1M';
             const bucketSec = Math.max(1, Math.round(seconds || 3600));
-            const cacheKey = currentPairMode + '|' + bucketSec;
+            const cacheKey = currentPairMode + '|' + (monthly ? '1M' : String(bucketSec));
             if (aggregateCache.has(cacheKey)) return aggregateCache.get(cacheKey);
             const out = [];
             const idxs = [];
@@ -1048,7 +1054,13 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 const row = rows[i];
                 const ts = Number(row.time);
                 if (!Number.isFinite(ts)) continue;
-                const bucket = Math.floor(ts / bucketSec) * bucketSec;
+                let bucket;
+                if (monthly) {
+                    const d = new Date(ts * 1000);
+                    bucket = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) / 1000;
+                } else {
+                    bucket = Math.floor(ts / bucketSec) * bucketSec;
+                }
                 if (!cur || bucket !== curBucket) {
                     if (cur) {
                         out.push(cur);
@@ -1793,7 +1805,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             currentSeriesState = getSeriesState(currentPairMode);
             currentSeriesCandles = currentSeriesState.candles;
             currentSeriesCloseValues = currentSeriesState.closeValues;
-            const aggregated = aggregateCandles(currentSeriesCandles, tf?.seconds || 3600);
+            const aggregated = aggregateCandles(currentSeriesCandles, tf?.seconds || 3600, tf?.label || currentTimeframe);
             currentCandles = aggregated.candles;
             if (currentCandles.length) {
                 xMin = currentCandles[0].time;
@@ -1924,6 +1936,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 ],
                 hooks: {
                     draw: [(u) => { positionPriceMarker(u); positionReserveLine(u); positionOrderLines(u); positionUpdateMarker(u, true); }],
+                    // Keep the bottom-right stat badges glued to the visible
+                    // window while zooming/panning (rAF-throttled text swap).
+                    setScale: [() => { scheduleStatPanels(); }],
                 },
             };
 
@@ -1960,6 +1975,10 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     makeTimeAxis(true),
                     { scale: 'y', side: 1, size: 84, space: 22, stroke: '#ffffff', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, font: '600 12px Segoe UI, sans-serif', values: (u, vals) => vals.map((v) => (v == null ? '' : fmtVolume(v))) },
                 ],
+                hooks: {
+                    // x is synced from the price chart; refresh the V max badge.
+                    setScale: [() => { scheduleStatPanels(); }],
+                },
             };
 
             const volumePluginInst = volumePlugin();
@@ -2613,6 +2632,8 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             }
             refreshLegend();
             renderMarketPanel();
+            renderRangePanel();
+            renderVolumePanel();
             saveState();
         }
 
@@ -2834,7 +2855,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const span = last - first;
             syncXRange(first - span * 0.02, last + span * 0.12);
         }
-        // Market panel top-right: Market + best buy/sell with distance-to-market
+        // Market panel top-right: SELL / Market / BUY with distance-to-market
         // %. Pair-aware (same display levels as the overlay). Static per
         // generation, so drawn once (no draw hook); refreshed on pair flip
         // via rerender. Hidden while the Orders overlay is unchecked — the
@@ -2853,21 +2874,97 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const last = currentCandles[currentCandles.length - 1];
             const mkt = last ? last.close : NaN;
             const { buys, sells } = getDisplayOrders();
-            let html = '<div style="color:#e8eef5">Market ' + (Number.isFinite(mkt) ? fmtPriceLabel(mkt) : '-') + '</div>';
-            if (buys.length && Number.isFinite(mkt)) {
-                const b = Math.max(...buys);
-                const p = (b - mkt) / mkt * 100;
-                html += '<div style="color:#26a69a">BUY ' + fmtPriceLabel(b) + ' ' + (p >= 0 ? '+' : '') + p.toFixed(1) + '%</div>';
-            }
+            let html = '';
             if (sells.length && Number.isFinite(mkt)) {
                 const s = Math.min(...sells);
                 const p = (s - mkt) / mkt * 100;
                 html += '<div style="color:#ef5350">SELL ' + fmtPriceLabel(s) + ' ' + (p >= 0 ? '+' : '') + p.toFixed(1) + '%</div>';
             }
+            html += '<div style="color:#e8eef5">Market ' + (Number.isFinite(mkt) ? fmtPriceLabel(mkt) : '-') + '</div>';
+            if (buys.length && Number.isFinite(mkt)) {
+                const b = Math.max(...buys);
+                const p = (b - mkt) / mkt * 100;
+                html += '<div style="color:#26a69a">BUY ' + fmtPriceLabel(b) + ' ' + (p >= 0 ? '+' : '') + p.toFixed(1) + '%</div>';
+            }
             panel.innerHTML = html;
+        }
+        // Range panel bottom-right: visible-window candle High (red) /
+        // Low (green) — sell-side red on top, buy-side green below, mirroring
+        // the top-right market badge. Volume max lives in its own badge on
+        // the volume chart below. Slightly smaller type than the top-right market badge.
+        // Pair-aware via currentCandles (already inverted in B/A view).
+        // Refreshed on rerender and on x zoom/pan through the setScale hooks.
+        function visibleCandleStats() {
+            if (!currentCandles.length) return null;
+            let minX = NaN;
+            let maxX = NaN;
+            if (priceChart) {
+                const xs = priceChart.scales.x || {};
+                if (Number.isFinite(xs.min)) minX = xs.min;
+                if (Number.isFinite(xs.max)) maxX = xs.max;
+            }
+            if (!Number.isFinite(minX)) minX = currentCandles[0].time;
+            if (!Number.isFinite(maxX)) maxX = currentCandles[currentCandles.length - 1].time;
+            const times = currentCandles.map((c) => c.time);
+            const start = Math.max(0, lowerBound(times, minX) - 1);
+            const end = Math.min(times.length, lowerBound(times, maxX) + 2);
+            let hi = -Infinity;
+            let lo = Infinity;
+            let vol = 0;
+            for (let i = start; i < end; i++) {
+                const c = currentCandles[i];
+                if (!c) continue;
+                if (Number.isFinite(c.high) && c.high > hi) hi = c.high;
+                if (Number.isFinite(c.low) && c.low < lo) lo = c.low;
+                if (Number.isFinite(c.volume) && c.volume > vol) vol = c.volume;
+            }
+            if (!Number.isFinite(hi) || !Number.isFinite(lo)) return null;
+            return { hi, lo, vol };
+        }
+        function renderRangePanel() {
+            if (!priceChart) return;
+            let panel = document.getElementById('range-panel');
+            if (!panel) {
+                panel = document.createElement('div');
+                panel.id = 'range-panel';
+                panel.style.cssText = 'position:absolute;z-index:26;bottom:10px;right:88px;pointer-events:none;font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.6;padding:6px 10px;border-radius:8px;background:rgba(13,17,23,0.85);border:1px solid #263241;white-space:nowrap;text-align:right;';
+                priceChart.root.appendChild(panel);
+            }
+            const stats = visibleCandleStats();
+            if (!stats) { panel.style.display = 'none'; return; }
+            panel.style.display = 'block';
+            panel.innerHTML = '<div style="color:#ef5350">H ' + fmtPriceLabel(stats.hi) + '</div>'
+                + '<div style="color:#26a69a">L ' + fmtPriceLabel(stats.lo) + '</div>';
+        }
+        // Volume badge top-right on the volume chart: max volume of the
+        // visible window only. Same small type as the range panel. Lives on
+        // the volume root, so hiding the volume chart hides the badge too.
+        function renderVolumePanel() {
+            if (!volumeChart) return;
+            let panel = document.getElementById('vol-panel');
+            if (!panel) {
+                panel = document.createElement('div');
+                panel.id = 'vol-panel';
+                panel.style.cssText = 'position:absolute;z-index:26;top:10px;right:88px;pointer-events:none;font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.6;padding:6px 10px;border-radius:8px;background:rgba(13,17,23,0.85);border:1px solid #263241;white-space:nowrap;text-align:right;';
+                volumeChart.root.appendChild(panel);
+            }
+            const stats = visibleCandleStats();
+            if (!stats) { panel.style.display = 'none'; return; }
+            panel.style.display = 'block';
+            panel.innerHTML = '<div style="color:#e8eef5">V max ' + fmtVolume(stats.vol) + '</div>';
+        }
+        function scheduleStatPanels() {
+            if (rangePanelRaf) return;
+            rangePanelRaf = requestAnimationFrame(() => {
+                rangePanelRaf = 0;
+                renderRangePanel();
+                renderVolumePanel();
+            });
         }
         padXRight();
         renderMarketPanel();
+        renderRangePanel();
+        renderVolumePanel();
 
         window.addEventListener('resize', () => {
             if (!charts.length) return;
