@@ -1829,6 +1829,7 @@ class OrderManager {
             const edge = ascending ? 'floor' : 'ceiling';
             const edgeFirst = this.getOrdersByTypeAndState(orderType, ORDER_STATES.VIRTUAL)
                 .filter((o: any) => inRailFor(orderType, o))
+                .filter((o: any) => parseSlotIndex(o.id) !== null)
                 .sort((a: any, b: any) => compareReserveEdge(a, b, edge, edgeAnchor));
             for (const o of edgeFirst) {
                 if (picked.length >= count) break;

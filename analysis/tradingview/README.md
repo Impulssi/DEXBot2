@@ -44,7 +44,7 @@ The sections below cover manual usage (explicit candle files, direct runner flag
 - Order overlay for bot charts (active grid buys/sells as dashed levels, reserve line at the lowest grid buy, ceiling line at the highest grid sell, spread label; pair-aware, toggle in-chart)
 - Market panel (top-right): `SELL` / `Market` / `BUY` rows with distance-to-market % (fork appends a `DEEP` row for deep-shelf `deep-N` buy ids)
 - Range panel (bottom-right, smaller type): visible-window candle High/Low (red/green, mirroring the SELL/BUY badge)
-- Volume badge (bottom-right of the volume chart, same small type): visible-window max volume
+- Volume badge (bottom-right of the volume chart, same small type): visible-window max volume, always with the currency suffix (`1.2M BTS`); click the badge, the legend `Vol` value, or the toolbar unit button to switch base/quote units (quote ≈ base × close, persisted per chart like the AMA settings; feed charts show publish counts and disable the switch)
 - Bottom volume panel with `Volume` toggle and per-bar hover tooltip
 - Crosshair legend with current candle values
 

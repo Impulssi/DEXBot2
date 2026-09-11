@@ -143,6 +143,12 @@ function detectMissingCandleTimestamps(candles: any, intervalSeconds = 3600) {
  * Fills gaps in a candle series by carrying forward the last known close price.
  * Volume for filled candles is 0.
  *
+ * Filled-vs-real convention: a zero-volume candle is SYNTHESIZED (no trades
+ * in that bucket), not a flat market. OHLC consumers can rely on volume to
+ * tell them apart; close-only consumers cannot — pass close arrays together
+ * with their volume column when the distinction matters (stale-tail pruning,
+ * live-vs-backtest parity checks).
+ *
  * @param {Array}  candles         - [[ts, o, h, l, c, v], ...]
  * @param {number} intervalSeconds - bucket size in seconds
  * @param {number} [startTs]       - optional start timestamp (ms) to stretch to the past

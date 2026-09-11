@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { normalizePoolId } from '../../market_adapter/utils/chain.js';
-import { toIntervalLabel } from '../../market_adapter/interval_utils.js';
+import { toIntervalLabel, slugPart } from '../../market_adapter/interval_utils.js';
 import { MARKET_ADAPTER } from '../../modules/constants.js';
 import * as kibanaSource from '../../market_adapter/inputs/kibana_source.js';
 import { PATHS } from '../../modules/paths.js';
@@ -29,13 +29,6 @@ import { getErrorMessage } from '../../modules/utils/errors.js';
  */
 const DATA_DIR = PATHS.MARKET_ADAPTER.LP_DATA_DIR;
 const HOURS_3Y  = 3 * 365 * 24; // 26280
-function slugPart(value: string | null | undefined): string {
-    return String(value || '')
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '_')
-        .replace(/^_+|_+$/g, '') || 'unknown';
-}
 function slugPairFolder(symbolA: string, symbolB: string): string {
     return `${slugPart(symbolA)}_${slugPart(symbolB)}`;
 }
@@ -147,7 +140,6 @@ async function main() {
     const candles = await kibanaSource.getLpCandlesForPool(poolId, assetA, assetB, {
         intervalSeconds,
         lookbackHours:         lookback,
-        consolidateByTimestamp: true,
         apiKey:                null,
         timeout:               60000,
     });

@@ -1096,7 +1096,6 @@ class MarketAdapterService {
             try {
                 const kibanaCandles = await deps.withRetries(() => fetchKibanaCandles({
                     intervalSeconds: cfg.intervalSeconds,
-                    consolidateByTimestamp: true,
                     fillGapsToRequestedRange: false,
                     apiKey: null,
                     timeRange: {
@@ -1227,7 +1226,6 @@ class MarketAdapterService {
                 try {
                     const kibanaSilenceCandles = await deps.withRetries(() => fetchKibanaCandles({
                         intervalSeconds: cfg.intervalSeconds,
-                        consolidateByTimestamp: true,
                         fillGapsToRequestedRange: false,
                         apiKey: null,
                         timeRange: {
@@ -1310,7 +1308,6 @@ class MarketAdapterService {
                         kibanaCandles = await deps.withRetries(() => fetchKibanaCandles({
                             intervalSeconds: cfg.intervalSeconds,
                             lookbackHours: kibanaLookbackHours,
-                            consolidateByTimestamp: true,
                             fillGapsToRequestedRange: false,
                             apiKey: null,
                         }), cfg.sourceRetries, cfg.retryDelayMs, 'kibana order book bootstrap failed');
@@ -1423,7 +1420,6 @@ class MarketAdapterService {
                     kibanaCandles = await deps.withRetries(() => fetchKibanaCandles({
                         intervalSeconds: cfg.intervalSeconds,
                         lookbackHours,
-                        consolidateByTimestamp: true,
                         fillGapsToRequestedRange: false,
                         apiKey: null,
                     }), cfg.sourceRetries, cfg.retryDelayMs, 'kibana bootstrap failed');
@@ -1662,7 +1658,6 @@ class MarketAdapterService {
                     try {
                         const kibanaGapCandles = await deps.withRetries(() => fetchKibanaCandles({
                             intervalSeconds: cfg.intervalSeconds,
-                            consolidateByTimestamp: true,
                             fillGapsToRequestedRange: false,
                             apiKey: null,
                             timeRange,
@@ -1747,7 +1742,6 @@ class MarketAdapterService {
                 try {
                     const historicalCandles = await deps.withRetries(() => fetchKibanaCandles({
                         intervalSeconds: cfg.intervalSeconds,
-                        consolidateByTimestamp: true,
                         fillGapsToRequestedRange: false,
                         apiKey: null,
                         timeRange: {

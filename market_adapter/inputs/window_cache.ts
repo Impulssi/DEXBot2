@@ -22,7 +22,7 @@
 import { path } from '../../modules/path_api.js';
 import { getStorage } from '../../modules/storage/index.js';
 import { writeJsonAtomic } from '../utils/atomic_write.js';
-import { getErrorMessage } from '../../modules/utils/errors.js';
+import { getErrorMessage, sleepMs } from '../../modules/utils/errors.js';
 import { mergeCandles } from '../candle_utils.js';
 
 const storage = getStorage();
@@ -317,12 +317,86 @@ function formatWindowLine(unit: string, index: number, total: number, gte: strin
     return `  ${unit} ${index}/${total}: ${gte} → ${lte}${detail ? ` ${detail}` : ''}`;
 }
 
-async function fetchRangeLogged(fetchRange: (gteIso: string, lteIso: string) => Promise<any[]>, opts: { unit: string; index: number; total: number; gte: string; lte: string; note?: string }) {
+/**
+ * Per-range fetch budget shared by every cached candle fetcher (pool, book,
+ * feed). Retries a failing range up to `attempts` times with linear backoff
+ * and an optional per-attempt timeout (aborted via signal passed as the 4th
+ * fetchRange argument — fetchers that ignore it simply get no abort).
+ * Defaults (attempts 1, no timeout) preserve the old single-shot behavior.
+ */
+async function fetchRangeWithRetry(
+    fetchRange: (gteIso: string, lteIso: string, window: any, signal?: AbortSignal) => Promise<any>,
+    opts: {
+        gte: string;
+        lte: string;
+        window: any;
+        label: string;
+        attempts?: number;
+        backoffBaseMs?: number;
+        timeoutMs?: number;
+        onRetry?: (info: { attempt: number; attempts: number; backoffMs: number; error: any; gte: string; lte: string }) => void;
+    }
+) {
+    const attempts = Number.isFinite(Number(opts.attempts)) && Number(opts.attempts) >= 1 ? Math.floor(Number(opts.attempts)) : 1;
+    const backoffBaseMs = Number.isFinite(Number(opts.backoffBaseMs)) && Number(opts.backoffBaseMs) >= 0 ? Number(opts.backoffBaseMs) : 0;
+    const timeoutMs = Number.isFinite(Number(opts.timeoutMs)) && Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 0;
+    let lastErr: any = null;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        let signal: AbortSignal | undefined;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        let timedOut = false;
+        const timeoutMessage = `${opts.label} timed out after ${Math.round(timeoutMs / 1000)}s`;
+        if (timeoutMs > 0) {
+            const controller = new AbortController();
+            signal = controller.signal;
+            timer = setTimeout(() => {
+                timedOut = true;
+                controller.abort(new Error(timeoutMessage));
+            }, timeoutMs);
+        }
+        try {
+            const candles = await fetchRange(opts.gte, opts.lte, opts.window, signal);
+            return { candles, attempts: attempt };
+        } catch (err: any) {
+            lastErr = timedOut && (err?.name === 'AbortError' || err?.message === timeoutMessage)
+                ? new Error(timeoutMessage)
+                : err;
+            if (attempt < attempts) {
+                const backoffMs = backoffBaseMs * attempt;
+                try { opts.onRetry?.({ attempt, attempts, backoffMs, error: lastErr, gte: opts.gte, lte: opts.lte }); } catch (_) { /* logging must never fail the fetch */ }
+                if (backoffMs > 0) await sleepMs(backoffMs);
+            }
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+    }
+    throw lastErr;
+}
+
+async function fetchRangeLogged(fetchRange: (gteIso: string, lteIso: string, window?: any, signal?: AbortSignal) => Promise<any[] | { candles: any[]; complete?: boolean }>, opts: { unit: string; index: number; total: number; gte: string; lte: string; note?: string; window?: any; retry?: { attempts?: number; backoffBaseMs?: number; timeoutMs?: number; onRetry?: (info: any) => void } }) {
     const startMs = Date.now();
-    const candles = await fetchRange(opts.gte, opts.lte);
+    const label = `${opts.unit} ${opts.index}/${opts.total}`;
+    const { candles: raw, attempts } = await fetchRangeWithRetry(fetchRange, {
+        gte: opts.gte,
+        lte: opts.lte,
+        window: opts.window,
+        label,
+        attempts: opts.retry?.attempts,
+        backoffBaseMs: opts.retry?.backoffBaseMs,
+        timeoutMs: opts.retry?.timeoutMs,
+        onRetry: opts.retry?.onRetry,
+    });
+    // A fetcher may return { candles, complete: false } for a partial result
+    // (e.g. one swap direction failed). Partial candles are still merged
+    // into this run's output, but the caller must not persist them as full
+    // coverage — otherwise the missing side would never be re-queried.
+    const complete = !Array.isArray(raw) && raw?.complete === false ? false : true;
+    const candles = Array.isArray(raw) ? raw : (raw?.candles ?? []);
+    const attemptNote = attempts > 1 ? ` (attempt ${attempts})` : '';
+    const partialNote = complete ? '' : ' (partial — not cached)';
     const note = opts.note ? `${opts.note}` : '';
-    console.log(formatWindowLine(opts.unit, opts.index, opts.total, opts.gte, opts.lte, `-> ${candles.length} candles (${((Date.now() - startMs) / 1000).toFixed(1)}s)${note}`));
-    return candles;
+    console.log(formatWindowLine(opts.unit, opts.index, opts.total, opts.gte, opts.lte, `-> ${candles.length} candles (${((Date.now() - startMs) / 1000).toFixed(1)}s)${attemptNote}${partialNote}${note}`));
+    return { candles, complete };
 }
 
 function higherVolumeWins(existing: any, incoming: any) {
@@ -336,7 +410,10 @@ function higherVolumeWins(existing: any, incoming: any) {
  * Fetch policy per window: exact reuse when nothing is missing, sub-range
  * queries merged over local when gaps are small (and `allowSubFetch`), else
  * one full-window fetch merged over local. Fresh data wins collisions by
- * volume/count, output is clamped to the window and sorted.
+ * volume/count, output is clamped to the window and sorted. A window whose
+ * fetch reports partial (`{ candles, complete: false }`) is merged into
+ * this run's output but NOT persisted, so the missing side is re-queried
+ * on the next run instead of being baked in as gap-filled zeros.
  */
 async function runCachedWindows(opts: {
     windows: any[];
@@ -344,15 +421,30 @@ async function runCachedWindows(opts: {
     requestKey: any;
     isMatch: (meta: any, requestKey: any) => boolean;
     metaForWindow: (window: any) => any;
-    fetchRange: (gteIso: string, lteIso: string, window: any) => Promise<any[]>;
+    // A fetch may return either a candle array (complete) or
+    // { candles, complete: false } for a partial result that must be merged
+    // but NOT persisted (see fetchRangeLogged).
+    fetchRange: (gteIso: string, lteIso: string, window: any, signal?: AbortSignal) => Promise<any[] | { candles: any[]; complete?: boolean }>;
     bucketMs: number;
     allowSubFetch?: boolean;
     nowMs?: number;
+    // Shared per-range fetch budget (used by the LP fetcher; book/feed keep
+    // the single-shot default). See fetchRangeWithRetry.
+    fetchAttempts?: number;
+    fetchBackoffBaseMs?: number;
+    fetchTimeoutMs?: number;
+    onFetchRetry?: (info: { attempt: number; attempts: number; backoffMs: number; error: any; gte: string; lte: string }) => void;
 }) {
     const { windows, outPath, requestKey, isMatch, metaForWindow, fetchRange, bucketMs } = opts;
     const allowSubFetch = opts.allowSubFetch !== false;
     const nowMs = opts.nowMs != null ? opts.nowMs : Date.now();
     const total = windows.length;
+    const retry = {
+        attempts: opts.fetchAttempts,
+        backoffBaseMs: opts.fetchBackoffBaseMs,
+        timeoutMs: opts.fetchTimeoutMs,
+        onRetry: opts.onFetchRetry,
+    };
 
     const localCache = loadBucketCache(outPath, requestKey, isMatch);
     if (localCache.files > 0) {
@@ -393,6 +485,10 @@ async function runCachedWindows(opts: {
 
         let candles: any[];
         let queriedRanges: { gte: number; lte: number }[];
+        // A partial sub-range makes the whole window partial: gap-filled
+        // buckets from the surviving side would otherwise claim coverage
+        // the failed side never earned, baking the skew into the cache.
+        let windowComplete = true;
         if (allowSubFetch && reusable.length > 0 && missing.length > 0 && missingHours <= windowHours / 2 && missing.length <= 3) {
             // Small gaps: query only the missing sub-ranges, merge over local.
             console.log(`${tag} (local cover${reusableNote}; fetching ${missingHours}h in ${missing.length} sub-range(s))`);
@@ -404,10 +500,11 @@ async function runCachedWindows(opts: {
                 // freezes it as a zero-volume candle. Over-fetch is safe —
                 // merged output is clamped to the window below.
                 const part = await fetchRangeLogged(
-                    (gte: string, lte: string) => fetchRange(gte, lte, windowEntry),
-                    { unit: 'Chunk', index: windowEntry.index, total, gte: new Date(m.gte).toISOString(), lte: new Date(m.lte + bucketMs).toISOString() },
+                    fetchRange,
+                    { unit: 'Chunk', index: windowEntry.index, total, gte: new Date(m.gte).toISOString(), lte: new Date(m.lte + bucketMs).toISOString(), window: windowEntry, retry },
                 );
-                mergedLocal = mergeCandles(mergedLocal, part, { onCollision: higherVolumeWins });
+                if (!part.complete) windowComplete = false;
+                mergedLocal = mergeCandles(mergedLocal, part.candles, { onCollision: higherVolumeWins });
             }
             // Clamp to the window (drops the one-bucket over-fetch above).
             candles = mergedLocal.filter((c: any) => Number(c[0]) >= gteMs && Number(c[0]) <= lteMs);
@@ -421,15 +518,20 @@ async function runCachedWindows(opts: {
                 console.log(`${tag} (local cover${reusableNote}; gap too large — full window fetch)`);
             }
             const fresh = await fetchRangeLogged(
-                (gte: string, lte: string) => fetchRange(gte, lte, windowEntry),
-                { unit: 'Chunk', index: windowEntry.index, total, gte: windowEntry.gte, lte: windowEntry.lte },
+                fetchRange,
+                { unit: 'Chunk', index: windowEntry.index, total, gte: windowEntry.gte, lte: windowEntry.lte, window: windowEntry, retry },
             );
+            if (!fresh.complete) windowComplete = false;
             candles = reusable.length > 0
-                ? mergeCandles(reusable, fresh, { onCollision: higherVolumeWins }).filter((c: any) => Number(c[0]) >= gteMs && Number(c[0]) <= lteMs).sort((a: any, b: any) => a[0] - b[0])
-                : fresh;
+                ? mergeCandles(reusable, fresh.candles, { onCollision: higherVolumeWins }).filter((c: any) => Number(c[0]) >= gteMs && Number(c[0]) <= lteMs).sort((a: any, b: any) => a[0] - b[0])
+                : fresh.candles;
             queriedRanges = [{ gte: gteMs, lte: lteMs }];
         }
-        persistCacheChunk(windowEntry.file, { ...metaForWindow(windowEntry), fetchedAt: new Date().toISOString(), queriedRanges }, candles);
+        if (windowComplete) {
+            persistCacheChunk(windowEntry.file, { ...metaForWindow(windowEntry), fetchedAt: new Date().toISOString(), queriedRanges }, candles);
+        } else {
+            console.log(`${tag} (partial — kept for this run, not cached; will re-query next run)`);
+        }
         merged = merged.length === 0
             ? candles
             : mergeCandles(merged, candles, { onCollision: higherVolumeWins });
@@ -461,5 +563,6 @@ export {
     planWindowReuse,
     formatWindowLine,
     fetchRangeLogged,
+    fetchRangeWithRetry,
     runCachedWindows,
 };

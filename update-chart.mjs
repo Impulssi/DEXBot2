@@ -15,7 +15,7 @@ const CHART_FILE = resolve(ROOT, 'analysis/charts/BTS-XBTSX.USDT_tradingview.htm
 //   node update-chart.mjs                     -> 24 kk (oletus, inkrementaalinen)
 //   node update-chart.mjs 12                  -> 12 kk taaksepain (inkrementaalinen)
 //   node update-chart.mjs kaikki              -> koko poolin historia (inkrementaalinen)
-//   node update-chart.mjs --alku 2024-08-11   -> aloituspäivämäärästä tähän päivään (inkrementaalinen)
+//   node update-chart.mjs --since 2024-08-11   -> aloituspäivämäärästä tähän päivään (inkrementaalinen, alias --alku)
 //   node update-chart.mjs --full ...          -> pakota tayshaku historiasta (ei inkrementaalista)
 // Inkrementaalinen = haetaan Kibanasta vain viimeisen tallennetun kynttilan
 // jalkeiset kaupat (yleensa 0-2 sivua eika ~20), historiaa ei haeta uudelleen
@@ -23,7 +23,8 @@ const CHART_FILE = resolve(ROOT, 'analysis/charts/BTS-XBTSX.USDT_tradingview.htm
 // halpoja), joten jokainen ikkuna on katettu ensimmaisen tayshaun jalkeen.
 const argRaw = String(process.argv[2] || '').trim().toLowerCase();
 const FULL_HISTORY = argRaw === 'kaikki' || argRaw === 'all';
-const START_ARG_IDX = process.argv.indexOf('--alku');
+const START_FLAG = ['--since', '--start', '--alku'].find((f) => process.argv.indexOf(f) >= 0);
+const START_ARG_IDX = START_FLAG ? process.argv.indexOf(START_FLAG) : -1;
 const START_DATE = START_ARG_IDX >= 0 && process.argv[START_ARG_IDX + 1]
     ? process.argv[START_ARG_IDX + 1].trim()
     : null;

@@ -26,13 +26,13 @@ const __dirname = path.dirname(__filename);
 import { loadBotMeta, resolveAmaConfig, loadBotSettings, computeBotKey } from '../analysis/bot_key_utils.js';
 import { PATHS } from '../modules/paths.js';
 import { normalizePoolId, resolveAsset, findPoolByAssets } from '../market_adapter/utils/chain.js';
-import { fetchCandlesSequentially, outputPath, buildFetchWindowsFromRange } from '../market_adapter/inputs/fetch_lp_data.js';
-import { getMarketCandles } from '../market_adapter/core/kibana_market_candles.js';
+import { fetchCandlesSequentially, outputPath } from '../market_adapter/inputs/fetch_lp_data.js';
+import { fetchMarketCandlesSequentially } from '../market_adapter/inputs/fetch_book_data.js';
 import { fetchFeedCandlesSequentially } from '../market_adapter/inputs/kibana_feed_source.js';
-import { mergeCandles } from '../market_adapter/candle_utils.js';
 import { getErrorMessage } from '../modules/utils/errors.js';
 import { muteChainLogs } from '../modules/utils/chain_logs.js';
 import { isSameBotName, sanitizeKey } from '../modules/utils/sanitize_key.js';
+import { slugPart } from '../market_adapter/interval_utils.js';
 
 const INTERVAL_SECONDS = 3600;
 const DEFAULT_MONTHS = 3;
@@ -210,10 +210,6 @@ function findBotByTarget(target: string): { botKey: string; meta: any } | null {
     return null;
 }
 
-function slugPart(value: any): string {
-    return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'unknown';
-}
-
 function monthsLabel(months: number): string {
     return Number.isInteger(months) ? `${months}m` : `${String(months).replace('.', 'p')}m`;
 }
@@ -355,10 +351,9 @@ async function run(): Promise<void> {
         }
 
         // ── Data pull (the only job of this script) ──────────────────────────
-        // All three paths reuse the existing Kibana infrastructure in 1-month
-        // windows: LP goes through the fetcher's manifest/resume + per-chunk
-        // timeout/retry machinery, book fills and feed publishes use the same
-        // windowing with the shared mergeCandles helper.
+        // All three paths share ONE chunk-cache function (runCachedWindows)
+        // in 1-month windows; the LP path additionally sets a per-chunk
+        // timeout/retry budget. Reruns query only what is missing.
         // No fetch logic is duplicated here.
         const TV_CHUNK_MONTHS = 1;
         console.log(`[tv] Fetching 1h candles (${months}mo, ${timeRange.gte.slice(0, 10)} → ${timeRange.lte.slice(0, 10)}) from ${sourceLabel} for ${assetA.symbol}/${assetB.symbol}...`);
@@ -379,20 +374,14 @@ async function run(): Promise<void> {
                 chunkMonths: TV_CHUNK_MONTHS,
             }, outputPath(poolId, INTERVAL_SECONDS, assetA, assetB));
         } else {
-            const windows = buildFetchWindowsFromRange(timeRange, TV_CHUNK_MONTHS);
-            let merged: any[] = [];
-            for (let w = 0; w < windows.length; w++) {
-                const windowStartMs = Date.now();
-                console.log(`  Window ${w + 1}/${windows.length}: ${windows[w].gte.slice(0, 10)} → ${windows[w].lte.slice(0, 10)}`);
-                const part = await getMarketCandles(assetA, assetB, { intervalSeconds: INTERVAL_SECONDS, timeRange: windows[w] });
-                console.log(`    -> ${part.length} candles (${((Date.now() - windowStartMs) / 1000).toFixed(1)}s)`);
-                merged = merged.length === 0
-                    ? part
-                    : mergeCandles(merged, part, {
-                        onCollision: (existing: any, incoming: any) => incoming[5] > existing[5] ? incoming : existing,
-                    });
-            }
-            candles = merged;
+            // Order-book fills go through the same chunk-cache machinery as LP
+            // candles and feed publishes: reruns reuse local buckets and query
+            // only what is missing (plus a tail refresh for late-indexed fills).
+            candles = await fetchMarketCandlesSequentially(assetA, assetB, {
+                intervalSeconds: INTERVAL_SECONDS,
+                timeRange,
+                chunkMonths: TV_CHUNK_MONTHS,
+            });
         }
         if (!Array.isArray(candles) || candles.length === 0) throw new Error('No candles returned for the requested range');
 

@@ -17,7 +17,7 @@
 
 import { createRequire } from 'node:module';
 import { MARKET_ADAPTER } from '../../modules/constants.js';
-import { getErrorMessage } from '../../modules/utils/errors.js';
+import { getErrorMessage, isTransientNetworkError, sleepMs } from '../../modules/utils/errors.js';
 
 const _require = createRequire(import.meta.url);
 let _https: any;
@@ -35,6 +35,13 @@ const DEFAULT_CONFIG = Object.freeze({
   kibanaUrl:  KIBANA_URL,
   apiKey:     null,     // 'base64(id:key)' if auth required
   timeout:    MARKET_ADAPTER.KIBANA_REQUEST_TIMEOUT_MS,
+  // One-shot queries (discovery aggs, bot-usage scans) go through
+  // kibanaSearch directly with no page loop of their own, so the client
+  // retries transient failures itself. Paged candle fetches do their own
+  // per-page retry and pass kibanaSearchRetries: 1 to avoid stacking
+  // retries (page budget x client budget).
+  kibanaSearchRetries: 3,       // total attempts per request
+  kibanaSearchRetryDelayMs: 1000, // base delay, linear backoff (x attempt)
 });
 
 const PROXY_PATH = (index: any) =>
@@ -148,11 +155,29 @@ function doKibanaRequest(cfg: any, esQuery: any, resolve: any, reject: any, redi
   req.end();
 }
 
-function kibanaSearch(config: any, esQuery: any) {
+function kibanaSearchOnce(config: any, esQuery: any) {
   return new Promise((resolve, reject) => {
-    const cfg = { ...DEFAULT_CONFIG, ...config };
-    doKibanaRequest(cfg, esQuery, resolve, reject);
+    doKibanaRequest(config, esQuery, resolve, reject);
   });
+}
+
+async function kibanaSearch(config: any, esQuery: any) {
+  const cfg = { ...DEFAULT_CONFIG, ...config };
+  const retriesRaw = Number(cfg.kibanaSearchRetries);
+  const attempts = Number.isFinite(retriesRaw) && retriesRaw >= 1 ? Math.floor(retriesRaw) : 1;
+  const delayRaw = Number(cfg.kibanaSearchRetryDelayMs);
+  const retryDelayMs = Number.isFinite(delayRaw) && delayRaw >= 0 ? delayRaw : 1000;
+  let lastErr: any = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await kibanaSearchOnce(cfg, esQuery);
+    } catch (err: any) {
+      lastErr = err;
+      if (attempt >= attempts || !isTransientNetworkError(err)) throw err;
+      if (retryDelayMs > 0) await sleepMs(retryDelayMs * attempt);
+    }
+  }
+  throw lastErr;
 }
 
 export { DEFAULT_CONFIG, kibanaSearch }

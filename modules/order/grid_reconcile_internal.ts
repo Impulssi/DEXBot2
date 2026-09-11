@@ -10,7 +10,7 @@
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
 import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findCrossedOrder, resolveGapBand, isSlotInRail, priceSlotEqual, resolveBuyFloorUsdt, resolveBuyWindowMode, isDeepShelfId } from './utils/math.js';
-import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, reserveEdgeIdSet, compareReserveEdge } from './utils/order.js';
+import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, reserveEdgeIdSet, compareReserveEdge, parseSlotIndex } from './utils/order.js';
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -347,12 +347,18 @@ function _pickEdgeReserveSlots(manager: any, orderType: any, count: any, exclude
     const typeFilter = boundaryKnown
         ? (slot: any) => slot && (slot.type === type || slot.type === ORDER_TYPES.SPREAD)
         : (slot: any) => slot && slot.type === type;
+    // Reserve classification (reserveEdgeIdSet / countLiveReserveOrders) is
+    // slot-N gated; keep placement in agreement so a kept virtual non-grid
+    // shelf is never activated as a reserve it would then never be counted
+    // as (issue #27 follow-up). No-op upstream (grids only mint slot-N).
+    const gridSlot = (slot: any): boolean => parseSlotIndex(slot?.id) !== null;
     // Both edges anchor at the live grid's own edge (ladder/rail extreme):
     // floor — nearest at/above the live floor first; ceiling — nearest
     // at/below the live ceiling first. Stale out-of-grid slots sort last.
     const edgeAnchor = resolveLiveReserveEdgeAnchorPrice(manager, edgeDesc ? 'sell' : 'buy');
     const edgeFirst = (Array.from(manager.orders.values()) as any[])
         .filter(typeFilter)
+        .filter(gridSlot)
         .filter(inRail)
         .sort((a: any, b: any) => compareReserveEdge(a, b, edgeDesc ? 'ceiling' : 'floor', edgeAnchor));
     let effectiveMin = 0;
