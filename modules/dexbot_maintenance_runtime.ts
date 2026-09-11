@@ -62,6 +62,7 @@ function scheduleFillConsumerRestartFn(...args: any) { return require('./dexbot_
 function reconcileGridOrders(...args: any) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
 function resolveReserveCount(...args: any) { return require('./order/utils/order').resolveReserveCount(...args); }
 function reserveEdgeIdSet(...args: any) { return require('./order/utils/order').reserveEdgeIdSet(...args); }
+function liveWindowIdSet(...args: any) { return require('./order/utils/order').liveWindowIdSet(...args); }
 function resolveLiveReserveEdgeAnchorPrice(...args: any) { return require('./order/utils/order').resolveLiveReserveEdgeAnchorPrice(...args); }
 function formatUnmatchedChainOrder(...args: any) { return require('./order/utils/order').formatUnmatchedChainOrder(...args); }
 function isNonBlockingUnmatchedOrder(...args: any) { return require('./order/utils/order').isNonBlockingUnmatchedOrder(...args); }
@@ -566,7 +567,13 @@ function getTargetActiveOrders(config: any, side: any) {
  * Classification reuses the single source of truth (reserveEdgeIdSet +
  * resolveLiveReserveEdgeAnchorPrice, same anchor the placement pickers use)
  * over the full master grid, intersected with live ACTIVE/PARTIAL orderIds
- * (same live definition as countLiveGridOrders).
+ * (same live definition as countLiveGridOrders). The edge pick excludes the
+ * window (liveWindowIdSet — the same exclusion every placement picker
+ * applies): window + edge are additive in targets/fees/hold-back, but
+ * without the exclusion a window that reaches the grid edge (keep-low
+ * window = bottom slots = floor edge) makes the edge pick land on window
+ * members and the count reads N/N with zero dedicated reserves, so the
+ * deficit never fires (issue #27 follow-up).
  * @param {any} manager - OrderManager
  * @param {any} config - Bot configuration (reserve count source)
  * @param {any} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
@@ -585,7 +592,11 @@ function countLiveReserveOrders(manager: any, config: any, type: any): number | 
         const allSlots: any[] = Array.from(manager.orders.values());
         if (allSlots.length === 0) return null;
         const anchor = resolveLiveReserveEdgeAnchorPrice(manager, side);
-        const reserveIds = reserveEdgeIdSet(allSlots, config, type, anchor);
+        // Fail open on unknown window geometry (null): without a boundary the
+        // pickers cannot place reserves either, so keep the previous
+        // (exclusion-free) classification instead of guessing.
+        const windowIds = liveWindowIdSet(manager, type);
+        const reserveIds = reserveEdgeIdSet(allSlots, config, type, anchor, windowIds);
         if (!reserveIds || reserveIds.size === 0) return 0;
         const liveIds = new Set<string>();
         if (typeof manager.getOrdersByTypeAndState === 'function') {

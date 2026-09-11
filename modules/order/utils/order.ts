@@ -2174,9 +2174,15 @@ function resolveReserveOrders(config: any) {
  *   classification matches placement. NB: null/undefined falls back to the
  *   config-bound anchor (unresolved -> plain rank) — unlike
  *   selectReserveEdgeSlots, where null alone means plain rank.
+ * @param {Set<string>|null} [excludeIds] - Windowed ids to skip (same set the
+ *   placement pickers exclude). Window + edge are additive in every target
+ *   (order counts, fees, hold-back), so a window that reaches the grid edge
+ *   (e.g. a keep-low window sitting on the floor) must not let the edge pick
+ *   land on window members — otherwise counting reads N/N with zero
+ *   dedicated reserves and the deficit never fires (issue #27 follow-up).
  * @returns {Set<string>|null} Edge slot ids, or null when side disabled
  */
-function reserveEdgeIdSet(allSlots: any, config: any, orderType: any, anchorPrice: unknown = null): Set<string> | null {
+function reserveEdgeIdSet(allSlots: any, config: any, orderType: any, anchorPrice: unknown = null, excludeIds: Set<string> | null = null): Set<string> | null {
     const isSell = orderType === ORDER_TYPES.SELL;
     const side = isSell ? 'sell' : 'buy';
     // Filter by the canonical side type, not the caller's token: the previous
@@ -2192,10 +2198,55 @@ function reserveEdgeIdSet(allSlots: any, config: any, orderType: any, anchorPric
     const ascending = allSlots
         .filter((s: any) => s && s.id != null && s.price != null && s.type === type && parseSlotIndex(s.id) !== null)
         .sort((a: any, b: any) => Number(a.price) - Number(b.price));
-    for (const s of selectReserveEdgeSlots(ascending, n, null, isSell ? 'ceiling' : 'floor', anchor)) {
+    for (const s of selectReserveEdgeSlots(ascending, n, excludeIds, isSell ? 'ceiling' : 'floor', anchor)) {
         ids.add(s.id);
     }
     return ids;
+}
+
+/**
+ * Window member ids for one side, mirroring the window every placement
+ * picker excludes from its reserve pick: in-rail slots of the side (geometry
+ * via resolveGapBand/isSlotInRail — the same source the reconcile pickers
+ * use), ordered closest to market first (buys: highest price first; sells:
+ * lowest first), sliced to the configured activeOrders count. The slice runs
+ * over the FULL master rail, not just live orders — window membership is
+ * geometric (a virtual hole inside the window still blocks the reserve pick
+ * there), so live-only slices would misclassify live reserves as window
+ * members whenever the window itself is under-filled.
+ *
+ * Returns null when the boundary geometry is unknown: the pickers cannot
+ * place reserves without it either, so callers fail open (no exclusion)
+ * and keep their previous classification instead of guessing.
+ *
+ * @param {any} manager - OrderManager (orders Map, config, boundaryIdx)
+ * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+ * @returns {Set<string>|null} Window slot ids, or null when geometry unknown
+ */
+function liveWindowIdSet(manager: any, orderType: any): Set<string> | null {
+    try {
+        const isSell = orderType === ORDER_TYPES.SELL;
+        const type = isSell ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
+        const side = isSell ? 'sell' : 'buy';
+        const count = Math.max(0, Math.floor(Number(manager?.config?.activeOrders?.[side])) || 0);
+        if (!(count > 0) || !manager?.orders || typeof manager.orders.values !== 'function') return new Set<string>();
+        const resolved = MathUtils.resolveGapBand(manager);
+        if (resolved?.boundaryIdx == null || resolved?.sellStartIdx == null) return null;
+        const inRail = (o: any): boolean => MathUtils.isSlotInRail(resolved.boundaryIdx, resolved.gapSlots, type, o);
+        // Same type filter as the window pickers with known geometry: the
+        // side's concrete type plus SPREAD placeholders (normalized empties
+        // sitting in this side's rail).
+        const typeFilter = (o: any): boolean => o && o.id != null && o.price != null && (o.type === type || o.type === ORDER_TYPES.SPREAD);
+        const ids = (Array.from(manager.orders.values()) as any[])
+            .filter(typeFilter)
+            .filter(inRail)
+            .sort((a: any, b: any) => isSell ? Number(a.price) - Number(b.price) : Number(b.price) - Number(a.price))
+            .slice(0, count)
+            .map((o: any) => String(o.id));
+        return new Set<string>(ids);
+    } catch {
+        return null;
+    }
 }
 
 /**
@@ -2696,6 +2747,6 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
     return { masterIds: [...masterIds], createIds: [...createIds], all: [...all] };
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isNonBlockingUnmatchedOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, deriveTargetBoundary, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds, reserveEdgeIdSet }
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isNonBlockingUnmatchedOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, deriveTargetBoundary, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds, reserveEdgeIdSet, liveWindowIdSet }
 export { resolveReserveEdgeAnchorPrice, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge, collectRefillSlotIds };
 
