@@ -577,6 +577,193 @@ async function testKeepAliveRecovery() {
     }
 }
 
+// ── Node-failure reporting / reconnect selection ─────────────────────────
+
+/**
+ * Minimal mock node server for node-failure tests.
+ * @param {number} port
+ * @param {{failLoginAfter?: number, closeReply?: 'destroy'|'graceful'}} options
+ */
+function createNodeFailureServer(port, options: any = {}) {
+    return new Promise<any>((resolve, reject) => {
+        const server = http.createServer((req, res) => { res.writeHead(200); res.end('ok'); });
+        const sockets = new Set();
+        let loginCalls = 0;
+        const failLoginAfter = options.failLoginAfter ?? Number.POSITIVE_INFINITY;
+        const closeReply = options.closeReply || 'destroy';
+
+        server.on('upgrade', (req, socket) => {
+            const key = req.headers['sec-websocket-key'];
+            const acceptKey = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+            socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + acceptKey + '\r\n\r\n');
+            sockets.add(socket);
+            socket.on('close', () => sockets.delete(socket));
+            socket.on('error', () => { sockets.delete(socket); });
+
+            socket.on('data', (chunk) => {
+                let frame;
+                try { frame = parseWsFrame(chunk); } catch (_) { return; }
+                if (!frame) return;
+                if (frame.opcode === 0x08) {
+                    if (closeReply === 'graceful') { try { socket.end(); } catch (_) {} }
+                    else { try { socket.destroy(); } catch (_) {} }
+                    return;
+                }
+                let msg;
+                try { msg = JSON.parse(frame.payload.toString()); } catch (_) { return; }
+                if (msg.method !== 'call') return;
+                const id = msg.id;
+                const method = msg.params[1];
+                const respond = (result, error?) => sendWsFrame(socket, JSON.stringify({ id, jsonrpc: '2.0', result, error }));
+                if (method === 'login') {
+                    loginCalls++;
+                    if (loginCalls > failLoginAfter) respond(null, { code: 1, message: 'login failed' });
+                    else respond(true);
+                } else if (method === 'database') respond(2);
+                else if (method === 'history') respond(3);
+                else if (method === 'network_broadcast') respond(4);
+                else if (method === 'get_chain_id') respond('4018d7844c78f6a6c41c6a552b898022310fc5dec06da467ee7905a8dad512c8');
+                else if (method === 'get_chain_properties') respond({ address_prefix: 'BTS' });
+                else if (method === 'get_global_properties') respond({ parameters: { current_fees: { parameters: [], scale: 10000 } } });
+                else respond({});
+            });
+        });
+
+        server.once('error', reject);
+        server.listen(port, '127.0.0.1', () => {
+            resolve({
+                port,
+                url: `ws://127.0.0.1:${port}/ws`,
+                abortAll() { for (const s of sockets) { try { (s as any).destroy(); } catch (_) {} } },
+                sendClose(code) {
+                    const payload = Buffer.alloc(2);
+                    payload.writeUInt16BE(code, 0);
+                    for (const s of sockets) { try { sendWsFrameRaw(s, 0x08, payload); } catch (_) {} }
+                },
+                close() { for (const s of sockets) { try { (s as any).destroy(); } catch (_) {} } server.close(); },
+            });
+        });
+    });
+}
+
+async function testNodeFailureReportsOnce() {
+    const { createTransport } = require('../modules/bitshares-native/transport');
+    const port = 19100 + Math.floor(Math.random() * 500);
+    const server = await createNodeFailureServer(port, { failLoginAfter: 0, closeReply: 'destroy' });
+    const failures: any[] = [];
+    try {
+        const transport = createTransport({
+            keepAliveIntervalMs: 30,
+            rpcTimeoutMs: 100,
+            connectTimeoutMs: 500,
+            onNodeFailure: (url, message, source) => failures.push({ url, message, source }),
+        });
+        await transport.connect([server.url], false);
+        const start = Date.now();
+        while (failures.length === 0 && Date.now() - start < 5000) {
+            await new Promise(r => setTimeout(r, 50));
+        }
+        assert.ok(failures.length >= 1, 'expected at least one node-failure report');
+        assert.strictEqual(failures[0].url, server.url, 'failure must name the node');
+        assert.strictEqual(failures[0].source, 'keep-alive', 'first failure source is keep-alive');
+        // The close triggered by the keep-alive trip must not produce a second
+        // (connection) strike for the same event.
+        await new Promise(r => setTimeout(r, 400));
+        assert.strictEqual(failures.filter(f => f.source === 'connection').length, 0,
+            'keep-alive trip must not double-report as a connection failure');
+        transport.disconnect();
+        console.log('  PASS: Node failure reported once (no duplicate close strike)');
+    } finally {
+        server.close();
+    }
+}
+
+async function testCloseClassification() {
+    const { createTransport } = require('../modules/bitshares-native/transport');
+
+    // Benign close (1000) must NOT count as a node failure.
+    const benignPort = 19200 + Math.floor(Math.random() * 200);
+    const benignServer = await createNodeFailureServer(benignPort, { closeReply: 'graceful' });
+    const benignFailures: any[] = [];
+    try {
+        const transport = createTransport({
+            keepAliveIntervalMs: 60000,
+            rpcTimeoutMs: 500,
+            connectTimeoutMs: 1000,
+            onNodeFailure: (url, message, source) => benignFailures.push({ url, source }),
+        });
+        await transport.connect([benignServer.url], false);
+        benignServer.sendClose(1000);
+        await new Promise(r => setTimeout(r, 400));
+        assert.strictEqual(benignFailures.length, 0, 'normal close (1000) must not count as a node failure');
+        transport.disconnect();
+        console.log('  PASS: Benign close not reported');
+    } finally {
+        benignServer.close();
+    }
+
+    // Abnormal close (abrupt drop) MUST count, with source 'connection'.
+    const abnormalPort = 19400 + Math.floor(Math.random() * 200);
+    const abnormalServer = await createNodeFailureServer(abnormalPort, {});
+    const abnormalFailures: any[] = [];
+    try {
+        const transport = createTransport({
+            keepAliveIntervalMs: 60000,
+            rpcTimeoutMs: 500,
+            connectTimeoutMs: 1000,
+            onNodeFailure: (url, message, source) => abnormalFailures.push({ url, source }),
+        });
+        await transport.connect([abnormalServer.url], false);
+        abnormalServer.abortAll();
+        const start = Date.now();
+        while (abnormalFailures.length === 0 && Date.now() - start < 3000) {
+            await new Promise(r => setTimeout(r, 50));
+        }
+        assert.ok(abnormalFailures.length >= 1, 'abnormal close must count as a node failure');
+        assert.strictEqual(abnormalFailures[0].source, 'connection');
+        transport.disconnect();
+        console.log('  PASS: Abnormal close reported');
+    } finally {
+        abnormalServer.close();
+    }
+}
+
+async function testShouldSkipNode() {
+    const { createTransport } = require('../modules/bitshares-native/transport');
+    const portA = 19600 + Math.floor(Math.random() * 100);
+    const portB = 19700 + Math.floor(Math.random() * 100);
+    const serverA = await createNodeFailureServer(portA, {});
+    const serverB = await createNodeFailureServer(portB, {});
+    try {
+        // Skip A → must land on B even though both are healthy.
+        const transport = createTransport({
+            keepAliveIntervalMs: 60000,
+            rpcTimeoutMs: 500,
+            connectTimeoutMs: 1000,
+            shouldSkipNode: (url) => url === serverA.url,
+        });
+        await transport.connect([serverA.url, serverB.url], false);
+        assert.strictEqual(transport.getNodeUrl(), serverB.url, 'skipped node must not be selected');
+        transport.disconnect();
+        console.log('  PASS: shouldSkipNode deprioritizes a node');
+
+        // Every node skipped → fallback still connects (never wedge).
+        const fallback = createTransport({
+            keepAliveIntervalMs: 60000,
+            rpcTimeoutMs: 500,
+            connectTimeoutMs: 1000,
+            shouldSkipNode: () => true,
+        });
+        await fallback.connect([serverA.url, serverB.url], false);
+        assert.ok(fallback.getNodeUrl(), 'fallback connects when every node is deprioritized');
+        fallback.disconnect();
+        console.log('  PASS: all-deprioritized fallback still connects');
+    } finally {
+        serverA.close();
+        serverB.close();
+    }
+}
+
 // ── Run all tests ────────────────────────────────────────────────────────
 
 (async () => {
@@ -588,6 +775,9 @@ async function testKeepAliveRecovery() {
         await testStatusCallbacks();
         await testKeepAlive();
         await testKeepAliveRecovery();
+        await testNodeFailureReportsOnce();
+        await testCloseClassification();
+        await testShouldSkipNode();
         console.log('\n=== All transport tests passed ===');
     } catch (e) {
         if (!STRICT_TEST && isEnvironmentError(e)) {

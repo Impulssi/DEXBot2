@@ -30,6 +30,8 @@ const CONNECT_TIMEOUT_MS: number = TRANSPORT.CONNECT_TIMEOUT_MS;
 const RPC_TIMEOUT_MS: number = TRANSPORT.RPC_TIMEOUT_MS;
 const KEEPALIVE_INTERVAL_MS: number = TRANSPORT.KEEPALIVE_INTERVAL_MS;
 const CLOSE_COALESCE_MS: number = TRANSPORT.CLOSE_COALESCE_MS;
+// Close codes that do not indicate a node problem (normal closure / going away).
+const BENIGN_CLOSE_CODES: Set<number> = new Set<number>(Array.isArray(TRANSPORT.BENIGN_CLOSE_CODES) ? TRANSPORT.BENIGN_CLOSE_CODES : [1000, 1001]);
 
 let _rpcId = 0;
 
@@ -89,6 +91,11 @@ interface TransportConfig {
     rpcTimeoutMs?: number;
     onStatusChange?: ((status: string, nodeUrl: string | null) => void) | null;
     onReconnect?: ((nodeUrl: string) => Promise<void>) | null;
+    onNodeFailure?: ((nodeUrl: string, message: string, source: string) => void) | null;
+    // Optional predicate: return true to deprioritize a node for the next
+    // reconnect (e.g. blacklisted/failed per NodeManager). Unlike the internal
+    // recently-failed set, this is consulted on every connect attempt.
+    shouldSkipNode?: ((nodeUrl: string) => boolean) | null;
     validateNode?: (() => Promise<void>) | null;
     keepAliveIntervalMs?: number;
 }
@@ -99,6 +106,8 @@ function createTransport(config: TransportConfig = {}) {
         rpcTimeoutMs = RPC_TIMEOUT_MS,
         onStatusChange = null,
         onReconnect = null,
+        onNodeFailure = null,
+        shouldSkipNode = null,
         validateNode = null,
         keepAliveIntervalMs = KEEPALIVE_INTERVAL_MS,
     } = config;
@@ -130,6 +139,43 @@ function createTransport(config: TransportConfig = {}) {
     // deadline-aborted broadcast's reconnect racing the next request) cannot
     // leave a zombie handshake that later assigns itself as the active socket.
     const connectingSockets = new Set<WebSocketLike>();
+    // Nodes that failed during this transport's lifetime (keep-alive trip or
+    // abnormal close). Deprioritized on the next reconnect but cleared as soon
+    // as the node connects successfully, so a recovered node is re-admitted.
+    const failedNodes = new Set<string>();
+    // Set when the keep-alive path already reported a failure for the active
+    // socket, so the ensuing close does not double-count the same event.
+    let suppressNextCloseFailure = false;
+    // Errors from the most recent connect sweep, used for the aggregate throw.
+    let lastConnectErrors: Error[] = [];
+
+    /**
+     * Record a node failure: remember it for reconnect deprioritization and
+     * forward to the optional onNodeFailure observer (which feeds NodeManager).
+     * Never throws into the transport's own control flow.
+     */
+    function notifyNodeFailure(failedUrl: string | null, message: string, source: string): void {
+        if (!failedUrl) return;
+        failedNodes.add(failedUrl);
+        if (onNodeFailure) {
+            try { onNodeFailure(failedUrl, message, source); } catch (_: any) {}
+        }
+    }
+
+    /** True when a close code/wasClean pair should NOT count as a node failure. */
+    function isBenignClose(code: any, wasClean: boolean): boolean {
+        if (wasClean === false) return false;
+        return typeof code === 'number' && BENIGN_CLOSE_CODES.has(code);
+    }
+
+    /** True when a node should be skipped in favor of another candidate. */
+    function shouldDeprioritize(url: string): boolean {
+        if (failedNodes.has(url)) return true;
+        if (shouldSkipNode) {
+            try { return !!shouldSkipNode(url); } catch (_: any) { return false; }
+        }
+        return false;
+    }
 
     function setStatus(newStatus: TransportStatus): void {
         if (status !== newStatus) {
@@ -200,15 +246,20 @@ function createTransport(config: TransportConfig = {}) {
                 })
                 .catch(() => {
                     keepAliveFailures++;
+                    const failedNode = nodeUrl;
                     if (keepAliveFailures >= MAX_KEEPALIVE_FAILURES) {
-                        console.warn(`[TRANSPORT] Keep-alive failed ${keepAliveFailures} times, forcing reconnect`);
+                        console.warn(`[TRANSPORT] Keep-alive failed ${keepAliveFailures} times on ${failedNode || 'unknown node'}, forcing reconnect`);
+                        // Report once here; suppress the follow-up connection
+                        // report from the close this triggers.
+                        suppressNextCloseFailure = true;
+                        notifyNodeFailure(failedNode, `keep-alive failed ${keepAliveFailures} times`, 'keep-alive');
                         autoreconnect = true;
                         intentionalClose = false;
                         if (ws) {
                             try { ws.close(); } catch (_: any) {}
                         }
                     } else {
-                        console.warn(`[TRANSPORT] Keep-alive call failed (${keepAliveFailures}/${MAX_KEEPALIVE_FAILURES})`);
+                        console.warn(`[TRANSPORT] Keep-alive call failed (${keepAliveFailures}/${MAX_KEEPALIVE_FAILURES}) on ${failedNode || 'unknown node'}`);
                     }
                 })
                 .finally(() => {
@@ -287,6 +338,10 @@ function createTransport(config: TransportConfig = {}) {
 
         socket.onclose = (evt: any) => {
             if (socket !== ws) return;
+            // Consume the keep-alive suppression flag regardless of the
+            // coalescing path, so a later unrelated close is never suppressed.
+            const suppressCloseFailure = suppressNextCloseFailure;
+            suppressNextCloseFailure = false;
             const code = evt?.code;
             const reason = evt?.reason || '';
             const wasClean = evt?.wasClean !== false;
@@ -302,6 +357,12 @@ function createTransport(config: TransportConfig = {}) {
             lastCloseSocket = socket;
             lastCloseAt = now;
             transportLogger.warn(`WebSocket closed on ${nodeUrl}: code=${code}, wasClean=${wasClean}, reason="${reason}"`);
+            // Only abnormal, unexpected closes count as a node failure. A normal
+            // closure (1000) or going-away (1001, server deploy) is benign, and
+            // a keep-alive trip was already reported.
+            if (!intentionalClose && nodeUrl && !suppressCloseFailure && !isBenignClose(code, wasClean)) {
+                notifyNodeFailure(nodeUrl, `WebSocket closed code=${code} wasClean=${wasClean} reason="${reason}"`, 'connection');
+            }
             setStatus('closed');
             cleanup();
 
@@ -320,9 +381,17 @@ function createTransport(config: TransportConfig = {}) {
             try { ws.close(); } catch (_: any) {}
         }
         ws = socket;
+        // A new active socket supersedes any pending close-suppression: the
+        // flag only ever refers to the socket the keep-alive trip tore down,
+        // whose onclose was just detached above (or may fire after this
+        // connect). Leaving it armed would suppress this socket's next genuine
+        // failure report — a one-strike leak, but avoidable.
+        suppressNextCloseFailure = false;
         nodeUrl = url;
         nodeIndex = idx;
         reconnectAttempts = 0;
+        // A successful connection clears the deprioritization for this node.
+        failedNodes.delete(url);
         setupMessageHandler(socket);
         return (async () => {
             if (validateNode) {
@@ -340,23 +409,22 @@ function createTransport(config: TransportConfig = {}) {
         })();
     }
 
-    async function tryConnect(): Promise<void> {
-        intentionalClose = false;
-        const list = [...nodeList];
-        if (list.length === 0) {
-            setStatus('closed');
-            return;
-        }
+    /**
+     * Attempt to connect over a specific candidate set.
+     * Parallel race first (fastest handshake wins), then a sequential pass for
+     * environments where parallel connection floods are problematic.
+     * @returns true when a connection was established.
+     */
+    async function attemptConnect(candidates: string[], wasReconnect: boolean): Promise<boolean> {
+        if (candidates.length === 0) return false;
 
-        const wasReconnect = reconnectAttempts > 0;
-
-        // Parallel connect strategy: race all nodes concurrently so the fastest
-        // connecting node wins. Each individual connectOne still has its own
-        // per-node timeout (connectTimeoutMs), so worst-case wall time is
-        // connectTimeoutMs instead of list.length * connectTimeoutMs.
-        const connectPromises = list.map((_url, i) => {
-            const idx = (nodeIndex + i) % list.length;
-            const actualUrl = list[idx];
+        // Parallel connect strategy: race all candidates concurrently so the
+        // fastest connecting node wins. Each individual connectOne still has
+        // its own per-node timeout (connectTimeoutMs), so worst-case wall time
+        // is connectTimeoutMs instead of list.length * connectTimeoutMs.
+        const connectPromises = candidates.map((_url, i) => {
+            const idx = (nodeIndex + i) % candidates.length;
+            const actualUrl = candidates[idx];
             return connectOne(actualUrl)
                 .then(socket => ({ socket, url: actualUrl, idx }))
                 .catch(err => { throw { url: actualUrl, error: err }; });
@@ -374,38 +442,64 @@ function createTransport(config: TransportConfig = {}) {
                 }).catch(() => {});
             }
             await _onConnected(winner.socket, winner.url, winner.idx, wasReconnect);
-            return;
+            return true;
         } catch (firstErr: any) {
             // All parallel attempts failed. Fall back to sequential retry for
             // environments where parallel connection floods are problematic.
             const errMsg = firstErr?.errors ? firstErr.errors.map((e: any) => e?.message || e).join('; ') : (firstErr?.message || firstErr);
-            transportLogger.warn(`Parallel connect failed (${list.length} nodes), falling back to sequential: ${errMsg}`);
-            // Fall through to sequential logic below
+            transportLogger.warn(`Parallel connect failed (${candidates.length} nodes), falling back to sequential: ${errMsg}`);
         }
 
         // Sequential fallback pass.
-        const errors: Error[] = [];
-        for (let i = 0; i < list.length; i++) {
-            const idx = (nodeIndex + i) % list.length;
-            const url = list[idx];
+        for (let i = 0; i < candidates.length; i++) {
+            const idx = (nodeIndex + i) % candidates.length;
+            const url = candidates[idx];
             try {
                 setStatus('connecting');
                 const socket = await connectOne(url);
                 await _onConnected(socket, url, idx, wasReconnect);
-                return;
+                return true;
             } catch (err: any) {
                 if (ws) {
                     ws.onclose = null;
                     try { ws.close(); } catch (_: any) {}
                     ws = null;
                 }
-                errors.push(err);
+                lastConnectErrors.push(err);
             }
+        }
+        return false;
+    }
+
+    async function tryConnect(): Promise<void> {
+        intentionalClose = false;
+        const list = [...nodeList];
+        if (list.length === 0) {
+            setStatus('closed');
+            return;
+        }
+
+        const wasReconnect = reconnectAttempts > 0;
+        lastConnectErrors = [];
+
+        // Prefer nodes that have not just failed and are not reported as
+        // unusable by the caller's shouldSkipNode predicate. This is what makes
+        // a stale node get switched away from instead of winning the reconnect
+        // race again. If every node is deprioritized we still fall back to the
+        // full list so the transport can never wedge permanently.
+        const preferred = list.filter(url => !shouldDeprioritize(url));
+        const candidates = preferred.length > 0 ? preferred : list;
+
+        if (await attemptConnect(candidates, wasReconnect)) return;
+
+        if (preferred.length > 0 && preferred.length < list.length) {
+            transportLogger.warn(`All ${preferred.length} preferred node(s) failed; retrying including recently-failed node(s)`);
+            if (await attemptConnect(list, wasReconnect)) return;
         }
 
         nodeIndex = 0;
         setStatus('closed');
-        throw new AllNodesFailed(errors);
+        throw new AllNodesFailed(lastConnectErrors);
     }
 
     async function connect(servers?: string[], autoReconnect = false): Promise<void> {

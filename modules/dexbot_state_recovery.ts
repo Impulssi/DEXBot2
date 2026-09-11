@@ -7,7 +7,7 @@ import { readOpenOrdersGuarded } from './chain_orders.js';
 import { ORDER_TYPES, TIMING } from './constants.js';
 import * as Format from './order/format.js';
 import * as grid from './order/grid.js';
-import { convertToSpreadPlaceholder, parseChainOrder } from './order/utils/order.js';
+import { convertToSpreadPlaceholder, parseChainOrder, isNonBlockingUnmatchedOrder } from './order/utils/order.js';
 import { restoreGapEvacStreaks, applyPersistedPendingCrawls } from './order/utils/system.js';
 import { blockchainToFloat, calculateGapSlots, validatePersistedBoundary } from './order/utils/math.js';
 import { hasExecutableActions } from './order/utils/validate.js';
@@ -472,7 +472,7 @@ async function recoverFromPersistedGrid(bot: any) {
         // the frozen rail): they survive every reload, so they must not fail
         // snapshot recovery — otherwise each restart forces a full grid reset
         // while a hold exists. Only adoptable/cancellable orphans reject.
-        const blockingUnmatched = remainingUnmatched.filter((u: any) => u?.reason !== 'out-of-grid-deferred');
+        const blockingUnmatched = remainingUnmatched.filter((u: any) => !isNonBlockingUnmatchedOrder(u));
         if (blockingUnmatched.length > 0) {
             const sample = blockingUnmatched.slice(0, 3)
                 .map((o: any) => bot._formatUnmatchedChainOrderForLog(o))
@@ -706,5 +706,5 @@ async function targetedOrderRepair(bot: any, orderIds: any) {
     }
 }
 
-export { persistAndRecoverIfNeeded, getRecentFillKeysSnapshot, triggerStateRecoverySync, abortFlowIfIllegalState, handleBatchHardAbort, applyRecoverableGridUpdates, recoverExplicitStaleOrders, recoverBatchSizeDrift, extractSizeDriftOrderIds, recoverFromPersistedGrid, rejectCorruptedGridSnapshot, targetedOrderRepair }
+export { persistAndRecoverIfNeeded, getRecentFillKeysSnapshot, triggerStateRecoverySync, abortFlowIfIllegalState, handleBatchHardAbort, applyRecoverableGridUpdates, recoverExplicitStaleOrders, recoverBatchSizeDrift, extractSizeDriftOrderIds, recoverFromPersistedGrid, rejectCorruptedGridSnapshot, targetedOrderRepair, _schedulePostRecoveryRebalance as schedulePostRecoveryRebalance }
 

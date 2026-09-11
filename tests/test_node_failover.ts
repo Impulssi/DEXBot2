@@ -360,6 +360,69 @@ process.on('exit', () => {
     console.log('✓ Statistics persistence test passed\n');
 }
 
+// ============================================================================
+// Test 13: Live-transport strikes survive a single health-check success
+// ============================================================================
+{
+    console.log('Test 13: Live-transport strike retention');
+
+    const nm = createNodeManager({
+        list: ['wss://flap.test/ws'],
+        healthCheck: { blacklistThreshold: 3 }
+    });
+    const url = 'wss://flap.test/ws';
+
+    // A live-transport failure is a strike.
+    nm.reportNodeFailure(url, 'keep-alive failed 3 times', 'keep-alive');
+    assert.strictEqual(nm.nodeStats.get(url).failureCount, 1, 'live strike recorded');
+
+    // One successful probe must NOT erase it (retain until the streak is met).
+    const r1 = nm._recordHealthCheckSuccess(url, 'healthy', 10, 'chain');
+    assert.strictEqual(r1.recovered, false, 'not recovered after 1 success');
+    assert.strictEqual(nm.nodeStats.get(url).failureCount, 1, 'live strike retained after 1 success');
+    assert.strictEqual(nm.nodeStats.get(url).status, 'healthy', 'node re-admitted while strike retained');
+
+    // Second consecutive success clears it.
+    const r2 = nm._recordHealthCheckSuccess(url, 'healthy', 10, 'chain');
+    assert.strictEqual(r2.recovered, true, 'recovered after 2 successes');
+    assert.strictEqual(nm.nodeStats.get(url).failureCount, 0, 'live strike cleared after streak');
+
+    // A health-check-sourced failure clears on the very next success.
+    nm.reportNodeFailure(url, 'probe failed', 'health-check');
+    assert.strictEqual(nm.nodeStats.get(url).failureCount, 1, 'probe strike recorded');
+    const r3 = nm._recordHealthCheckSuccess(url, 'healthy', 10, 'chain');
+    assert.strictEqual(r3.recovered, true, 'probe strike clears on first success');
+    assert.strictEqual(nm.nodeStats.get(url).failureCount, 0, 'probe strike cleared');
+
+    // Selection helpers used by the transport predicate.
+    assert.strictEqual(nm.isBlacklisted(url), false, 'healthy node not blacklisted');
+    assert.strictEqual(nm.shouldAvoidNode(url), false, 'healthy node not avoided');
+    nm.nodeStats.get(url).status = 'failed';
+    assert.strictEqual(nm.shouldAvoidNode(url), true, 'failed node avoided');
+    nm.blacklistNode(url);
+    assert.strictEqual(nm.isBlacklisted(url), true, 'blacklisted detected');
+    assert.strictEqual(nm.shouldAvoidNode(url), true, 'blacklisted node avoided');
+
+    // An explicit 0 must fall back to the default, not silently disable the
+    // retention safety net (0 would make `streak >= 0` always true).
+    const zeroCfg = createNodeManager({
+        list: ['wss://zero.test/ws'],
+        healthCheck: { liveFailureSuccessStreak: 0 }
+    });
+    assert.strictEqual(
+        zeroCfg.config.healthCheck.liveFailureSuccessStreak,
+        NODE_MANAGEMENT.LIVE_FAILURE_HEALTH_SUCCESS_STREAK,
+        'explicit 0 falls back to the default retention streak'
+    );
+    const zeroUrl = 'wss://zero.test/ws';
+    zeroCfg.reportNodeFailure(zeroUrl, 'keep-alive failed 3 times', 'keep-alive');
+    const zeroR1 = zeroCfg._recordHealthCheckSuccess(zeroUrl, 'healthy', 10, 'chain');
+    assert.strictEqual(zeroR1.recovered, false, 'zero-config still retains a live strike after 1 success');
+    assert.strictEqual(zeroCfg.nodeStats.get(zeroUrl).failureCount, 1, 'live strike retained under fallback default');
+
+    console.log('✓ Live-transport strike retention test passed\n');
+}
+
 console.log('='.repeat(60));
 console.log('All Node Failover integration tests passed!');
 console.log('='.repeat(60));

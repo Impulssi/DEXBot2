@@ -289,6 +289,25 @@ let TIMING = {
     // survive moderate fill-processing bursts.
     DUST_CANCEL_TIMEOUT_MS: 5 * 1000,  // 5 seconds
 
+    // FILL_BROADCAST_DEFER_MAX_MS: Bound on fill-consumer deferral while a
+    // broadcast region is active. The consumer defers (instead of acquiring
+    // the fill lock and sleeping up to 30s inside it) so concurrent consumers
+    // never queue as lock waiters and time out. Past this bound a stuck flag
+    // falls through to the legacy in-lock wait, which still caps at 30s and
+    // proceeds — a leaked flag can delay fills, never starve them.
+    FILL_BROADCAST_DEFER_MAX_MS: 60 * 1000,  // 60 seconds
+
+    // BOUNDARY_HOLD_RESYNC_THRESHOLD / COOLDOWN: consecutive boundary-hold
+    // batches (each carrying fresh fills) after which the COW executor asks
+    // for a guard-aware structural re-center. A hold is correct maker
+    // discipline when a guard vetoes stale-priced refills, but a growing run
+    // means the grid is trailing the market and fill-less replans cannot heal
+    // it (they re-derive the identical veto). At the threshold the executor
+    // requests a structural resync that re-derives centers on the live pivot;
+    // the cooldown prevents resync storms.
+    BOUNDARY_HOLD_RESYNC_THRESHOLD: 4,
+    BOUNDARY_HOLD_RESYNC_COOLDOWN_MS: 5 * 60 * 1000,  // 5 minutes
+
     // Blockchain settle delay before follow-up structural work after a scheduled maintenance action.
     // Gives maintenance-triggered cancels/rebalances time to acquire locks, broadcast, and settle
     // before a deferred grid resync attempts more on-chain changes.
@@ -506,7 +525,16 @@ let GRID_LIMITS = {
     ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER: 4,
 
     // GRID_REGENERATION_PERCENTAGE: Trigger threshold for automatic grid size recalculation.
-    // Formula: IF (availableFunds / allocatedCapital) × 100 ≥ threshold → regenerate
+    // Works in BOTH directions (bidirectional), sharing one threshold:
+    //   GROW: IF (availableFunds / allocatedCapital) x 100 >= threshold -> regenerate
+    //     After fills, free balance rises relative to allocated grid capital.
+    //   SHRINK: IF (gridTracked - allocatedCapital) / allocatedCapital x 100 >= threshold
+    //     -> regenerate. After external fund removal the grid-tracked size
+    //     (ACTIVE + PARTIAL + VIRTUAL) stays put while the allocation sinks, so
+    //     affected orders are resized down (limit_order_update to a smaller size,
+    //     which releases funds back on chain). Deliberately NOT based on per-side
+    //     chain-total drops: a normal fill moves value across sides (pays one
+    //     asset, receives the other), so fill handling owns that resize.
     // Rationale: After fills, free balance rises relative to allocated grid capital.
     //   - 3% = regen triggered when available funds represent ≥3% of side allocation
     //   - This allows gradual accumulation while preventing lag during high-fill periods
@@ -533,6 +561,38 @@ let GRID_LIMITS = {
 
     // Allowed drift fraction before triggering fund-invariant recovery (0.1% = 0.001).
     FUND_INVARIANT_PERCENT_TOLERANCE: 0.1,
+
+    // FUND_INVARIANT_HEAL_ON_RECOVERY_FAIL: guarded "trust-chain" free-balance
+    // seeding on recovery failure. When recovery keeps failing on the SAME
+    // one-sided drift (e.g. SELL tracked-free is consistently short of the
+    // chain total after a fill/broadcast chaos window), re-seed the tracked
+    // FREE balance for that side from the freshly fetched chain total minus
+    // the (already chain-reconciled) committed grid sizes, instead of looping
+    // recovery attempts and eventually blocking new orders. Default off —
+    // free-balance derivation can absorb third-party locked funds on SHARED
+    // accounts, so this is opt-in and (unless the allow-shared switch below is
+    // also set) refused when more than one bot is registered on the account.
+    FUND_INVARIANT_HEAL_ON_RECOVERY_FAIL: false,
+
+    // FUND_INVARIANT_HEAL_ALLOW_SHARED: permit the trust-chain heal even when
+    // multiple bots are registered on the same account. total = free + grid is
+    // then only an approximation of this bot's share (other bots' committed
+    // orders are part of the chain total); only enable when the account is
+    // exclusively managed by one bot at a time.
+    FUND_INVARIANT_HEAL_ALLOW_SHARED: false,
+
+    // FUND_INVARIANT_HEAL_MIN_PERSISTENT_CHECKS: consecutive fund-invariant
+    // checks that must report the same one-sided drift (same side, same
+    // direction) before the trust-chain heal may seed the free balance. Keeps
+    // a single transient mismatch from triggering a heal.
+    FUND_INVARIANT_HEAL_MIN_PERSISTENT_CHECKS: 2,
+
+    // FUND_INVARIANT_HEAL_MIN_PERSIST_MS: minimum wall-clock span between the
+    // first and last recorded drift check before the trust-chain heal may
+    // apply. A single busy fill cycle can run two quick recalculateFunds
+    // calls back-to-back; the duration gate keeps a sub-second double-recalc
+    // from satisfying the persistence requirement. 0 disables the gate.
+    FUND_INVARIANT_HEAL_MIN_PERSIST_MS: 30 * 1000,
 
     // MIN_SPREAD_ORDERS: Minimum number of empty slots in spread zone (between best buy and best sell).
     // Rationale: Spread must be sufficiently wide to:
@@ -842,6 +902,12 @@ let NODE_MANAGEMENT = {
     BLACKLIST_THRESHOLD: 3,             // Failures before blacklist
     BLACKLIST_COOLDOWN_MS: 24 * 60 * 60 * 1000,  // 24 hours before retrying blacklisted nodes
     FAILURE_REPORT_COOLDOWN_MS: 1000,   // Min ms between failure count increments (prevents rapid-fire blacklisting)
+
+    // Consecutive successful health probes required before a node whose last
+    // failure came from the live transport (not a health check) gets its
+    // failure ledger reset. Prevents a single "is it up?" probe from erasing
+    // live-transport strikes, so flapping nodes still reach BLACKLIST_THRESHOLD.
+    LIVE_FAILURE_HEALTH_SUCCESS_STREAK: 2,
 
     // Expected chain ID (BitShares mainnet)
     EXPECTED_CHAIN_ID: '4018d7844c78f6a6c41c6a552b898022310fc5dec06da467ee7905a8dad512c8',
@@ -1651,6 +1717,11 @@ let NATIVE_CLIENT = {
         // Some WebSocket implementations can emit close/error cascades for one
         // underlying connection failure; this window prevents redundant failover work.
         CLOSE_COALESCE_MS: 250,
+
+        // WebSocket close codes treated as benign — they do NOT count as a
+        // node failure. 1000 = normal closure, 1001 = going away (server
+        // shutdown/deploy). Any other code, or wasClean === false, is abnormal.
+        BENIGN_CLOSE_CODES: [1000, 1001],
 
         // NOTE: These constants are informational but not imported by transport.ts
         // Reconnection backoff parameters (ms).

@@ -131,7 +131,13 @@ class StrategyEngine {
             // non-null boundary commit. Same eligibility as the crawl itself.
             if (isShiftEligibleFill(filledOrder)
                 && typeof filledOrder.id === 'string' && filledOrder.id.length > 0
-                && (filledOrder.type === ORDER_TYPES.BUY || filledOrder.type === ORDER_TYPES.SELL)) {
+                && (filledOrder.type === ORDER_TYPES.BUY || filledOrder.type === ORDER_TYPES.SELL)
+                // dryRun never commits a boundary, so a recorded crawl could
+                // never be consumed — it would only accumulate and persist
+                // forever. Fills are not processed under dryRun today, but
+                // guard the ledger at its single writer so a future dryRun
+                // simulation cannot grow it unbounded.
+                && mgr.config?.dryRun !== true) {
                 const pending = (mgr as any)._pendingFillCrawls;
                 if (Array.isArray(pending)) {
                     // Slot-level dedupe: a slot with no live order cannot
@@ -141,8 +147,10 @@ class StrategyEngine {
                     // Replace (keep newest) instead of stacking.
                     const at = pending.findIndex((e: any) => e && e.slotId === filledOrder.id);
                     if (at >= 0) pending.splice(at, 1);
-                    if (pending.length > 500) pending.shift();
                     pending.push({ slotId: filledOrder.id, side: filledOrder.type, ts: Date.now() });
+                    // Hard cap AFTER push so the in-memory length matches the
+                    // persisted cap (account_orders stores slice(-500)).
+                    while (pending.length > 500) pending.shift();
                     if (typeof (mgr as any)._markGridDirty === 'function') (mgr as any)._markGridDirty();
                 }
             }

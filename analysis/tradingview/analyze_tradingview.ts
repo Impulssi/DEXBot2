@@ -41,6 +41,7 @@ function parseArgs() {
         rangeSpan: number | undefined;
         ordersFile: string | null;
         noOrders: boolean;
+        noUpdateMarker: boolean;
         updateMarkerTsSec: number | null;
         updateMarkerNewBars: number | null;
         quiet: boolean;
@@ -63,6 +64,7 @@ function parseArgs() {
         rangeSpan: undefined,
         ordersFile: null,
         noOrders: false,
+        noUpdateMarker: false,
         updateMarkerTsSec: null,
         updateMarkerNewBars: null,
         quiet: false,
@@ -94,6 +96,7 @@ function parseArgs() {
         else if (arg === '--range-span') config.rangeSpan = parseFloat(args[++i]);
         else if (arg === '--orders-file') config.ordersFile = String(args[++i] || '');
         else if (arg === '--no-orders') config.noOrders = true;
+        else if (arg === '--no-update-marker') config.noUpdateMarker = true;
         else if (arg === '--update-marker-ts') config.updateMarkerTsSec = Math.max(0, parseInt(args[++i], 10) || 0) || null;
         else if (arg === '--update-marker-bars') config.updateMarkerNewBars = Math.max(0, parseInt(args[++i], 10) || 0) || null;
         else if (arg === '--list-bots') config.listBots = true;
@@ -108,7 +111,7 @@ function loadJsonMeta(filePath: any) {
     return loadCandleFile(filePath);
 }
 
-// ── Order overlay: active grid orders (buys/sells) + grid LO factor ──
+// ── Order overlay: live grid levels (buys/sells) + full-grid bounds ──
 // Canonical source is profiles/orders/<botKey>.json (same files
 // scripts/analyze-orders.ts reads); --orders-file overrides, --no-orders
 // disables. Pool/pair charts without a bot key render without overlay,
@@ -116,7 +119,8 @@ function loadJsonMeta(filePath: any) {
 function resolveOrdersFile(botKey: string | null | undefined, explicit: string | null | undefined, disabled: boolean): string | null {
     if (disabled) return null;
     if (explicit) {
-        try { if (explicit && fs.existsSync(explicit)) return explicit; } catch { /* fall through */ }
+        try { if (fs.existsSync(explicit)) return explicit; } catch { /* fall through to warning */ }
+        console.warn(`[TradingView] --orders-file not found: ${explicit} (rendering without order overlay)`);
         return null;
     }
     if (!botKey) return null;
@@ -128,31 +132,45 @@ function resolveOrdersFile(botKey: string | null | undefined, explicit: string |
     return null;
 }
 
-function loadActiveOrders(filePath: string | null): { buys: number[]; sells: number[]; deepBuys: number[] } {
-    if (!filePath) return { buys: [], sells: [], deepBuys: [] };
+// Single-pass read of the order grid, like the runtime sees it: live
+// (active/partial) levels for the overlay plus full-grid bounds (live +
+// planned/virtual slots). Virtual slots carry the same slot geometry
+// without an on-chain order, so excluding them would shrink the shown
+// grid to the live extremes. Spread-type slots are neither buys nor
+// sells and stay out of both.
+function loadOrdersData(filePath: string | null): { buys: number[]; sells: number[]; deepBuys: number[]; low: number | null; high: number | null } {
+    if (!filePath) return { buys: [], sells: [], deepBuys: [], low: null, high: null };
     try {
         const od = JSON.parse(fs.readFileSync(filePath, 'utf8'));
         const grid = Array.isArray(od?.grid) ? od.grid : (Array.isArray(od?.orders) ? od.orders : []);
-        const live = (s: any) => (s?.state === 'active' || s?.state === 'partial') && Number(s?.price) > 0;
-        const buys = grid.filter((s: any) => s?.type === 'buy' && live(s)).map((s: any) => Number(s.price)).filter(Number.isFinite).sort((a: number, b: number) => a - b);
-        const sells = grid.filter((s: any) => s?.type === 'sell' && live(s)).map((s: any) => Number(s.price)).filter(Number.isFinite).sort((a: number, b: number) => a - b);
-        // Deep shelf: dip-insurance buys above the reserve floor (canonical id scheme).
-        const deepBuys = grid.filter((s: any) => s?.type === 'buy' && live(s) && isDeepShelfId(s?.id)).map((s: any) => Number(s.price)).filter(Number.isFinite).sort((a: number, b: number) => a - b);
-        return { buys, sells, deepBuys };
-    } catch { return { buys: [], sells: [], deepBuys: [] }; }
-}
-
-// Grid LO factor from bot minPrice ("1.15x" -> 1/1.15). Fallback 0.87
-// (matches the pre-refactor personal overlay default).
-function resolveGridLo(botMeta: any): number {
-    try {
-        const mp = botMeta?.minPrice;
-        if (typeof mp === 'string' && mp.trim().toLowerCase().endsWith('x')) {
-            const n = parseFloat(mp);
-            if (Number.isFinite(n) && n > 0) return 1 / n;
+        const buys: number[] = [];
+        const sells: number[] = [];
+        const deepBuys: number[] = [];
+        let low: number | null = null;
+        let high: number | null = null;
+        for (const s of grid) {
+            const price = Number((s as any)?.price);
+            if (!Number.isFinite(price) || price <= 0) continue;
+            const st = (s as any)?.state;
+            if (st !== 'active' && st !== 'partial' && st !== 'virtual') continue;
+            if ((s as any)?.type === 'buy') {
+                if (low == null || price < low) low = price;
+                if (st === 'virtual') continue;
+                buys.push(price);
+                // Fork deep shelf (dip-insurance buys): canonical predicate
+                // shared with the runtime so the chart MKT panel can show
+                // its own DEEP row.
+                if (isDeepShelfId((s as any)?.id)) deepBuys.push(price);
+            } else if ((s as any)?.type === 'sell') {
+                if (high == null || price > high) high = price;
+                if (st !== 'virtual') sells.push(price);
+            }
         }
-    } catch { /* fallback below */ }
-    return 0.87;
+        buys.sort((a, b) => a - b);
+        sells.sort((a, b) => a - b);
+        deepBuys.sort((a, b) => a - b);
+        return { buys, sells, deepBuys, low, high };
+    } catch { return { buys: [], sells: [], deepBuys: [], low: null, high: null }; }
 }
 
 function inferTitle(meta: any, fallback: string) {
@@ -174,7 +192,7 @@ async function main() {
             return;
         }
 
-        const { source, botKey, amaConfig } = resolveSource({ ...config.source.config, type: config.source.type }, { quiet: config.quiet });
+        const { source, botKey, amaConfig, meta: sourceMeta } = resolveSource({ ...config.source.config, type: config.source.type }, { quiet: config.quiet });
         if (!config.quiet) console.log(`[TradingView] Loading candles from ${source.name}...`);
 
         const candles = await source.fetchCandles();
@@ -186,7 +204,9 @@ async function main() {
         const filePath = config.source.config.filePath;
         const rawJson = isJsonSource ? loadJsonMeta(filePath) : { meta: null, candles: null };
         const botMeta = botKey ? loadBotMeta(botKey) : null;
-        const jsonMeta = rawJson.meta || (botMeta ? {
+        // Prefer meta from the actual candle file (has pool + asset ids) over
+        // the bots.json fallback, which only knows the asset symbols.
+        const jsonMeta = rawJson.meta || sourceMeta || (botMeta ? {
             assetA: { symbol: botMeta.assetA },
             assetB: { symbol: botMeta.assetB },
             intervalSeconds: 3600,
@@ -211,8 +231,11 @@ async function main() {
         } : null;
         // Order overlay (canonical profiles/orders/<botKey>.json; silent when absent)
         const ordersFile = resolveOrdersFile(botKey, config.ordersFile, config.noOrders);
-        const { buys: orderBuys, sells: orderSells, deepBuys: orderDeepBuys } = loadActiveOrders(ordersFile);
-        const gridLo = resolveGridLo(botMeta);
+        const ordersData = loadOrdersData(ordersFile);
+        const orderBuys = ordersData.buys;
+        const orderSells = ordersData.sells;
+        const orderDeepBuys = ordersData.deepBuys;
+        const gridBounds = { low: ordersData.low, high: ordersData.high };
         if (!config.quiet && ordersFile) console.log(`[TradingView] Order overlay: ${orderBuys.length} buys + ${orderSells.length} sells + ${orderDeepBuys.length} deep from ${ordersFile}`);
         const html = generateHTML({
             candles,
@@ -238,13 +261,13 @@ async function main() {
             defaultTimeframe: '1h',
             marketAdapter: MARKET_ADAPTER,
             orders: { buys: orderBuys, sells: orderSells, deepBuys: orderDeepBuys },
-            gridLo,
+            gridBounds,
             // Update marker ("updated from here" line): explicit CLI flags win,
             // otherwise fall back to stamped data-file meta when present.
-            updateMarkerTsSec: config.updateMarkerTsSec
-                ?? (Number((jsonMeta as any)?.prevUpdateLastCandleSec) > 0 ? Number((jsonMeta as any).prevUpdateLastCandleSec) : null),
-            updateMarkerNewBars: config.updateMarkerNewBars
-                ?? (Number((jsonMeta as any)?.prevUpdateNewBars) || null),
+            updateMarkerTsSec: config.noUpdateMarker ? null : (config.updateMarkerTsSec
+                ?? (Number((jsonMeta as any)?.prevUpdateLastCandleSec) > 0 ? Number((jsonMeta as any).prevUpdateLastCandleSec) : null)),
+            updateMarkerNewBars: config.noUpdateMarker ? null : (config.updateMarkerNewBars
+                ?? (Number((jsonMeta as any)?.prevUpdateNewBars) || null)),
         }, title);
 
         writeChartFile(config.chartFile, html);

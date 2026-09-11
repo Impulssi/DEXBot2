@@ -70,6 +70,8 @@ interface NodeManagerConfig {
         timeoutMs?: number;
         maxPingMs?: number;
         blacklistThreshold?: number;
+        // Consecutive successful probes required to clear live-transport strikes.
+        liveFailureSuccessStreak?: number;
         enabled?: boolean;
     };
     selection?: {
@@ -125,6 +127,9 @@ class NodeManager {
                 timeoutMs: config.healthCheck?.timeoutMs ?? NODE_MANAGEMENT.HEALTH_CHECK_TIMEOUT_MS,
                 maxPingMs: config.healthCheck?.maxPingMs ?? NODE_MANAGEMENT.MAX_PING_MS,
                 blacklistThreshold: config.healthCheck?.blacklistThreshold ?? NODE_MANAGEMENT.BLACKLIST_THRESHOLD,
+                liveFailureSuccessStreak: Number(config.healthCheck?.liveFailureSuccessStreak) > 0
+                    ? Number(config.healthCheck?.liveFailureSuccessStreak)
+                    : NODE_MANAGEMENT.LIVE_FAILURE_HEALTH_SUCCESS_STREAK,
                 enabled: config.healthCheck?.enabled ?? true
             },
             selection: {
@@ -184,7 +189,11 @@ class NodeManager {
                     lastCheckTime: null,
                     lastErrorMessage: null,
                     chainId: null,
-                    blacklistedAt: null
+                    blacklistedAt: null,
+                    // Recovery confirmation: how many consecutive successful
+                    // probes since the last live-transport failure.
+                    healthCheckSuccessStreak: 0,
+                    lastFailureSource: null
                 });
             }
         }
@@ -391,15 +400,7 @@ class NodeManager {
 
                 // Classify health
                 const status = latencyMs > this.config.healthCheck.maxPingMs ? 'slow' : 'healthy';
-
-                // Update stats
-                stats.status = status;
-                stats.latencyMs = latencyMs;
-                stats.failureCount = 0;
-                this.failureLedger.reset(nodeUrl);
-                stats.lastCheckTime = nowIso();
-                stats.lastErrorMessage = null;
-                stats.chainId = result;
+                this._recordHealthCheckSuccess(nodeUrl, status, latencyMs, result);
 
                 if (status === 'healthy') {
                     this.logger.debug(`✓ ${nodeUrl.substring(0, 40)}... (${latencyMs}ms)`);
@@ -415,6 +416,48 @@ class NodeManager {
             this.reportNodeFailure(nodeUrl, getErrorMessage(err), 'health-check');
             return { status: stats.status, latency: null, error: getErrorMessage(err) };
         }
+    }
+
+    /**
+     * Record a successful health-probe result: set status/latency and decide
+     * whether to clear the failure ledger.
+     *
+     * A single successful probe must not erase strikes that came from the live
+     * transport. Require `liveFailureSuccessStreak` consecutive successes before
+     * clearing those, so a genuinely flapping node keeps accumulating toward
+     * BLACKLIST_THRESHOLD while a recovered node is still re-admitted (status is
+     * set either way). Strikes whose last source was a health check clear on the
+     * first success, preserving normal probe recovery.
+     *
+     * @returns {{ recovered: boolean, failureCount: number }}
+     */
+    _recordHealthCheckSuccess(nodeUrl: string, status: string, latencyMs: number | null, chainId: string | null): { recovered: boolean; failureCount: number } {
+        const stats = this.nodeStats.get(nodeUrl);
+        if (!stats) return { recovered: false, failureCount: 0 };
+
+        const priorSource = stats.lastFailureSource;
+        const liveFailure = !!priorSource && priorSource !== 'health-check';
+        stats.healthCheckSuccessStreak = (stats.healthCheckSuccessStreak || 0) + 1;
+        const successStreak = this.config.healthCheck.liveFailureSuccessStreak;
+        const recovered = !liveFailure || stats.healthCheckSuccessStreak >= successStreak;
+
+        stats.status = status;
+        stats.latencyMs = latencyMs;
+        stats.lastCheckTime = nowIso();
+        stats.lastErrorMessage = null;
+        stats.chainId = chainId;
+        if (recovered) {
+            stats.failureCount = 0;
+            stats.lastFailureSource = null;
+            stats.healthCheckSuccessStreak = 0;
+            this.failureLedger.reset(nodeUrl);
+        } else {
+            this.logger.debug(
+                `${nodeUrl.substring(0, 40)}... ${status} but retaining ${stats.failureCount} live-transport strike(s) ` +
+                `(success streak ${stats.healthCheckSuccessStreak}/${successStreak})`
+            );
+        }
+        return { recovered, failureCount: stats.failureCount };
     }
 
     _shouldLogBlacklistWarning(nodeUrl: string, errorMessage: string, nowMs: number = Date.now()): boolean {
@@ -605,6 +648,27 @@ class NodeManager {
     }
 
     /**
+     * Whether a node is currently blacklisted.
+     * @param {string} nodeUrl - Node URL
+     * @returns {boolean}
+     */
+    isBlacklisted(nodeUrl: string): boolean {
+        return this.nodeStats.get(nodeUrl)?.status === 'blacklisted';
+    }
+
+    /**
+     * Whether a node should be avoided for selection/reconnect right now
+     * (currently failed or blacklisted). Healthy, slow, and not-yet-checked
+     * nodes are treated as usable.
+     * @param {string} nodeUrl - Node URL
+     * @returns {boolean}
+     */
+    shouldAvoidNode(nodeUrl: string): boolean {
+        const status = this.nodeStats.get(nodeUrl)?.status;
+        return status === 'failed' || status === 'blacklisted';
+    }
+
+    /**
      * Report a node failure (from health check or broadcast).
      * Increments failureCount and auto-blacklists when the threshold is reached.
      * All node-failure paths route through here so the retry budget is synchronized.
@@ -627,6 +691,11 @@ class NodeManager {
         stats.failureCount = result.failureCount;
         stats.lastCheckTime = nowIso();
         if (errorMessage) stats.lastErrorMessage = errorMessage;
+        // Remember the source so a later health-check success knows whether the
+        // strike came from the live transport (retain) or a probe (clearable).
+        // Recorded even when the ledger rate-limits this report.
+        stats.lastFailureSource = source || 'unknown';
+        stats.healthCheckSuccessStreak = 0;
 
         if (result.outcome === 'rate-limited' || result.outcome === 'skipped-blacklisted') {
             return;
@@ -680,6 +749,8 @@ class NodeManager {
             stats.latencyMs = null;
             stats.lastErrorMessage = null;
             stats.blacklistedAt = null;
+            stats.lastFailureSource = null;
+            stats.healthCheckSuccessStreak = 0;
             this.failureLedger.reset(nodeUrl);
             this._clearBlacklistWarningCooldown(nodeUrl);
             this.saveBlacklistState();
@@ -699,6 +770,8 @@ class NodeManager {
             stats.lastErrorMessage = null;
             stats.chainId = null;
             stats.blacklistedAt = null;
+            stats.lastFailureSource = null;
+            stats.healthCheckSuccessStreak = 0;
         }
         this.failureLedger.clear();
         this._clearBlacklistWarningCooldown();

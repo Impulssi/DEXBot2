@@ -164,7 +164,9 @@ import {
     calculateIdealBoundary,
     assignGridRoles,
     resolveOnChainRetypeType,
-    resolveReserveCount
+    resolveReserveCount,
+    reserveEdgeIdSet,
+    resolveLiveReserveEdgeAnchorPrice
 } from './utils/order.js';
 import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry } from './utils/system.js';
 import * as MathUtils from './utils/math.js';
@@ -1255,6 +1257,65 @@ export async function initializeGrid(manager: any): Promise<void> {
             resolvedMinP = guard.minPrice;
         }
 
+        // P4 / unanchored rebuild anchor: when the new generation is centered
+        // on a static config value (not a live market source), owed fill
+        // crawls carry the only fresh market direction — fold their net
+        // direction into the rebuild center before the ladder is generated.
+        // A live center already contains the movement, so its owed crawls are
+        // dropped as a stale generation (see the clear below).
+        const owedCrawls = Array.isArray((manager as any)._pendingFillCrawls)
+            ? (manager as any)._pendingFillCrawls
+            : [];
+        // Whether the ladder CENTER already reflects current market movement.
+        // gpSource describes the gridPrice/bounds reference, NOT the center:
+        // the center is gridStartPrice, built from mp (config.startPrice).
+        // Only a derived startPrice (a non-numeric mode like "pool"/"book"
+        // resolved to a fresh number above) or an AMA-driven center is live:
+        // with gpSource === "ama" the center itself is still mp * (1 +
+        // offset), but the offset comes from the live AMA snapshot, so the
+        // center moves with the market. A numeric startPrice with a live
+        // gridPrice still has a static center — a live gridPrice (bounds
+        // reference only) does not make that static center fresh.
+        const startPriceWasDerived = typeof mpRaw !== 'number' || Number.isNaN(Number(mpRaw));
+        const centerIsLive = startPriceWasDerived || gpSource === 'ama';
+        if (owedCrawls.length > 0 && !centerIsLive) {
+            // Reserve fills never crawl (static insurance). Classify them
+            // against the OLD generation (manager.orders is replaced below)
+            // with the same live anchors the runtime derivation uses, so the
+            // fold can never be driven by a reserve fill.
+            const oldSlots = Array.from(manager.orders?.values?.() ?? []) as any[];
+            const edgeAnchors = {
+                buy: resolveLiveReserveEdgeAnchorPrice(manager, 'buy'),
+                sell: resolveLiveReserveEdgeAnchorPrice(manager, 'sell')
+            };
+            const reserveBuyIds = reserveEdgeIdSet(oldSlots, manager.config, ORDER_TYPES.BUY, edgeAnchors.buy);
+            const reserveSellIds = reserveEdgeIdSet(oldSlots, manager.config, ORDER_TYPES.SELL, edgeAnchors.sell);
+            let netShift = 0;
+            for (const e of owedCrawls) {
+                if (e?.side === ORDER_TYPES.BUY && reserveBuyIds?.has(e.slotId)) continue;
+                if (e?.side === ORDER_TYPES.SELL && reserveSellIds?.has(e.slotId)) continue;
+                if (e?.side === ORDER_TYPES.SELL) netShift++;
+                else if (e?.side === ORDER_TYPES.BUY) netShift--;
+            }
+            const stepPct = Number(manager.config?.incrementPercent);
+            if (netShift !== 0 && Number.isFinite(stepPct) && stepPct > 0) {
+                // One crawl moves the boundary one slot; the geometric ladder
+                // step is incrementPercent, so shift the center by netShift steps.
+                const folded = gridStartPrice * Math.pow(1 + stepPct / 100, netShift);
+                // Re-clamp to the post-guard resolved bounds so a fold cannot
+                // push the center outside the rail it is about to generate.
+                const clampMin = Number.isFinite(Number(resolvedMinP)) ? Number(resolvedMinP) : rMinP;
+                const clampMax = Number.isFinite(Number(resolvedMaxP)) ? Number(resolvedMaxP) : rMaxP;
+                gridStartPrice = Math.max(clampMin, Math.min(clampMax, folded));
+                manager.config.startPrice = gridStartPrice;
+                manager.logger?.log?.(
+                    `[BOUNDARY] Folded ${owedCrawls.length} owed fill crawl(s) (net ${netShift}) into ` +
+                    `static grid center -> ${gridStartPrice.toFixed(8)}`,
+                    'info'
+                );
+            }
+        }
+
         manager.config.minPrice = resolvedMinP;
         manager.config.maxPrice = resolvedMaxP;
         manager._lastGridPricingContext = {
@@ -1529,11 +1590,17 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
      * @returns {any}
      */
 export function checkAndUpdateGridIfNeeded(manager: any): any {
-        const threshold = manager.config?.gridLimits?.GRID_REGENERATION_PERCENTAGE;
+        const rawThreshold = manager.config?.gridLimits?.GRID_REGENERATION_PERCENTAGE;
+        // NOTE: a configured 0 (or non-numeric) falls back to the global default
+        // instead of disabling. 0 never worked as "disable" (ratio >= 0 is always
+        // true, i.e. constant regen), so no working configuration is broken by this.
+        const threshold = (Number.isFinite(Number(rawThreshold)) && Number(rawThreshold) > 0)
+            ? Number(rawThreshold)
+            : GRID_LIMITS.GRID_REGENERATION_PERCENTAGE;
         const chainSnap = manager.getChainFundsSnapshot();
         const gridBuy = Number(manager.funds?.total?.grid?.buy || 0);
         const gridSell = Number(manager.funds?.total?.grid?.sell || 0);
-        const result = { buyUpdated: false, sellUpdated: false };
+        const result = { buyUpdated: false, sellUpdated: false, buyShrink: false, sellShrink: false };
 
         const sides = [
             { name: 'buy', grid: gridBuy, orderType: ORDER_TYPES.BUY },
@@ -1566,16 +1633,40 @@ export function checkAndUpdateGridIfNeeded(manager: any): any {
             const denominator = (allocated > 0) ? allocated : (s.grid + availableFunds);
             const ratio = (denominator > 0) ? (availableFunds / denominator) * 100 : 0;
 
+            // DOWNSIDE: grid-tracked size exceeds the (botFunds-capped) allocation,
+            // so the side must shrink toward the new budget via the same resize path.
+            // s.grid is funds.total.grid (ACTIVE + PARTIAL + VIRTUAL — planned size,
+            // not just on-chain committed). Deliberately NOT based on per-side
+            // chain-total drops: a normal fill moves value across sides (pays one
+            // asset, receives the other), so one side's total routinely drops >=3%
+            // on ordinary fills — and the fill pipeline already re-sizes from the
+            // post-fill budget. External removal is caught here because the
+            // committed/planned grid stays put while the allocation sinks.
+            // NOTE: with an explicit 0 allocation the shared fallback denominator
+            // yields overAlloc ≈ +100%, i.e. a 0%-funded side holding size always
+            // triggers — which is the desired unwind (zero budget sizes everything
+            // to 0 and the correction pass cancels the surplus; self-clearing).
+            const overAlloc = (denominator > 0) ? ((s.grid - allocated) / denominator) * 100 : 0;
+
+            const growTrigger = ratio >= threshold;
+            const shrinkTrigger = overAlloc >= threshold;
+
             manager.logger?.log?.(
-                `[DIVERGENCE] ${s.name.toUpperCase()} ratio check: availableFunds=${availableFunds.toFixed(5)}, allocated=${allocated.toFixed(5)}, ratio=${ratio.toFixed(4)}% (threshold=${threshold}%) → ${ratio >= threshold ? 'TRIGGER' : 'no trigger'}`,
+                `[DIVERGENCE] ${s.name.toUpperCase()} ratio check: availableFunds=${availableFunds.toFixed(5)}, allocated=${allocated.toFixed(5)}, ratio=${ratio.toFixed(4)}% (threshold=${threshold}%) → ${growTrigger ? 'TRIGGER-GROW' : 'no trigger'} | overAlloc=${overAlloc.toFixed(4)}% → ${shrinkTrigger ? 'TRIGGER-SHRINK' : 'no trigger'}`,
                 'debug'
             );
 
-            if (ratio >= threshold) {
+            if (growTrigger || shrinkTrigger) {
                 // RC-3: Use Set for automatic duplicate prevention
                 if (!(manager._gridSidesUpdated instanceof Set)) manager._gridSidesUpdated = new Set();
                 manager._gridSidesUpdated.add(s.orderType);
-                if (s.name === 'buy') result.buyUpdated = true; else result.sellUpdated = true;
+                if (s.name === 'buy') {
+                    result.buyUpdated = true;
+                    if (shrinkTrigger) result.buyShrink = true;
+                } else {
+                    result.sellUpdated = true;
+                    if (shrinkTrigger) result.sellShrink = true;
+                }
             }
         }
         return result;
@@ -2043,8 +2134,8 @@ export async function monitorDivergence(manager: any, calculatedGrid: any, persi
             const { getOrderTypeFromUpdatedFlags } = require('./utils/order');
             return {
                 needsUpdate: true,
-                buy: { updated: ratioResult.buyUpdated, ratio: ratioResult.buyUpdated, rms: false, metric: 0 },
-                sell: { updated: ratioResult.sellUpdated, ratio: ratioResult.sellUpdated, rms: false, metric: 0 },
+                buy: { updated: ratioResult.buyUpdated, ratio: ratioResult.buyUpdated, rms: false, metric: 0, shrink: ratioResult.buyShrink === true },
+                sell: { updated: ratioResult.sellUpdated, ratio: ratioResult.sellUpdated, rms: false, metric: 0, shrink: ratioResult.sellShrink === true },
                 orderType: getOrderTypeFromUpdatedFlags(ratioResult.buyUpdated, ratioResult.sellUpdated)
             };
         }
@@ -2059,8 +2150,8 @@ export async function monitorDivergence(manager: any, calculatedGrid: any, persi
         
         return {
             needsUpdate: buyUpdated || sellUpdated,
-            buy: { updated: buyUpdated, ratio: ratioResult.buyUpdated, rms: rmsResult.buy.updated, metric: rmsResult.buy.metric },
-            sell: { updated: sellUpdated, ratio: ratioResult.sellUpdated, rms: rmsResult.sell.updated, metric: rmsResult.sell.metric },
+            buy: { updated: buyUpdated, ratio: ratioResult.buyUpdated, rms: rmsResult.buy.updated, metric: rmsResult.buy.metric, shrink: ratioResult.buyShrink === true },
+            sell: { updated: sellUpdated, ratio: ratioResult.sellUpdated, rms: rmsResult.sell.updated, metric: rmsResult.sell.metric, shrink: ratioResult.sellShrink === true },
             orderType: getOrderTypeFromUpdatedFlags(buyUpdated, sellUpdated)
         };
     }

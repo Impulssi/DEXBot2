@@ -23,6 +23,8 @@ function toRpcMethodName(method: string): string {
 interface ChainClientConfig {
     nodes?: string[];
     onStatusChange?: ((status: string, nodeUrl: string | null) => void) | null;
+    onNodeFailure?: ((nodeUrl: string, message: string, source: string) => void) | null;
+    shouldSkipNode?: ((nodeUrl: string) => boolean) | null;
     rpcTimeoutMs?: number;
     connectTimeoutMs?: number;
     autoreconnect?: boolean;
@@ -40,6 +42,8 @@ function createChainClient(config: ChainClientConfig = {}) {
     const {
         nodes = [],
         onStatusChange = null,
+        onNodeFailure = null,
+        shouldSkipNode = null,
         rpcTimeoutMs,
         connectTimeoutMs,
         autoreconnect = true,
@@ -59,6 +63,8 @@ function createChainClient(config: ChainClientConfig = {}) {
 
     const transport = createTransport({
         onStatusChange: wrappedOnStatusChange,
+        onNodeFailure,
+        shouldSkipNode,
         rpcTimeoutMs,
         connectTimeoutMs,
         validateNode: validateChainId ? async () => {

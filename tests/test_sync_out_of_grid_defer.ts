@@ -257,6 +257,34 @@ async function testHoldDoesNotBlockRailRefill() {
     console.log('✓ OUT-OF-GRID-006 passed');
 }
 
+async function testBoundaryUnknownHoldDoesNotBlockRailRefill() {
+    console.log(' - Boundary-unknown hold (a different -deferred reason) also does not collide...');
+    const assets = {
+        assetA: { id: '1.3.0', precision: 8, symbol: 'BTS' },
+        assetB: { id: '1.3.121', precision: 5, symbol: 'USD' }
+    };
+    const orders = new Map([['slot-0', {
+        id: 'slot-0', type: ORDER_TYPES.BUY, price: LEVELS[0], size: 5,
+        state: ORDER_STATES.VIRTUAL, orderId: '',
+    }]]);
+    const actions = [{
+        type: COW_ACTIONS.CREATE, id: 'slot-0',
+        order: { id: 'slot-0', price: LEVELS[0], type: ORDER_TYPES.BUY, size: 5 },
+    }];
+    // Classification is by the shared `-deferred` suffix, not an exact reason
+    // string: a boundary-unknown hold is a deliberate defer too and must not
+    // be mistaken for a same-slot duplicate.
+    const holds = [{
+        chainOrderId: '1.7.910007', candidateSlotId: 'slot-0',
+        reason: 'boundary-unknown-deferred', price: LEVELS[0], size: 5, type: ORDER_TYPES.BUY,
+    }];
+    const resHold = validateCreateTargetSlots(actions, orders, assets, holds);
+    assert.ok(!resHold.violations.some((v: any) => v.reason === 'chain_orphan_collision'),
+        'Boundary-unknown hold must not collide with the rail refill');
+    assert.strictEqual(resHold.isValid, true, 'Refill CREATE stays valid alongside the hold');
+    console.log('✓ OUT-OF-GRID-007 passed');
+}
+
 async function runTests() {
     console.log('Running Sync Engine Out-Of-Grid Defer Tests (issue #24)...');
     await testBelowGridBuysAreDeferredNotAdoptedOrCancelled();
@@ -265,6 +293,7 @@ async function runTests() {
     await testInRailOrphanStillAdopts();
     await testHelperClassifiesEdges();
     await testHoldDoesNotBlockRailRefill();
+    await testBoundaryUnknownHoldDoesNotBlockRailRefill();
     console.log('✓ Sync engine out-of-grid defer tests passed!');
 }
 

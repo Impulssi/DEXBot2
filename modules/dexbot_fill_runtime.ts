@@ -460,6 +460,72 @@ function computeFillConsumerBackoffMs(bot: any, failures: any) {
 }
 
 /**
+ * Consume the deferred-drain marker at the start of a fill cycle.
+ *
+ * When fills were parked by the consumer's broadcast/order-pipeline deferral
+ * (or by a region-end / pipeline-clear drain), the cycle that finally runs
+ * them deals with ledger deltas that interacted with mid-rebalance grid
+ * state. Mirror the orphan-fill credit treatment: stamp
+ * manager._orphanFillsCreditedAt so the fund-invariant tolerance is widened
+ * (×5) for this cycle only — the drain itself must not trip the invariant.
+ * Idempotent: returns true only when a marker was actually consumed.
+ * @param {any} bot
+ * @returns {boolean} true when the drain marker was consumed (tolerance widened)
+ */
+export function consumeDeferredDrainMarker(bot: any): boolean {
+    if (bot && (bot as any)._deferredFillsPending) {
+        (bot as any)._deferredFillsPending = false;
+        if (bot.manager) bot.manager._orphanFillsCreditedAt = Date.now();
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Decide whether the fill consumer must defer because a broadcast region is
+ * active — WITHOUT acquiring _fillProcessingLock first.
+ *
+ * Background: a fill-driven rebalance waits up to 30s for broadcast idle
+ * INSIDE _fillProcessingLock (20s acquisition timeout). While it sleeps,
+ * every concurrent consumer queues as a lock waiter and dies at the 20s
+ * timeout ("Error processing fills: Lock acquisition timeout"), cascading
+ * under backlog. Deferring before the acquire avoids the sleep entirely:
+ * the broadcast's finally plus the region-end hook reschedule the consumer,
+ * so freshness is preserved without the wait.
+ *
+ * Bounded: deferral longer than TIMING.FILL_BROADCAST_DEFER_MAX_MS falls
+ * through ({ defer: false, stuckFallback: true }) to the legacy path whose
+ * in-lock wait still caps at 30s and proceeds — a leaked flag can delay
+ * fills, never starve them. The marker resets whenever the consumer
+ * proceeds, so only continuous deferral counts toward the bound.
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {number} [nowMs] - Clock override (tests)
+ * @returns {{ defer: boolean; stuckFallback: boolean }} defer=true means the
+ *   caller must return without acquiring the lock.
+ */
+function shouldDeferFillForBroadcast(bot: any, nowMs?: number): { defer: boolean; stuckFallback: boolean } {
+    const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+    let active = false;
+    try {
+        active = bot?.manager?.isBroadcastingActive?.() === true;
+    } catch { active = false; }
+    if (!active) {
+        if ((bot as any)?._fillBroadcastDeferSince) (bot as any)._fillBroadcastDeferSince = 0;
+        return { defer: false, stuckFallback: false };
+    }
+    const deferMaxMs = Number((TIMING as any)?.FILL_BROADCAST_DEFER_MAX_MS) > 0
+        ? Number((TIMING as any).FILL_BROADCAST_DEFER_MAX_MS)
+        : 60000;
+    const since = Number((bot as any)?._fillBroadcastDeferSince) || 0;
+    if (!since) (bot as any)._fillBroadcastDeferSince = now;
+    if (since && (now - since) >= deferMaxMs) {
+        (bot as any)._fillBroadcastDeferSince = 0;
+        return { defer: false, stuckFallback: true };
+    }
+    return { defer: true, stuckFallback: false };
+}
+
+/**
  * Schedule a fill consumer restart with exponential backoff when the
  * failure budget is exhausted, or immediate retry via setImmediate when
  * within the budget. The consumer NEVER permanently stops re-scheduling.
@@ -660,6 +726,14 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
         }
     };
 
+    // Deferral marks the queue as a "drain residue": the fills that finally
+    // run were parked while the order pipeline / broadcast mutated grid
+    // state, so their optimistic ledger interacts with mid-rebalance
+    // geometry. The flag is consumed at lock acquire to widen the invariant
+    // tolerance like an orphan credit (×5) for that drain cycle only — the
+    // drain itself must not trip the fund invariant.
+    const markDeferredDrain = () => { (bot as any)._deferredFillsPending = true; };
+
     if (bot._incomingFillQueue.length === 0) {
         resetFailureWatchdogIfSet();
         return;
@@ -676,8 +750,31 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
             `Fill processing deferred: order pipeline active (${bot._incomingFillQueue.length} queued)`,
             'debug'
         );
+        markDeferredDrain();
         resetFailureWatchdogIfSet();
         return;
+    }
+
+    // Broadcast pre-check (lock-timeout robustness — see
+    // shouldDeferFillForBroadcast): never acquire the fill lock just to
+    // sleep in the 30s broadcast wait while concurrent consumers pile up as
+    // lock waiters and time out. The broadcast's finally + region-end hook
+    // reschedule this consumer when the region ends.
+    const broadcastDefer = shouldDeferFillForBroadcast(bot);
+    if (broadcastDefer.defer) {
+        bot.manager?.logger?.log?.(
+            `Fill processing deferred: broadcast active (${bot._incomingFillQueue.length} queued)`,
+            'debug'
+        );
+        markDeferredDrain();
+        resetFailureWatchdogIfSet();
+        return;
+    }
+    if (broadcastDefer.stuckFallback) {
+        bot.manager?.logger?.log?.(
+            'Fill processing proceeding despite stuck broadcast flag (deferral bound exceeded; in-lock wait still applies)',
+            'warn'
+        );
     }
 
     let pendingFillKeysForCurrentCycle = new Set();
@@ -697,7 +794,16 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
             return;
         }
 
-        if (bot.manager._fillProcessingLock.getQueueLength() > 0) {
+        // Single-flight: getQueueLength() counts WAITERS, not the active
+        // holder — without isLocked() every concurrent consumer queues behind
+        // a long batch (e.g. a broadcast wait) and dies at the 20s
+        // acquisition timeout. The holder's while-loop drains late arrivals
+        // (splice-all per iteration + non-empty tail reschedule), so a second
+        // consumer is purely redundant — return instead of queueing.
+        const fillLock = bot.manager._fillProcessingLock;
+        const lockBusy = (typeof fillLock?.isLocked === 'function' && fillLock.isLocked())
+            || (typeof fillLock?.getQueueLength === 'function' && fillLock.getQueueLength() > 0);
+        if (lockBusy) {
             bot._metrics.lockContentionEvents++;
             resetFailureWatchdogIfSet();
             return;
@@ -705,6 +811,13 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
 
         await bot.manager._fillProcessingLock.acquire(async () => {
             bot.manager._orphanFillsCreditedAt = null;
+            // Deferred-drain residue tolerance: fills that were parked while a
+            // broadcast/order pipeline held the queue are now running against
+            // post-rebalance grid state. Mirror the orphan-fill treatment —
+            // widen the invariant tolerance for this cycle so the drain itself
+            // does not fire a fund-invariant violation. Bounded: cleared at the
+            // next cycle start or by the next fresh chain fetch.
+            consumeDeferredDrainMarker(bot);
 
             while (bot._incomingFillQueue.length > 0) {
                 const batchStartTime = Date.now();
@@ -957,6 +1070,18 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
                         allFilledOrders, null, 'fill set'
                     );
                     let abortedFillCycle = result.aborted;
+                    const deferredFillCycle = (result as any)?.deferred === true;
+                    if (deferredFillCycle) {
+                        // Accounting + crawls are applied; only the broadcast was
+                        // deferred to avoid sleeping in-lock on the broadcast
+                        // flag. Post-fill maintenance would immediately attempt
+                        // the same blocked broadcasts, so skip it here and let
+                        // the region-end hook run one no-fill rebalance.
+                        bot.manager?.logger?.log?.(
+                            '[FILL-QUEUE] Fill rebalance deferred (broadcast active); post-fill maintenance deferred to region end',
+                            'debug'
+                        );
+                    }
                     if (!abortedFillCycle) {
                         const batchFillKeys = new Set(allFilledOrders.map((filledOrder: any) => buildFillKey({
                             orderId: filledOrder?.orderId,
@@ -982,8 +1107,8 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
                         o && o.isPartial !== true
                     ).length;
                     const hasAnyFills = allFilledOrders.some((o: any) => o);
-                    const shouldRunPostFillChecks = !abortedFillCycle && fullFillCount > 0;
-                    const shouldRunDustDetection = !abortedFillCycle && hasAnyFills;
+                    const shouldRunPostFillChecks = !abortedFillCycle && !deferredFillCycle && fullFillCount > 0;
+                    const shouldRunDustDetection = !abortedFillCycle && !deferredFillCycle && hasAnyFills;
 
                     if (shouldRunDustDetection) {
                         const healthResult = await bot.manager.checkGridHealth(
@@ -1114,5 +1239,5 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
     }
 }
 
-export { wireProcessedFillTracking, flushProcessedFillPersistence, flushProcessedFillPersistenceForKeys, buildOrphanFillFallbackKey, applyReplaySafeFillAccounting, applyReplaySafeTrackedFillAccounting, applyReplaySafeOrphanFillAccounting, processSweepOrphanFill, createFillCallback, maxConsecutiveFillConsumerFailures, computeFillConsumerBackoffMs, scheduleFillConsumerRestart, consumeFillQueue, processFillsWithBootstrapMode }
+export { wireProcessedFillTracking, flushProcessedFillPersistence, flushProcessedFillPersistenceForKeys, buildOrphanFillFallbackKey, applyReplaySafeFillAccounting, applyReplaySafeTrackedFillAccounting, applyReplaySafeOrphanFillAccounting, processSweepOrphanFill, createFillCallback, maxConsecutiveFillConsumerFailures, computeFillConsumerBackoffMs, scheduleFillConsumerRestart, shouldDeferFillForBroadcast, consumeFillQueue, processFillsWithBootstrapMode }
 

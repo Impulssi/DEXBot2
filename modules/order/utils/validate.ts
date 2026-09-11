@@ -62,7 +62,8 @@ import {
     isPhantomOrder,
     convertToSpreadPlaceholder,
     detectGapEvacuationCandidates,
-    updateGapEvacuationStreaks
+    updateGapEvacuationStreaks,
+    isNonBlockingUnmatchedOrder
 } from './order.js';
 const { isValidNumber, toFiniteNumber } = Format;
 
@@ -904,7 +905,7 @@ function validateCreateTargetSlots(actions: any, orders: any, _assets: any = nul
         // would permanently block refilling that rail slot while the hold
         // lives below/above the grid — the hold must not collide.
         // Chain orphan: if chain order's nearest slot equals target slot
-        const validChainCandidates = chainOrderCandidates.length > 0 ? chainOrderCandidates.filter((u: any) => u.chainOrderId && u.reason !== 'out-of-grid-deferred') : [];
+        const validChainCandidates = chainOrderCandidates.length > 0 ? chainOrderCandidates.filter((u: any) => u.chainOrderId && !isNonBlockingUnmatchedOrder(u)) : [];
         if (validChainCandidates.length > 0) {
             const chainSlotIds = new Set(validChainCandidates.map((u: any) => u.chainSlotId || u.candidateSlotId).filter(Boolean));
             for (const entry of createEntries) {

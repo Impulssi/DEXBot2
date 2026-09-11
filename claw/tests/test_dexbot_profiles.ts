@@ -545,6 +545,69 @@ async function testMatchBotIdentifierHandlesIdOnlyBots() {
   assert.strictEqual(matchBotIdentifier(mixedBot, '1.3.1/1.3.0'), true, 'ID pair should also work for mixed bot');
 }
 
+async function testLiveOnlyPatchSkipsTriggerByDefault() {
+  // Live-pickup keys (activeOrders/reserveOrders/botFunds/weightDistribution/
+  // min_BTS_value/debtPolicy) are applied by the running bot within ~1min,
+  // so a patch touching only them must not force a full grid-resync trigger.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dexbot-profiles-live-'));
+  const profilesDir = path.join(dir, 'profiles');
+  const botsFile = path.join(profilesDir, 'bots.json');
+
+  await fs.mkdir(profilesDir, { recursive: true });
+  await fs.writeFile(botsFile, JSON.stringify({
+    bots: [
+      {
+        name: 'live',
+        assetA: 'USD',
+        assetB: 'BTS',
+        activeOrders: { sell: 15, buy: 15 }
+      }
+    ]
+  }, null, 2));
+
+  const adapter = createDexbotProfileAdapter(profilesDir);
+  const preview = await adapter.previewBotSettingsUpdate('live', {
+    activeOrders: { buy: 20 }
+  });
+  assert.strictEqual(preview.triggerRequired, false, 'live-only patch must not require a trigger');
+  const result = await adapter.applyBotSettingsPatch('live', {
+    activeOrders: { buy: 20 }
+  });
+  const written = JSON.parse(await fs.readFile(botsFile, 'utf8'));
+  assert.strictEqual(written.bots[0].activeOrders.buy, 20, 'patch must still be saved');
+  assert.strictEqual(result.triggerPath, null, 'live-only patch must not write a trigger');
+  assert.ok(result.next.mutability.livePickupOnChange.includes('activeOrders'), 'catalog must list live-pickup keys');
+  assert.ok(result.next.mutability.triggerOnChange.includes('incrementPercent'), 'catalog keeps full trigger set');
+  const files = await fs.readdir(profilesDir);
+  assert.ok(!files.some((f: string) => f.startsWith('recalculate.')), 'no recalculate trigger file may exist');
+}
+
+async function testGeometryPatchKeepsTriggerByDefault() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dexbot-profiles-geo-'));
+  const profilesDir = path.join(dir, 'profiles');
+  const botsFile = path.join(profilesDir, 'bots.json');
+
+  await fs.mkdir(profilesDir, { recursive: true });
+  await fs.writeFile(botsFile, JSON.stringify({
+    bots: [
+      {
+        name: 'geo',
+        assetA: 'USD',
+        assetB: 'BTS',
+        incrementPercent: 0.4
+      }
+    ]
+  }, null, 2));
+
+  const adapter = createDexbotProfileAdapter(profilesDir);
+  const result = await adapter.applyBotSettingsPatch('geo', {
+    incrementPercent: 0.5
+  });
+  const canonicalKey = result.updatedBot.botKey;
+  assert.strictEqual(result.triggerPath, path.join(profilesDir, `recalculate.${canonicalKey}.trigger`));
+  await fs.access(result.triggerPath);
+}
+
 async function main() {
   await testNormalizeAcceptsAssetIdAliases();
   testCreateBotKeyFallsBackToAssetIds();
@@ -563,6 +626,8 @@ async function main() {
   await testNestedPatchValidationDoesNotDuplicateErrors();
   await testNestedStateValidationRejectsWrongContainerTypes();
   await testUpdateBotSettingsWithoutIdentifierReturnsResolvedBot();
+  await testLiveOnlyPatchSkipsTriggerByDefault();
+  await testGeometryPatchKeepsTriggerByDefault();
   console.log('dexbot profile tests passed');
 }
 

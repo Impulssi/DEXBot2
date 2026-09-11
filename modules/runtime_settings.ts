@@ -46,6 +46,27 @@ export const RUNTIME_SETTINGS_KEYS: readonly string[] = [
     'fillProcessing', 'cowPerformance', 'pipelineTiming', 'apiLimits', 'logging',
 ];
 
+/**
+ * Bot-config keys safe to apply to a live bot without a grid rebuild or a
+ * process restart (Issue #27 follow-up). Single source of truth — consumed
+ * by the live bot-config check (dexbot_maintenance_runtime.ts) and the
+ * `dexbot bot` editor hint (account_bots.ts) so the two can never drift.
+ * activeOrders/reserveOrders are re-read via the targeted-reconcile path,
+ * botFunds via recalculateFunds, weightDistribution base via
+ * refreshDynamicWeightDistribution, min_BTS_value via the fee/acquisition
+ * reads, and debtPolicy via the credit runtime's live getter (next credit
+ * maintenance/watchdog cycle applies it; enabling from zero also
+ * (re)starts the credit watchdog, removal stops it).
+ */
+export const BOT_LIVE_CONFIG_KEYS: readonly string[] = [
+    'activeOrders',
+    'reserveOrders',
+    'botFunds',
+    'weightDistribution',
+    'min_BTS_value',
+    'debtPolicy',
+];
+
 export function resolveBotRuntimeSettings(botConfig: Record<string, any>): BotRuntimeSettings {
     const result: BotRuntimeSettings = {
         gridLimits: { ...GRID_LIMITS, GRID_COMPARISON: { ...GRID_LIMITS.GRID_COMPARISON } },

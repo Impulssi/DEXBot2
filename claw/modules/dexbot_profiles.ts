@@ -8,6 +8,7 @@ import { PATHS } from '../../modules/paths.js';
 import { writeJsonFileAtomic as baseWriteJsonFileAtomic } from '../../modules/bots_file_lock.js';
 import { acquireFileLock } from '../../market_adapter/utils/file_lock.js';
 import { assertNoDuplicateBotKeys } from '../../modules/bot_settings.js';
+import { BOT_LIVE_CONFIG_KEYS } from '../../modules/runtime_settings.js';
 import { clone } from './utils.js';
 import { createBotKey, sanitizeKey } from '../../modules/account_orders.js';
 import { isSameBotName } from '../../modules/utils/sanitize_key.js';
@@ -271,11 +272,25 @@ function describeBotSettingMutability() {
   const readOnly = [...BOT_SETTINGS_READ_ONLY_KEYS].sort();
   const writable = [...KNOWN_BOT_KEYS].filter((key) => !BOT_SETTINGS_READ_ONLY_KEYS.has(key)).sort();
 
+  // triggerOnChange is the full trigger-eligible set; the default trigger
+  // fires only for triggerOnChange minus livePickupOnChange (those are
+  // applied by the running bot within ~1min, no resync needed).
   return {
+    livePickupOnChange: [...(BOT_LIVE_CONFIG_KEYS as readonly string[])].sort(),
     readOnly,
     triggerOnChange: [...BOT_SETTINGS_TRIGGER_KEYS].sort(),
     writable
   };
+}
+
+/**
+ * Default resync-trigger predicate: a trigger-eligible key that is NOT
+ * applied live by the running bot. Single predicate for the validator
+ * (triggerRequired) and the apply path (shouldWriteTrigger).
+ */
+function isResyncTriggerKey(key: string): boolean {
+  return BOT_SETTINGS_TRIGGER_KEYS.has(key)
+    && !(BOT_LIVE_CONFIG_KEYS as readonly string[]).includes(key);
 }
 
 function validateBotSettingsValue(field: any, value: any, errors: any[]) {
@@ -566,7 +581,12 @@ function validateBotSettingsPatch(patch: Record<string, any> = {}, currentBot: R
   errors.push(...mergedValidation.errors.filter((entry) => !errors.includes(entry)));
   warnings.push(...mergedValidation.warnings);
 
-  const triggerRequired = patchKeys.some((key) => BOT_SETTINGS_TRIGGER_KEYS.has(key));
+  // Live-pickup keys (BOT_LIVE_CONFIG_KEYS, shared with the bot runtime) are
+  // applied by the running bot within ~1min without restart or resync, so
+  // they must not force a full grid-resync trigger on their own. A patch
+  // touching only live keys writes no trigger; any non-live trigger key
+  // keeps the previous behavior. Explicit options.trigger still overrides.
+  const triggerRequired = patchKeys.some((key) => isResyncTriggerKey(key));
 
   return {
     errors,
@@ -1153,7 +1173,7 @@ function createDexbotProfileAdapter(profileRoot: string | null, options: Partial
         || options.trigger === true
         || (options.trigger === undefined && (
           options.triggerPayload !== undefined
-          || validation.patchKeys.some((key) => BOT_SETTINGS_TRIGGER_KEYS.has(key))
+          || validation.patchKeys.some((key) => isResyncTriggerKey(key))
         ));
       if (shouldWriteTrigger) {
         triggerPath = path.join(getProfilesDir(), `recalculate.${bot.botKey}.trigger`);

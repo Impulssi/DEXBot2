@@ -137,6 +137,9 @@ class DEXBot {
     _botsConfigPollInterval: any;
     _botsConfigPollInFlight: boolean;
     _marketAdapterWatchdogFingerprint: string | null;
+    _appliedBotConfigFingerprint: string | null;
+    _appliedBotConfigEntry: any;
+    _lastBotConfigHintFingerprint: string | null;
     _fillsUnsubscribe: any;
     _triggerWatcher: any;
     _triggerDebounceTimer: any;
@@ -149,6 +152,11 @@ class DEXBot {
     _batchInFlight: number;
     _cowBroadcastInFlight: boolean;
     _recoverySyncInFlight: number;
+    // Set when fills are parked by the consumer's broadcast/order-pipeline
+    // deferral (or by a region-end / pipeline-clear drain), consumed by
+    // consumeFillQueue at lock acquire to widen the fund-invariant tolerance
+    // (orphan-equivalent) for that drain cycle only.
+    _deferredFillsPending: boolean;
     _postRecoveryRebalanceTimer: any;
     _lastTargetedDriftSyncAt: number;
     _lightweightSyncCheckAt: number;
@@ -243,6 +251,12 @@ class DEXBot {
         this._botsConfigPollInterval = null;
         this._botsConfigPollInFlight = false;
         this._marketAdapterWatchdogFingerprint = null;
+        // Live bot-config baseline (Issue #27 follow-up): null = never
+        // checked against bots.json. Seeded on the first periodic check;
+        // allowlisted keys merge live, everything else hints reset/restart.
+        this._appliedBotConfigFingerprint = null;
+        this._appliedBotConfigEntry = null;
+        this._lastBotConfigHintFingerprint = null;
         // null = never checked. '' is a valid stored steady-state (no active
         // AMA bots) and must compare equal across ticks — see ?? in
         // syncMarketAdapterOnPeriodicConfigCheck and the === null gate in
@@ -266,6 +280,7 @@ class DEXBot {
         // placed orders and produce orphan fills).
         this._cowBroadcastInFlight = false;
         this._recoverySyncInFlight = 0;
+        this._deferredFillsPending = false;
         this._postRecoveryRebalanceTimer = null;
         this._lastTargetedDriftSyncAt = 0;
         this._lightweightSyncCheckAt = 0;
@@ -1124,6 +1139,7 @@ class DEXBot {
         if (typeof this.manager?.pauseFundRecalc === 'function') {
             this.manager.pauseFundRecalc();
         }
+        let anyDeferred = false;
         try {
             const activeSell = this.manager?.config?.activeOrders?.sell ?? 1;
             const activeBuy = this.manager?.config?.activeOrders?.buy ?? 1;
@@ -1166,6 +1182,20 @@ class DEXBot {
                 const rebalanceResult = await this.manager.processFilledOrders(
                     fillBatch, fullExcludeSet, options
                 );
+                // Deferred (broadcast region active): accounting is already
+                // applied and crawls recorded. Do NOT broadcast; continue the
+                // remaining chunks so every fill is credited, then let the
+                // region-end hook run a single no-fill rebalance to apply the
+                // owed boundary shift. This replaces the old in-lock 30s wait
+                // that cascaded into "Lock acquisition timeout".
+                if ((rebalanceResult as any)?.deferred) {
+                    anyDeferred = true;
+                    managerLog(
+                        `[COW] ${label} rebalance deferred (broadcast active); accounting applied, boundary re-derives after the region ends`,
+                        'debug'
+                    );
+                    continue;
+                }
                 const batchResult = await this._executeBatchIfNeeded(rebalanceResult, label);
 
                 if (batchResult?.abortedForIllegalState || batchResult?.abortedForAccountingFailure) {
@@ -1195,7 +1225,7 @@ class DEXBot {
             }
         }
 
-        return { aborted: false };
+        return { aborted: false, deferred: anyDeferred };
     }
 
     /**
@@ -1763,12 +1793,28 @@ class DEXBot {
         if (!manager || manager._onBroadcastRegionEnd) return;
         manager._onBroadcastRegionEnd = () => {
             if (this._shuttingDown) return;
+            // A fill-driven rebalance deferred because this region was active:
+            // schedule a single no-fill rebalance to apply the boundary crawls
+            // the deferred fills recorded. Runs after _batchInFlight teardown
+            // (schedulePostRecoveryRebalance re-defers), so it never overlaps
+            // the batch whose finally is still executing.
+            if ((manager as any)._deferredRebalanceAt) {
+                (manager as any)._deferredRebalanceAt = 0;
+                DexbotStateRecovery.schedulePostRecoveryRebalance(
+                    this,
+                    'fill rebalance deferred by an active broadcast region'
+                );
+            }
             // A recovery sync wrapping the region keeps the consumer gated;
             // requestGridReset's finally drains once the counter clears.
             if ((this as any)._recoverySyncInFlight) return;
             if ((this as any)._batchInFlight) return;
             if (!this._incomingFillQueue || this._incomingFillQueue.length === 0) return;
             this._log(`[FILL-QUEUE] Broadcasting region ended; draining ${this._incomingFillQueue.length} deferred fill(s).`, 'info');
+            // Region-ended drain residue: the parked fills run against
+            // post-rebalance grid state; consumeFillQueue widens the fund
+            // invariant tolerance for this cycle (orphan-equivalent).
+            this._deferredFillsPending = true;
             this._scheduleFillConsumerRestart(chainOrders);
         };
     }
@@ -2074,7 +2120,8 @@ class DEXBot {
         const metrics = this.getMetrics();
         this._log(`Shutdown complete. Final metrics: fills=${metrics.fillsProcessed}, batches=${metrics.batchesExecuted}, ` +
             `avgProcessingTime=${metrics.fillsProcessed > 0 ? Format.formatMetric2(metrics.fillProcessingTimeMs / metrics.fillsProcessed) : 0}ms, ` +
-            `lockContentions=${metrics.lockContentionEvents}, maxQueueDepth=${metrics.maxQueueDepth}`);
+            `lockContentions=${metrics.lockContentionEvents}, maxQueueDepth=${metrics.maxQueueDepth}, ` +
+            `heldChainOrders=${metrics.heldChainOrders ?? 0}, blockingChainOrders=${metrics.blockingChainOrders ?? 0}`);
 
         await this.manager?.logger?.flush();
     }

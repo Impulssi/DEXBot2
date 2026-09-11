@@ -648,6 +648,35 @@ class Accountant {
             }
         }
 
+        // One-sided persistent drift ledger (trust-chain heal eligibility).
+        // A gap that flips side or direction between checks is a live
+        // broadcast/fill interaction, not the accounting residue the heal is
+        // for; only a STABLE one-sided gap across consecutive checks
+        // qualifies. Cleared whenever the invariant passes so a healed
+        // episode never lingers.
+        if (hasViolation) {
+            const sellBad = actualSell !== null && actualSell !== undefined && diffSell > allowedSellTolerance;
+            const buyBad = actualBuy !== null && actualBuy !== undefined && diffBuy > allowedBuyTolerance;
+            const side = (buyBad && !sellBad) ? 'buy' : (!buyBad && sellBad) ? 'sell' : 'both';
+            const direction = (side === 'buy') ? (actualBuy > expectedBuy ? 'tracked-low' : 'tracked-high')
+                : (side === 'sell') ? (actualSell > expectedSell ? 'tracked-low' : 'tracked-high')
+                : null;
+            const prev = mgr._fundDriftLedger;
+            if (prev && side !== 'both' && direction && prev.side === side && prev.direction === direction) {
+                prev.count += 1;
+                prev.lastAt = Date.now();
+                mgr._fundDriftLedger = prev;
+            } else {
+                // Cross-bot-only violations (INVARIANT 3) or two-sided drift
+                // reset the ledger to null — not healable.
+                mgr._fundDriftLedger = (side === 'both' || !direction)
+                    ? null
+                    : { side, direction, count: 1, firstAt: Date.now(), lastAt: Date.now() };
+            }
+        } else {
+            mgr._fundDriftLedger = null;
+        }
+
         // NEW: Attempt immediate recovery if violation detected
         if (hasViolation) {
             const doRecovery = async () => {
@@ -777,6 +806,36 @@ class Accountant {
                         mgr.logger?.log?.(`[RECOVERY] Post-recalibration fund recalc failed: ${getErrorMessage(recalcErr)}`, 'warn');
                     }
                     driftValidation = mgr.checkFundDriftAfterFills();
+                }
+            }
+            if (driftValidation && driftValidation.isValid === false) {
+                const healed = await this._tryTrustChainFreeHeal(mgr, driftValidation);
+                if (healed) {
+                    const healPrecision = mgr.assets && (healed.side === 'sell'
+                        ? mgr.assets.assetA?.precision
+                        : mgr.assets.assetB?.precision);
+                    const prec = Number.isFinite(Number(healPrecision)) ? Number(healPrecision) : 4;
+                    mgr.logger?.log?.(
+                        `[RECOVERY] Trust-chain free-balance heal applied (side=${healed.side}, ` +
+                        `seededFree=${Format.formatAmountByPrecision(healed.seededFree, prec)}, ` +
+                        `committed=${Format.formatAmountByPrecision(healed.committed, prec)}, ` +
+                        `chainTotal=${Format.formatAmountByPrecision(healed.chainTotal, prec)})`,
+                        'warn'
+                    );
+                    try {
+                        if (typeof mgr.recalculateFunds === 'function') {
+                            await mgr.recalculateFunds();
+                        }
+                    } catch (recalcErr: any) {
+                        mgr.logger?.log?.(`[RECOVERY] Post-heal fund recalc failed: ${getErrorMessage(recalcErr)}`, 'warn');
+                    }
+                    driftValidation = mgr.checkFundDriftAfterFills();
+                    if (driftValidation && driftValidation.isValid === false) {
+                        mgr.logger?.log?.(
+                            `[RECOVERY] Trust-chain heal did not resolve drift: ${driftValidation.reason || 'unknown'}`,
+                            'warn'
+                        );
+                    }
                 }
             }
             if (driftValidation && driftValidation.isValid === false) {
@@ -921,6 +980,115 @@ class Accountant {
     }
 
       /**
+       * Guarded "trust-chain" free-balance seeding for a persistent one-sided
+       * fund drift (recovery heal path).
+       *
+       * When state recovery keeps failing because the tracked FREE balance on
+       * one side is consistently short of (or above) the chain total — the
+       * accounting residue of a fill/broadcast chaos window — this seeds the
+       * tracked free balance from the freshly fetched chain total minus the
+       * reconciled committed grid sizes. The committed-side recalibration
+       * cannot repair this by design: free balances are never derived from
+       * chain (shared-account safety), so healing is opt-in and guarded.
+       *
+       * Returns null (no heal) unless ALL hold:
+       *   - FUND_INVARIANT_HEAL_ON_RECOVERY_FAIL enabled in gridLimits
+       *   - the drift is one-sided (only BUY or only SELL violated)
+       *   - the same side+direction was observed on at least
+       *     FUND_INVARIANT_HEAL_MIN_PERSISTENT_CHECKS consecutive checks
+       *   - the account is not shared by other registered bots, unless
+       *     FUND_INVARIANT_HEAL_ALLOW_SHARED is also enabled
+       *
+       * @param {Object} mgr - Manager instance
+       * @param {Object} driftValidation - Result of checkFundDriftAfterFills()
+       * @returns {Promise<{side: string, seededFree: number, committed: number, chainTotal: number}|null>}
+       */
+    async _tryTrustChainFreeHeal(mgr: any, driftValidation: any) {
+          const limits = mgr.config?.gridLimits || GRID_LIMITS;
+          if (limits.FUND_INVARIANT_HEAL_ON_RECOVERY_FAIL !== true) return null;
+          if (!mgr.accountTotals || !mgr.funds?.committed?.chain) return null;
+          if (!driftValidation || typeof driftValidation !== 'object') return null;
+
+          const driftBuy = toFiniteNumber(driftValidation.driftBuy);
+          const allowedBuy = toFiniteNumber(driftValidation.allowedDriftBuy);
+          const driftSell = toFiniteNumber(driftValidation.driftSell);
+          const allowedSell = toFiniteNumber(driftValidation.allowedDriftSell);
+          const buyBad = Number.isFinite(driftBuy) && Number.isFinite(allowedBuy) && driftBuy > allowedBuy;
+          const sellBad = Number.isFinite(driftSell) && Number.isFinite(allowedSell) && driftSell > allowedSell;
+          if (buyBad === sellBad) return null; // both or none — not one-sided
+
+          const side = sellBad ? 'sell' : 'buy';
+          const ledger = mgr._fundDriftLedger;
+          if (!ledger || ledger.side !== side) return null;
+          const minChecks = Math.max(1, Number(limits.FUND_INVARIANT_HEAL_MIN_PERSISTENT_CHECKS) || 2);
+          if (ledger.count < minChecks) return null;
+          // Wall-clock persistence gate: two quick recalculateFunds calls
+          // within one busy fill cycle must not satisfy the persistence
+          // requirement on their own.
+          const minPersistMs = Math.max(0, Number(limits.FUND_INVARIANT_HEAL_MIN_PERSIST_MS) || 0);
+          if (minPersistMs > 0 && Number.isFinite(ledger.firstAt) && Number.isFinite(ledger.lastAt)
+              && (ledger.lastAt - ledger.firstAt) < minPersistMs) {
+              return null;
+          }
+
+          // Shared-account guard: free = chainTotal − committed would absorb
+          // other bots' committed funds as this bot's free.
+          try {
+              const accountRef = resolveAccountRef(mgr, '');
+              if (accountRef) {
+                  const registeredBots = fundRegistry.getRegisteredBots(accountRef);
+                  if ((registeredBots?.length ?? 0) > 1 && limits.FUND_INVARIANT_HEAL_ALLOW_SHARED !== true) {
+                      mgr.logger?.log?.(
+                          `[RECOVERY] Trust-chain heal refused: ${registeredBots.length} bots registered on shared account ${accountRef}; ` +
+                          `enable FUND_INVARIANT_HEAL_ALLOW_SHARED to override`,
+                          'warn'
+                      );
+                      return null;
+                  }
+              }
+          } catch (err: any) {
+              mgr.logger?.log?.(`[RECOVERY] Trust-chain heal shared-account check skipped: ${getErrorMessage(err)}`, 'warn');
+          }
+
+          const chainTotal = toFiniteNumber(side === 'sell' ? mgr.accountTotals.sell : mgr.accountTotals.buy);
+          const committed = toFiniteNumber(side === 'sell' ? mgr.funds.committed.chain.sell : mgr.funds.committed.chain.buy);
+          if (!Number.isFinite(chainTotal) || chainTotal < 0 || !Number.isFinite(committed) || committed < 0) return null;
+
+          // Direction re-validation: the ledger snapshot may predate the
+          // recovery-time drift read (checkFundDriftAfterFills); only heal
+          // when the CURRENT mismatch still points the same way.
+          const expected = toFiniteNumber(side === 'sell' ? mgr.accountTotals.sellFree : mgr.accountTotals.buyFree) + committed;
+          const currentDirection = chainTotal > expected ? 'tracked-low' : 'tracked-high';
+          if (ledger.direction && currentDirection !== ledger.direction) {
+              mgr.logger?.log?.(
+                  `[RECOVERY] Trust-chain heal refused: drift direction flipped (ledger=${ledger.direction}, now=${currentDirection})`,
+                  'warn'
+              );
+              return null;
+          }
+          // committed > chainTotal means the books hold more on-chain orders
+          // than the chain total can cover — genuinely broken. Seeding free=0
+          // would re-trip the drift immediately and re-enter the recovery
+          // loop, so fail loudly instead and leave the state for inspection.
+          if (committed > chainTotal) {
+              mgr.logger?.log?.(
+                  `[RECOVERY] Trust-chain heal refused: committed (${committed}) exceeds chain total (${chainTotal}) — awaiting manual intervention`,
+                  'error'
+              );
+              return null;
+          }
+
+          const seededFree = Math.max(0, chainTotal - committed);
+          if (side === 'sell') mgr.accountTotals.sellFree = seededFree;
+          else mgr.accountTotals.buyFree = seededFree;
+
+          // Heal runs once per episode: a re-offending drift must re-establish
+          // persistence (minChecks checks) from scratch.
+          mgr._fundDriftLedger = null;
+          return { side, seededFree, committed, chainTotal };
+      }
+
+      /**
        * Attempt immediate recovery from fund invariant violations.
        * Runs once per cycle - subsequent violations in same cycle are skipped.
        *
@@ -1028,6 +1196,7 @@ class Accountant {
               if (validation.isValid) {
                   mgr.logger?.log?.('[RECOVERY] State recovery succeeded', 'info');
                   state.structuralResyncRequested = false;
+                  mgr._fundDriftLedger = null;
                   // NOTE: Do NOT reset attemptCount here. The fund invariant check will
                   // run again after recovery returns. If the invariant is still violated,
                   // we want the counter to increment properly (2/5, 3/5, etc.) rather
@@ -1104,6 +1273,10 @@ class Accountant {
              // Gap 5: Clear exhausted flag so the bot can attempt new CREATEs
              // on the next fill or periodic sync cycle.
              this.manager._recoveryExhaustedAt = null;
+             // A fresh recovery cycle has no drift history; the trust-chain
+             // heal (FUND_INVARIANT_HEAL_ON_RECOVERY_FAIL) must re-establish
+             // persistence from scratch instead of inheriting stale geometry.
+             this.manager._fundDriftLedger = null;
          }
 
     /**
