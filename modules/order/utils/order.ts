@@ -2160,7 +2160,11 @@ function resolveReserveOrders(config: any) {
  * pickers use (compareReserveEdge via selectReserveEdgeSlots) — single source
  * of truth, so the no-crawl classification can never drift from placement.
  * Anchor: explicit live-grid edge when supplied, otherwise the config-bound
- * fallback (unresolved -> plain rank).
+ * fallback (unresolved -> plain rank). Shelf/manual ids (non-slot-N, e.g.
+ * fork-kept deep-* orders below the rail) are never reserves: they would
+ * otherwise win the cheapest-first rank and poison the deficit check while
+ * the shelf is live (issue #27 follow-up). No-op upstream (grids only mint
+ * slot-N).
  *
  * @param {Array<Object>} allSlots - All grid slots (need id/price/type)
  * @param {Object} config - Bot configuration (reserve count source)
@@ -2186,7 +2190,7 @@ function reserveEdgeIdSet(allSlots: any, config: any, orderType: any, anchorPric
     // NB: Number(null) === 0 is finite — null/undefined must mean "no anchor".
     const anchor = anchorPrice == null ? resolveReserveEdgeAnchorPrice(config, side) : Number(anchorPrice);
     const ascending = allSlots
-        .filter((s: any) => s && s.id != null && s.price != null && s.type === type)
+        .filter((s: any) => s && s.id != null && s.price != null && s.type === type && parseSlotIndex(s.id) !== null)
         .sort((a: any, b: any) => Number(a.price) - Number(b.price));
     for (const s of selectReserveEdgeSlots(ascending, n, null, isSell ? 'ceiling' : 'floor', anchor)) {
         ids.add(s.id);
@@ -2339,6 +2343,12 @@ function resolveLiveReserveEdgeAnchorPrice(manager: ReserveEdgeAnchorManager | n
                 if (!entry || typeof entry !== 'object') continue;
                 if (!('type' in entry) || !('price' in entry)) continue;
                 if (entry.type !== sideType) continue;
+                // Shelf/manual ids (e.g. fork-kept deep-* orders below the rail)
+                // are never rail geometry: isSlotInRail is fail-open for
+                // unparseable ids, so without this gate a cheap shelf order drags
+                // the anchor down to itself and then qualifies as the reserve edge
+                // (issue #27 follow-up). No-op upstream (grids only mint slot-N).
+                if (parseSlotIndex((entry as any)?.id) === null) continue;
                 if (!MathUtils.isSlotInRail(band.boundaryIdx, band.gapSlots, sideType, entry)) continue;
                 const price = Number(entry.price);
                 if (!Number.isFinite(price) || price <= 0) continue;

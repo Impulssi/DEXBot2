@@ -86,7 +86,7 @@ async function runTests() {
         // picks hold the dip-insurance end instead of the stale rank-lowest slot.
         const stale = [
             { id: 'slot-9', price: 109, type: ORDER_TYPES.SELL },
-            { id: 'slot-s', price: 79, type: ORDER_TYPES.BUY },
+            { id: 'slot-7', price: 79, type: ORDER_TYPES.BUY },
             { id: 'slot-0', price: 80, type: ORDER_TYPES.BUY },
             { id: 'slot-1', price: 81, type: ORDER_TYPES.BUY },
             { id: 'slot-2', price: 82, type: ORDER_TYPES.BUY },
@@ -94,7 +94,7 @@ async function runTests() {
         const anchoredFloor = reserveEdgeIdSet(stale, { reserveOrders: { buy: 2, sell: 0 } }, ORDER_TYPES.BUY, 80);
         assert(anchoredFloor.has('slot-0') && anchoredFloor.has('slot-1') && anchoredFloor.size === 2, 'floor ids anchor at/above the threshold');
         const legacyFloor = reserveEdgeIdSet(stale, { reserveOrders: { buy: 2, sell: 0 } }, ORDER_TYPES.BUY);
-        assert(legacyFloor.has('slot-s') && legacyFloor.has('slot-0'), 'no anchor keeps legacy rank-lowest');
+        assert(legacyFloor.has('slot-7') && legacyFloor.has('slot-0'), 'no anchor keeps legacy rank-lowest');
         const staleAsc = stale.slice().sort((a, b) => a.price - b.price);
         assert.deepStrictEqual(
             selectReserveEdgeSlots(staleAsc, 2, new Set(), 'floor', 80).map((s) => s.id),
@@ -103,7 +103,7 @@ async function runTests() {
         );
         assert.deepStrictEqual(
             selectReserveEdgeSlots(staleAsc, 2, new Set(), 'floor').map((s) => s.id),
-            ['slot-s', 'slot-0'],
+            ['slot-7', 'slot-0'],
             'unanchored floor selector keeps legacy behavior'
         );
         assert.deepStrictEqual(
@@ -116,12 +116,12 @@ async function runTests() {
         const staleSell = [
             { id: 'slot-8', price: 108, type: ORDER_TYPES.SELL },
             { id: 'slot-9', price: 109, type: ORDER_TYPES.SELL },
-            { id: 'slot-x', price: 111, type: ORDER_TYPES.SELL },
+            { id: 'slot-6', price: 111, type: ORDER_TYPES.SELL },
         ];
         const anchoredCeil = reserveEdgeIdSet(staleSell, { reserveOrders: { buy: 0, sell: 1 } }, ORDER_TYPES.SELL, 109);
         assert(anchoredCeil.has('slot-9') && anchoredCeil.size === 1, 'ceiling ids anchor at/below the threshold');
         const legacyCeil = reserveEdgeIdSet(staleSell, { reserveOrders: { buy: 0, sell: 1 } }, ORDER_TYPES.SELL);
-        assert(legacyCeil.has('slot-x'), 'no anchor keeps legacy rank-highest');
+        assert(legacyCeil.has('slot-6'), 'no anchor keeps legacy rank-highest');
         const sellAsc = staleSell.slice().sort((a, b) => a.price - b.price);
         assert.deepStrictEqual(
             selectReserveEdgeSlots(sellAsc, 2, new Set(), 'ceiling', 109).map((s) => s.id),
@@ -130,7 +130,7 @@ async function runTests() {
         );
         assert.deepStrictEqual(
             selectReserveEdgeSlots(sellAsc, 2, new Set(), 'ceiling').map((s) => s.id),
-            ['slot-x', 'slot-9'],
+            ['slot-6', 'slot-9'],
             'unanchored ceiling selector keeps legacy behavior'
         );
     }
@@ -215,6 +215,10 @@ async function runTests() {
         );
 
         // Tier 2: no genesis -> live in-rail extreme of the master grid.
+        // Non-grid shelf/manual ids (e.g. a fork-kept deep-* order below the
+        // rail) never drag the anchor: isSlotInRail is fail-open for
+        // unparseable ids, so the Tier 2 scan skips them explicitly
+        // (issue #27 follow-up) and the live rail floor wins.
         assert.strictEqual(
             resolveLiveReserveEdgeAnchorPrice({
                 config: poolCfg,
@@ -223,8 +227,8 @@ async function runTests() {
                 boundaryIdx: 4,
                 _gapSlots: 2,
             }, 'buy'),
-            79,
-            'no genesis falls back to the live in-rail extreme'
+            80,
+            'no genesis falls back to the live in-rail extreme (shelf ids skipped)'
         );
 
         // Tier 3/4: nothing to read -> config bound, then legacy null.
@@ -236,7 +240,7 @@ async function runTests() {
     console.log(' - no-crawl classification follows the live edge anchor...');
     {
         const slots = [
-            { id: 'slot-x', price: 79, type: ORDER_TYPES.BUY },
+            { id: 'slot-7', price: 79, type: ORDER_TYPES.BUY },
             { id: 'slot-0', price: 80, type: ORDER_TYPES.BUY },
             { id: 'slot-1', price: 81, type: ORDER_TYPES.BUY },
             { id: 'slot-2', price: 82, type: ORDER_TYPES.BUY },
@@ -244,8 +248,41 @@ async function runTests() {
         const cfg = { startPrice: 'pool', minPrice: '3x', maxPrice: '3x', reserveOrders: { buy: 2, sell: 0 } };
         const configAnchored = reserveEdgeIdSet(slots, cfg, ORDER_TYPES.BUY);
         const liveAnchored = reserveEdgeIdSet(slots, cfg, ORDER_TYPES.BUY, 80);
-        assert(configAnchored && configAnchored.has('slot-x'), 'unresolved config anchor classifies the leftover as a reserve');
-        assert(liveAnchored && liveAnchored.has('slot-0') && liveAnchored.has('slot-1') && !liveAnchored.has('slot-x'), 'live anchor keeps classification inside the live rail');
+        assert(configAnchored && configAnchored.has('slot-7'), 'unresolved config anchor classifies the leftover as a reserve');
+        assert(liveAnchored && liveAnchored.has('slot-0') && liveAnchored.has('slot-1') && !liveAnchored.has('slot-7'), 'live anchor keeps classification inside the live rail');
+    }
+
+    console.log(' - shelf/manual ids are never reserves (issue #27 follow-up)...');
+    {
+        // Fork-kept shelf orders below the rail (non-slot-N ids, live on-chain)
+        // must not be counted as the reserve edge in any anchor outcome:
+        // otherwise the deficit can never appear while the shelf is live and
+        // the targeted-sync reserve reason stays silent.
+        const shelfSlots = [
+            { id: 'deep-1', price: 70, type: ORDER_TYPES.BUY },
+            { id: 'deep-0', price: 71, type: ORDER_TYPES.BUY },
+            { id: 'slot-0', price: 80, type: ORDER_TYPES.BUY },
+            { id: 'slot-1', price: 81, type: ORDER_TYPES.BUY },
+            { id: 'slot-2', price: 82, type: ORDER_TYPES.BUY },
+        ];
+        const shelfCfg = { reserveOrders: { buy: 2, sell: 0 } };
+        const rankFallback = reserveEdgeIdSet(shelfSlots, shelfCfg, ORDER_TYPES.BUY);
+        assert(rankFallback && rankFallback.has('slot-0') && rankFallback.has('slot-1') && rankFallback.size === 2, 'rank fallback skips shelf ids');
+        const anchored = reserveEdgeIdSet(shelfSlots, shelfCfg, ORDER_TYPES.BUY, 80);
+        assert(anchored && anchored.has('slot-0') && anchored.has('slot-1') && anchored.size === 2, 'finite anchor skips shelf ids');
+        // Shelf-only grid: empty edge set, so the deficit (0/2) can fire.
+        const shelfOnly = reserveEdgeIdSet(shelfSlots.slice(0, 2), shelfCfg, ORDER_TYPES.BUY, 80);
+        assert(shelfOnly && shelfOnly.size === 0, 'no rail slots means no live reserves');
+        // Tier 2 anchor scan skips shelf ids even though isSlotInRail is
+        // fail-open for unparseable ids: the live rail floor wins.
+        const shelfManager = {
+            config: { startPrice: 'pool', minPrice: '3x', maxPrice: '3x' },
+            _genesis: null,
+            orders: new Map(shelfSlots.map((s) => [s.id, { ...s }])),
+            boundaryIdx: 4,
+            _gapSlots: 2,
+        };
+        assert.strictEqual(resolveLiveReserveEdgeAnchorPrice(shelfManager, 'buy'), 80, 'shelf ids never drag the live anchor');
     }
 
     console.log(' - getActiveOrdersTotal includes both sides...');
@@ -298,7 +335,7 @@ async function runTests() {
     console.log(' - live edge anchors drive no-crawl classification...');
     {
         const allSlots = [
-            { id: 'slot-x', price: 50, type: ORDER_TYPES.BUY },      // stray below the live floor (idx 0)
+            { id: 'slot-7', price: 50, type: ORDER_TYPES.BUY },      // stray below the live floor (idx 0)
             ...Array.from({ length: 5 }, (_, i) => ({ id: `slot-${i}`, price: 80 + i, type: ORDER_TYPES.BUY })), // idx 1..5
             { id: 'gap-0', price: 85, type: ORDER_TYPES.SPREAD },
             { id: 'gap-1', price: 86, type: ORDER_TYPES.SPREAD },
@@ -310,7 +347,7 @@ async function runTests() {
             activeOrders: { buy: 2, sell: 1 },
             reserveOrders: { buy: 2, sell: 0 },
         };
-        const strayFill = [{ id: 'slot-x', type: ORDER_TYPES.BUY }];
+        const strayFill = [{ id: 'slot-7', type: ORDER_TYPES.BUY }];
         const liveAnchors = { buy: 80, sell: 91 };
         assert.strictEqual(
             deriveTargetBoundary(strayFill, 5, allSlots, cfg, 2, null).boundaryIdx, 5,
@@ -395,6 +432,22 @@ async function runTests() {
             livePlan.map((p) => p.id), ['slot-9', 'slot-8', 'slot-7'],
             'live reserves do not shrink the window plan'
         );
+
+        // Reconcile placement agrees with reserve classification: a kept
+        // virtual non-grid shelf (non-slot-N id below the rail, e.g.
+        // fork-injected deep-*) is never activated as a reserve, in both
+        // the anchored case (gated live-edge anchor keeps it out-of-bound
+        // and ranks it last) and the rank-fallback case (slot-N gate in
+        // _pickEdgeReserveSlots, since isSlotInRail is fail-open for
+        // unparseable ids) — issue #27 follow-up.
+        const shelfMgr = await makeMgr(100, ORDER_TYPES.BUY);
+        await shelfMgr._updateOrder({
+            id: 'deep-a', type: ORDER_TYPES.BUY, price: 70,
+            size: 100, state: ORDER_STATES.VIRTUAL, orderId: null,
+        });
+        const shelfPlanIds = (await planBuy(shelfMgr)).map((p) => p.id);
+        assert(!shelfPlanIds.includes('deep-a'), 'non-slot-N shelf never activated as a reserve');
+        assert(shelfPlanIds.includes('slot-0') && shelfPlanIds.includes('slot-1'), 'rail edge reserves still placed');
     }
 
     console.log(' - target grid unions window + edges (middle stays VIRTUAL)...');
