@@ -662,6 +662,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         // Bounds-only grids (virtual slots, no live levels yet) still show
         // the reserve/ceiling lines; levels/spread/panel rows need live data.
         const hasBounds = payload.gridBounds?.low != null || payload.gridBounds?.high != null;
+        // Base gridlines only on bare charts (no overlay data): with embedded
+        // orders/bounds the overlay levels are the grid (M1).
+        const showGridlines = !(hasOrders || hasBounds);
         let currentAmaInitOffsetEnabled = false;
         let currentAmaInitOffset = Number.isFinite(state.amaInitOffset) ? state.amaInitOffset : 0;
         let currentPriceScale = state.priceScale || payload.priceScale || 'log';
@@ -768,6 +771,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             let startMin = 0;
             let startMax = 0;
             let startYRange = null;
+            let startBboxLeft = 0;
+            let startBboxTop = 0;
+            let startPxRatio = 1;
             let panRaf = 0;
             let pendingPan = null;
             const applyPendingPan = () => {
@@ -777,9 +783,17 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 if (!dragging || !p) return;
                 // Vertical drag inside the price chart: price scale follows the mouse
                 // (aktivoi manuaalisen skaalan; kaksoisklikkaus akselilla palauttaa autofitin)
+                // Plot-relative coords (same convention as bindWheelZoom):
+                // posToVal expects position inside the plot area, so the
+                // axis offset (bbox) must be subtracted. Without it the
+                // offset cancels on linear scales but corrupts log-scale
+                // values, which kills vertical pan on the default log scale.
+                const pxr = startPxRatio || 1;
+                const plotX = (cx) => cx - p.rectLeft - (startBboxLeft / pxr);
+                const plotY = (cy) => cy - p.rectTop - (startBboxTop / pxr);
                 if (chart === priceChart && startYRange && Number.isFinite(p.clientY)) {
-                    const vStart = chart.posToVal(p.startY - p.rectTop, 'y');
-                    const vCur = chart.posToVal(p.clientY - p.rectTop, 'y');
+                    const vStart = chart.posToVal(plotY(p.startY), 'y');
+                    const vCur = chart.posToVal(plotY(p.clientY), 'y');
                     if (Number.isFinite(vStart) && Number.isFinite(vCur) && vCur !== vStart) {
                         if (currentPriceScale === 'log') {
                             const ratio = Math.max(1e-12, vStart) / Math.max(1e-12, vCur);
@@ -794,7 +808,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                         }
                     }
                 }
-                const delta = chart.posToVal(p.clientX - p.rectLeft, 'x') - chart.posToVal(p.startX - p.rectLeft, 'x');
+                const delta = chart.posToVal(plotX(p.clientX), 'x') - chart.posToVal(plotX(p.startX), 'x');
                 syncXRange(startMin - delta, startMax - delta);
             };
             const onMove = (e) => {
@@ -831,6 +845,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 const s = chart.scales.x || {};
                 startMin = Number.isFinite(s.min) ? s.min : currentCandles[0].time;
                 startMax = Number.isFinite(s.max) ? s.max : currentCandles[currentCandles.length - 1].time;
+                startBboxLeft = (chart.bbox && Number.isFinite(chart.bbox.left)) ? chart.bbox.left : 0;
+                startBboxTop = (chart.bbox && Number.isFinite(chart.bbox.top)) ? chart.bbox.top : 0;
+                startPxRatio = Number.isFinite(chart.pxRatio) && chart.pxRatio > 0 ? chart.pxRatio : 1;
                 if (chart === priceChart) startYRange = currentYRange(chart);
                 document.body.style.cursor = 'grabbing';
                 window.addEventListener('mousemove', onMove);
@@ -838,38 +855,36 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             });
         }
         function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
-        // Significant-digit price formatting (4 "active" digits), matching the
-        // DEXBot order-price style (formatCurrency).
-        // Very small values get SI micro-suffixes (m/µ/n/p/...); large values
-        // get comma grouping. Examples: 34.94 -> "34.94", 119.98 -> "120.0",
-        // 3014.9 -> "3,015", 0.00567 -> "5.670m".
+        // Plain-decimal price formatting (matches order-price style):
+        // full decimals, never SI suffixes — order levels must read exact.
         function fmtPrice(v) {
             if (v == null || !Number.isFinite(v)) return '-';
-            const num = Number(v);
-            if (num === 0) return '0';
-            const abs = Math.abs(num);
-            if (abs < 0.1) {
-                if (abs >= 0.001) return fmtPrice(num * 1000) + 'm';
-                if (abs >= 0.000001) return fmtPrice(num * 1e6) + 'µ';
-                if (abs >= 1e-9) return fmtPrice(num * 1e9) + 'n';
-                if (abs >= 1e-12) return fmtPrice(num * 1e12) + 'p';
-                if (abs >= 1e-15) return fmtPrice(num * 1e15) + 'f';
-                if (abs >= 1e-18) return fmtPrice(num * 1e18) + 'a';
-                return num.toFixed(6);
-            }
-            const digits = 4;
-            let intDigits = Math.floor(Math.log10(abs)) + 1;
-            if (abs < 1) intDigits = 1;
-            const formatted = intDigits >= digits ? String(Math.round(num)) : num.toFixed(digits - intDigits);
-            return intDigits >= 4 ? formatted.replace(/\B(?=(\d{3})+(?!\d))/g, ',') : formatted;
+            const abs = Math.abs(v);
+            if (abs >= 1000) return v.toFixed(2);
+            if (abs >= 100) return v.toFixed(3);
+            if (abs >= 1) return v.toFixed(4);
+            return v.toPrecision(6);
         }
         function fmtPriceAxis(vals) {
             if (!Array.isArray(vals) || vals.length === 0) return [];
-            return vals.map((v) => (v == null || !Number.isFinite(v)) ? '' : fmtPrice(v));
+            let step = Infinity;
+            for (let i = 1; i < vals.length; i++) {
+                const d = Math.abs(Number(vals[i]) - Number(vals[i - 1]));
+                if (Number.isFinite(d) && d > 0 && d < step) step = d;
+            }
+            let decimals = 4;
+            if (Number.isFinite(step) && step > 0) decimals = Math.ceil(-Math.log10(step));
+            decimals = Math.max(0, Math.min(10, decimals));
+            return vals.map((v) => (v == null || !Number.isFinite(v)) ? '' : Number(v).toFixed(decimals));
         }
         function fmtPriceLabel(v) {
             if (v == null || !Number.isFinite(v)) return '-';
-            return fmtPrice(v);
+            const abs = Math.abs(v);
+            if (abs >= 1000) return v.toFixed(2);
+            if (abs >= 1) return v.toFixed(4);
+            let s = v.toPrecision(6);
+            if (s.indexOf('e') >= 0) s = v.toFixed(10).replace(/0+$/, '').replace(/.$/, '');
+            return s;
         }
         function logAxisSplits(self, axisIdx, scaleMin, scaleMax, foundIncr, foundSpace) {
             if (!Number.isFinite(scaleMin) || !Number.isFinite(scaleMax) || scaleMin <= 0 || scaleMax <= 0) return [];
@@ -942,7 +957,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 show: true,
                 size: showLabels ? 24 : 14,
                 stroke: '#ffffff',
-                grid: { stroke: '#1c2128' },
+                grid: { show: showGridlines, stroke: '#1c2128' },
                 ticks: { stroke: '#30363d', width: 1 },
                 font: '11px Segoe UI, sans-serif',
                 values: showLabels ? (u, vals) => {
@@ -1454,7 +1469,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             let end = Math.min(xs.length, lowerBound(xs, maxX) + 2);
             let max = 0;
             for (let i = start; i < end; i++) {
-                const v = currentCandles[i]?.volume;
+                const v = candleVolumeUsdt(currentCandles[i]);
                 if (Number.isFinite(v) && v > max) max = v;
             }
             if (!Number.isFinite(max) || max <= 0) return [0, 1];
@@ -1569,7 +1584,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             document.getElementById('legend-delta').textContent = Number.isFinite(delta)
                 ? ((delta >= 0 ? '+' : '') + fmtPrice(delta))
                 : '-';
-            document.getElementById('legend-volume').textContent = fmtVolume(c.volume);
+            document.getElementById('legend-volume').textContent = fmtPriceLabel(candleVolumeUsdt(c)) + ' USDT';
             document.getElementById('legend-sma').textContent = Number.isFinite(currentSma[idx]) ? fmtPrice(currentSma[idx]) : (smaPending ? '...' : '-');
             document.getElementById('legend-vwap').textContent = Number.isFinite(currentVwap[idx]) ? fmtPrice(currentVwap[idx]) : '-';
             document.getElementById('legend-sma-init').textContent = Number.isFinite(currentSmaInit[idx]) ? fmtPrice(currentSmaInit[idx]) : '-';
@@ -1790,6 +1805,15 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             }
             return { hooks: { draw: [drawRangeBand] } };
         }
+        // USDT notional of a (possibly aggregated, mode-aware) candle for
+        // DISPLAY only (bars, legend, hover). VWMA keeps using raw volumes.
+        // In inverse pair mode the series volume is already converted to
+        // quote units by invertCandle, so use it as-is.
+        function candleVolumeUsdt(c) {
+            const v = Number(c?.volume) || 0;
+            if (normalizePairMode(currentPairMode) === 'inverse') return v;
+            return v * (Number(c?.close) || 0);
+        }
         function buildData() {
             const tf = timeframeMap.get(currentTimeframe) || timeframeMap.get(defaultTimeframe.label) || timeframes[0];
             currentSeriesState = getSeriesState(currentPairMode);
@@ -1857,7 +1881,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             ];
             currentVolumeData = [
                 currentCandles.map((c) => c.time),
-                currentCandles.map((c) => c.volume),
+                currentCandles.map((c) => candleVolumeUsdt(c)),
             ];
             return {
                 priceData: currentPriceData,
@@ -1915,7 +1939,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                         size: 84,
                         space: isLogScale ? 1 : 45,
                         stroke: '#ffffff',
-                        grid: { stroke: '#272f3a' },
+                        grid: { show: showGridlines, stroke: '#272f3a' },
                         ticks: { stroke: '#414b57', width: 1 },
                         font: '600 13px Segoe UI, sans-serif',
                         splits: isLogScale ? logAxisSplits : undefined,
@@ -1960,7 +1984,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 ],
                 axes: [
                     makeTimeAxis(true),
-                    { scale: 'y', side: 1, size: 84, space: 22, stroke: '#ffffff', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, font: '600 12px Segoe UI, sans-serif', values: (u, vals) => vals.map((v) => (v == null ? '' : fmtVolume(v))) },
+                    { scale: 'y', side: 1, size: 62, stroke: '#ffffff', grid: { show: showGridlines, stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, font: '600 12px Segoe UI, sans-serif', values: (u, vals) => fmtPriceAxis(vals) },
                 ],
             };
 
@@ -2319,34 +2343,31 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             if (!wrap) {
                 try { if (getComputedStyle(u.root).position === 'static') u.root.style.position = 'relative'; } catch (e) {}
                 wrap = document.createElement('div');
+                // Class MUST match the reuse query above: without it every
+                // draw (each pan/zoom frame) appends a new marker line.
+                wrap.className = 'um-wrap';
                 wrap.style.cssText = 'position:absolute;z-index:24;pointer-events:none;';
                 wrap.innerHTML =
-                    '<div class="um-line" style="position:absolute;top:0;height:100%;width:0;border-left:2px dashed #22d3ee;opacity:0.75;"></div>' +
-                    '<div class="um-tag" style="position:absolute;top:2px;left:6px;font:600 10px Segoe UI, sans-serif;line-height:15px;color:#22d3ee;white-space:nowrap;"></div>';
+                    '<div class="um-tag" style="position:absolute;top:0;right:0;font:500 9px Segoe UI, sans-serif;line-height:14px;color:#22d3ee;opacity:0.55;white-space:nowrap;"></div>';
                 u.root.appendChild(wrap);
             }
-            const s = u.scales.x || {};
-            const sMin = Number.isFinite(s.min) ? s.min : null;
-            const sMax = Number.isFinite(s.max) ? s.max : null;
-            if (sMin == null || sMax == null || sMax <= sMin) { wrap.style.display = 'none'; return; }
-            const frac = (UPDATE_MARKER_SEC - sMin) / (sMax - sMin);
-            const inView = frac >= 0 && frac <= 1;
-            if (!inView) { wrap.style.display = 'none'; return; }
+            // Unobtrusive corner tag (no full-height line): fixed position so
+            // panning never moves it. The timestamp text still tells where
+            // the incremental fetch started.
             const rootRect = u.root.getBoundingClientRect();
             const overRect = u.over.getBoundingClientRect();
-            const xRoot = (overRect.left - rootRect.left) + frac * overRect.width;
             wrap.style.display = 'block';
-            wrap.style.left = xRoot + 'px';
-            wrap.style.top = (overRect.top - rootRect.top) + 'px';
-            wrap.style.height = overRect.height + 'px';
+            wrap.style.left = 'auto';
+            wrap.style.right = '4px';
+            wrap.style.top = (overRect.top - rootRect.top + 4) + 'px';
+            wrap.style.height = 'auto';
             if (withLabel) {
                 const tag = wrap.querySelector('.um-tag');
                 const d = new Date(UPDATE_MARKER_SEC * 1000);
                 const hh = String(d.getUTCHours()).padStart(2, '0');
                 const mm = String(d.getUTCMinutes()).padStart(2, '0');
                 const bars = Number(payload.updateMarkerNewBars) > 0 ? ' (+' + Math.round(Number(payload.updateMarkerNewBars)) + ')' : '';
-                tag.textContent = 'update ' + d.toLocaleDateString(undefined) + ' ' + hh + ':' + mm + bars + ' →';
-                tag.style.left = (frac > 0.8 ? -(tag.offsetWidth + 8) : 6) + 'px';
+                tag.textContent = 'update ' + d.toLocaleDateString(undefined) + ' ' + hh + ':' + mm + bars;
             }
         }
         function ensureVolumeHoverTip(u) {
@@ -2372,7 +2393,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             }
             const barX = u.valToPos(u.data[0][idx], 'x', true);
             volumeHoverTip.style.display = 'block';
-            volumeHoverTip.textContent = 'Vol ' + fmtVolume(v);
+            volumeHoverTip.textContent = 'Vol ' + fmtPriceLabel(candleVolumeUsdt(c)) + ' USDT';
             volumeHoverTip.style.left = Math.max(2, barX - volumeHoverTip.offsetWidth / 2) + 'px';
             // Pinned to the panel top — never covers the bars
             volumeHoverTip.style.top = '2px';

@@ -172,6 +172,8 @@ if (prevUpdate && Number(prevUpdate.lastCandleSec) > 0) {
         updateMarkerArg.push('--update-marker-bars', String(Math.floor(Number(prevUpdate.newBars))));
     }
 }
+// Opt-out: --no-update-marker suppresses the auto-stamped marker entirely.
+if (process.argv.includes('--no-update-marker')) updateMarkerArg = [];
 const chartCode = await runNode([
     'dist/analysis/tradingview/analyze_tradingview.js',
     '--file', dataFile,
@@ -186,16 +188,13 @@ if (chartCode !== 0) {
 }
 
 console.log();
-console.log('[2b/3] Generoidaan grid-kuva (reserve / ostot loppuvat) nykyisella botti-konfiguraatiolla...');
-try {
-  const gridCode = await runNode(['grid-kuva.mjs', '--data', dataFile]);
-  if (gridCode !== 0) console.warn('grid-kuva generointi palautti exit ' + gridCode + ' (jatkuu silti)');
-  else console.log('  grid-kuva paivitetty: analysis/charts/BTS-XBTSX.USDT_grid.html');
-} catch (e) {
-  console.warn('grid-kuva paivitys epaonnistui:', e.message);
-}
+// grid-kuva step removed permanently (unused): run standalone if ever needed:
+//   node grid-kuva.mjs --data <lp-data-file>
 
 console.log();
+if (process.argv.includes('--no-open')) {
+    console.log('[3/3] Selaimen avaus ohitettu (--no-open). Chartti: ' + CHART_FILE);
+} else {
 console.log('[3/3] Avataan chartti selaimeen...');
 try {
     const { exec } = await import('node:child_process');
@@ -210,6 +209,7 @@ try {
     }
 } catch (e) {
     console.log('Avaa chartti manuaalisesti: ' + CHART_FILE);
+}
 }
 
 console.log();
