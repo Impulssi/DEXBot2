@@ -316,7 +316,10 @@ function bucketPricesToCandles(points: any, intervalSeconds = 3600) {
         }
         if (price > bucket.high) bucket.high = price;
         if (price < bucket.low) bucket.low = price;
-        bucket.count += 1;
+        // Cross-feed points may carry an averaged publication count for the
+        // bucket; ordinary feed points count one publication each.
+        const pointCount = Number(point?.feedPublishCount);
+        bucket.count += Number.isFinite(pointCount) && pointCount >= 0 ? pointCount : 1;
     }
 
     return [...buckets.entries()]
@@ -374,10 +377,32 @@ function applyGapFill(consolidated: any, cfg: any) {
  * Numerator publishes predating the first denominator publish are dropped
  * (no reference price yet). Pure function of two point lists otherwise.
  */
-function crossPointsToRatios(numeratorPoints: any, denominatorPoints: any) {
+function crossPointsToRatios(numeratorPoints: any, denominatorPoints: any, intervalSeconds: any = 0) {
     const ratios: any[] = [];
     let j = 0;
     let lastDenominator: any = null;
+    const bucketMs = Number(intervalSeconds) * 1000;
+    const numeratorCounts = new Map<number, number>();
+    const denominatorCounts = new Map<number, number>();
+    const countedBuckets = new Set<number>();
+
+    if (Number.isFinite(bucketMs) && bucketMs > 0) {
+        for (const point of numeratorPoints || []) {
+            const tsMs = Number(point?.tsMs);
+            if (Number.isFinite(tsMs)) {
+                const bucket = Math.floor(tsMs / bucketMs) * bucketMs;
+                numeratorCounts.set(bucket, (numeratorCounts.get(bucket) || 0) + 1);
+            }
+        }
+        for (const point of denominatorPoints || []) {
+            const tsMs = Number(point?.tsMs);
+            if (Number.isFinite(tsMs)) {
+                const bucket = Math.floor(tsMs / bucketMs) * bucketMs;
+                denominatorCounts.set(bucket, (denominatorCounts.get(bucket) || 0) + 1);
+            }
+        }
+    }
+
     for (const point of numeratorPoints || []) {
         const tsMs = Number(point?.tsMs);
         const price = Number(point?.price);
@@ -388,7 +413,17 @@ function crossPointsToRatios(numeratorPoints: any, denominatorPoints: any) {
         }
         const refPrice = Number(lastDenominator?.price);
         if (!Number.isFinite(refPrice) || refPrice <= 0) continue;
-        ratios.push({ tsMs, price: price / refPrice });
+        const ratio: any = { tsMs, price: price / refPrice };
+        if (Number.isFinite(bucketMs) && bucketMs > 0) {
+            const bucket = Math.floor(tsMs / bucketMs) * bucketMs;
+            if (!countedBuckets.has(bucket)) {
+                ratio.feedPublishCount = ((numeratorCounts.get(bucket) || 0) + (denominatorCounts.get(bucket) || 0)) / 2;
+                countedBuckets.add(bucket);
+            } else {
+                ratio.feedPublishCount = 0;
+            }
+        }
+        ratios.push(ratio);
     }
     return ratios;
 }
@@ -401,7 +436,7 @@ async function fetchFeedCrossPoints({ mpaA, mpaB, backing, config = {} }: any) {
         fetchFeedPricePoints({ mpaAsset: mpaA, backingAsset: backing, config }),
         fetchFeedPricePoints({ mpaAsset: mpaB, backingAsset: backing, config }),
     ]);
-    return crossPointsToRatios(pointsA, pointsB);
+    return crossPointsToRatios(pointsA, pointsB, config.intervalSeconds || 3600);
 }
 
 /**

@@ -244,6 +244,7 @@ async function testFeedCrossCandles() {
     const straight = await getFeedCandlesForMpaCross(MPA, EUR, legUSD, legEUR, cfg);
     assert.strictEqual(straight.length, 1);
     assert.deepStrictEqual(straight[0].slice(1, 5), [0.5, 0.5, 0.5, 0.5]);
+    assert.strictEqual(straight[0][5], 1.5, 'cross volume is the average of both feed publication counts');
 
     // Flipped legs still orient to B-per-A (2 USD per EUR).
     const flipped = await getFeedCandlesForMpaCross(EUR, MPA, legUSD, legEUR, cfg);

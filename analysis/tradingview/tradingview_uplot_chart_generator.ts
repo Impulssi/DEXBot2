@@ -269,6 +269,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         .toolbar-row { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px 12px; align-items: center; }
         .group { display: inline-flex; align-items: center; gap: 8px; padding-left: 12px; border-left: 1px solid #263241; }
         .group:first-child { padding-left: 0; border-left: 0; }
+        .primary-toolbar-row .group { padding-left: 0; border-left: 0; }
         :root {
             --control-height: 36px;
         }
@@ -508,7 +509,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 <div id="subtitle">${escapeHtml(poolLabel)} · ${escapeHtml(pairLabelNormal)} · ${escapeHtml(intervalLabel)} base · indicators from 1h · volume · uPlot</div>
             </div>
             <div id="toolbar">
-                <div class="toolbar-row">
+                <div class="toolbar-row primary-toolbar-row">
                 <div class="group">
                     <div class="indicator">
                         <span class="tag">pair</span>
@@ -544,7 +545,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                         </span>
                     </div>
                     <div class="indicator"><label><input type="checkbox" id="volume-toggle" checked> Volume</label> <button type="button" class="reset-btn" id="volume-unit-toggle" data-volume-mode="base" title="Volume units: base asset — click for quote asset">${escapeHtml(defaultPairMode === 'inverse' ? assetLabelB : assetLabelA)}</button></div>
-                    ${(((payload.orderBuys?.length || 0) + (payload.orderSells?.length || 0) > 0 || payload.gridBounds?.low != null || payload.gridBounds?.high != null) ? '<div class="indicator"><label><input type="checkbox" id="orders-toggle" checked> Orders</label> <span class="tag">' + (payload.orderBuys?.length || 0) + 'B/' + (payload.orderSells?.length || 0) + 'S</span></div>' : '')}
+                    ${(((payload.orderBuys?.length || 0) + (payload.orderSells?.length || 0) > 0 || payload.gridBounds?.low != null || payload.gridBounds?.high != null) ? '<div class="indicator"><label><input type="checkbox" id="orders-toggle" checked> Orders</label></div>' : '')}
                 </div>
                 </div>
                 <div class="toolbar-row">
@@ -1148,6 +1149,17 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             let cur = null;
             let curBucket = null;
             let curIdx = -1;
+            const finishBucket = (bucket) => {
+                if (!bucket) return;
+                // Feed volume is a publication rate, not trade quantity. Keep
+                // it comparable across 1h/week/month views instead of turning
+                // a monthly candle into a sum such as 388 publishes.
+                if (payload.volumeIsCount && bucket.barCount > 0) {
+                    bucket.volume /= bucket.barCount;
+                }
+                delete bucket.barCount;
+                out.push(bucket);
+            };
             for (let i = 0; i < rows.length; i++) {
                 const row = rows[i];
                 const ts = Number(row.time);
@@ -1161,22 +1173,31 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 }
                 if (!cur || bucket !== curBucket) {
                     if (cur) {
-                        out.push(cur);
+                        finishBucket(cur);
                         idxs.push(curIdx);
                     }
                     curBucket = bucket;
                     curIdx = i;
-                    cur = { time: bucket, open: row.open, high: row.high, low: row.low, close: row.close, volume: row.volume || 0 };
+                    cur = {
+                        time: bucket,
+                        open: row.open,
+                        high: row.high,
+                        low: row.low,
+                        close: row.close,
+                        volume: row.volume || 0,
+                        barCount: 1,
+                    };
                 } else {
                     cur.high = Math.max(cur.high, row.high);
                     cur.low = Math.min(cur.low, row.low);
                     cur.close = row.close;
                     cur.volume += row.volume || 0;
+                    cur.barCount += 1;
                     curIdx = i;
                 }
             }
             if (cur) {
-                out.push(cur);
+                finishBucket(cur);
                 idxs.push(curIdx);
             }
             const result = { candles: out, idxs };
@@ -1939,17 +1960,26 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             currentVwap = currentVwapEnabled ? sampleSeriesByIndex(baseVwap, aggregated.idxs) : new Array(currentCandles.length).fill(null);
             const amaCfg = currentAmaConfig();
             const warmupInit = currentAmaEnabled && baseAma.length > amaCfg.erPeriod ? baseAma[amaCfg.erPeriod] : null;
-            const baseSmaInit = warmupInit !== null
-                ? currentSeriesCandles.map((c, i) => i <= amaCfg.erPeriod ? warmupInit : null)
-                : new Array(currentSeriesCandles.length).fill(null);
-            currentSmaInit = sampleSeriesByIndex(baseSmaInit, aggregated.idxs);
+            // Build the init segment in the selected timeframe. Sampling the
+            // 1h init series by each bucket's final 1h index can make it end
+            // inside a week/month bucket, leaving a gap before the first
+            // sampled AMA value appears.
+            const firstAmaIndex = currentAma.findIndex((value) => Number.isFinite(value));
+            // The first visible higher-timeframe AMA sample can already be
+            // several 1h updates past the true warmup point. Anchor that
+            // sample to the warmup average so the AMA starts where the init
+            // line ends instead of appearing detached at a different value.
+            if (warmupInit !== null && firstAmaIndex >= 0) currentAma[firstAmaIndex] = warmupInit;
+            currentSmaInit = warmupInit !== null
+                ? currentAma.map((value, i) => i <= firstAmaIndex || (firstAmaIndex < 0 && i === currentAma.length - 1) ? warmupInit : null)
+                : new Array(currentCandles.length).fill(null);
             const offsetInit = currentAmaEnabled && currentAmaInitOffset !== 0 && baseAmaOff.length > amaCfg.erPeriod
                 ? baseAmaOff[amaCfg.erPeriod]
                 : null;
-            const baseSmaInitOff = offsetInit !== null
-                ? currentSeriesCandles.map((c, i) => i <= amaCfg.erPeriod ? offsetInit : null)
-                : new Array(currentSeriesCandles.length).fill(null);
-            currentSmaInitOff = sampleSeriesByIndex(baseSmaInitOff, aggregated.idxs);
+            const firstAmaOffIndex = currentAmaOff.findIndex((value) => Number.isFinite(value));
+            currentSmaInitOff = offsetInit !== null
+                ? currentAmaOff.map((value, i) => i < firstAmaOffIndex || (firstAmaOffIndex < 0 && i === currentAmaOff.length - 1) ? offsetInit : null)
+                : new Array(currentCandles.length).fill(null);
             currentPriceData = [
                 currentCandles.map((c) => c.time),
                 currentOpen,
