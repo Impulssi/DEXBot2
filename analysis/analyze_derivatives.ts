@@ -14,7 +14,7 @@
  *
  *   node dist/analysis/analyze_derivatives.js \\
  *     --source market_adapter \
- *     --bot-key AAA-BBB
+ *     --bot-key <bot>
  *
  * Output:
  *   analysis/charts/derivative_chart.html

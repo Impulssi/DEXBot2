@@ -61,6 +61,8 @@ function updateDynamicGridSnapshotSync(...args: any) { return require('../market
 function scheduleFillConsumerRestartFn(...args: any) { return require('./dexbot_fill_runtime').scheduleFillConsumerRestart(...args); }
 function reconcileGridOrders(...args: any) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
 function resolveReserveCount(...args: any) { return require('./order/utils/order').resolveReserveCount(...args); }
+function reserveEdgeIdSet(...args: any) { return require('./order/utils/order').reserveEdgeIdSet(...args); }
+function resolveLiveReserveEdgeAnchorPrice(...args: any) { return require('./order/utils/order').resolveLiveReserveEdgeAnchorPrice(...args); }
 function formatUnmatchedChainOrder(...args: any) { return require('./order/utils/order').formatUnmatchedChainOrder(...args); }
 function isNonBlockingUnmatchedOrder(...args: any) { return require('./order/utils/order').isNonBlockingUnmatchedOrder(...args); }
 function getSideBudget(...args: any) { return require('./order/utils/order').getSideBudget(...args); }
@@ -159,7 +161,7 @@ function runtimeConfigNeedsMarketAdapter(snapshot: any, config: any) {
  * Live bot-config allowlist (BOT_LIVE_CONFIG_KEYS) is defined once in
  * runtime_settings.ts (shared with the `dexbot bot` editor hint) and
  * statically imported above. Everything outside it is hint-only:
- * geometry needs `dexbot reset <name>`, identity needs a restart.
+ * geometry needs `dexbot reset <bot>`, identity needs a restart.
  */
 
 /**
@@ -394,7 +396,7 @@ function diffBotConfigEntries(oldNormalized: any, newNormalized: any): {
  * Best-effort and idempotent: synchronous in-memory merge only, no chain
  * I/O, no fill-lock (assignments are atomic; the existing maintenance /
  * targeted-reconcile ticks heal shortfalls/excess on the next cycle).
- * Geometry changes are NOT applied (need `dexbot reset <name>`), identity
+ * Geometry changes are NOT applied (need `dexbot reset <bot>`), identity
  * changes are NOT applied (need restart) — on the steady-state path both
  * produce a one-time hint per fingerprint (the fingerprint advances past
  * hinted keys, malformed debtPolicy included, so a persistently-broken file
@@ -552,6 +554,59 @@ function getTargetActiveOrders(config: any, side: any) {
     return Math.max(0, Number.isFinite(configured) ? configured : 1) + reserves;
 }
 
+/**
+ * Count live on-chain reserve orders for one side (issue #27 follow-up).
+ *
+ * The window shortfall check above compares live window+reserves against
+ * window+reserves, so a pre-existing window surplus masks a reserve deficit
+ * (e.g. target 6+2=8 vs 12 live after reserveOrders 0→2: no shortfall, no
+ * sync, zero reserve placements). Reserves get their own independent reason
+ * below — the mirror of the masking case getTargetActiveOrders handles.
+ *
+ * Classification reuses the single source of truth (reserveEdgeIdSet +
+ * resolveLiveReserveEdgeAnchorPrice, same anchor the placement pickers use)
+ * over the full master grid, intersected with live ACTIVE/PARTIAL orderIds
+ * (same live definition as countLiveGridOrders).
+ * @param {any} manager - OrderManager
+ * @param {any} config - Bot configuration (reserve count source)
+ * @param {any} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+ * @returns {number|null} Live reserve count, or null when unclassifiable
+ */
+function countLiveReserveOrders(manager: any, config: any, type: any): number | null {
+    try {
+        const side = type === ORDER_TYPES.SELL ? 'sell' : 'buy';
+        const required = resolveReserveCount(config, side);
+        if (!(required > 0)) return 0;
+        if (!manager) return null;
+        // Full master grid only: classifying from live-only indexed lookups
+        // would pick the "edge" of the live subset, not the grid edge, and
+        // mis-fire on stripped test doubles. Fail closed (null) without it.
+        if (!manager.orders || typeof manager.orders.values !== 'function') return null;
+        const allSlots: any[] = Array.from(manager.orders.values());
+        if (allSlots.length === 0) return null;
+        const anchor = resolveLiveReserveEdgeAnchorPrice(manager, side);
+        const reserveIds = reserveEdgeIdSet(allSlots, config, type, anchor);
+        if (!reserveIds || reserveIds.size === 0) return 0;
+        const liveIds = new Set<string>();
+        if (typeof manager.getOrdersByTypeAndState === 'function') {
+            for (const state of [ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL]) {
+                for (const o of manager.getOrdersByTypeAndState(type, state) || []) {
+                    if (o?.id != null && o?.orderId) liveIds.add(String(o.id));
+                }
+            }
+        } else {
+            for (const s of allSlots) {
+                if (s?.id != null && s?.orderId) liveIds.add(String(s.id));
+            }
+        }
+        let live = 0;
+        for (const id of reserveIds) {
+            if (liveIds.has(String(id))) live++;
+        }
+        return live;
+    } catch { return null; }
+}
+
 function _hasBudgetForSide(manager: any, config: any, side: any) {
     try {
         const funds = manager?.getChainFundsSnapshot?.();
@@ -581,6 +636,21 @@ function getTargetedSyncReason(bot: any) {
     if (liveSell < targetSell) {
         if (_hasBudgetForSide(bot.manager, bot.config, 'sell')) {
             shortfalls.push(`sell ${liveSell}/${targetSell}`);
+        }
+    }
+
+    // Reserve deficit is independent of window surplus: a bot carrying extra
+    // rail/stranded orders can sit above target while its reserve edge is
+    // empty (live-applied reserveOrders 0→N, filled/cancelled reserve).
+    // Without this, placement waits for fills or the 4h fetch (issue #27).
+    for (const [type, side] of [[ORDER_TYPES.BUY, 'buy'], [ORDER_TYPES.SELL, 'sell']] as const) {
+        const required = resolveReserveCount(bot.config, side);
+        if (!(required > 0)) continue;
+        const liveReserves = countLiveReserveOrders(bot.manager, bot.config, type);
+        if (liveReserves !== null && liveReserves < required) {
+            if (_hasBudgetForSide(bot.manager, bot.config, side)) {
+                shortfalls.push(`${side} reserves ${liveReserves}/${required}`);
+            }
         }
     }
 
@@ -2965,7 +3035,7 @@ async function syncOpenOrdersAndProcessFillsImpl(bot: any, tag: any) {
         return { syncResult: null, aborted: true, hasUnmatched: -1, openOrders: null };
     }
 }
-export { loadBotsConfigSnapshot, isWrapperAdapterOwner, checkAndApplyBotConfigChanges, buildBotConfigFingerprint, refreshDynamicWeightDistribution, performGridResync, updateBotGridResetMetadata, handlePendingTriggerReset, setupTriggerFileDetection, performPeriodicGridChecks, isOpenOrdersSyncLoopEnabled, startOpenOrdersSyncLoop, stopOpenOrdersSyncLoop, setupBlockchainFetchInterval, stopBlockchainFetchInterval, setupBotsConfigPollInterval, stopBotsConfigPollInterval, executeMaintenanceLogic, cancelDustOrders, isOrderDoesNotExistError, runGridMaintenance, stopMarketAdapterPm2, releaseMarketAdapterRuntime, syncMarketAdapterOnPeriodicConfigCheck, findSnapshotBotForRuntimeConfig, runtimeConfigNeedsMarketAdapter, usesAmaGridPrice, checkBtsBalanceAndAcquire, acquireBts, runDustHealthCheck, setupDustHealthCheckInterval, requestGridReset, wireStructuralGridResyncRequest, getPipelineSignals, markGridActivity, getMetrics, syncOpenOrdersAndProcessFills };
+export { loadBotsConfigSnapshot, isWrapperAdapterOwner, checkAndApplyBotConfigChanges, buildBotConfigFingerprint, refreshDynamicWeightDistribution, performGridResync, updateBotGridResetMetadata, handlePendingTriggerReset, setupTriggerFileDetection, performPeriodicGridChecks, isOpenOrdersSyncLoopEnabled, startOpenOrdersSyncLoop, stopOpenOrdersSyncLoop, setupBlockchainFetchInterval, stopBlockchainFetchInterval, setupBotsConfigPollInterval, stopBotsConfigPollInterval, executeMaintenanceLogic, getTargetedSyncReason, countLiveReserveOrders, maybeRunTargetedDriftReconciliation, cancelDustOrders, isOrderDoesNotExistError, runGridMaintenance, stopMarketAdapterPm2, releaseMarketAdapterRuntime, syncMarketAdapterOnPeriodicConfigCheck, findSnapshotBotForRuntimeConfig, runtimeConfigNeedsMarketAdapter, usesAmaGridPrice, checkBtsBalanceAndAcquire, acquireBts, runDustHealthCheck, setupDustHealthCheckInterval, requestGridReset, wireStructuralGridResyncRequest, getPipelineSignals, markGridActivity, getMetrics, syncOpenOrdersAndProcessFills };
 
 
 export default {
@@ -2987,6 +3057,9 @@ export default {
     setupBotsConfigPollInterval,
     stopBotsConfigPollInterval,
     executeMaintenanceLogic,
+    getTargetedSyncReason,
+    countLiveReserveOrders,
+    maybeRunTargetedDriftReconciliation,
     cancelDustOrders,
     isOrderDoesNotExistError,
     runGridMaintenance,

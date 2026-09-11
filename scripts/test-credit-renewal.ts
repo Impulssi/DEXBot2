@@ -88,7 +88,7 @@ function printHelp() {
 Dry-run the credit renewal plan for an existing BitShares credit position.
 
 Options:
-  --bot <name>                    Bot profile name (default: ${DEFAULT_BOT_NAME})
+  --bot <bot>                    Bot profile name (default: ${DEFAULT_BOT_NAME})
   --account <name-or-id>           Account override (default: bot preferredAccount)
   --asset <symbol-or-id>           Credit/debt asset override (default: bot assetA)
   --collateral <symbol-or-id>      Collateral asset override (default: bot assetB)

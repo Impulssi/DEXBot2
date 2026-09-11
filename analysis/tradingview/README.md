@@ -161,7 +161,7 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 
 | Flag | Description |
 |------|-------------|
-| `--bot <name>` | Bot name from `profiles/bots.json` (auto-resolves pool) |
+| `--bot <bot>` | Bot name from `profiles/bots.json` (auto-resolves pool) |
 | `--pool <id>` | Manual mode, no blockchain needed (requires `--precA/--precB`) |
 | `--interval <1m\|5m\|15m\|30m\|1h\|2h\|4h\|6h\|12h\|1d\|1w>` | Candle bucket size (bare numbers = seconds, e.g. `1800` = 30m) |
 | `--lookback <N>h` | Hours back from now |

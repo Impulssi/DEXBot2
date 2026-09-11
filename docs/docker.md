@@ -35,7 +35,7 @@ dexbot start
 To start only one bot:
 
 ```bash
-dexbot start <bot-name>
+dexbot start <bot>
 ```
 
 ### Headless (non-interactive) startup

@@ -1589,8 +1589,8 @@ function main() {
   const rawArgs = process.argv.slice(2);
   const exportHtml = rawArgs.includes('--export');
   // Positional (non-flag) args are treated as bot key filters. Example:
-  //   node dist/scripts/analyze-orders.js aaa-bbb
-  //   node dist/scripts/analyze-orders.js aaa-bbb --export
+  //   node dist/scripts/analyze-orders.js <bot>
+  //   node dist/scripts/analyze-orders.js <bot> --export
   const botKeyFilter = rawArgs.find((arg) => !arg.startsWith('-'))?.trim().toLowerCase() || null;
 
   if (!exportHtml) {
