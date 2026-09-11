@@ -229,6 +229,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         poolLabel,
         intervalLabel,
         amaDefaultsSource: marketProfiles ? 'market_profiles' : 'constants',
+        volumeIsCount: !!((meta as any)?.feed),
     };
 
     return `<!doctype html>
@@ -542,7 +543,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                             <button type="button" class="step-btn" id="vwap-bars-dec">▼</button>
                         </span>
                     </div>
-                    <div class="indicator"><label><input type="checkbox" id="volume-toggle" checked> Volume</label></div>
+                    <div class="indicator"><label><input type="checkbox" id="volume-toggle" checked> Volume</label> <button type="button" class="reset-btn" id="volume-unit-toggle" data-volume-mode="base" title="Volume units: base asset — click for quote asset">${escapeHtml(defaultPairMode === 'inverse' ? assetLabelB : assetLabelA)}</button></div>
                     ${(((payload.orderBuys?.length || 0) + (payload.orderSells?.length || 0) > 0 || payload.gridBounds?.low != null || payload.gridBounds?.high != null) ? '<div class="indicator"><label><input type="checkbox" id="orders-toggle" checked> Orders</label> <span class="tag">' + (payload.orderBuys?.length || 0) + 'B/' + (payload.orderSells?.length || 0) + 'S</span></div>' : '')}
                 </div>
                 </div>
@@ -596,7 +597,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     <span class="legend-item"><span class="legend-label">Time</span> <span class="legend-value" id="legend-time">-</span></span>
                     <span class="legend-item"><span class="legend-label">C</span> <span class="legend-value" id="legend-close">-</span></span>
                     <span class="legend-item"><span class="legend-label">Delta</span> <span class="legend-value" id="legend-delta">-</span></span>
-                    <span class="legend-item"><span class="legend-label">Vol</span> <span class="legend-value" id="legend-volume">-</span></span>
+                    <span class="legend-item"><span class="legend-label">Vol</span> <span class="legend-value" id="legend-volume" title="Volume units — click to switch base/quote" style="cursor:pointer">-</span></span>
                 </div>
                 <div class="legend-line">
                     <span class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span><span class="legend-label">SMA</span> <span class="legend-value" id="legend-sma">-</span></span>
@@ -653,6 +654,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             : (Number.isFinite(Number(payload.rangeSpan)) && Number(payload.rangeSpan) > 0 ? Math.min(2, Math.max(1.2, Number(payload.rangeSpan))) : 1.55);
         let currentOrdersVisible = state.ordersVisible ?? true;
         let currentVolumeVisible = state.volumeVisible ?? true;
+        let currentVolumeMode = state.volumeMode === 'quote' ? 'quote' : 'base';
         // Static per generation: the overlay (levels, reserve/ceiling lines,
         // spread label) exists only when order data was embedded.
         // --no-orders or a missing orders file therefore removes the whole
@@ -1004,6 +1006,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     rangeSpan: currentRangeSpan,
                     ordersVisible: currentOrdersVisible,
                     volumeVisible: currentVolumeVisible,
+                    volumeMode: currentVolumeMode,
                     amaInitOffset: currentAmaInitOffset,
                     priceScale: currentPriceScale,
                     pairMode: currentPairMode,
@@ -1017,6 +1020,61 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             return normalizePairMode(mode) === 'inverse'
                 ? (payload.pairLabelInverse || (payload.assetLabelB + '/' + payload.assetLabelA))
                 : (payload.pairLabelNormal || (payload.assetLabelA + '/' + payload.assetLabelB));
+        }
+        // Volume units: base = displayed pair's base asset (TradingView
+        // standard, VWMA-correct), quote = base * display close (per-candle
+        // approximation of true quote volume). Persisted per chart in
+        // localStorage like the AMA settings (volumeMode).
+        function getVolumeSymbols() {
+            const inverse = normalizePairMode(currentPairMode) === 'inverse';
+            return {
+                base: inverse ? payload.assetLabelB : payload.assetLabelA,
+                quote: inverse ? payload.assetLabelA : payload.assetLabelB,
+            };
+        }
+        function getVolumeUnit() {
+            if (payload.volumeIsCount) return { mode: 'count', symbol: 'pubs' };
+            const syms = getVolumeSymbols();
+            return currentVolumeMode === 'quote'
+                ? { mode: 'quote', symbol: syms.quote }
+                : { mode: 'base', symbol: syms.base };
+        }
+        function getDisplayVolume(c) {
+            const v = Number(c?.volume);
+            if (!Number.isFinite(v)) return NaN;
+            if (payload.volumeIsCount) return v;
+            if (currentVolumeMode === 'quote') {
+                const p = Number(c?.close);
+                return Number.isFinite(p) && p > 0 ? v * p : NaN;
+            }
+            return v;
+        }
+        function fmtVolumeWithSym(v) {
+            const s = fmtVolume(v);
+            if (s == null || s === '-') return '-';
+            const u = getVolumeUnit();
+            return u.symbol ? s + ' ' + u.symbol : s;
+        }
+        function setActiveVolumeUnit() {
+            const btn = document.getElementById('volume-unit-toggle');
+            if (!btn) return;
+            const u = getVolumeUnit();
+            btn.dataset.volumeMode = u.mode;
+            btn.textContent = u.symbol || u.mode;
+            btn.title = payload.volumeIsCount
+                ? 'Volume: feed publish count per bucket'
+                : (u.mode === 'quote'
+                    ? 'Volume units: quote asset (' + u.symbol + ') — click for base asset'
+                    : 'Volume units: base asset (' + u.symbol + ') — click for quote asset');
+            btn.disabled = !!payload.volumeIsCount;
+            btn.style.opacity = payload.volumeIsCount ? '0.45' : '';
+            btn.style.cursor = payload.volumeIsCount ? 'not-allowed' : 'pointer';
+        }
+        function toggleVolumeUnit() {
+            if (payload.volumeIsCount) return;
+            currentVolumeMode = currentVolumeMode === 'quote' ? 'base' : 'quote';
+            setActiveVolumeUnit();
+            rerender(true);
         }
         function refreshSubtitle() {
             const subtitleEl = document.getElementById('subtitle');
@@ -1490,7 +1548,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             let end = Math.min(xs.length, lowerBound(xs, maxX) + 2);
             let max = 0;
             for (let i = start; i < end; i++) {
-                const v = currentCandles[i]?.volume;
+                const v = getDisplayVolume(currentCandles[i]);
                 if (Number.isFinite(v) && v > max) max = v;
             }
             if (!Number.isFinite(max) || max <= 0) return [0, 1];
@@ -1605,7 +1663,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             document.getElementById('legend-delta').textContent = Number.isFinite(delta)
                 ? ((delta >= 0 ? '+' : '') + fmtPrice(delta))
                 : '-';
-            document.getElementById('legend-volume').textContent = fmtVolume(c.volume);
+            document.getElementById('legend-volume').textContent = fmtVolumeWithSym(getDisplayVolume(c));
             document.getElementById('legend-sma').textContent = Number.isFinite(currentSma[idx]) ? fmtPrice(currentSma[idx]) : (smaPending ? '...' : '-');
             document.getElementById('legend-vwap').textContent = Number.isFinite(currentVwap[idx]) ? fmtPrice(currentVwap[idx]) : '-';
             document.getElementById('legend-sma-init').textContent = Number.isFinite(currentSmaInit[idx]) ? fmtPrice(currentSmaInit[idx]) : '-';
@@ -1893,7 +1951,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             ];
             currentVolumeData = [
                 currentCandles.map((c) => c.time),
-                currentCandles.map((c) => c.volume),
+                currentCandles.map((c) => getDisplayVolume(c)),
             ];
             return {
                 priceData: currentPriceData,
@@ -2417,14 +2475,14 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 return;
             }
             const c = currentCandles[idx];
-            const v = Number(c.volume);
-            if (!Number.isFinite(v)) {
+            const dv = getDisplayVolume(c);
+            if (!Number.isFinite(dv)) {
                 volumeHoverTip.style.display = 'none';
                 return;
             }
             const barX = u.valToPos(u.data[0][idx], 'x', true);
             volumeHoverTip.style.display = 'block';
-            volumeHoverTip.textContent = 'Vol ' + fmtVolume(v);
+            volumeHoverTip.textContent = 'Vol ' + fmtVolumeWithSym(dv);
             volumeHoverTip.style.left = Math.max(2, barX - volumeHoverTip.offsetWidth / 2) + 'px';
             // Pinned to the panel top — never covers the bars
             volumeHoverTip.style.top = '2px';
@@ -2628,6 +2686,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             if (ordersToggle) ordersToggle.checked = currentOrdersVisible;
             const volumeToggleEl = document.getElementById('volume-toggle');
             if (volumeToggleEl) volumeToggleEl.checked = currentVolumeVisible;
+            setActiveVolumeUnit();
             markActiveAmaPreset();
             document.getElementById('sma-toggle').checked = currentSmaEnabled;
             document.getElementById('sma-period').value = String(currentSmaPeriod);
@@ -2818,6 +2877,14 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 saveState();
                 applyVolumeVisibility();
             });
+        }
+        const volumeUnitToggle = document.getElementById('volume-unit-toggle');
+        if (volumeUnitToggle) {
+            volumeUnitToggle.addEventListener('click', () => toggleVolumeUnit());
+        }
+        const legendVolume = document.getElementById('legend-volume');
+        if (legendVolume) {
+            legendVolume.addEventListener('click', () => toggleVolumeUnit());
         }
         // Initial state on load (previously stored in localStorage)
         applyVolumeVisibility();
@@ -3030,7 +3097,8 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 if (!c) continue;
                 if (Number.isFinite(c.high) && c.high > hi) hi = c.high;
                 if (Number.isFinite(c.low) && c.low < lo) lo = c.low;
-                if (Number.isFinite(c.volume) && c.volume > vol) vol = c.volume;
+                const dv = getDisplayVolume(c);
+                if (Number.isFinite(dv) && dv > vol) vol = dv;
             }
             if (!Number.isFinite(hi) || !Number.isFinite(lo)) return null;
             return { hi, lo, vol };
@@ -3059,13 +3127,15 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             if (!panel) {
                 panel = document.createElement('div');
                 panel.id = 'vol-panel';
-                panel.style.cssText = 'position:absolute;z-index:26;top:10px;right:88px;pointer-events:none;font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.6;padding:6px 10px;border-radius:8px;background:rgba(13,17,23,0.85);border:1px solid #263241;white-space:nowrap;text-align:right;';
+                panel.style.cssText = 'position:absolute;z-index:26;top:10px;right:88px;pointer-events:auto;cursor:pointer;font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.6;padding:6px 10px;border-radius:8px;background:rgba(13,17,23,0.85);border:1px solid #263241;white-space:nowrap;text-align:right;';
+                panel.title = 'Volume units — click to switch base/quote';
+                panel.addEventListener('click', () => toggleVolumeUnit());
                 volumeChart.root.appendChild(panel);
             }
             const stats = visibleCandleStats();
             if (!stats) { panel.style.display = 'none'; return; }
             panel.style.display = 'block';
-            panel.innerHTML = '<div style="color:#e8eef5">V max ' + fmtVolume(stats.vol) + '</div>';
+            panel.innerHTML = '<div style="color:#e8eef5">V max ' + fmtVolumeWithSym(stats.vol) + '</div>';
         }
         function scheduleStatPanels() {
             if (rangePanelRaf) return;
