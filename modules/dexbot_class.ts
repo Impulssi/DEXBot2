@@ -152,6 +152,11 @@ class DEXBot {
     _batchInFlight: number;
     _cowBroadcastInFlight: boolean;
     _recoverySyncInFlight: number;
+    // Set when fills are parked by the consumer's broadcast/order-pipeline
+    // deferral (or by a region-end / pipeline-clear drain), consumed by
+    // consumeFillQueue at lock acquire to widen the fund-invariant tolerance
+    // (orphan-equivalent) for that drain cycle only.
+    _deferredFillsPending: boolean;
     _postRecoveryRebalanceTimer: any;
     _lastTargetedDriftSyncAt: number;
     _lightweightSyncCheckAt: number;
@@ -275,6 +280,7 @@ class DEXBot {
         // placed orders and produce orphan fills).
         this._cowBroadcastInFlight = false;
         this._recoverySyncInFlight = 0;
+        this._deferredFillsPending = false;
         this._postRecoveryRebalanceTimer = null;
         this._lastTargetedDriftSyncAt = 0;
         this._lightweightSyncCheckAt = 0;
@@ -1805,6 +1811,10 @@ class DEXBot {
             if ((this as any)._batchInFlight) return;
             if (!this._incomingFillQueue || this._incomingFillQueue.length === 0) return;
             this._log(`[FILL-QUEUE] Broadcasting region ended; draining ${this._incomingFillQueue.length} deferred fill(s).`, 'info');
+            // Region-ended drain residue: the parked fills run against
+            // post-rebalance grid state; consumeFillQueue widens the fund
+            // invariant tolerance for this cycle (orphan-equivalent).
+            this._deferredFillsPending = true;
             this._scheduleFillConsumerRestart(chainOrders);
         };
     }

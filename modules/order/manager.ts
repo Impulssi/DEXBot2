@@ -500,6 +500,7 @@ class OrderManager {
     _gridDirtyAt: number | null;
     _lastStaleTotalsWarnAt: Record<string, number>;
     _orphanFillsCreditedAt: number | null;
+    _fundDriftLedger: { side: string; direction: string; count: number; firstAt: number; lastAt: number } | null;
     _pendingRecovery: Promise<void> | null;
     _pendingFillCrawls: { slotId: string; side: string; ts: number }[];
     _recentFillKeysSnapshot: Record<string, number> | null;
@@ -627,6 +628,7 @@ class OrderManager {
         this._gapSlots = 0;
         this._gridDirtyAt = null;
         this._orphanFillsCreditedAt = null;
+        this._fundDriftLedger = null;
         this._pendingRecovery = null;
         this._pendingFillCrawls = [];
         this._recentFillKeysSnapshot = null;

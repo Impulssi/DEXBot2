@@ -1,9 +1,9 @@
 /**
  * Fill-pipeline robustness tests (lock-timeout cascade + boundary-hold runs).
  *
- * Covers the two hardening helpers behind the bbot9/XRP-BTS incident
- * (Sep 2026: 22x "Lock acquisition timeout", boundary frozen at 99 while the
- * plan wanted 109 during a vertical rally):
+ * Covers the two hardening helpers behind a live lock-timeout-cascade
+ * incident (Sep 2026: 22x "Lock acquisition timeout", boundary frozen at 99
+ * while the plan wanted 109 during a vertical rally):
  *
  * DEFER-001..005 — shouldDeferFillForBroadcast (modules/dexbot_fill_runtime):
  *   the fill consumer must defer BEFORE acquiring _fillProcessingLock while a
@@ -24,7 +24,7 @@
  */
 
 const assert = require('assert');
-const { shouldDeferFillForBroadcast } = require('../modules/dexbot_fill_runtime');
+const { shouldDeferFillForBroadcast, consumeDeferredDrainMarker, consumeFillQueue } = require('../modules/dexbot_fill_runtime');
 const { trackBoundaryHold } = require('../modules/dexbot_cow_runtime');
 const { OrderManager } = require('../modules/order/manager');
 const { TIMING } = require('../modules/constants');
@@ -222,6 +222,75 @@ async function testWDG003_ShutdownAbortsDeferredRebalance() {
     console.log('✓ WDG-003 passed');
 }
 
+async function testDRAIN001_DeferralMarksDrainResidue() {
+    console.log('\n[DRAIN-001] Consumer deferral marks the queue as drain residue...');
+    const bot: any = {
+        _incomingFillQueue: [{ order_id: '1.7.x' }],
+        _shuttingDown: false,
+        _batchInFlight: 0,
+        _recoverySyncInFlight: 0,
+        _deferredFillsPending: false,
+        _consecutiveConsumeFailures: 0,
+        _consumeFailureFirstAt: 0,
+        _warn: () => {},
+        manager: {
+            isBroadcastingActive: () => true,
+            // Any lock acquire during a deferral is a regression of the
+            // lock-timeout cascade — the lock is fake-throwing to prove the
+            // consumer returned BEFORE acquiring.
+            _fillProcessingLock: { acquire: async () => { throw new Error('lock acquired during broadcast deferral'); } },
+            _orphanFillsCreditedAt: null,
+            logger: { log: () => {} },
+        },
+    };
+    await consumeFillQueue(bot, {});
+    assert.strictEqual(bot._deferredFillsPending, true, 'broadcast deferral must mark the drain-residue flag');
+    assert.strictEqual(bot.manager._orphanFillsCreditedAt, null, 'tolerance stamp only applies once the drain cycle runs');
+    console.log('✓ DRAIN-001 passed');
+}
+
+async function testDRAIN002_PipelineDeferralAlsoMarks() {
+    console.log('\n[DRAIN-002] Order-pipeline deferral marks the drain-residue flag too...');
+    const bot: any = {
+        _incomingFillQueue: [{ order_id: '1.7.x' }],
+        _shuttingDown: false,
+        _batchInFlight: 1,
+        _recoverySyncInFlight: 0,
+        _deferredFillsPending: false,
+        _consecutiveConsumeFailures: 0,
+        _consumeFailureFirstAt: 0,
+        _warn: () => {},
+        manager: {
+            isBroadcastingActive: () => false,
+            _fillProcessingLock: { acquire: async () => { throw new Error('lock acquired during pipeline deferral'); } },
+            _orphanFillsCreditedAt: null,
+            logger: { log: () => {} },
+        },
+    };
+    await consumeFillQueue(bot, {});
+    assert.strictEqual(bot._deferredFillsPending, true, 'pipeline deferral must mark the drain-residue flag');
+    console.log('✓ DRAIN-002 passed');
+}
+
+async function testDRAIN003_MarkerConsumedAtCycleStart() {
+    console.log('\n[DRAIN-003] The drain cycle consumes the marker and widens tolerance once...');
+    const bot: any = {
+        _deferredFillsPending: false,
+        manager: { _orphanFillsCreditedAt: 0 },
+    };
+    assert.strictEqual(consumeDeferredDrainMarker(bot), false, 'no marker → no-op');
+    assert.strictEqual(bot.manager._orphanFillsCreditedAt, 0, 'no marker → no tolerance stamp');
+
+    bot._deferredFillsPending = true;
+    assert.strictEqual(consumeDeferredDrainMarker(bot), true, 'marker consumed');
+    assert.strictEqual(bot._deferredFillsPending, false, 'marker cleared after consumption');
+    assert.ok(Number.isFinite(bot.manager._orphanFillsCreditedAt) && bot.manager._orphanFillsCreditedAt > 0,
+        'orphan-equivalent tolerance stamp applied (x5 tolerance for the drain cycle)');
+
+    assert.strictEqual(consumeDeferredDrainMarker(bot), false, 'second call is a no-op (idempotent)');
+    console.log('✓ DRAIN-003 passed');
+}
+
 async function runAllTests() {
     console.log('=== Fill-Pipeline Robustness Test Suite ===\n');
     await testDEFER001_IdleProceedsAndClearsMarker();
@@ -238,6 +307,9 @@ async function runAllTests() {
     await testWDG001_StaleWatchdogFiresRegionEnd();
     await testWDG002_RegionEndHookErrorsAreContained();
     await testWDG003_ShutdownAbortsDeferredRebalance();
+    await testDRAIN001_DeferralMarksDrainResidue();
+    await testDRAIN002_PipelineDeferralAlsoMarks();
+    await testDRAIN003_MarkerConsumedAtCycleStart();
     console.log('\n=== All fill-pipeline robustness tests passed! ===');
 }
 

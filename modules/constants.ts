@@ -555,6 +555,38 @@ let GRID_LIMITS = {
     // Allowed drift fraction before triggering fund-invariant recovery (0.1% = 0.001).
     FUND_INVARIANT_PERCENT_TOLERANCE: 0.1,
 
+    // FUND_INVARIANT_HEAL_ON_RECOVERY_FAIL: guarded "trust-chain" free-balance
+    // seeding on recovery failure. When recovery keeps failing on the SAME
+    // one-sided drift (e.g. SELL tracked-free is consistently short of the
+    // chain total after a fill/broadcast chaos window), re-seed the tracked
+    // FREE balance for that side from the freshly fetched chain total minus
+    // the (already chain-reconciled) committed grid sizes, instead of looping
+    // recovery attempts and eventually blocking new orders. Default off —
+    // free-balance derivation can absorb third-party locked funds on SHARED
+    // accounts, so this is opt-in and (unless the allow-shared switch below is
+    // also set) refused when more than one bot is registered on the account.
+    FUND_INVARIANT_HEAL_ON_RECOVERY_FAIL: false,
+
+    // FUND_INVARIANT_HEAL_ALLOW_SHARED: permit the trust-chain heal even when
+    // multiple bots are registered on the same account. total = free + grid is
+    // then only an approximation of this bot's share (other bots' committed
+    // orders are part of the chain total); only enable when the account is
+    // exclusively managed by one bot at a time.
+    FUND_INVARIANT_HEAL_ALLOW_SHARED: false,
+
+    // FUND_INVARIANT_HEAL_MIN_PERSISTENT_CHECKS: consecutive fund-invariant
+    // checks that must report the same one-sided drift (same side, same
+    // direction) before the trust-chain heal may seed the free balance. Keeps
+    // a single transient mismatch from triggering a heal.
+    FUND_INVARIANT_HEAL_MIN_PERSISTENT_CHECKS: 2,
+
+    // FUND_INVARIANT_HEAL_MIN_PERSIST_MS: minimum wall-clock span between the
+    // first and last recorded drift check before the trust-chain heal may
+    // apply. A single busy fill cycle can run two quick recalculateFunds
+    // calls back-to-back; the duration gate keeps a sub-second double-recalc
+    // from satisfying the persistence requirement. 0 disables the gate.
+    FUND_INVARIANT_HEAL_MIN_PERSIST_MS: 30 * 1000,
+
     // MIN_SPREAD_ORDERS: Minimum number of empty slots in spread zone (between best buy and best sell).
     // Rationale: Spread must be sufficiently wide to:
     //   1. Prevent order collision (blockchain rejects orders with identical price)

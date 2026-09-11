@@ -460,6 +460,28 @@ function computeFillConsumerBackoffMs(bot: any, failures: any) {
 }
 
 /**
+ * Consume the deferred-drain marker at the start of a fill cycle.
+ *
+ * When fills were parked by the consumer's broadcast/order-pipeline deferral
+ * (or by a region-end / pipeline-clear drain), the cycle that finally runs
+ * them deals with ledger deltas that interacted with mid-rebalance grid
+ * state. Mirror the orphan-fill credit treatment: stamp
+ * manager._orphanFillsCreditedAt so the fund-invariant tolerance is widened
+ * (×5) for this cycle only — the drain itself must not trip the invariant.
+ * Idempotent: returns true only when a marker was actually consumed.
+ * @param {any} bot
+ * @returns {boolean} true when the drain marker was consumed (tolerance widened)
+ */
+export function consumeDeferredDrainMarker(bot: any): boolean {
+    if (bot && (bot as any)._deferredFillsPending) {
+        (bot as any)._deferredFillsPending = false;
+        if (bot.manager) bot.manager._orphanFillsCreditedAt = Date.now();
+        return true;
+    }
+    return false;
+}
+
+/**
  * Decide whether the fill consumer must defer because a broadcast region is
  * active — WITHOUT acquiring _fillProcessingLock first.
  *
@@ -704,6 +726,14 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
         }
     };
 
+    // Deferral marks the queue as a "drain residue": the fills that finally
+    // run were parked while the order pipeline / broadcast mutated grid
+    // state, so their optimistic ledger interacts with mid-rebalance
+    // geometry. The flag is consumed at lock acquire to widen the invariant
+    // tolerance like an orphan credit (×5) for that drain cycle only — the
+    // drain itself must not trip the fund invariant.
+    const markDeferredDrain = () => { (bot as any)._deferredFillsPending = true; };
+
     if (bot._incomingFillQueue.length === 0) {
         resetFailureWatchdogIfSet();
         return;
@@ -720,6 +750,7 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
             `Fill processing deferred: order pipeline active (${bot._incomingFillQueue.length} queued)`,
             'debug'
         );
+        markDeferredDrain();
         resetFailureWatchdogIfSet();
         return;
     }
@@ -735,6 +766,7 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
             `Fill processing deferred: broadcast active (${bot._incomingFillQueue.length} queued)`,
             'debug'
         );
+        markDeferredDrain();
         resetFailureWatchdogIfSet();
         return;
     }
@@ -779,6 +811,13 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
 
         await bot.manager._fillProcessingLock.acquire(async () => {
             bot.manager._orphanFillsCreditedAt = null;
+            // Deferred-drain residue tolerance: fills that were parked while a
+            // broadcast/order pipeline held the queue are now running against
+            // post-rebalance grid state. Mirror the orphan-fill treatment —
+            // widen the invariant tolerance for this cycle so the drain itself
+            // does not fire a fund-invariant violation. Bounded: cleared at the
+            // next cycle start or by the next fresh chain fetch.
+            consumeDeferredDrainMarker(bot);
 
             while (bot._incomingFillQueue.length > 0) {
                 const batchStartTime = Date.now();

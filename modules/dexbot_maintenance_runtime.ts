@@ -2645,6 +2645,7 @@ function drainFillQueueAfterPipelineClear(bot: any) {
         if (bot.manager?.isBroadcastingActive?.()) return;
         if (!bot._incomingFillQueue || bot._incomingFillQueue.length === 0) return;
         bot._log(`[FILL-QUEUE] Pipeline cleared; draining ${bot._incomingFillQueue.length} deferred fill(s).`, 'info');
+        bot._deferredFillsPending = true;
         scheduleFillConsumerRestartFn(bot, chainOrders);
     } catch {}
 }
