@@ -605,7 +605,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     <span class="legend-item"><span class="legend-dot" style="background:#2dd4bf"></span><span class="legend-label">AMA</span> <span class="legend-value" id="legend-ama">-</span></span>
                 </div>
             </div>
-            <div id="price-chart" title="Wheel: zoom time (out = empty space around data) · Drag: move time and price view · Wheel/drag on price axis: zoom price · Double-click price axis: autofit"></div>
+            <div id="price-chart" title="Wheel: zoom time (out = empty space around data) · Shift+wheel: zoom price · Drag: pan time + price (sets manual price scale) · Wheel/drag on price axis: zoom price · Drag on time axis: zoom time · Double-click price axis: autofit"></div>
             <div id="volume-chart"></div>
         </div>
     </div>
@@ -694,6 +694,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         let pendingRange = null;
         let pendingRangeRaf = 0;
         let rangePanelRaf = 0;
+        let yRefitRaf = 0;
         let xMin = 0;
         let xMax = 0;
         let smaWorker = null;
@@ -717,9 +718,13 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 if (e.ctrlKey || e.metaKey || e.altKey) return;
                 e.preventDefault();
                 const rect = chart.root.getBoundingClientRect();
-                if (chart === priceChart && inYAxisZone(chart, e.clientX)) {
+                // Shift+wheel scales price (cursor-anchored) anywhere over the
+                // price pane — same as wheeling over the price axis. Volume has
+                // no manual Y lock, so it keeps the timeframe zoom.
+                if (chart === priceChart && (e.shiftKey || inYAxisZone(chart, e.clientX))) {
                     const centerY = chart.posToVal(e.clientY - rect.top, 'y');
-                    zoomYAt(chart, centerY, e.deltaY < 0 ? 0.91 : 1.10);
+                    const delta = e.deltaY !== 0 ? e.deltaY : e.deltaX;
+                    zoomYAt(chart, centerY, delta < 0 ? 0.91 : 1.10);
                     return;
                 }
                 e.stopPropagation();
@@ -743,12 +748,24 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return null;
             // Allow empty space on both sides of the data (TradingView-style):
             // enintaan 75 % datan pituudesta reunapuskurina kummallekin puolelle.
+            // Span-locked: pans slide the window and never squash it — only a
+            // deliberate over-wide zoom-out is centered down to the limit.
+            // Plot drags therefore move but never scale; scaling lives on
+            // the axis gutters alone.
             const dataSpan = Math.max(1, xMax - xMin);
             const maxPad = dataSpan * 0.75;
-            const lo = Math.max(xMin - maxPad, min);
-            const hi = Math.min(xMax + maxPad, max);
-            if (hi <= lo) return null;
-            return { min: lo, max: hi };
+            const lo = xMin - maxPad;
+            const hi = xMax + maxPad;
+            const span = max - min;
+            if (span > hi - lo) {
+                const center = (min + max) / 2;
+                const half = (hi - lo) / 2;
+                return { min: center - half, max: center + half };
+            }
+            let nMin = min;
+            if (nMin < lo) nMin = lo;
+            if (nMin + span > hi) nMin = hi - span;
+            return { min: nMin, max: nMin + span };
         }
         function syncXRange(min, max) {
             pendingRange = clampRange(min, max);
@@ -775,21 +792,29 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 const p = pendingPan;
                 pendingPan = null;
                 if (!dragging || !p) return;
-                // Vertical drag inside the price chart: price scale follows the mouse
-                // (aktivoi manuaalisen skaalan; kaksoisklikkaus akselilla palauttaa autofitin)
+                // Plot drag pans time and price (TradingView-style): the price
+                // move sets a manual Y range; double-click the price axis to
+                // return to autofit. Axis gutters never pan — they scale.
                 if (chart === priceChart && startYRange && Number.isFinite(p.clientY)) {
                     const vStart = chart.posToVal(p.startY - p.rectTop, 'y');
                     const vCur = chart.posToVal(p.clientY - p.rectTop, 'y');
                     if (Number.isFinite(vStart) && Number.isFinite(vCur) && vCur !== vStart) {
+                        // Rigid move only: the span is locked by construction so a
+                        // plot drag can never rescale — Y scaling happens solely
+                        // on the price-axis gutter (wheel/drag there).
                         if (currentPriceScale === 'log') {
                             const ratio = Math.max(1e-12, vStart) / Math.max(1e-12, vCur);
-                            if (Number.isFinite(ratio) && ratio > 0) {
-                                applyYRange(chart, startYRange.min * ratio, startYRange.max * ratio);
+                            const spanRatio = startYRange.max / startYRange.min;
+                            if (Number.isFinite(ratio) && ratio > 0 && Number.isFinite(spanRatio) && spanRatio > 0) {
+                                const nextMin = startYRange.min * ratio;
+                                applyYRange(chart, nextMin, nextMin * spanRatio);
                             }
                         } else {
                             const dy = vStart - vCur;
-                            if (Number.isFinite(dy)) {
-                                applyYRange(chart, startYRange.min + dy, startYRange.max + dy);
+                            const span = startYRange.max - startYRange.min;
+                            if (Number.isFinite(dy) && Number.isFinite(span) && span > 0) {
+                                const nextMin = startYRange.min + dy;
+                                applyYRange(chart, nextMin, nextMin + span);
                             }
                         }
                     }
@@ -823,6 +848,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 const rect = chart.root.getBoundingClientRect();
                 if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
                 if (chart === priceChart && inYAxisZone(chart, e.clientX)) return;
+                if (inXAxisZone(chart, e.clientY)) return;
                 e.preventDefault();
                 e.stopPropagation();
                 dragging = true;
@@ -1938,7 +1964,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     draw: [(u) => { positionPriceMarker(u); positionReserveLine(u); positionOrderLines(u); positionUpdateMarker(u, true); }],
                     // Keep the bottom-right stat badges glued to the visible
                     // window while zooming/panning (rAF-throttled text swap).
-                    setScale: [() => { scheduleStatPanels(); }],
+                    // Refit Y to the visible window on timeframe (x) moves —
+                    // uPlot does not recompute Y on setScale('x') by itself.
+                    setScale: [(u, key) => { if (key === 'x') scheduleYRefit(); scheduleStatPanels(); }],
                 },
             };
 
@@ -1976,8 +2004,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     { scale: 'y', side: 1, size: 84, space: 22, stroke: '#ffffff', grid: { stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, font: '600 12px Segoe UI, sans-serif', values: (u, vals) => vals.map((v) => (v == null ? '' : fmtVolume(v))) },
                 ],
                 hooks: {
-                    // x is synced from the price chart; refresh the V max badge.
-                    setScale: [() => { scheduleStatPanels(); }],
+                    // x is synced from the price chart; refit volume Y to the
+                    // visible window and refresh the V max badge.
+                    setScale: [(u, key) => { if (key === 'x') scheduleYRefit(); scheduleStatPanels(); }],
                 },
             };
 
@@ -1991,19 +2020,25 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             lastRenderedPriceScale = currentPriceScale;
             return priceChart;
         }
-        // True when clientX sits over the price-axis region. The chart canvas
-        // (plot + axis gutters) can be wider than the viewport and the right
-        // gutter clipped off-screen, so we key the price zone off the ON-SCREEN
-        // chart container width (always reachable) rather than the far-right gutter.
-        // The rightmost ~120px of the container zooms price; the rest pans time.
+        // True when clientX sits over the true price-axis gutter (right of
+        // the plot area). Keyed off uPlot's plot rect, not the container
+        // width, so grabs on candles — even the newest ones at the plot's
+        // right edge — always pan instead of scaling. Only the axis itself
+        // zooms price; the rest pans time.
         function inYAxisZone(chart, clientX) {
-            const rootRect = chart.root.getBoundingClientRect();
-            if (!rootRect || rootRect.width <= 0) return false;
-            const x = clientX - rootRect.left;
-            if (chart === priceChart) {
-                return x > rootRect.width - 120;
-            }
-            return false;
+            if (chart !== priceChart || !chart.over) return false;
+            const overRect = chart.over.getBoundingClientRect();
+            if (!overRect || overRect.width <= 0) return false;
+            return clientX >= overRect.right - 2;
+        }
+        // True when the pointer sits over the time-axis gutter (below the
+        // plot area) of either chart. Dragging there scales the timeframe;
+        // drags on candles always pan instead.
+        function inXAxisZone(chart, clientY) {
+            if (!chart || !chart.over) return false;
+            const overRect = chart.over.getBoundingClientRect();
+            if (!overRect || overRect.height <= 0) return false;
+            return clientY >= overRect.bottom - 2;
         }
         let priceMarkerLabel = null;
         function ensurePriceMarker(u) {
@@ -2420,10 +2455,12 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 return;
             }
             // Uloszoomauksen rajat: alin naytettava hinta voi painua viimeistaan
-            // ~35 % datan minimin alapuolelle, ylin ~1.6x datan maksimin —
-            // ei siis paase "lipsahtamaan" candleita nakyvasta kadottaen.
-            // Kokonaisvalille ei ole ylarajaa: pystyakselia saa zoomata ulos vapaasti.
-            priceBounds = { min: min, max: max, floor: min * 0.35, ceil: max * 1.6 };
+            // ~1/2 datan minimin alapuolelle, ylin ~2x datan maksimin —
+            // paneminen kayttaa tata 2x-bandia ja pysahtyy jaykkana sen
+            // reunaan (ei siis paase "lipsahtamaan" candleita nakyvasta
+            // kadottaen). Kokonaisvalille ei ole ylarajaa: pystyakselia saa
+            // zoomata ulos vapaasti.
+            priceBounds = { min: min, max: max, floor: min / 2, ceil: max * 2.0 };
         }
         function applyYRange(chart, min, max) {
             if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return false;
@@ -2434,11 +2471,37 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 if (max <= min) return false;
             }
             if (priceBounds) {
-                let nMin = Math.max(min, priceBounds.floor);
-                let nMax = Math.min(max, priceBounds.ceil);
-                if (nMax <= nMin) return false;
-                min = nMin;
-                max = nMax;
+                // Span-locked slide within the 2x zoom band: a pan that would
+                // cross the zoom-out limits stops as a rigid block instead of
+                // getting squashed (squashing reads as scaling halfway through
+                // a drag). Only a span wider than the band itself snaps to the
+                // full band. Scaling lives on the axis gutters alone.
+                if (currentPriceScale === 'log') {
+                    const spanRatio = max / min;
+                    if (spanRatio > priceBounds.ceil / priceBounds.floor) {
+                        min = priceBounds.floor;
+                        max = priceBounds.ceil;
+                    } else {
+                        if (max > priceBounds.ceil) {
+                            const f = max / priceBounds.ceil;
+                            min /= f; max /= f;
+                        }
+                        if (min < priceBounds.floor) {
+                            const f = priceBounds.floor / min;
+                            min *= f; max *= f;
+                        }
+                    }
+                } else {
+                    const span = max - min;
+                    if (span > priceBounds.ceil - priceBounds.floor) {
+                        min = priceBounds.floor;
+                        max = priceBounds.ceil;
+                    } else {
+                        if (max > priceBounds.ceil) { max = priceBounds.ceil; min = max - span; }
+                        if (min < priceBounds.floor) { min = priceBounds.floor; max = min + span; }
+                    }
+                }
+                if (!(max > min) || !Number.isFinite(min) || !Number.isFinite(max)) return false;
             }
             manualYRange = { min: min, max: max };
             chart.setScale('y', { min: min, max: max });
@@ -2493,6 +2556,56 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 startClientY = e.clientY;
                 startRange = range;
                 chart.root.style.cursor = 'ns-resize';
+                window.addEventListener('mousemove', onMove);
+                window.addEventListener('mouseup', endDrag, { once: true });
+            }, true);
+        }
+        // Time-axis drag scales the timeframe around its center (mirror of
+        // the price-axis drag): drag right to zoom out, left to zoom in.
+        // Synced across charts via syncXRange; capture phase pre-empts plot pan.
+        function bindXAxisDrag(chart) {
+            let dragging = false;
+            let startClientX = 0;
+            let startRange = null;
+            const onMove = (e) => {
+                if (!dragging || !startRange) return;
+                e.preventDefault();
+                chart.root.style.cursor = 'ew-resize';
+                const deltaPx = e.clientX - startClientX;
+                if (!Number.isFinite(deltaPx) || deltaPx === 0) return;
+                const factor = Math.exp(deltaPx / 350);
+                const span = startRange.max - startRange.min;
+                if (!Number.isFinite(span) || span <= 0) return;
+                const center = (startRange.min + startRange.max) / 2;
+                const nextSpan = span * factor;
+                syncXRange(center - nextSpan / 2, center + nextSpan / 2);
+            };
+            const endDrag = () => {
+                if (!dragging) return;
+                dragging = false;
+                startRange = null;
+                chart.root.style.cursor = '';
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', endDrag);
+            };
+            chart.root.addEventListener('mousedown', (e) => {
+                if (!e || e.button !== 0 || e.ctrlKey || e.metaKey || e.altKey) return;
+                // capture phase so we pre-empt the plot pan when in the x-zone
+                const rect = chart.root.getBoundingClientRect();
+                if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
+                if (!inXAxisZone(chart, e.clientY)) return;
+                const s = chart.scales.x || {};
+                const range = {
+                    min: Number.isFinite(s.min) ? s.min : xMin,
+                    max: Number.isFinite(s.max) ? s.max : xMax,
+                };
+                if (!Number.isFinite(range.min) || !Number.isFinite(range.max) || range.max <= range.min) return;
+                e.preventDefault();
+                e.stopPropagation();
+                dragging = true;
+                startClientX = e.clientX;
+                startRange = range;
+                chart.root.style.cursor = 'ew-resize';
                 window.addEventListener('mousemove', onMove);
                 window.addEventListener('mouseup', endDrag, { once: true });
             }, true);
@@ -2574,11 +2687,12 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 charts.forEach((chart) => {
                     bindWheelZoom(chart);
                     bindPan(chart);
+                    bindXAxisDrag(chart);
                     if (chart === priceChart) {
                         bindYAxisDrag(chart);
                         bindYAxisReset(chart);
                         chart.root.addEventListener('mousemove', (e) => {
-                            chart.root.style.cursor = inYAxisZone(chart, e.clientX) ? 'ns-resize' : '';
+                            chart.root.style.cursor = inYAxisZone(chart, e.clientX) ? 'ns-resize' : (inXAxisZone(chart, e.clientY) ? 'ew-resize' : '');
                         });
                         // Cursor price tag: floating label next to the mouse
                         // showing the price under the cursor (price chart only).
@@ -2959,6 +3073,34 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 rangePanelRaf = 0;
                 renderRangePanel();
                 renderVolumePanel();
+            });
+        }
+        // uPlot does not recompute an auto Y scale when X moves via
+        // setScale('x') — the scale range fns only run on init/data
+        // change. Refit Y to the visible window after every timeframe
+        // move so candles/volume follow the pan/zoom instead of getting
+        // stuck outside the view. A user-locked price range (axis
+        // wheel/drag → manualYRange) is respected; double-click the
+        // price axis to return to autofit. y-keyed setScale calls never
+        // schedule a refit, so this cannot loop with itself.
+        function yRangeDirty(u, vis) {
+            const s = u.scales.y || {};
+            if (!Number.isFinite(s.min) || !Number.isFinite(s.max)) return true;
+            const span = Math.max(1e-12, Math.abs(vis[1] - vis[0]));
+            return Math.abs(s.min - vis[0]) / span > 1e-9 || Math.abs(s.max - vis[1]) / span > 1e-9;
+        }
+        function scheduleYRefit() {
+            if (yRefitRaf) return;
+            yRefitRaf = requestAnimationFrame(() => {
+                yRefitRaf = 0;
+                if (priceChart && !manualYRange) {
+                    const vis = visiblePriceRange(priceChart);
+                    if (vis && yRangeDirty(priceChart, vis)) priceChart.setScale('y', { min: vis[0], max: vis[1] });
+                }
+                if (volumeChart) {
+                    const vvis = visibleVolumeRange(volumeChart);
+                    if (vvis && yRangeDirty(volumeChart, vvis)) volumeChart.setScale('y', { min: vvis[0], max: vvis[1] });
+                }
             });
         }
         padXRight();
