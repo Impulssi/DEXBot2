@@ -56,7 +56,7 @@ function interiorGapCache(queried: { gte: number; lte: number }[]) {
         { gte: WGTE + 4 * 24 * H, lte: WLTE },
     ]);
     const raw = findMissingBucketRanges(WGTE, WLTE, H, new Set(have));
-    const pruned = pruneImmutableGaps(raw, have[0], WLTE, localCache.fileCover, NOW);
+    const pruned = pruneImmutableGaps(raw, WLTE, localCache.fileCover, NOW);
     assert.strictEqual(pruned.length, 1, `interior never-queried gap must survive pruning, got ${JSON.stringify(pruned)}`);
     assert.strictEqual(pruned[0].gte, WGTE + 2 * H, 'gap starts at first missing bucket');
     assert.strictEqual(pruned[0].lte, WGTE + 4 * 24 * H - H, 'gap ends at last missing bucket');
@@ -74,7 +74,7 @@ function interiorGapCache(queried: { gte: number; lte: number }[]) {
     // Same gap, but actually queried before -> still pruned (no regression).
     const { localCache, have } = interiorGapCache([{ gte: WGTE, lte: WLTE }]);
     const raw = findMissingBucketRanges(WGTE, WLTE, H, new Set(have));
-    const pruned = pruneImmutableGaps(raw, have[0], WLTE, localCache.fileCover, NOW);
+    const pruned = pruneImmutableGaps(raw, WLTE, localCache.fileCover, NOW);
     assert.strictEqual(pruned.length, 0, `actually-queried interior gap must be pruned, got ${JSON.stringify(pruned)}`);
 
     const plan = planWindowReuse(localCache, {
@@ -128,6 +128,35 @@ function interiorGapCache(queried: { gte: number; lte: number }[]) {
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });
     }
+}
+
+{
+    // Regression: 5 stray boundary buckets from the NEXT window's file sat
+    // at the end of this old window (real incident: a whole month certified
+    // "nothing missing" from 5 stray buckets while hundreds of live hours
+    // went unfetched). Buckets before the first local one
+    // are not proven empty by anything -> the whole leading range must be
+    // kept for querying.
+    const strays = hourly(WLTE - 4 * H, WLTE);
+    const byTs = new Map();
+    for (const h of strays) byTs.set(h, candle(h));
+    const localCache = {
+        byTs,
+        files: 1,
+        fileCover: [{ gte: WGTE, lte: WLTE, count: strays.length, queried: [] }],
+    };
+    const raw = findMissingBucketRanges(WGTE, WLTE, H, new Set(strays));
+    const pruned = pruneImmutableGaps(raw, WLTE, localCache.fileCover, NOW);
+    assert.strictEqual(pruned.length, 1, `stray-anchored leading range must survive pruning, got ${JSON.stringify(pruned)}`);
+    assert.strictEqual(pruned[0].gte, WGTE, 'gap starts at the window start');
+    assert.strictEqual(pruned[0].lte, WLTE - 5 * H, 'gap ends before the first stray bucket');
+
+    const plan = planWindowReuse(localCache, {
+        gteMs: WGTE, lteMs: WLTE, bucketMs: H,
+        isTail: false, allowSubFetch: true, nowMs: NOW,
+    });
+    assert.ok(plan.missing.length > 0, `planner must re-query the uncovered range, got ${JSON.stringify(plan.missing)}`);
+    assert.strictEqual(plan.missing[0].gte, WGTE);
 }
 
 console.log('window_cache pruning tests passed');

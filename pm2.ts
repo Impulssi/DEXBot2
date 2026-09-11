@@ -22,11 +22,11 @@ const __dirname = _esmDirname(__filename);
  * dexbot pm2 claw-only             - Credential daemon only, managed by PM2
  * dexbot pm2 update                - Run the update script immediately
  * dexbot pm2 stop all              - Stop all dexbot PM2 processes
- * dexbot pm2 stop <bot-name>       - Stop specific bot process
+ * dexbot pm2 stop <bot>            - Stop specific bot process
  * dexbot pm2 delete all            - Delete all dexbot processes from PM2
- * dexbot pm2 delete <bot-name>     - Delete specific bot from PM2
+ * dexbot pm2 delete <bot>          - Delete specific bot from PM2
  * dexbot pm2 reload all            - Reload managed apps without touching dexbot-cred
- * dexbot pm2 reload <bot-name>     - Reload a bot without touching dexbot-cred
+ * dexbot pm2 reload <bot>          - Reload a bot without touching dexbot-cred
  * dexbot pm2 restart all           - Restart managed apps; re-unlock dexbot-cred only if needed
  * dexbot pm2 restart <target>      - Restart a bot or safely re-unlock dexbot-cred
 
@@ -992,16 +992,16 @@ Flags:
 Examples:
   dexbot pm2                       # Start all bots (unlock + start)
   dexbot pm2 claw-only             # Start only the credential daemon
-  dexbot pm2 <bot-name>           # Start a single bot
+  dexbot pm2 <bot>                 # Start a single bot
   dexbot pm2 --headless            # Start all bots (non-interactive)
   dexbot pm2 --password-file /run/secrets/bot-password
                                    # Start all bots with password from file
   dexbot pm2 stop all             # Stop all dexbot processes
-  dexbot pm2 stop AAA-BBB         # Stop specific bot
+  dexbot pm2 stop <bot>            # Stop specific bot
   dexbot pm2 delete all           # Delete all dexbot processes from PM2
-  dexbot pm2 delete AAA-BBB       # Delete specific bot from PM2
+  dexbot pm2 delete <bot>          # Delete specific bot from PM2
   dexbot pm2 reload all           # Reload managed apps, dexbot-cred untouched
-  dexbot pm2 reload AAA-BBB       # Reload a single bot, dexbot-cred untouched
+  dexbot pm2 reload <bot>          # Reload a single bot, dexbot-cred untouched
   dexbot pm2 restart all          # Safe restart path for managed apps
   dexbot pm2 restart dexbot-cred  # Re-unlock credential daemon
 

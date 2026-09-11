@@ -95,7 +95,7 @@ const __dirname = _esmDirname(__filename);
  * Bots:  <profiles>/bots.json
  * Keys:  <profiles>/keys.json (encrypted)
  * State: <profiles>/orders/{botKey}.json (per-bot grid snapshots)
- * Logs:  <profiles>/logs/{botname}.log
+ * Logs:  <profiles>/logs/<bot>.log
  *
  * <profiles> resolves to ~/.config/dexbot2/profiles by default for all
  * installs (override: DEXBOT_PROFILE_ROOT); a source checkout with a
@@ -985,7 +985,7 @@ async function handleCLICommands() {
         case 'pm2': {
             const { spawnSync } = require('child_process') as any as any;
             // Forward the remaining CLI args to pm2.js so subcommands work
-            // (`dexbot pm2 stop AAA-BBB`, `dexbot pm2 restart all`, `dexbot pm2
+            // (`dexbot pm2 stop <bot>`, `dexbot pm2 restart all`, `dexbot pm2
             // help`...). Previously the subcommand was silently dropped and the
             // full-setup path ran, so `dexbot pm2 start X` started ALL bots and
             // `dexbot pm2 stop X` no-oped into a full setup.

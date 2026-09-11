@@ -852,7 +852,7 @@ Options:
   --quote <asset>          Synthetic quote asset, default ${DEFAULT_QUOTE}
   --common-quote <asset>   Common quote asset, default ${DEFAULT_COMMON_QUOTE}
   --bot-key <key>          Default output becomes market_adapter/data/market_adapter_<key>_<interval>.json
-  --bot-name <name>        Resolve the output key from profiles/bots.json by bot name
+  --bot-name <bot>        Resolve the output key from profiles/bots.json by bot name
   --bots-file <path>       Alternate bots.json file for resolving --bot-name
   --out <file>             Write to an explicit path
   --check-only             Probe markets and candle endpoints without writing output

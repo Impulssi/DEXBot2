@@ -143,7 +143,7 @@ No trading fields (`assetA`, `assetB`, `startPrice`, `incrementPercent`, `active
 
 ```bash
 dexbot start credit          # Background daemon — runs only the credit worker
-dexbot start <bot-name>      # Start a named bot directly
+dexbot start <bot>            # Start a named bot directly
 ```
 
 ### Collateral Increase Thresholds

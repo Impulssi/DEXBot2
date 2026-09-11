@@ -168,7 +168,7 @@ Do not tune on a fixed schedule. Tune when the bot's behavior stops matching the
 Use a normal reset when you want the bot to rebuild around the current market:
 
 ```bash
-dexbot reset <bot-name>
+dexbot reset <bot>
 ```
 
 That writes the recalculation trigger file. If the bot is running, it resets immediately; if it is stopped, it resets on the next start.

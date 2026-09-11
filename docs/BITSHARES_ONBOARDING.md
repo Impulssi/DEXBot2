@@ -294,6 +294,13 @@ The only things worth tuning later:
 See the "Recommended Bot Setup" section of the
 [README](../README.md#recommended-bot-setup).
 
+### Editing a running bot
+
+You can re-run `dexbot bot` and save while the bot runs. Order counts,
+reserves, funds and weights apply live (~1min, no restart); grid geometry
+needs `dexbot reset <bot>`, market/account changes need a restart. The
+editor prints exactly what applies live every time it saves.
+
 ### Activate the market adapter
 
 For AMA pricing, enable the market adapter once:
@@ -332,7 +339,7 @@ dexbot start --dryrun --foreground   # stop with Ctrl+C
 | :--- | :--- |
 | Runtime status | `dexbot stat` |
 | Live output | `dexbot start --foreground` (stop with Ctrl+C) |
-| Logs | `<profiles>/logs/` — runtime `dexbot.log`, per-bot `<bot-name>.log` (see [Where are the logs?](#where-are-the-logs)) |
+| Logs | `<profiles>/logs/` — runtime `dexbot.log`, per-bot `<bot>.log` (see [Where are the logs?](#where-are-the-logs)) |
 | Clear logs | `dexbot clear` |
 
 See [LOGGING.md](LOGGING.md) for the full logging reference.
@@ -396,7 +403,7 @@ overrides the location entirely.
 | File | Contents |
 | :--- | :--- |
 | `dexbot.log` / `dexbot-error.log` | Runtime (monolithic daemon) stdout/stderr |
-| `<bot-name>.log` / `<bot-name>-error.log` | Per-bot output |
+| `<bot>.log` / `<bot>-error.log` | Per-bot output |
 | `dexbot-cred.log` | Credential daemon |
 | `dexbot-adapter.log` / `dexbot-adapter-error.log` | Market adapter managed by the runtime |
 | `market_adapter.log` | Standalone adapter mode |

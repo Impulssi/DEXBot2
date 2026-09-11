@@ -693,6 +693,9 @@ async function main() {
         const avail = liveOffer && pair.debtId
           ? await toFloat(Number(liveOffer.current_balance), pair.debtId)
           : null;
+        // No live liquidity for the pair: skip the line entirely —
+        // Curr. CR only reports live on-chain offers with funds.
+        if (!liveOffer || avail === null || avail <= 0) continue;
         // No active debt: borrow-now CR — wallet collateral value against
         // the offer's available funds, i.e. the CR a fresh borrow of the
         // full available amount would land at.
@@ -712,8 +715,7 @@ async function main() {
         const availText = avail !== null && avail > 0
           ? `${formatAmount(avail)} ${pair.debtSym}`
           : 'no funds';
-        const shortOfferId = liveOfferId?.includes('.') ? liveOfferId.split('.').pop()! : liveOfferId;
-        const idSuffix = shortOfferId ? ` ${colors.gray}(${shortOfferId})${colors.reset}` : '';
+        const idSuffix = liveOfferId ? ` ${colors.gray}(${liveOfferId})${colors.reset}` : '';
         console.log(`   ${colors.white}${colors.bold}Curr. CR:${colors.reset} ${crColor}${crText}${colors.reset}, ${pair.debtSym}←${pair.collSym} | ${availText}${idSuffix}`);
       }
     }

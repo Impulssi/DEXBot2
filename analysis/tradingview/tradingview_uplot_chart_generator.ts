@@ -124,7 +124,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         { label: '4h', seconds: 14400 },
         { label: '1d', seconds: 86400 },
         { label: '1w', seconds: 604800 },
-        { label: '1M', seconds: 2592000 },
+        { label: '1M', seconds: 2592000, calendar: 'month' },
     ].map((item: any) => ({ ...item, enabled: item.seconds >= baseIntervalSeconds }));
 
     const defaultTimeframe = timeframes.find((item: any) => item.label === data.defaultTimeframe && item.enabled)
@@ -481,11 +481,11 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             background: rgba(10,14,20,0.72);
             backdrop-filter: blur(10px);
         }
-        .legend-line { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; font-size: 11px; }
+        .legend-line { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; font-size: 12px; }
         .legend-line + .legend-line { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.06); }
         .legend-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
         .legend-dot { width: 10px; height: 10px; border-radius: 999px; flex: 0 0 auto; }
-        .legend-label { color: #8290a2; text-transform: uppercase; letter-spacing: 0.45px; font-size: 10px; }
+        .legend-label { color: #8290a2; text-transform: uppercase; letter-spacing: 0.45px; font-size: 12px; }
         .legend-value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #eef4fb; font-weight: 700; }
         .status { display: inline-flex; align-items: center; gap: 8px; font-size: 10px; color: #8290a2; text-transform: uppercase; letter-spacing: 0.5px; }
         .pill { border: 1px solid rgba(255,255,255,0.06); border-radius: 999px; padding: 4px 8px; background: rgba(255,255,255,0.03); }
@@ -606,7 +606,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     <span class="legend-item"><span class="legend-dot" style="background:#2dd4bf"></span><span class="legend-label">AMA</span> <span class="legend-value" id="legend-ama">-</span></span>
                 </div>
             </div>
-            <div id="price-chart" title="Wheel: zoom time (out = empty space around data) · Drag: move time and price view · Wheel/drag on price axis: zoom price · Double-click price axis: autofit"></div>
+            <div id="price-chart" title="Wheel: zoom time (out = empty space around data) · Shift+wheel: zoom price · Drag: pan time + price (sets manual price scale) · Wheel/drag on price axis: zoom price · Drag on time axis: zoom time · Double-click price axis: autofit"></div>
             <div id="volume-chart"></div>
         </div>
     </div>
@@ -697,6 +697,8 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         let lastCandleKey = null;
         let pendingRange = null;
         let pendingRangeRaf = 0;
+        let rangePanelRaf = 0;
+        let yRefitRaf = 0;
         let xMin = 0;
         let xMax = 0;
         let smaWorker = null;
@@ -720,9 +722,13 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 if (e.ctrlKey || e.metaKey || e.altKey) return;
                 e.preventDefault();
                 const rect = chart.root.getBoundingClientRect();
-                if (chart === priceChart && inYAxisZone(chart, e.clientX)) {
+                // Shift+wheel scales price (cursor-anchored) anywhere over the
+                // price pane — same as wheeling over the price axis. Volume has
+                // no manual Y lock, so it keeps the timeframe zoom.
+                if (chart === priceChart && (e.shiftKey || inYAxisZone(chart, e.clientX))) {
                     const centerY = chart.posToVal(e.clientY - rect.top, 'y');
-                    zoomYAt(chart, centerY, e.deltaY < 0 ? 0.91 : 1.10);
+                    const delta = e.deltaY !== 0 ? e.deltaY : e.deltaX;
+                    zoomYAt(chart, centerY, delta < 0 ? 0.91 : 1.10);
                     return;
                 }
                 e.stopPropagation();
@@ -746,12 +752,24 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return null;
             // Allow empty space on both sides of the data (TradingView-style):
             // enintaan 75 % datan pituudesta reunapuskurina kummallekin puolelle.
+            // Span-locked: pans slide the window and never squash it — only a
+            // deliberate over-wide zoom-out is centered down to the limit.
+            // Plot drags therefore move but never scale; scaling lives on
+            // the axis gutters alone.
             const dataSpan = Math.max(1, xMax - xMin);
             const maxPad = dataSpan * 0.75;
-            const lo = Math.max(xMin - maxPad, min);
-            const hi = Math.min(xMax + maxPad, max);
-            if (hi <= lo) return null;
-            return { min: lo, max: hi };
+            const lo = xMin - maxPad;
+            const hi = xMax + maxPad;
+            const span = max - min;
+            if (span > hi - lo) {
+                const center = (min + max) / 2;
+                const half = (hi - lo) / 2;
+                return { min: center - half, max: center + half };
+            }
+            let nMin = min;
+            if (nMin < lo) nMin = lo;
+            if (nMin + span > hi) nMin = hi - span;
+            return { min: nMin, max: nMin + span };
         }
         function syncXRange(min, max) {
             pendingRange = clampRange(min, max);
@@ -781,8 +799,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 const p = pendingPan;
                 pendingPan = null;
                 if (!dragging || !p) return;
-                // Vertical drag inside the price chart: price scale follows the mouse
-                // (aktivoi manuaalisen skaalan; kaksoisklikkaus akselilla palauttaa autofitin)
+                // Plot drag pans time and price (TradingView-style): the price
+                // move sets a manual Y range; double-click the price axis to
+                // return to autofit. Axis gutters never pan — they scale.
                 // Plot-relative coords (same convention as bindWheelZoom):
                 // posToVal expects position inside the plot area, so the
                 // axis offset (bbox) must be subtracted. Without it the
@@ -795,15 +814,22 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     const vStart = chart.posToVal(plotY(p.startY), 'y');
                     const vCur = chart.posToVal(plotY(p.clientY), 'y');
                     if (Number.isFinite(vStart) && Number.isFinite(vCur) && vCur !== vStart) {
+                        // Rigid move only: the span is locked by construction so a
+                        // plot drag can never rescale — Y scaling happens solely
+                        // on the price-axis gutter (wheel/drag there).
                         if (currentPriceScale === 'log') {
                             const ratio = Math.max(1e-12, vStart) / Math.max(1e-12, vCur);
-                            if (Number.isFinite(ratio) && ratio > 0) {
-                                applyYRange(chart, startYRange.min * ratio, startYRange.max * ratio);
+                            const spanRatio = startYRange.max / startYRange.min;
+                            if (Number.isFinite(ratio) && ratio > 0 && Number.isFinite(spanRatio) && spanRatio > 0) {
+                                const nextMin = startYRange.min * ratio;
+                                applyYRange(chart, nextMin, nextMin * spanRatio);
                             }
                         } else {
                             const dy = vStart - vCur;
-                            if (Number.isFinite(dy)) {
-                                applyYRange(chart, startYRange.min + dy, startYRange.max + dy);
+                            const span = startYRange.max - startYRange.min;
+                            if (Number.isFinite(dy) && Number.isFinite(span) && span > 0) {
+                                const nextMin = startYRange.min + dy;
+                                applyYRange(chart, nextMin, nextMin + span);
                             }
                         }
                     }
@@ -837,6 +863,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 const rect = chart.root.getBoundingClientRect();
                 if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
                 if (chart === priceChart && inYAxisZone(chart, e.clientX)) return;
+                if (inXAxisZone(chart, e.clientY)) return;
                 e.preventDefault();
                 e.stopPropagation();
                 dragging = true;
@@ -961,6 +988,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 ticks: { stroke: '#30363d', width: 1 },
                 font: '11px Segoe UI, sans-serif',
                 values: showLabels ? (u, vals) => {
+                    if (String(currentTimeframe) === '1M') {
+                        return vals.map((ts) => new Date(ts * 1000).toLocaleString(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' }));
+                    }
                     const xScale = u.scales.x || {};
                     const spanSec = Number.isFinite(xScale.min) && Number.isFinite(xScale.max)
                         ? Math.max(0, xScale.max - xScale.min)
@@ -1052,9 +1082,10 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             seriesCache.set(key, state);
             return state;
         }
-        function aggregateCandles(rows, seconds) {
+        function aggregateCandles(rows, seconds, label) {
+            const monthly = String(label || '') === '1M';
             const bucketSec = Math.max(1, Math.round(seconds || 3600));
-            const cacheKey = currentPairMode + '|' + bucketSec;
+            const cacheKey = currentPairMode + '|' + (monthly ? '1M' : String(bucketSec));
             if (aggregateCache.has(cacheKey)) return aggregateCache.get(cacheKey);
             const out = [];
             const idxs = [];
@@ -1065,7 +1096,13 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 const row = rows[i];
                 const ts = Number(row.time);
                 if (!Number.isFinite(ts)) continue;
-                const bucket = Math.floor(ts / bucketSec) * bucketSec;
+                let bucket;
+                if (monthly) {
+                    const d = new Date(ts * 1000);
+                    bucket = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) / 1000;
+                } else {
+                    bucket = Math.floor(ts / bucketSec) * bucketSec;
+                }
                 if (!cur || bucket !== curBucket) {
                     if (cur) {
                         out.push(cur);
@@ -1819,7 +1856,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             currentSeriesState = getSeriesState(currentPairMode);
             currentSeriesCandles = currentSeriesState.candles;
             currentSeriesCloseValues = currentSeriesState.closeValues;
-            const aggregated = aggregateCandles(currentSeriesCandles, tf?.seconds || 3600);
+            const aggregated = aggregateCandles(currentSeriesCandles, tf?.seconds || 3600, tf?.label || currentTimeframe);
             currentCandles = aggregated.candles;
             if (currentCandles.length) {
                 xMin = currentCandles[0].time;
@@ -1950,6 +1987,11 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 ],
                 hooks: {
                     draw: [(u) => { positionPriceMarker(u); positionReserveLine(u); positionOrderLines(u); positionUpdateMarker(u, true); }],
+                    // Keep the bottom-right stat badges glued to the visible
+                    // window while zooming/panning (rAF-throttled text swap).
+                    // Refit Y to the visible window on timeframe (x) moves —
+                    // uPlot does not recompute Y on setScale('x') by itself.
+                    setScale: [(u, key) => { if (key === 'x') scheduleYRefit(); scheduleStatPanels(); }],
                 },
             };
 
@@ -1986,6 +2028,11 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     makeTimeAxis(true),
                     { scale: 'y', side: 1, size: 62, stroke: '#ffffff', grid: { show: showGridlines, stroke: '#1c2128' }, ticks: { stroke: '#30363d', width: 1 }, font: '600 12px Segoe UI, sans-serif', values: (u, vals) => fmtPriceAxis(vals) },
                 ],
+                hooks: {
+                    // x is synced from the price chart; refit volume Y to the
+                    // visible window and refresh the V max badge.
+                    setScale: [(u, key) => { if (key === 'x') scheduleYRefit(); scheduleStatPanels(); }],
+                },
             };
 
             const volumePluginInst = volumePlugin();
@@ -1998,19 +2045,25 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             lastRenderedPriceScale = currentPriceScale;
             return priceChart;
         }
-        // True when clientX sits over the price-axis region. The chart canvas
-        // (plot + axis gutters) can be wider than the viewport and the right
-        // gutter clipped off-screen, so we key the price zone off the ON-SCREEN
-        // chart container width (always reachable) rather than the far-right gutter.
-        // The rightmost ~120px of the container zooms price; the rest pans time.
+        // True when clientX sits over the true price-axis gutter (right of
+        // the plot area). Keyed off uPlot's plot rect, not the container
+        // width, so grabs on candles — even the newest ones at the plot's
+        // right edge — always pan instead of scaling. Only the axis itself
+        // zooms price; the rest pans time.
         function inYAxisZone(chart, clientX) {
-            const rootRect = chart.root.getBoundingClientRect();
-            if (!rootRect || rootRect.width <= 0) return false;
-            const x = clientX - rootRect.left;
-            if (chart === priceChart) {
-                return x > rootRect.width - 120;
-            }
-            return false;
+            if (chart !== priceChart || !chart.over) return false;
+            const overRect = chart.over.getBoundingClientRect();
+            if (!overRect || overRect.width <= 0) return false;
+            return clientX >= overRect.right - 2;
+        }
+        // True when the pointer sits over the time-axis gutter (below the
+        // plot area) of either chart. Dragging there scales the timeframe;
+        // drags on candles always pan instead.
+        function inXAxisZone(chart, clientY) {
+            if (!chart || !chart.over) return false;
+            const overRect = chart.over.getBoundingClientRect();
+            if (!overRect || overRect.height <= 0) return false;
+            return clientY >= overRect.bottom - 2;
         }
         let priceMarkerLabel = null;
         function ensurePriceMarker(u) {
@@ -2424,10 +2477,12 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 return;
             }
             // Uloszoomauksen rajat: alin naytettava hinta voi painua viimeistaan
-            // ~35 % datan minimin alapuolelle, ylin ~1.6x datan maksimin —
-            // ei siis paase "lipsahtamaan" candleita nakyvasta kadottaen.
-            // Kokonaisvalille ei ole ylarajaa: pystyakselia saa zoomata ulos vapaasti.
-            priceBounds = { min: min, max: max, floor: min * 0.35, ceil: max * 1.6 };
+            // ~1/2 datan minimin alapuolelle, ylin ~2x datan maksimin —
+            // paneminen kayttaa tata 2x-bandia ja pysahtyy jaykkana sen
+            // reunaan (ei siis paase "lipsahtamaan" candleita nakyvasta
+            // kadottaen). Kokonaisvalille ei ole ylarajaa: pystyakselia saa
+            // zoomata ulos vapaasti.
+            priceBounds = { min: min, max: max, floor: min / 2, ceil: max * 2.0 };
         }
         function applyYRange(chart, min, max) {
             if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return false;
@@ -2438,11 +2493,37 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 if (max <= min) return false;
             }
             if (priceBounds) {
-                let nMin = Math.max(min, priceBounds.floor);
-                let nMax = Math.min(max, priceBounds.ceil);
-                if (nMax <= nMin) return false;
-                min = nMin;
-                max = nMax;
+                // Span-locked slide within the 2x zoom band: a pan that would
+                // cross the zoom-out limits stops as a rigid block instead of
+                // getting squashed (squashing reads as scaling halfway through
+                // a drag). Only a span wider than the band itself snaps to the
+                // full band. Scaling lives on the axis gutters alone.
+                if (currentPriceScale === 'log') {
+                    const spanRatio = max / min;
+                    if (spanRatio > priceBounds.ceil / priceBounds.floor) {
+                        min = priceBounds.floor;
+                        max = priceBounds.ceil;
+                    } else {
+                        if (max > priceBounds.ceil) {
+                            const f = max / priceBounds.ceil;
+                            min /= f; max /= f;
+                        }
+                        if (min < priceBounds.floor) {
+                            const f = priceBounds.floor / min;
+                            min *= f; max *= f;
+                        }
+                    }
+                } else {
+                    const span = max - min;
+                    if (span > priceBounds.ceil - priceBounds.floor) {
+                        min = priceBounds.floor;
+                        max = priceBounds.ceil;
+                    } else {
+                        if (max > priceBounds.ceil) { max = priceBounds.ceil; min = max - span; }
+                        if (min < priceBounds.floor) { min = priceBounds.floor; max = min + span; }
+                    }
+                }
+                if (!(max > min) || !Number.isFinite(min) || !Number.isFinite(max)) return false;
             }
             manualYRange = { min: min, max: max };
             chart.setScale('y', { min: min, max: max });
@@ -2497,6 +2578,56 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 startClientY = e.clientY;
                 startRange = range;
                 chart.root.style.cursor = 'ns-resize';
+                window.addEventListener('mousemove', onMove);
+                window.addEventListener('mouseup', endDrag, { once: true });
+            }, true);
+        }
+        // Time-axis drag scales the timeframe around its center (mirror of
+        // the price-axis drag): drag right to zoom out, left to zoom in.
+        // Synced across charts via syncXRange; capture phase pre-empts plot pan.
+        function bindXAxisDrag(chart) {
+            let dragging = false;
+            let startClientX = 0;
+            let startRange = null;
+            const onMove = (e) => {
+                if (!dragging || !startRange) return;
+                e.preventDefault();
+                chart.root.style.cursor = 'ew-resize';
+                const deltaPx = e.clientX - startClientX;
+                if (!Number.isFinite(deltaPx) || deltaPx === 0) return;
+                const factor = Math.exp(deltaPx / 350);
+                const span = startRange.max - startRange.min;
+                if (!Number.isFinite(span) || span <= 0) return;
+                const center = (startRange.min + startRange.max) / 2;
+                const nextSpan = span * factor;
+                syncXRange(center - nextSpan / 2, center + nextSpan / 2);
+            };
+            const endDrag = () => {
+                if (!dragging) return;
+                dragging = false;
+                startRange = null;
+                chart.root.style.cursor = '';
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', endDrag);
+            };
+            chart.root.addEventListener('mousedown', (e) => {
+                if (!e || e.button !== 0 || e.ctrlKey || e.metaKey || e.altKey) return;
+                // capture phase so we pre-empt the plot pan when in the x-zone
+                const rect = chart.root.getBoundingClientRect();
+                if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
+                if (!inXAxisZone(chart, e.clientY)) return;
+                const s = chart.scales.x || {};
+                const range = {
+                    min: Number.isFinite(s.min) ? s.min : xMin,
+                    max: Number.isFinite(s.max) ? s.max : xMax,
+                };
+                if (!Number.isFinite(range.min) || !Number.isFinite(range.max) || range.max <= range.min) return;
+                e.preventDefault();
+                e.stopPropagation();
+                dragging = true;
+                startClientX = e.clientX;
+                startRange = range;
+                chart.root.style.cursor = 'ew-resize';
                 window.addEventListener('mousemove', onMove);
                 window.addEventListener('mouseup', endDrag, { once: true });
             }, true);
@@ -2578,11 +2709,12 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 charts.forEach((chart) => {
                     bindWheelZoom(chart);
                     bindPan(chart);
+                    bindXAxisDrag(chart);
                     if (chart === priceChart) {
                         bindYAxisDrag(chart);
                         bindYAxisReset(chart);
                         chart.root.addEventListener('mousemove', (e) => {
-                            chart.root.style.cursor = inYAxisZone(chart, e.clientX) ? 'ns-resize' : '';
+                            chart.root.style.cursor = inYAxisZone(chart, e.clientX) ? 'ns-resize' : (inXAxisZone(chart, e.clientY) ? 'ew-resize' : '');
                         });
                         // Cursor price tag: floating label next to the mouse
                         // showing the price under the cursor (price chart only).
@@ -2636,6 +2768,8 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             }
             refreshLegend();
             renderMarketPanel();
+            renderRangePanel();
+            renderVolumePanel();
             saveState();
         }
 
@@ -2857,7 +2991,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const span = last - first;
             syncXRange(first - span * 0.02, last + span * 0.12);
         }
-        // Market panel top-right: Market + best buy/sell with distance-to-market
+        // Market panel top-right: SELL / Market / BUY with distance-to-market
         // %. Pair-aware (same display levels as the overlay). Static per
         // generation, so drawn once (no draw hook); refreshed on pair flip
         // via rerender. Hidden while the Orders overlay is unchecked — the
@@ -2878,7 +3012,13 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const { buys, sells } = getDisplayOrders();
             const deeps = Array.isArray(payload.orderDeepBuys) ? payload.orderDeepBuys.filter(Number.isFinite).filter((p) => p > 0) : [];
             const dispDeeps = normalizePairMode(currentPairMode) === 'inverse' ? deeps.map((p) => 1 / p).filter(Number.isFinite).filter((p) => p > 0) : deeps;
-            let html = '<div style="color:#e8eef5">Market ' + (Number.isFinite(mkt) ? fmtPriceLabel(mkt) : '-') + '</div>';
+            let html = '';
+            if (sells.length && Number.isFinite(mkt)) {
+                const s = Math.min(...sells);
+                const p = (s - mkt) / mkt * 100;
+                html += '<div style="color:#ef5350">SELL ' + fmtPriceLabel(s) + ' ' + (p >= 0 ? '+' : '') + p.toFixed(1) + '%</div>';
+            }
+            html += '<div style="color:#e8eef5">Market ' + (Number.isFinite(mkt) ? fmtPriceLabel(mkt) : '-') + '</div>';
             if (buys.length && Number.isFinite(mkt)) {
                 const b = Math.max(...buys);
                 const p = (b - mkt) / mkt * 100;
@@ -2889,15 +3029,113 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 const p = (d - mkt) / mkt * 100;
                 html += '<div style="color:#f97316">DEEP ' + fmtPriceLabel(d) + ' ' + (p >= 0 ? '+' : '') + p.toFixed(1) + '%</div>';
             }
-            if (sells.length && Number.isFinite(mkt)) {
-                const s = Math.min(...sells);
-                const p = (s - mkt) / mkt * 100;
-                html += '<div style="color:#ef5350">SELL ' + fmtPriceLabel(s) + ' ' + (p >= 0 ? '+' : '') + p.toFixed(1) + '%</div>';
-            }
             panel.innerHTML = html;
+        }
+        // Range panel bottom-right: visible-window candle High (red) /
+        // Low (green) — sell-side red on top, buy-side green below, mirroring
+        // the top-right market badge. Volume max lives in its own badge on
+        // the volume chart below. Slightly smaller type than the top-right market badge.
+        // Pair-aware via currentCandles (already inverted in B/A view).
+        // Refreshed on rerender and on x zoom/pan through the setScale hooks.
+        function visibleCandleStats() {
+            if (!currentCandles.length) return null;
+            let minX = NaN;
+            let maxX = NaN;
+            if (priceChart) {
+                const xs = priceChart.scales.x || {};
+                if (Number.isFinite(xs.min)) minX = xs.min;
+                if (Number.isFinite(xs.max)) maxX = xs.max;
+            }
+            if (!Number.isFinite(minX)) minX = currentCandles[0].time;
+            if (!Number.isFinite(maxX)) maxX = currentCandles[currentCandles.length - 1].time;
+            const times = currentCandles.map((c) => c.time);
+            const start = Math.max(0, lowerBound(times, minX) - 1);
+            const end = Math.min(times.length, lowerBound(times, maxX) + 2);
+            let hi = -Infinity;
+            let lo = Infinity;
+            let vol = 0;
+            for (let i = start; i < end; i++) {
+                const c = currentCandles[i];
+                if (!c) continue;
+                if (Number.isFinite(c.high) && c.high > hi) hi = c.high;
+                if (Number.isFinite(c.low) && c.low < lo) lo = c.low;
+                if (Number.isFinite(c.volume) && c.volume > vol) vol = c.volume;
+            }
+            if (!Number.isFinite(hi) || !Number.isFinite(lo)) return null;
+            return { hi, lo, vol };
+        }
+        function renderRangePanel() {
+            if (!priceChart) return;
+            let panel = document.getElementById('range-panel');
+            if (!panel) {
+                panel = document.createElement('div');
+                panel.id = 'range-panel';
+                panel.style.cssText = 'position:absolute;z-index:26;bottom:10px;right:88px;pointer-events:none;font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.6;padding:6px 10px;border-radius:8px;background:rgba(13,17,23,0.85);border:1px solid #263241;white-space:nowrap;text-align:right;';
+                priceChart.root.appendChild(panel);
+            }
+            const stats = visibleCandleStats();
+            if (!stats) { panel.style.display = 'none'; return; }
+            panel.style.display = 'block';
+            panel.innerHTML = '<div style="color:#ef5350">H ' + fmtPriceLabel(stats.hi) + '</div>'
+                + '<div style="color:#26a69a">L ' + fmtPriceLabel(stats.lo) + '</div>';
+        }
+        // Volume badge top-right on the volume chart: max volume of the
+        // visible window only. Same small type as the range panel. Lives on
+        // the volume root, so hiding the volume chart hides the badge too.
+        function renderVolumePanel() {
+            if (!volumeChart) return;
+            let panel = document.getElementById('vol-panel');
+            if (!panel) {
+                panel = document.createElement('div');
+                panel.id = 'vol-panel';
+                panel.style.cssText = 'position:absolute;z-index:26;top:10px;right:88px;pointer-events:none;font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.6;padding:6px 10px;border-radius:8px;background:rgba(13,17,23,0.85);border:1px solid #263241;white-space:nowrap;text-align:right;';
+                volumeChart.root.appendChild(panel);
+            }
+            const stats = visibleCandleStats();
+            if (!stats) { panel.style.display = 'none'; return; }
+            panel.style.display = 'block';
+            panel.innerHTML = '<div style="color:#e8eef5">V max ' + fmtVolume(stats.vol) + '</div>';
+        }
+        function scheduleStatPanels() {
+            if (rangePanelRaf) return;
+            rangePanelRaf = requestAnimationFrame(() => {
+                rangePanelRaf = 0;
+                renderRangePanel();
+                renderVolumePanel();
+            });
+        }
+        // uPlot does not recompute an auto Y scale when X moves via
+        // setScale('x') — the scale range fns only run on init/data
+        // change. Refit Y to the visible window after every timeframe
+        // move so candles/volume follow the pan/zoom instead of getting
+        // stuck outside the view. A user-locked price range (axis
+        // wheel/drag → manualYRange) is respected; double-click the
+        // price axis to return to autofit. y-keyed setScale calls never
+        // schedule a refit, so this cannot loop with itself.
+        function yRangeDirty(u, vis) {
+            const s = u.scales.y || {};
+            if (!Number.isFinite(s.min) || !Number.isFinite(s.max)) return true;
+            const span = Math.max(1e-12, Math.abs(vis[1] - vis[0]));
+            return Math.abs(s.min - vis[0]) / span > 1e-9 || Math.abs(s.max - vis[1]) / span > 1e-9;
+        }
+        function scheduleYRefit() {
+            if (yRefitRaf) return;
+            yRefitRaf = requestAnimationFrame(() => {
+                yRefitRaf = 0;
+                if (priceChart && !manualYRange) {
+                    const vis = visiblePriceRange(priceChart);
+                    if (vis && yRangeDirty(priceChart, vis)) priceChart.setScale('y', { min: vis[0], max: vis[1] });
+                }
+                if (volumeChart) {
+                    const vvis = visibleVolumeRange(volumeChart);
+                    if (vvis && yRangeDirty(volumeChart, vvis)) volumeChart.setScale('y', { min: vvis[0], max: vvis[1] });
+                }
+            });
         }
         padXRight();
         renderMarketPanel();
+        renderRangePanel();
+        renderVolumePanel();
 
         window.addEventListener('resize', () => {
             if (!charts.length) return;

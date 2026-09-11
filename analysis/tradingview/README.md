@@ -34,7 +34,7 @@ The sections below cover manual usage (explicit candle files, direct runner flag
 ## What It Produces
 
 - Log-scale price chart
-- Candle timeframe buttons: `1h`, `4h`, `1d`, `1w`, `1M` (`1M` aggregates to fixed 30-day buckets; fork-only, not upstream)
+- Candle timeframe buttons: `1h`, `4h`, `1d`, `1w`, `1M` (calendar months)
 - Pair-orientation switcher for `A/B` and `B/A`
 - SMA overlay
 - AMA preset buttons `1–4` (one-click AMA1–4, active preset highlighted); numeric inputs kept
@@ -42,7 +42,9 @@ The sections below cover manual usage (explicit candle files, direct runner flag
 - Range-scale switch: fit the price axis to the range band
 - VWMA overlay
 - Order overlay for bot charts (active grid buys/sells as dashed levels, reserve line at the lowest grid buy, ceiling line at the highest grid sell, spread label; pair-aware, toggle in-chart)
-- Market panel (top-right): `Market` + best `BUY`/`SELL` levels with distance-to-market % (fork adds a `DEEP` row for deep-shelf `deep-N` buy ids)
+- Market panel (top-right): `SELL` / `Market` / `BUY` rows with distance-to-market % (fork appends a `DEEP` row for deep-shelf `deep-N` buy ids)
+- Range panel (bottom-right, smaller type): visible-window candle High/Low (red/green, mirroring the SELL/BUY badge)
+- Volume badge (bottom-right of the volume chart, same small type): visible-window max volume
 - Bottom volume panel with `Volume` toggle and per-bar hover tooltip
 - Crosshair legend with current candle values
 
@@ -161,7 +163,7 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 
 | Flag | Description |
 |------|-------------|
-| `--bot <name>` | Bot name from `profiles/bots.json` (auto-resolves pool) |
+| `--bot <bot>` | Bot name from `profiles/bots.json` (auto-resolves pool) |
 | `--pool <id>` | Manual mode, no blockchain needed (requires `--precA/--precB`) |
 | `--interval <1m\|5m\|15m\|30m\|1h\|2h\|4h\|6h\|12h\|1d\|1w>` | Candle bucket size (bare numbers = seconds, e.g. `1800` = 30m) |
 | `--lookback <N>h` | Hours back from now |
@@ -213,6 +215,7 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 - The order overlay resolves from `profiles/orders/<botKey>.json` (same files `scripts/analyze-orders.ts` reads): active/partial grid orders only. Pool/pair charts without a bot key render without it, silently. `--no-orders` removes the whole overlay (levels, reserve/ceiling lines, spread label); the in-chart `Orders` checkbox does the same when orders are present. Grid bounds span the full grid, never calculated: the reserve line sits on the lowest grid buy, the ceiling line on the highest grid sell — live (active/partial) and planned (virtual) slots alike; a missing side hides its line instead of drawing an invented level. Bounds render even when no live levels exist yet (levels, spread, and panel BUY/SELL rows need live orders).
 - The update marker falls back to `prevUpdateLastCandleSec` / `prevUpdateNewBars` stamped in the candle-file `meta` when the flags are absent; those fields are written by external incremental-fetch tooling, not by anything in this repo.
 - `Ctrl+0` (or `Cmd+0`) resets the time-axis zoom to the full dataset.
+- Mouse: drag the candles to pan time + price (price drag sets a manual range); wheel zooms time, except over the price axis where it zooms price. Shift+wheel zooms price anywhere over the price pane (cursor-anchored). Dragging the price-axis gutter scales price, dragging the time-axis gutter scales the timeframe; double-click the price axis to return to autofit. While the price range is manual, timeframe moves no longer refit it.
 - Indicator, timeframe, scale, and overlay-visibility changes are persisted in browser `localStorage` per pool/pair chart (`dexbot2-tradingview-uplot-v3:<pool>:<A>_<B>:<baseSecs|base>`); cursor sync between the price/volume panes uses a separate constant key.
 - The price axis defaults to log base `10`, with a toolbar switch for `Log` / `Linear`.
 - If you regenerate the HTML and then open it later, no CDN access is needed — `uPlot` is loaded from the vendored local copy at `analysis/uplot/`.

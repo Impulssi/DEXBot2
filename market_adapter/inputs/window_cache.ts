@@ -199,13 +199,16 @@ function findMissingBucketRanges(gteMs: number, lteMs: number, bucketMs: number,
     return missing;
 }
 
-function pruneImmutableGaps(missing: { gte: number; lte: number; hours: number }[], firstReusableTs: number | null, lteMs: number, fileCover: { gte: number | null; lte: number | null; count: number; queried: { gte: number; lte: number }[] }[], nowMs: number = Date.now()) {
+function pruneImmutableGaps(missing: { gte: number; lte: number; hours: number }[], lteMs: number, fileCover: { gte: number | null; lte: number | null; count: number; queried: { gte: number; lte: number }[] }[], nowMs: number = Date.now()) {
     const windowOld = lteMs < nowMs - IMMUTABLE_WINDOW_AGE_MS;
     return missing.filter((m: any) => {
-        // Leading no-trade gap older than the lag horizon: blockchain history
-        // is immutable, so buckets that were empty days ago stay empty.
-        // Applies per-range, including inside the recent tail window.
-        if (firstReusableTs !== null && m.lte < nowMs - IMMUTABLE_WINDOW_AGE_MS && m.lte < firstReusableTs) return false;
+        // Absence of local buckets is NEVER proof of emptiness: stray
+        // buckets from a sibling window's file (e.g. boundary over-fetch)
+        // must not vouch for anything. Only queriedRanges count, and only
+        // for old windows — recent files may predate late-indexed trades.
+        // (A former "leading no-trade gap" heuristic pruned everything
+        // before the first local bucket; it once certified a whole month
+        // as empty from 5 stray boundary buckets of the next window.)
         // Ranges an existing chunk file actually queried (only trusted for
         // old windows — recent files may predate late-indexed trades).
         // Coverage comes from meta.queriedRanges, not the file's overall
@@ -279,9 +282,8 @@ function planWindowReuse(localCache: any, opts: { gteMs: number; lteMs: number; 
         : [];
     // Immutable history (pruned again after the tail widening below, which
     // reintroduces the leading gap via its refresh set).
-    const firstReusableTs = reusable.length > 0 ? Number(reusable[0][0]) : null;
     const prune = () => {
-        missing = pruneImmutableGaps(missing, firstReusableTs, lteMs, localCache.fileCover, nowMs);
+        missing = pruneImmutableGaps(missing, lteMs, localCache.fileCover, nowMs);
     };
     prune();
     // Late-indexing guard: the newest window always re-fetches its
