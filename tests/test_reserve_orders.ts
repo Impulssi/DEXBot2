@@ -16,6 +16,7 @@ const {
     resolveReserveEdgeAnchorPrice,
     resolveLiveReserveEdgeAnchorPrice,
     reserveEdgeIdSet,
+    liveWindowIdSet,
     compareReserveEdge,
     selectReserveEdgeSlots,
     deriveTargetBoundary,
@@ -26,6 +27,7 @@ const {
 const { _setFeeCache } = require('../modules/order/utils/math');
 const { reconcileGrid, optimizeRebalanceActions } = require('../modules/order/utils/validate');
 const { _reconcileStartupSide } = require('../modules/order/grid_reconcile_internal');
+const { countLiveReserveOrders } = require('../modules/dexbot_maintenance_runtime');
 _setFeeCache({
     BTS: {
         limitOrderCreate: { bts: 0.1 },
@@ -622,6 +624,128 @@ async function runTests() {
             `reserve CREATEs must never justify a boundary hold (wire: ${wire.join(', ')})`);
         assert(wire.includes('slot-7') && wire.includes('slot-10'),
             `window hole CREATEs stay in the wire (wire: ${wire.join(', ')})`);
+    }
+
+    console.log(' - window exclusion keeps counting and placement in agreement (issue #27 follow-up)...');
+    {
+        // Window + edge are additive in every target (orders, fees, hold-back),
+        // and the placement pickers exclude window ids from the edge pick.
+        // Classification must exclude them too: a window that reaches the grid
+        // edge (keep-low window = bottom slots = floor edge) otherwise makes
+        // the edge pick land on window members and the live-reserve count
+        // reads N/N with zero dedicated reserves, so the deficit never fires.
+        const slots = [
+            { id: 'slot-0', price: 80, type: ORDER_TYPES.BUY },
+            { id: 'slot-1', price: 81, type: ORDER_TYPES.BUY },
+            { id: 'slot-2', price: 82, type: ORDER_TYPES.BUY },
+            { id: 'slot-3', price: 83, type: ORDER_TYPES.BUY },
+        ];
+        const cfg = { reserveOrders: { buy: 2, sell: 0 } };
+        const ids = reserveEdgeIdSet(slots, cfg, ORDER_TYPES.BUY);
+        assert.deepStrictEqual([...(ids || [])].sort(), ['slot-0', 'slot-1'], 'plain pick pins the floor edge');
+        const excluded = reserveEdgeIdSet(slots, cfg, ORDER_TYPES.BUY, null, new Set(['slot-0', 'slot-1', 'slot-2', 'slot-3']));
+        assert.strictEqual(excluded && excluded.size, 0, 'windowed ids are skipped, overlapping edge pick is empty');
+        const partial = reserveEdgeIdSet(slots, cfg, ORDER_TYPES.BUY, null, new Set(['slot-0']));
+        assert.deepStrictEqual([...(partial || [])].sort(), ['slot-1', 'slot-2'], 'partially windowed edge refills the count from the next floor slots');
+    }
+
+    console.log(' - liveWindowIdSet mirrors the picker window slice...');
+    {
+        const makeMgr = async (opts: { boundary: number; window: number; live: number[] }) => {
+            const mgr = new OrderManager({
+                market: 'TEST/BTS', assetA: 'TEST', assetB: 'BTS',
+                startPrice: 100, incrementPercent: 1, targetSpreadPercent: 0,
+                activeOrders: { buy: opts.window, sell: 3 },
+                reserveOrders: { buy: 2, sell: 0 },
+            });
+            mgr.logger.level = 'silent';
+            mgr.assets = { assetA: { id: '1.3.0', precision: 8, symbol: 'TEST' }, assetB: { id: '1.3.1', precision: 5, symbol: 'BTS' } };
+            await mgr.setAccountTotals({ buy: 10000, sell: 100, buyFree: 10000, sellFree: 100 });
+            await mgr.resetFunds();
+            mgr._gapSlots = 0;
+            mgr.boundaryIdx = opts.boundary;
+            mgr.pauseFundRecalc();
+            for (let i = 0; i < 14; i++) {
+                const live = opts.live.includes(i);
+                await mgr._updateOrder({
+                    id: `slot-${i}`, type: i < opts.boundary ? ORDER_TYPES.BUY : ORDER_TYPES.SELL,
+                    price: 80 + i, size: 100,
+                    state: live ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL,
+                    orderId: live ? `1.7.${900 + i}` : null,
+                });
+            }
+            await mgr.resumeFundRecalc();
+            return mgr;
+        };
+
+        // Window slice is geometric (full rail, not live-only): buys closest to
+        // market first, virtual holes included.
+        const mgr = await makeMgr({ boundary: 10, window: 3, live: [0, 1, 8] });
+        assert.deepStrictEqual(
+            [...(liveWindowIdSet(mgr, ORDER_TYPES.BUY) || [])].sort(),
+            ['slot-7', 'slot-8', 'slot-9'],
+            'buy window = highest in-rail slots (closest to market)'
+        );
+
+        // Unknown boundary geometry: null (fail open — no exclusion).
+        mgr.boundaryIdx = null as any;
+        assert.strictEqual(liveWindowIdSet(mgr, ORDER_TYPES.BUY), null, 'null boundary fails open');
+    }
+
+    console.log(' - live-reserve count excludes window members (issue #27 follow-up)...');
+    {
+        const makeMgr = async (opts: { boundary: number; window: number; live: number[] }) => {
+            const mgr = new OrderManager({
+                market: 'TEST/BTS', assetA: 'TEST', assetB: 'BTS',
+                startPrice: 100, incrementPercent: 1, targetSpreadPercent: 0,
+                activeOrders: { buy: opts.window, sell: 3 },
+                reserveOrders: { buy: 2, sell: 0 },
+            });
+            mgr.logger.level = 'silent';
+            mgr.assets = { assetA: { id: '1.3.0', precision: 8, symbol: 'TEST' }, assetB: { id: '1.3.1', precision: 5, symbol: 'BTS' } };
+            await mgr.setAccountTotals({ buy: 10000, sell: 100, buyFree: 10000, sellFree: 100 });
+            await mgr.resetFunds();
+            mgr._gapSlots = 0;
+            mgr.boundaryIdx = opts.boundary;
+            mgr.pauseFundRecalc();
+            for (let i = 0; i < 14; i++) {
+                const live = opts.live.includes(i);
+                await mgr._updateOrder({
+                    id: `slot-${i}`, type: i < opts.boundary ? ORDER_TYPES.BUY : ORDER_TYPES.SELL,
+                    price: 80 + i, size: 100,
+                    state: live ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL,
+                    orderId: live ? `1.7.${900 + i}` : null,
+                });
+            }
+            await mgr.resumeFundRecalc();
+            return mgr;
+        };
+
+        // THE overlap case: keep-low window = bottom 6 = floor edge (buy rail
+        // is slot-0..5). Without exclusion the edge pick (slot-0, slot-1)
+        // lands on live window orders and the count reads 2/2 with zero
+        // dedicated reserves — the deficit never fires.
+        const overlap = await makeMgr({ boundary: 6, window: 6, live: [0, 1, 2, 3, 4, 5] });
+        assert.strictEqual(
+            countLiveReserveOrders(overlap, overlap.config, ORDER_TYPES.BUY), 0,
+            'window covering the floor edge counts zero dedicated reserves'
+        );
+
+        // Upstream default (closest window) never overlaps: window at the top
+        // of the buy rail, dedicated reserves live at the floor.
+        const control = await makeMgr({ boundary: 10, window: 6, live: [0, 1, 4, 5, 6, 7, 8, 9] });
+        assert.strictEqual(
+            countLiveReserveOrders(control, control.config, ORDER_TYPES.BUY), 2,
+            'dedicated floor reserves still count under a closest window'
+        );
+
+        // Under-filled window must not swallow live reserves either (the slice
+        // runs over the full rail, so floor reserves keep their identity).
+        const partial = await makeMgr({ boundary: 10, window: 6, live: [0, 1, 8, 9] });
+        assert.strictEqual(
+            countLiveReserveOrders(partial, partial.config, ORDER_TYPES.BUY), 2,
+            'live reserves count even when the window itself is under-filled'
+        );
     }
 
     console.log('✓ Reserve orders tests passed!');
