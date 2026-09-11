@@ -1952,6 +1952,23 @@ async function _reconcileStartupSide({
             }
         }
 
+        // Matched-excess candidates: surplus beyond targetCount living on
+        // matched (grid-known) slots. Computed once and shared by both the
+        // planOnly and execute branches so planning can never drift from
+        // execution: unmatched orphans cancel first, matched surplus after,
+        // reserve edge slots last (static insurance).
+        const matchedExcess = manager.getOrdersByTypeAndState(orderType, ORDER_STATES.ACTIVE)
+            .filter((o: any) => o && o.orderId)
+            .sort(sortMatchedCancelComparator);
+        // Reserve ladder: matched edge slots cancel last (static insurance).
+        if (reserveEdgeIds && reserveEdgeIds.size > 0) {
+            matchedExcess.sort((a: any, b: any) => {
+                const fa = reserveEdgeIds.has(a.id) ? 1 : 0;
+                const fb = reserveEdgeIds.has(b.id) ? 1 : 0;
+                return fa - fb;
+            });
+        }
+
         if (planOnly) {
             // In planOnly mode, record the cancellations for Phase 2 execution.
             // This prevents blockchain I/O inside _gridLock (Level 3).
@@ -1969,6 +1986,31 @@ async function _reconcileStartupSide({
                     });
                     cancelCount--;
                 }
+            }
+            // Matched excess must be PLANNED too, not only executed (issue #27
+            // follow-up): startup reconcile always runs planOnly, and on a
+            // fully-placed grid every chain order is matched — parsedUnmatched
+            // is empty, so the surplus lived entirely on matched slots and was
+            // silently dropped here while the execute branch kept cancelling
+            // it. Nothing ever created the vacancy, and a fully-placed grid
+            // could never converge to its additive window+edge target (live
+            // 12 vs target 8 sat static across every restart). Same priority
+            // as the execute branch: unmatched first (above), matched after,
+            // reserve edge last (matchedExcess ordering).
+            for (const o of matchedExcess) {
+                if (cancelCount <= 0) break;
+                logger?.log?.(
+                    `Startup: ${sideUpper} excess matched ${o.orderId} (grid ${o.id}) queued for cancellation (Phase 2)`,
+                    'warn'
+                );
+                plannedCancels.push({
+                    chainOrderId: o.orderId,
+                    chainOrderObj: o,
+                    // Matched-slot funds are tracked on the grid slot; only
+                    // unmatched orphans release untracked funds (mirrors the
+                    // execute branch, which passes no release flag here).
+                });
+                cancelCount--;
             }
         } else {
             for (const x of parsedUnmatched) {
@@ -1993,19 +2035,7 @@ async function _reconcileStartupSide({
             }
 
             if (cancelCount > 0) {
-                const activeOrders = manager.getOrdersByTypeAndState(orderType, ORDER_STATES.ACTIVE)
-                    .filter((o: any) => o && o.orderId)
-                    .sort(sortMatchedCancelComparator);
-                // Reserve ladder: matched edge slots cancel last (static insurance).
-                if (reserveEdgeIds && reserveEdgeIds.size > 0) {
-                    activeOrders.sort((a: any, b: any) => {
-                        const fa = reserveEdgeIds.has(a.id) ? 1 : 0;
-                        const fb = reserveEdgeIds.has(b.id) ? 1 : 0;
-                        return fa - fb;
-                    });
-                }
-
-                for (const o of activeOrders) {
+                for (const o of matchedExcess) {
                     if (cancelCount <= 0) break;
                     logger?.log?.(`Startup: Cancelling excess matched ${sideUpper} ${o.orderId} (grid ${o.id})`, 'warn');
                     try {

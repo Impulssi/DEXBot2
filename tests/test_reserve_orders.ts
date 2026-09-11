@@ -748,6 +748,127 @@ async function runTests() {
         );
     }
 
+    console.log(' - startup excess plans matched cancels on a fully-placed grid (issue #27 follow-up)...');
+    {
+        // The vacancy question: on a fully-placed grid (every rail slot live,
+        // zero virtual) there is no placement target and no window shortfall,
+        // so only the startup excess path can cancel the surplus and create
+        // room for the additive window+edge target. Startup reconcile always
+        // plans (planOnly) and executes in Phase 2 — but the matched-excess
+        // cancel leg used to exist only in the execute branch, so a fully
+        // placed grid dropped its surplus silently and sat static forever.
+        const makePlacedMgr = async (liveCount: number) => {
+            const mgr = new OrderManager({
+                market: 'TEST/BTS', assetA: 'TEST', assetB: 'BTS',
+                startPrice: 100, incrementPercent: 1, targetSpreadPercent: 0,
+                activeOrders: { buy: 6, sell: 3 },
+                reserveOrders: { buy: 2, sell: 0 },
+            });
+            mgr.logger.level = 'silent';
+            mgr.assets = { assetA: { id: '1.3.0', precision: 8, symbol: 'TEST' }, assetB: { id: '1.3.1', precision: 5, symbol: 'BTS' } };
+            await mgr.setAccountTotals({ buy: 100000, sell: 100, buyFree: 100000, sellFree: 100 });
+            await mgr.resetFunds();
+            mgr._gapSlots = 0;
+            mgr.boundaryIdx = 12;
+            mgr.pauseFundRecalc();
+            for (let i = 0; i < 14; i++) {
+                const live = i < liveCount;
+                await mgr._updateOrder({
+                    id: `slot-${i}`, type: i < 12 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL,
+                    price: 80 + i, size: 100,
+                    state: live ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL,
+                    orderId: live ? `1.7.${900 + i}` : null,
+                });
+            }
+            await mgr.resumeFundRecalc();
+            return mgr;
+        };
+        const runStartup = async (mgr: any, chainBuys: any[], unmatched: any[]) => {
+            const plannedCancels: any[] = [];
+            const plannedCreates: any[] = [];
+            await _reconcileStartupSide({
+                orderType: ORDER_TYPES.BUY, targetCount: 8,
+                chainSideOrders: chainBuys, unmatchedSideOrders: unmatched,
+                manager: mgr, chainOrders: {}, account: 'acct', privateKey: 'pk',
+                dryRun: true, plannedCreates, plannedUpdates: [], plannedCancels, planOnly: true,
+            });
+            return { plannedCancels, plannedCreates };
+        };
+
+        // THE fully-placed case: 12 live matched buys vs target 6+2=8. The
+        // surplus is entirely on matched slots (unmatched is empty) — it must
+        // still be planned, reserve edge slots last.
+        const placed = await makePlacedMgr(12);
+        const chainBuys = Array.from({ length: 12 }, (_, i) => ({ id: `1.7.${900 + i}` }));
+        const placedPlan = await runStartup(placed, chainBuys, []);
+        assert.strictEqual(placedPlan.plannedCancels.length, 4, 'surplus (12-8) matched cancels are planned');
+        assert.deepStrictEqual(
+            placedPlan.plannedCancels.map((c: any) => c.chainOrderId),
+            ['1.7.902', '1.7.903', '1.7.904', '1.7.905'],
+            'lowest non-reserve matched slots cancel first (post-state: floor reserves + closest window)'
+        );
+        const placedIds = new Set(placedPlan.plannedCancels.map((c: any) => c.chainOrderId));
+        assert(!placedIds.has('1.7.900') && !placedIds.has('1.7.901'), 'floor reserve slots cancel last');
+        assert.strictEqual(placedPlan.plannedCreates.length, 0, 'no creates on a fully-placed grid');
+
+        // Mixed surplus: unmatched orphans plan first (releaseUntrackedFunds),
+        // matched surplus fills the remaining budget — same priority as the
+        // execute branch.
+        const mixed = await makePlacedMgr(12);
+        const orphan = {
+            id: '1.7.950',
+            sell_price: { base: { asset_id: '1.3.1', amount: 1000 }, quote: { asset_id: '1.3.0', amount: 80000 } },
+            for_sale: 1000,
+        };
+        const mixedPlan = await runStartup(mixed, [...chainBuys, orphan], [orphan]);
+        assert.strictEqual(mixedPlan.plannedCancels.length, 5, 'unmatched orphan + 4 matched surplus planned');
+        assert.strictEqual(mixedPlan.plannedCancels[0].chainOrderId, '1.7.950', 'unmatched orphan cancels first');
+        assert.strictEqual(mixedPlan.plannedCancels[0].releaseUntrackedFunds, true, 'orphans release untracked funds');
+        assert.deepStrictEqual(
+            mixedPlan.plannedCancels.slice(1).map((c: any) => c.chainOrderId),
+            ['1.7.902', '1.7.903', '1.7.904', '1.7.905'],
+            'matched surplus follows with the same selection as the execute branch'
+        );
+
+        // At target: no surplus, nothing planned (cancelCount clamps to 0).
+        const atTarget = await makePlacedMgr(8);
+        const atTargetPlan = await runStartup(atTarget, Array.from({ length: 8 }, (_, i) => ({ id: `1.7.${900 + i}` })), []);
+        assert.strictEqual(atTargetPlan.plannedCancels.length, 0, 'at-target grid plans no cancels');
+
+        // Plan/execute parity: the shared matchedExcess selection must produce
+        // the identical cancel set in both branches (planning can never drift
+        // from execution). Execute mode runs with a cancel stub and a resolved
+        // _applySync (dryRun would short-circuit inside _cancelChainOrder).
+        const parityPlan = await makePlacedMgr(12);
+        const parityPlanned: any[] = [];
+        await _reconcileStartupSide({
+            orderType: ORDER_TYPES.BUY, targetCount: 8,
+            chainSideOrders: chainBuys, unmatchedSideOrders: [],
+            manager: parityPlan, chainOrders: {}, account: 'acct', privateKey: 'pk',
+            dryRun: true, plannedCreates: [], plannedUpdates: [], plannedCancels: parityPlanned, planOnly: true,
+        });
+        const parityExec = await makePlacedMgr(12);
+        const executedIds: string[] = [];
+        const stubChain = {
+            cancelOrder: async (_a: any, _p: any, orderId: string) => { executedIds.push(orderId); return {}; },
+            createOrder: async () => ({}),
+            readOpenOrders: async () => [],
+        };
+        await _reconcileStartupSide({
+            orderType: ORDER_TYPES.BUY, targetCount: 8,
+            chainSideOrders: chainBuys, unmatchedSideOrders: [],
+            manager: parityExec, chainOrders: stubChain, account: 'acct', privateKey: 'pk',
+            dryRun: false, plannedCreates: [], plannedUpdates: [], plannedCancels: [], planOnly: false,
+        });
+        assert.deepStrictEqual(
+            parityPlanned.map((c: any) => c.chainOrderId).sort(),
+            executedIds.sort(),
+            'planOnly and execute select the identical excess cancel set'
+        );
+        const postExec = parityExec.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE).filter((o: any) => o && o.orderId);
+        assert.strictEqual(postExec.length, 8, 'execute branch converges to the window+edge target');
+    }
+
     console.log('✓ Reserve orders tests passed!');
     process.exit(0);
 }
