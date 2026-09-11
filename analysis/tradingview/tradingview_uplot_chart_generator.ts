@@ -597,7 +597,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     <span class="legend-item"><span class="legend-label">Time</span> <span class="legend-value" id="legend-time">-</span></span>
                     <span class="legend-item"><span class="legend-label">C</span> <span class="legend-value" id="legend-close">-</span></span>
                     <span class="legend-item"><span class="legend-label">Delta</span> <span class="legend-value" id="legend-delta">-</span></span>
-                    <span class="legend-item"><span class="legend-label">Vol</span> <span class="legend-value" id="legend-volume" title="Volume units — click to switch base/quote" style="cursor:pointer">-</span></span>
+                    <span class="legend-item"><span class="legend-label">Vol</span> <span class="legend-value" id="legend-volume" title="${payload.volumeIsCount ? 'Volume: feed publish count per bucket' : 'Volume units — click to switch base/quote'}" style="cursor:${payload.volumeIsCount ? 'default' : 'pointer'}">-</span></span>
                 </div>
                 <div class="legend-line">
                     <span class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span><span class="legend-label">SMA</span> <span class="legend-value" id="legend-sma">-</span></span>
@@ -1033,7 +1033,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             };
         }
         function getVolumeUnit() {
-            if (payload.volumeIsCount) return { mode: 'count', symbol: 'pubs' };
+            if (payload.volumeIsCount) return { mode: 'count', symbol: 'feeds' };
             const syms = getVolumeSymbols();
             return currentVolumeMode === 'quote'
                 ? { mode: 'quote', symbol: syms.quote }
@@ -1069,6 +1069,20 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             btn.disabled = !!payload.volumeIsCount;
             btn.style.opacity = payload.volumeIsCount ? '0.45' : '';
             btn.style.cursor = payload.volumeIsCount ? 'not-allowed' : 'pointer';
+            const lv = document.getElementById('legend-volume');
+            if (lv) {
+                lv.style.cursor = payload.volumeIsCount ? 'default' : 'pointer';
+                lv.title = payload.volumeIsCount
+                    ? 'Volume: feed publish count per bucket'
+                    : 'Volume units — click to switch base/quote';
+            }
+            const vp = document.getElementById('vol-panel');
+            if (vp) {
+                vp.style.cursor = payload.volumeIsCount ? 'default' : 'pointer';
+                vp.title = payload.volumeIsCount
+                    ? 'Volume: feed publish count per bucket'
+                    : 'Volume units — click to switch base/quote';
+            }
         }
         function toggleVolumeUnit() {
             if (payload.volumeIsCount) return;
@@ -2063,7 +2077,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 ],
                 hooks: {
                     // x is synced from the price chart; refit volume Y to the
-                    // visible window and refresh the V max badge.
+                    // visible window and refresh the max badge.
                     setScale: [(u, key) => { if (key === 'x') scheduleYRefit(); scheduleStatPanels(); }],
                 },
             };
@@ -3127,15 +3141,18 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             if (!panel) {
                 panel = document.createElement('div');
                 panel.id = 'vol-panel';
-                panel.style.cssText = 'position:absolute;z-index:26;top:10px;right:88px;pointer-events:auto;cursor:pointer;font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.6;padding:6px 10px;border-radius:8px;background:rgba(13,17,23,0.85);border:1px solid #263241;white-space:nowrap;text-align:right;';
-                panel.title = 'Volume units — click to switch base/quote';
+                panel.style.cssText = 'position:absolute;z-index:26;top:10px;right:88px;pointer-events:auto;font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.6;padding:6px 10px;border-radius:8px;background:rgba(13,17,23,0.85);border:1px solid #263241;white-space:nowrap;text-align:right;';
                 panel.addEventListener('click', () => toggleVolumeUnit());
                 volumeChart.root.appendChild(panel);
             }
+            panel.style.cursor = payload.volumeIsCount ? 'default' : 'pointer';
+            panel.title = payload.volumeIsCount
+                ? 'Volume: feed publish count per bucket'
+                : 'Volume units — click to switch base/quote';
             const stats = visibleCandleStats();
             if (!stats) { panel.style.display = 'none'; return; }
             panel.style.display = 'block';
-            panel.innerHTML = '<div style="color:#e8eef5">V max ' + fmtVolumeWithSym(stats.vol) + '</div>';
+            panel.innerHTML = '<div style="color:#e8eef5">max ' + fmtVolumeWithSym(stats.vol) + '</div>';
         }
         function scheduleStatPanels() {
             if (rangePanelRaf) return;
