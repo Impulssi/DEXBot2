@@ -35,8 +35,9 @@ import { resolveRequestedFillRange } from '../core/kibana_candles.js';
 import { kibanaSearch, DEFAULT_CONFIG as BASE_CONFIG } from '../core/kibana_client.js';
 import { path } from '../../modules/path_api.js';
 import { PATHS } from '../../modules/paths.js';
-import { toIntervalLabel } from '../interval_utils.js';
+import { toIntervalLabel, slugPart } from '../interval_utils.js';
 import { chunkPathFor, buildFetchWindowsFromRange, runCachedWindows } from './window_cache.js';
+import { isTransientNetworkError, sleepMs } from '../../modules/utils/errors.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -67,23 +68,9 @@ const DEFAULT_CONFIG: any = {
     kibanaPageSize: 2000,
     kibanaPageRetries: 4,
     kibanaRetryDelayMs: 1000,
+    // Runaway guard for search_after pagination (see kibana_candles.ts).
+    kibanaMaxPages: 500,
 };
-
-function sleep(ms: any) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isTransientPageError(err: any) {
-    const msg = String(err?.message || err || '');
-    return (
-        msg.includes('aborted') ||
-        msg.includes('connection reset') ||
-        msg.includes('ECONNRESET') ||
-        msg.includes('socket hang up') ||
-        msg.includes('timed out') ||
-        msg.includes('EPIPE')
-    );
-}
 
 // ─── Price math ───────────────────────────────────────────────────────────────
 
@@ -212,11 +199,25 @@ async function fetchFeedPricePoints({ mpaAsset, backingAsset, config = {} }: any
     const retries = Number.isFinite(retriesRaw) && retriesRaw >= 1 ? Math.floor(retriesRaw) : DEFAULT_CONFIG.kibanaPageRetries;
     const delayRaw = Number(cfg.kibanaRetryDelayMs);
     const retryDelayMs = Number.isFinite(delayRaw) && delayRaw >= 0 ? delayRaw : DEFAULT_CONFIG.kibanaRetryDelayMs;
+    const maxPagesRaw = Number(cfg.kibanaMaxPages);
+    const maxPages = Number.isFinite(maxPagesRaw) && maxPagesRaw >= 1 ? Math.floor(maxPagesRaw) : DEFAULT_CONFIG.kibanaMaxPages;
+    // The page loop owns the retry budget here (see kibana_candles.ts).
+    const pageCfg = { ...cfg, kibanaSearchRetries: 1 };
 
     const points: any[] = [];
     let searchAfter: any = null;
+    let page = 0;
+    let droppedTotal = 0;
 
     while (true) {
+        page += 1;
+        if (page > maxPages) {
+            throw new Error(
+                `Kibana feed pagination exceeded kibanaMaxPages=${maxPages} for ${mpaAsset?.symbol || mpaAsset?.id} ` +
+                `— stuck search_after cursor or range too deep for one fetch. ` +
+                `Narrow the timeRange or raise kibanaMaxPages.`
+            );
+        }
         const query = buildFeedDocumentQuery({
             mpaAssetId: mpaAsset.id,
             lookbackHours: cfg.lookbackHours,
@@ -232,13 +233,13 @@ async function fetchFeedPricePoints({ mpaAsset, backingAsset, config = {} }: any
         let lastErr: any = null;
         for (let attempt = 1; attempt <= retries; attempt++) {
             try {
-                result = await search(cfg, query);
+                result = await search(pageCfg, query);
                 lastErr = null;
                 break;
             } catch (err: any) {
                 lastErr = err;
-                if (attempt >= retries || !isTransientPageError(err)) throw err;
-                if (retryDelayMs > 0) await sleep(retryDelayMs * attempt);
+                if (attempt >= retries || !isTransientNetworkError(err)) throw err;
+                if (retryDelayMs > 0) await sleepMs(retryDelayMs * attempt);
             }
         }
         if (lastErr) throw lastErr;
@@ -248,6 +249,7 @@ async function fetchFeedPricePoints({ mpaAsset, backingAsset, config = {} }: any
         for (const hit of hits) {
             const point = hitToFeedPrice(hit, { mpaAsset, backingAsset });
             if (point) points.push(point);
+            else droppedTotal += 1;
         }
 
         if (hits.length < size) break;
@@ -256,6 +258,13 @@ async function fetchFeedPricePoints({ mpaAsset, backingAsset, config = {} }: any
             throw new Error('Kibana document pagination requires sort values on hits');
         }
         searchAfter = lastSort;
+    }
+
+    if (droppedTotal > 0) {
+        console.warn(
+            `[kibana] feed ${mpaAsset?.symbol || mpaAsset?.id}: skipped ${droppedTotal} unparseable document(s) ` +
+            `across ${page} page(s) — kept ${points.length} price point(s)`
+        );
     }
 
     points.sort((a: any, b: any) => {
@@ -474,27 +483,19 @@ async function getFeedCandlesForMpaCross(assetA: any, assetB: any, legA: any, le
 // ranges but always take full-window fetches otherwise (same boundary
 // semantics as the uncached path: only the window-start edge is affected).
 
-function feedSlugPart(value: any) {
-    return String(value || '')
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '_')
-        .replace(/^_+|_+$/g, '') || 'unknown';
-}
-
 function feedCacheKey(feedCtx: any) {
     if (feedCtx?.kind === 'cross') {
         const a = feedCtx.legs[0]?.mpa?.symbol || feedCtx.legs[0]?.mpa?.id || 'legA';
         const b = feedCtx.legs[1]?.mpa?.symbol || feedCtx.legs[1]?.mpa?.id || 'legB';
-        return `cross_${feedSlugPart(a)}_${feedSlugPart(b)}`;
+        return `cross_${slugPart(a)}_${slugPart(b)}`;
     }
-    return feedSlugPart(feedCtx?.legs[0]?.mpa?.symbol || feedCtx?.legs[0]?.mpa?.id || 'feed');
+    return slugPart(feedCtx?.legs[0]?.mpa?.symbol || feedCtx?.legs[0]?.mpa?.id || 'feed');
 }
 
 function feedOutputPath(feedKey: any, intervalSeconds: any, assetA: any, assetB: any) {
     const label = toIntervalLabel(intervalSeconds);
-    const folder = `${feedSlugPart(assetA?.symbol)}_${feedSlugPart(assetB?.symbol)}`;
-    return path.join(PATHS.MARKET_ADAPTER.FEED_DATA_DIR, folder, `feed_${feedSlugPart(feedKey)}_${label}.json`);
+    const folder = `${slugPart(assetA?.symbol)}_${slugPart(assetB?.symbol)}`;
+    return path.join(PATHS.MARKET_ADAPTER.FEED_DATA_DIR, folder, `feed_${slugPart(feedKey)}_${label}.json`);
 }
 
 function isFeedChunkMatch(meta: any, requestKey: any) {

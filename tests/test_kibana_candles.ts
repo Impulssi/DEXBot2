@@ -384,6 +384,168 @@ async function testTransientPageErrorsAreRetried() {
     );
 }
 
+function captureWarns() {
+    const original = console.warn;
+    const messages: string[] = [];
+    console.warn = (...args: any[]) => {
+        messages.push(args.map(String).join(' '));
+    };
+    return {
+        messages,
+        restore() { console.warn = original; },
+    };
+}
+
+async function testPartialDirectionFailureKeepsSurvivingSide() {
+    const capture = captureWarns();
+    try {
+        const candles = await fetchKibanaCandles({
+            opType: 63,
+            fieldMap: FIELD_MAP,
+            assetA: ASSET_A,
+            assetB: ASSET_B,
+            poolId: '1.19.1',
+            config: {
+                intervalSeconds: 3600,
+                fillGaps: false,
+                kibanaSearch: async (_cfg: any, query: any) => {
+                    if (soldAssetFromQuery(query) !== ASSET_A.id) {
+                        throw new Error('proxy reset after all retries');
+                    }
+                    return kibanaHits([hit({
+                        id: '1.11.1',
+                        opId: '1.11.1',
+                        ts: Date.parse('2026-04-28T02:00:00Z'),
+                        soldAssetId: ASSET_A.id,
+                        receivedAssetId: ASSET_B.id,
+                        soldAmount: 10,
+                        receivedAmount: 20,
+                    })]);
+                },
+            },
+        });
+
+        assert.strictEqual(candles.length, 1, 'surviving direction should still produce its candle');
+        assert.strictEqual(candles[0][4], 2, 'surviving candle keeps its close');
+        assert.ok(
+            capture.messages.some((m) => m.includes('partial fetch')),
+            'a one-direction failure should warn instead of failing silently'
+        );
+    } finally {
+        capture.restore();
+    }
+}
+
+async function testBothDirectionsFailingStillThrows() {
+    await assert.rejects(
+        () => fetchKibanaCandles({
+            opType: 63,
+            fieldMap: FIELD_MAP,
+            assetA: ASSET_A,
+            assetB: ASSET_B,
+            poolId: '1.19.1',
+            config: {
+                intervalSeconds: 3600,
+                fillGaps: false,
+                kibanaSearch: async () => {
+                    throw new Error('kibana down');
+                },
+            },
+        }),
+        /both directions/,
+        'a both-directions failure must still throw'
+    );
+}
+
+async function testMaxPagesGuardThrows() {
+    const twoHits = () => kibanaHits([
+        hit({
+            id: '1.11.1',
+            opId: '1.11.1',
+            ts: Date.parse('2026-04-28T02:00:00Z'),
+            soldAssetId: ASSET_A.id,
+            receivedAssetId: ASSET_B.id,
+            soldAmount: 10,
+            receivedAmount: 20,
+        }),
+        hit({
+            id: '1.11.2',
+            opId: '1.11.2',
+            ts: Date.parse('2026-04-28T02:30:00Z'),
+            soldAssetId: ASSET_A.id,
+            receivedAssetId: ASSET_B.id,
+            soldAmount: 10,
+            receivedAmount: 30,
+        }),
+    ]);
+    await assert.rejects(
+        () => fetchKibanaCandles({
+            opType: 63,
+            fieldMap: FIELD_MAP,
+            assetA: ASSET_A,
+            assetB: ASSET_B,
+            poolId: '1.19.1',
+            config: {
+                intervalSeconds: 3600,
+                fillGaps: false,
+                kibanaPageSize: 2,
+                kibanaMaxPages: 1,
+                kibanaSearch: async () => twoHits(),
+            },
+        }),
+        /kibanaMaxPages/,
+        'a stuck cursor should trip the page budget instead of paging forever'
+    );
+}
+
+async function testDroppedDocumentsWarn() {
+    const capture = captureWarns();
+    try {
+        const candles = await fetchKibanaCandles({
+            opType: 63,
+            fieldMap: FIELD_MAP,
+            assetA: ASSET_A,
+            assetB: ASSET_B,
+            poolId: '1.19.1',
+            config: {
+                intervalSeconds: 3600,
+                fillGaps: false,
+                kibanaSearch: async (_cfg: any, query: any) => {
+                    if (soldAssetFromQuery(query) !== ASSET_A.id) return kibanaHits([]);
+                    return kibanaHits([
+                        hit({
+                            id: '1.11.1',
+                            opId: '1.11.1',
+                            ts: Date.parse('2026-04-28T02:00:00Z'),
+                            soldAssetId: ASSET_A.id,
+                            receivedAssetId: ASSET_B.id,
+                            soldAmount: 10,
+                            receivedAmount: 20,
+                        }),
+                        hit({
+                            id: '1.11.2',
+                            opId: '1.11.2',
+                            ts: Date.parse('2026-04-28T02:30:00Z'),
+                            soldAssetId: ASSET_A.id,
+                            receivedAssetId: ASSET_B.id,
+                            soldAmount: 0,
+                            receivedAmount: 30,
+                        }),
+                    ]);
+                },
+            },
+        });
+
+        assert.strictEqual(candles.length, 1, 'the parseable trade should still produce its candle');
+        assert.ok(
+            capture.messages.some((m) => m.includes('skipped 1 unparseable')),
+            'skipped documents should be reported on the terminal'
+        );
+    } finally {
+        capture.restore();
+    }
+}
+
 async function run() {
     await testTimeRangeControlsRequestedFillRange();
     await testLiveAdapterCanDisableRequestedRangeFill();
@@ -393,6 +555,10 @@ async function run() {
     testSourceFieldsForFieldMap();
     testDirectionalDocumentQueryUsesSourceProjection();
     await testTransientPageErrorsAreRetried();
+    await testPartialDirectionFailureKeepsSurvivingSide();
+    await testBothDirectionsFailingStillThrows();
+    await testMaxPagesGuardThrows();
+    await testDroppedDocumentsWarn();
 }
 
 run()

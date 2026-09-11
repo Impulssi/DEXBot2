@@ -22,7 +22,6 @@ async function main() {
     const candles = await kibanaSource.getLpCandlesForPool('1.19.133', assetA, assetB, {
         intervalSeconds: 3600,
         lookbackHours: 720,
-        consolidateByTimestamp: true,
         apiKey: null,
     });
 

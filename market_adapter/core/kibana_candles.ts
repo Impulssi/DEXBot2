@@ -2,13 +2,18 @@
 
 import { fillCandleGaps, tradesToCandles } from '../candle_utils.js';
 import { kibanaSearch, DEFAULT_CONFIG as BASE_CONFIG } from './kibana_client.js';
+import { isTransientNetworkError, sleepMs } from '../../modules/utils/errors.js';
 
 const DEFAULT_CONFIG = {
     ...BASE_CONFIG,
     intervalSeconds: 3600,
     lookbackHours: 500,
-    consolidateByTimestamp: true,
     fillGapsToRequestedRange: true,
+    // Runaway guard for search_after pagination: a stuck cursor (same
+    // search_after repeating) would otherwise page forever. 500 pages x
+    // 2000 docs = 1M trade documents, well above any legit pool/pair
+    // backfill; override via config for deeper scans.
+    kibanaMaxPages: 500,
     // The Kibana console proxy resets connections when a single page streams
     // too much data (observed with full _source payloads around ~8k documents).
     // 2000-document pages with a restricted _source stay well inside the limit.
@@ -67,22 +72,6 @@ function sourceFieldsForFieldMap(fieldMap: any) {
     }
     for (const extra of SOURCE_EXTRA_FIELDS) prefixes.add(extra);
     return [...prefixes];
-}
-
-function sleep(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isTransientPageError(err: any) {
-    const msg = String(err?.message || err || '');
-    return (
-        msg.includes('aborted') ||
-        msg.includes('connection reset') ||
-        msg.includes('ECONNRESET') ||
-        msg.includes('socket hang up') ||
-        msg.includes('timed out') ||
-        msg.includes('EPIPE')
-    );
 }
 
 function buildDirectionalDocumentQuery({ opType, soldAssetField, receivedAssetField, poolField, soldAssetId, receivedAssetId, lookbackHours, poolId, timeRange, size, searchAfter, sourceFields }: { opType: any; soldAssetField: any; receivedAssetField: any; poolField: any; soldAssetId: any; receivedAssetId: any; lookbackHours: any; poolId: any; timeRange: any; size: any; searchAfter?: any; sourceFields?: any }) {
@@ -218,6 +207,8 @@ async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAs
     const delayRaw = Number(cfg.kibanaRetryDelayMs);
     const retryDelayMs = Number.isFinite(delayRaw) && delayRaw >= 0 ? delayRaw : DEFAULT_CONFIG.kibanaRetryDelayMs;
     const sourceFields = sourceFieldsForFieldMap(fieldMap);
+    const maxPagesRaw = Number(cfg.kibanaMaxPages);
+    const maxPages = Number.isFinite(maxPagesRaw) && maxPagesRaw >= 1 ? Math.floor(maxPagesRaw) : DEFAULT_CONFIG.kibanaMaxPages;
     const directionLabel = direction || `${soldAsset?.symbol || soldAsset?.id || '?'}→${receivedAsset?.symbol || receivedAsset?.id || '?'}`;
     const reportPage = (info: any) => {
         const cb = typeof onPage === 'function' ? onPage : (typeof cfg?.onPage === 'function' ? cfg.onPage : null);
@@ -228,9 +219,17 @@ async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAs
     const trades: any[] = [];
     let searchAfter: any = null;
     let page = 0;
+    let droppedTotal = 0;
 
     while (true) {
         page += 1;
+        if (page > maxPages) {
+            throw new Error(
+                `Kibana pagination exceeded kibanaMaxPages=${maxPages} for ${directionLabel} ` +
+                `(op ${opType}) — stuck search_after cursor or range too deep for one fetch. ` +
+                `Narrow the timeRange or raise kibanaMaxPages.`
+            );
+        }
         const pageStartMs = Date.now();
         const query = buildDirectionalDocumentQuery({
             opType,
@@ -254,23 +253,30 @@ async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAs
         let result: any = null;
         let lastErr: any = null;
         let attempts = 0;
+        // The page loop owns the retry budget here, so the client-level
+        // retry is disabled for these calls (avoids page budget x client
+        // budget stacking). One-shot queries via kibanaSearch keep it.
+        const pageCfg = { ...cfg, kibanaSearchRetries: 1 };
         for (let attempt = 1; attempt <= retries; attempt++) {
             attempts = attempt;
             try {
-                result = await search(cfg, query);
+                result = await search(pageCfg, query);
                 lastErr = null;
                 break;
             } catch (err: any) {
                 lastErr = err;
-                if (attempt >= retries || !isTransientPageError(err)) throw err;
+                if (attempt >= retries || !isTransientNetworkError(err)) throw err;
                 reportPage({ page, event: 'retry', attempt, error: String(err?.message || err || 'unknown') });
-                if (retryDelayMs > 0) await sleep(retryDelayMs * attempt);
+                if (retryDelayMs > 0) await sleepMs(retryDelayMs * attempt);
             }
         }
         if (lastErr) throw lastErr;
         const hits = result?.hits?.hits || [];
-        reportPage({ page, event: 'page', hits: Array.isArray(hits) ? hits.length : 0, attempts, elapsedMs: Date.now() - pageStartMs, done: !Array.isArray(hits) || hits.length === 0 || hits.length < size });
-        if (!Array.isArray(hits) || hits.length === 0) break;
+        let droppedPage = 0;
+        if (!Array.isArray(hits) || hits.length === 0) {
+            reportPage({ page, event: 'page', hits: 0, dropped: 0, attempts, elapsedMs: Date.now() - pageStartMs, done: true });
+            break;
+        }
 
         for (const hit of hits) {
             const trade = hitToTrade(hit, {
@@ -281,7 +287,10 @@ async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAs
                 operationIdField: fieldMap.operationIdField,
             });
             if (trade) trades.push(trade);
+            else droppedPage += 1;
         }
+        droppedTotal += droppedPage;
+        reportPage({ page, event: 'page', hits: Array.isArray(hits) ? hits.length : 0, dropped: droppedPage, attempts, elapsedMs: Date.now() - pageStartMs, done: hits.length < size });
 
         if (hits.length < size) break;
         const lastSort = hits[hits.length - 1]?.sort;
@@ -289,6 +298,16 @@ async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAs
             throw new Error('Kibana document pagination requires sort values on hits');
         }
         searchAfter = lastSort;
+    }
+
+    // Dropped documents (unparseable timestamp or non-positive amounts) are
+    // skipped, not fatal — but a large drop count means the field map no
+    // longer matches the index mapping, so say so on the terminal.
+    if (droppedTotal > 0) {
+        console.warn(
+            `[kibana] ${directionLabel}: skipped ${droppedTotal} unparseable document(s) ` +
+            `across ${page} page(s) (op ${opType}) — kept ${trades.length} trade(s)`
+        );
     }
 
     return trades;
@@ -316,11 +335,31 @@ function resolveRequestedFillRange(cfg: any, nowMs: any = Date.now()) {
     };
 }
 
+/**
+ * Bidirectional trade-document fetch → OHLCV candles in B-per-A units.
+ *
+ * Robustness notes:
+ * - Either swap direction may fail alone (transient proxy reset after all
+ *   page retries): the surviving direction's trades are kept and a warning
+ *   is logged; only a both-directions failure throws. A partial result also
+ *   emits a guarded `onPage({ event: 'partial', ... })` so cached fetchers
+ *   can withhold the window from disk (partial gap-fills must never claim
+ *   full-window coverage, or the failed direction would never be re-queried).
+ * - Gap-fill convention (see fillCandleGaps): zero-volume candles are
+ *   synthesized carries of the last close. Close-only callers lose the
+ *   filled-vs-real distinction — keep the volume column when it matters.
+ */
 async function fetchKibanaCandles({ opType, fieldMap, assetA, assetB, config = {}, poolId = null }: any) {
     const cfg: any = { ...DEFAULT_CONFIG, ...config };
     const search = typeof cfg.kibanaSearch === 'function' ? cfg.kibanaSearch : kibanaSearch;
 
-    const [tradesAtoB, tradesBtoA] = await Promise.all([
+    const dirAtoB = `${assetA?.symbol || assetA?.id || '?'}→${assetB?.symbol || assetB?.id || '?'}`;
+    const dirBtoA = `${assetB?.symbol || assetB?.id || '?'}→${assetA?.symbol || assetA?.id || '?'}`;
+
+    // One direction failing (transient proxy reset after all page retries)
+    // must not discard the other direction's trades — sparse pairs often
+    // have data on one side only. Both failing still throws.
+    const [resAtoB, resBtoA] = await Promise.allSettled([
         fetchDirectionalTradeDocs({
             search,
             cfg,
@@ -332,7 +371,7 @@ async function fetchKibanaCandles({ opType, fieldMap, assetA, assetB, config = {
             poolId,
             timeRange: cfg.timeRange ?? null,
             onPage: cfg.onPage,
-            direction: `${assetA?.symbol || assetA?.id || '?'}→${assetB?.symbol || assetB?.id || '?'}`,
+            direction: dirAtoB,
         }),
         fetchDirectionalTradeDocs({
             search,
@@ -345,9 +384,29 @@ async function fetchKibanaCandles({ opType, fieldMap, assetA, assetB, config = {
             poolId,
             timeRange: cfg.timeRange ?? null,
             onPage: cfg.onPage,
-            direction: `${assetB?.symbol || assetB?.id || '?'}→${assetA?.symbol || assetA?.id || '?'}`,
+            direction: dirBtoA,
         }),
     ]);
+
+    let tradesAtoB: any[] = [];
+    let tradesBtoA: any[] = [];
+    const failures: string[] = [];
+    if (resAtoB.status === 'fulfilled') tradesAtoB = resAtoB.value;
+    else failures.push(`${dirAtoB}: ${resAtoB.reason?.message || resAtoB.reason}`);
+    if (resBtoA.status === 'fulfilled') tradesBtoA = resBtoA.value;
+    else failures.push(`${dirBtoA}: ${resBtoA.reason?.message || resBtoA.reason}`);
+    if (failures.length === 2) {
+        throw new Error(`Kibana fetch failed in both directions (op ${opType}): ${failures.join(' | ')}`);
+    }
+    if (failures.length === 1) {
+        console.warn(`[kibana] partial fetch (op ${opType}) — one direction failed, continuing with the other: ${failures[0]}`);
+        // Progress must never fail the fetch (same convention as reportPage).
+        try {
+            if (typeof cfg?.onPage === 'function') {
+                cfg.onPage({ event: 'partial', opType, poolId, failures });
+            }
+        } catch (_) { /* ignored */ }
+    }
 
     const allTrades = [...tradesAtoB, ...tradesBtoA].sort((a: any, b: any) => {
         const tsDelta = a.tsMs - b.tsMs;

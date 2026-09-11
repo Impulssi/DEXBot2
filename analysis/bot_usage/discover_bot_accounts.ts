@@ -94,7 +94,12 @@ interface CandidateInfo {
 
 // Node pool from central node management (failover-capable) instead of a
 // single hardcoded WSS endpoint.
-const KIBANA_CFG  = { ...DEFAULT_CONFIG, timeout: 30000 };
+// Single retry budget lives in withRetry below (honoring --retries), so the
+// client-level retry is disabled here — otherwise the two budgets would
+// stack (wrapper attempts x client attempts). Same convention as the paged
+// production fetchers, which pass kibanaSearchRetries: 1 and own their
+// page budget.
+const KIBANA_CFG  = { ...DEFAULT_CONFIG, timeout: 30000, kibanaSearchRetries: 1 };
 
 const ASSET_PRECISION = {
     '1.3.0':    5,   // BTS
@@ -333,13 +338,13 @@ async function run() {
 
     const [createRes, cancelRes, fillRes, updateRes]: any[] = await Promise.all([
         withRetry(() => kibanaSearch(KIBANA_CFG, buildTopSellerAccountsQuery(lookbackH, 200, opts.minCreates)),
-            'top-seller query'),
+            'top-seller query', opts.maxRetries),
         withRetry(() => kibanaSearch(KIBANA_CFG, buildTopCancellerAccountsQuery(lookbackH, 200, 5)),
-            'top-canceller query'),
+            'top-canceller query', opts.maxRetries),
         withRetry(() => kibanaSearch(KIBANA_CFG, buildTopFilledAccountsQuery(lookbackH, 200, 3)),
-            'top-fills query'),
+            'top-fills query', opts.maxRetries),
         withRetry(() => kibanaSearch(KIBANA_CFG, buildTopUpdaterAccountsQuery(lookbackH, 200, 1)),
-            'top-updater query'),
+            'top-updater query', opts.maxRetries),
     ]);
 
     const createBuckets = createRes?.aggregations?.by_account?.buckets ?? [];
@@ -428,7 +433,8 @@ async function run() {
             const priceResults: any[] = await Promise.all(
                 slice.map(r => withRetry(
                     () => kibanaSearch(KIBANA_CFG, buildOrderPriceQuery(r.id, lookbackH, null, 200)),
-                    `price-query for ${r.id}`
+                    `price-query for ${r.id}`,
+                    opts.maxRetries
                 ))
             );
 

@@ -42,14 +42,18 @@ const DEFAULT_CONFIG = {
     ...BASE_CONFIG,
     intervalSeconds: 3600,   // bucket size (3600=1h, 14400=4h, 86400=1d)
     lookbackHours:   500,    // how far back (~20 days at 1h)
-    consolidateByTimestamp: true,
 };
 
 /**
  * Build a discovery query: find the asset IDs that have been sold into a pool.
  * Returns a terms aggregation on amount_to_sell.asset_id — should yield exactly 2 buckets.
+ * An explicit timeRange makes discovery reproducible for backtests; otherwise
+ * it falls back to the relative now-lookback window.
  */
-function buildDiscoveryQuery(poolId: any, lookbackHours: any) {
+function buildDiscoveryQuery(poolId: any, lookbackHours: any, timeRange: any = null) {
+    const rangeValue = timeRange?.gte && timeRange?.lte
+        ? { gte: timeRange.gte, lte: timeRange.lte }
+        : { gte: `now-${lookbackHours}h`, lte: 'now' };
     return {
         size: 0,
         query: {
@@ -57,7 +61,7 @@ function buildDiscoveryQuery(poolId: any, lookbackHours: any) {
                 filter: [
                     { term:  { operation_type: OP_TYPE_LP } },
                     { term:  { 'operation_history.op_object.pool.keyword': poolId } },
-                    { range: { 'block_data.block_time': { gte: `now-${lookbackHours}h`, lte: 'now' } } },
+                    { range: { 'block_data.block_time': rangeValue } },
                 ],
             },
         },
@@ -88,8 +92,9 @@ function buildDiscoveryQuery(poolId: any, lookbackHours: any) {
 async function discoverPoolAssets(poolId: any, config: any = {}) {
     const cfg      = { ...DEFAULT_CONFIG, ...config };
     const fullId   = normalizePoolId(poolId);
-    const query    = buildDiscoveryQuery(fullId, cfg.lookbackHours);
-    const result   = await kibanaSearch(cfg, query) as any;
+    const query    = buildDiscoveryQuery(fullId, cfg.lookbackHours, cfg.timeRange ?? null);
+    const search   = typeof cfg.kibanaSearch === 'function' ? cfg.kibanaSearch : kibanaSearch;
+    const result   = await search(cfg, query) as any;
     const buckets  = result.aggregations?.sold_assets?.buckets ?? [];
     return buckets.map((b: any) => b.key);
 }

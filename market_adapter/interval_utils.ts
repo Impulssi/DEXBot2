@@ -7,5 +7,19 @@ function toIntervalLabel(intervalSeconds: any) {
     return `${intervalSeconds}s`;
 }
 
-export { toIntervalLabel }
+/**
+ * Filename-safe slug: lowercase, non-alphanumerics collapsed to a single
+ * underscore, no leading/trailing underscores. Single home for the helper
+ * previously copied into fetch_lp_data.ts, kibana_feed_source.ts,
+ * fetch_book_data.ts and scripts/tv.ts.
+ */
+function slugPart(value: any) {
+    return String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '') || 'unknown';
+}
+
+export { toIntervalLabel, slugPart }
 
