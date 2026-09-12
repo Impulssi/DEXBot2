@@ -1956,9 +1956,15 @@ async function _reconcileStartupSide({
         // matched (grid-known) slots. Computed once and shared by both the
         // planOnly and execute branches so planning can never drift from
         // execution: unmatched orphans cancel first, matched surplus after,
-        // reserve edge slots last (static insurance).
+        // reserve edge slots last (static insurance). Slot-N gated: fork-kept
+        // shelf/manual orders (non-slot-N ids, e.g. deep-*) are never excess
+        // candidates — reserveEdgeIdSet already excludes them, so without this
+        // gate a live shelf heads the cheapest-first sort and is wiped on the
+        // next boot (issue #27 follow-up). No-op upstream (grids only mint
+        // slot-N).
         const matchedExcess = manager.getOrdersByTypeAndState(orderType, ORDER_STATES.ACTIVE)
             .filter((o: any) => o && o.orderId)
+            .filter((o: any) => parseSlotIndex(o?.id) !== null)
             .sort(sortMatchedCancelComparator);
         // Reserve ladder: matched edge slots cancel last (static insurance).
         if (reserveEdgeIds && reserveEdgeIds.size > 0) {
