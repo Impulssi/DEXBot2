@@ -27,7 +27,7 @@ const {
 const { _setFeeCache } = require('../modules/order/utils/math');
 const { reconcileGrid, optimizeRebalanceActions } = require('../modules/order/utils/validate');
 const { _reconcileStartupSide } = require('../modules/order/grid_reconcile_internal');
-const { countLiveReserveOrders } = require('../modules/dexbot_maintenance_runtime');
+const { countLiveReserveOrders, getTargetedSyncReason } = require('../modules/dexbot_maintenance_runtime');
 _setFeeCache({
     BTS: {
         limitOrderCreate: { bts: 0.1 },
@@ -746,6 +746,325 @@ async function runTests() {
             countLiveReserveOrders(partial, partial.config, ORDER_TYPES.BUY), 2,
             'live reserves count even when the window itself is under-filled'
         );
+    }
+
+    console.log(' - reserve deficit fires its own targeted-sync reason (issue #27)...');
+    {
+        // Original 26f1ab0 mechanism: target 6+2=8 vs 12 live — the window
+        // shortfall (live >= target) stays silent while the reserve edge sits
+        // empty. The reserve reason must fire independently (budget-gated).
+        const makeTriggerMgr = async (liveIdx: number[]) => {
+            const mgr = new OrderManager({
+                market: 'TEST/BTS', assetA: 'TEST', assetB: 'BTS',
+                startPrice: 100, incrementPercent: 1, targetSpreadPercent: 0,
+                activeOrders: { buy: 6, sell: 0 },
+                reserveOrders: { buy: 2, sell: 0 },
+            });
+            mgr.logger.level = 'silent';
+            mgr.assets = { assetA: { id: '1.3.0', precision: 8, symbol: 'TEST' }, assetB: { id: '1.3.1', precision: 5, symbol: 'BTS' } };
+            await mgr.setAccountTotals({ buy: 100000, sell: 100, buyFree: 100000, sellFree: 100 });
+            await mgr.resetFunds();
+            mgr._gapSlots = 0;
+            mgr.boundaryIdx = 14;
+            mgr.pauseFundRecalc();
+            for (let i = 0; i < 16; i++) {
+                const live = liveIdx.includes(i);
+                await mgr._updateOrder({
+                    id: `slot-${i}`, type: i < 14 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL,
+                    price: 80 + i, size: 100,
+                    state: live ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL,
+                    orderId: live ? `1.7.${900 + i}` : null,
+                });
+            }
+            await mgr.resumeFundRecalc();
+            (mgr as any).getChainFundsSnapshot = undefined;
+            (mgr as any).checkFundDriftAfterFills = () => null;
+            return mgr;
+        };
+        // Deficit with surplus: 12 live buys (slot-2..13), floor reserves
+        // slot-0/1 virtual. Window shortfall silent (12 >= 8), reserve fires.
+        const deficitMgr = await makeTriggerMgr([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+        assert.strictEqual(
+            countLiveReserveOrders(deficitMgr, deficitMgr.config, ORDER_TYPES.BUY), 0,
+            'floor reserves virtual while rail carries surplus'
+        );
+        const deficitReason: any = getTargetedSyncReason({ manager: deficitMgr, config: deficitMgr.config });
+        assert(deficitReason && typeof deficitReason.reason === 'string', 'reserve deficit returns a reason');
+        assert(
+            deficitReason.reason.includes('buy reserves 0/2'),
+            `reserve reason names the deficit (got: ${deficitReason.reason})`
+        );
+        assert(
+            !deficitReason.reason.includes('buy 12/8'),
+            `window surplus stays silent (got: ${deficitReason.reason})`
+        );
+        // Filled clears: floor reserves live + window live (8 >= 8) => null.
+        const filledMgr = await makeTriggerMgr([0, 1, 8, 9, 10, 11, 12, 13]);
+        assert.strictEqual(
+            countLiveReserveOrders(filledMgr, filledMgr.config, ORDER_TYPES.BUY), 2,
+            'floor reserves live once filled'
+        );
+        assert.strictEqual(
+            getTargetedSyncReason({ manager: filledMgr, config: filledMgr.config }),
+            null,
+            'filled reserves clear the reason'
+        );
+        // Disabled reserves stay silent despite the same surplus.
+        const disabledReason: any = getTargetedSyncReason({
+            manager: deficitMgr,
+            config: { ...deficitMgr.config, reserveOrders: { buy: 0, sell: 0 } },
+        });
+        assert.strictEqual(disabledReason, null, 'disabled reserves never fire');
+        // Budget gate: no allocated funds suppresses the reserve reason.
+        const brokeMgr: any = await makeTriggerMgr([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+        brokeMgr.getChainFundsSnapshot = () => ({ allocatedBuy: 0, allocatedSell: 0 });
+        assert.strictEqual(
+            getTargetedSyncReason({ manager: brokeMgr, config: brokeMgr.config }),
+            null,
+            'empty budget suppresses the reserve reason'
+        );
+    }
+
+    console.log(' - startup excess plans matched cancels on a fully-placed grid (issue #27 follow-up)...');
+    {
+        // The vacancy question: on a fully-placed grid (every rail slot live,
+        // zero virtual) there is no placement target and no window shortfall,
+        // so only the startup excess path can cancel the surplus and create
+        // room for the additive window+edge target. Startup reconcile always
+        // plans (planOnly) and executes in Phase 2 — but the matched-excess
+        // cancel leg used to exist only in the execute branch, so a fully
+        // placed grid dropped its surplus silently and sat static forever.
+        const makePlacedMgr = async (liveCount: number) => {
+            const mgr = new OrderManager({
+                market: 'TEST/BTS', assetA: 'TEST', assetB: 'BTS',
+                startPrice: 100, incrementPercent: 1, targetSpreadPercent: 0,
+                activeOrders: { buy: 6, sell: 3 },
+                reserveOrders: { buy: 2, sell: 0 },
+            });
+            mgr.logger.level = 'silent';
+            mgr.assets = { assetA: { id: '1.3.0', precision: 8, symbol: 'TEST' }, assetB: { id: '1.3.1', precision: 5, symbol: 'BTS' } };
+            await mgr.setAccountTotals({ buy: 100000, sell: 100, buyFree: 100000, sellFree: 100 });
+            await mgr.resetFunds();
+            mgr._gapSlots = 0;
+            mgr.boundaryIdx = 12;
+            mgr.pauseFundRecalc();
+            for (let i = 0; i < 14; i++) {
+                const live = i < liveCount;
+                await mgr._updateOrder({
+                    id: `slot-${i}`, type: i < 12 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL,
+                    price: 80 + i, size: 100,
+                    state: live ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL,
+                    orderId: live ? `1.7.${900 + i}` : null,
+                });
+            }
+            await mgr.resumeFundRecalc();
+            return mgr;
+        };
+        const runStartup = async (mgr: any, chainBuys: any[], unmatched: any[]) => {
+            const plannedCancels: any[] = [];
+            const plannedCreates: any[] = [];
+            await _reconcileStartupSide({
+                orderType: ORDER_TYPES.BUY, targetCount: 8,
+                chainSideOrders: chainBuys, unmatchedSideOrders: unmatched,
+                manager: mgr, chainOrders: {}, account: 'acct', privateKey: 'pk',
+                dryRun: true, plannedCreates, plannedUpdates: [], plannedCancels, planOnly: true,
+            });
+            return { plannedCancels, plannedCreates };
+        };
+
+        // THE fully-placed case: 12 live matched buys vs target 6+2=8. The
+        // surplus is entirely on matched slots (unmatched is empty) — it must
+        // still be planned, reserve edge slots last.
+        const placed = await makePlacedMgr(12);
+        const chainBuys = Array.from({ length: 12 }, (_, i) => ({ id: `1.7.${900 + i}` }));
+        const placedPlan = await runStartup(placed, chainBuys, []);
+        assert.strictEqual(placedPlan.plannedCancels.length, 4, 'surplus (12-8) matched cancels are planned');
+        assert.deepStrictEqual(
+            placedPlan.plannedCancels.map((c: any) => c.chainOrderId),
+            ['1.7.902', '1.7.903', '1.7.904', '1.7.905'],
+            'lowest non-reserve matched slots cancel first (post-state: floor reserves + closest window)'
+        );
+        const placedIds = new Set(placedPlan.plannedCancels.map((c: any) => c.chainOrderId));
+        assert(!placedIds.has('1.7.900') && !placedIds.has('1.7.901'), 'floor reserve slots cancel last');
+        assert.strictEqual(placedPlan.plannedCreates.length, 0, 'no creates on a fully-placed grid');
+
+        // Mixed surplus: unmatched orphans plan first (releaseUntrackedFunds),
+        // matched surplus fills the remaining budget — same priority as the
+        // execute branch.
+        const mixed = await makePlacedMgr(12);
+        const orphan = {
+            id: '1.7.950',
+            sell_price: { base: { asset_id: '1.3.1', amount: 1000 }, quote: { asset_id: '1.3.0', amount: 80000 } },
+            for_sale: 1000,
+        };
+        const mixedPlan = await runStartup(mixed, [...chainBuys, orphan], [orphan]);
+        assert.strictEqual(mixedPlan.plannedCancels.length, 5, 'unmatched orphan + 4 matched surplus planned');
+        assert.strictEqual(mixedPlan.plannedCancels[0].chainOrderId, '1.7.950', 'unmatched orphan cancels first');
+        assert.strictEqual(mixedPlan.plannedCancels[0].releaseUntrackedFunds, true, 'orphans release untracked funds');
+        assert.deepStrictEqual(
+            mixedPlan.plannedCancels.slice(1).map((c: any) => c.chainOrderId),
+            ['1.7.902', '1.7.903', '1.7.904', '1.7.905'],
+            'matched surplus follows with the same selection as the execute branch'
+        );
+
+        // At target: no surplus, nothing planned (cancelCount clamps to 0).
+        const atTarget = await makePlacedMgr(8);
+        const atTargetPlan = await runStartup(atTarget, Array.from({ length: 8 }, (_, i) => ({ id: `1.7.${900 + i}` })), []);
+        assert.strictEqual(atTargetPlan.plannedCancels.length, 0, 'at-target grid plans no cancels');
+
+        // Plan/execute parity: the shared matchedExcess selection must produce
+        // the identical cancel set in both branches (planning can never drift
+        // from execution). Execute mode runs with a cancel stub and a resolved
+        // _applySync (dryRun would short-circuit inside _cancelChainOrder).
+        const parityPlan = await makePlacedMgr(12);
+        const parityPlanned: any[] = [];
+        await _reconcileStartupSide({
+            orderType: ORDER_TYPES.BUY, targetCount: 8,
+            chainSideOrders: chainBuys, unmatchedSideOrders: [],
+            manager: parityPlan, chainOrders: {}, account: 'acct', privateKey: 'pk',
+            dryRun: true, plannedCreates: [], plannedUpdates: [], plannedCancels: parityPlanned, planOnly: true,
+        });
+        const parityExec = await makePlacedMgr(12);
+        const executedIds: string[] = [];
+        const stubChain = {
+            cancelOrder: async (_a: any, _p: any, orderId: string) => { executedIds.push(orderId); return {}; },
+            createOrder: async () => ({}),
+            readOpenOrders: async () => [],
+        };
+        await _reconcileStartupSide({
+            orderType: ORDER_TYPES.BUY, targetCount: 8,
+            chainSideOrders: chainBuys, unmatchedSideOrders: [],
+            manager: parityExec, chainOrders: stubChain, account: 'acct', privateKey: 'pk',
+            dryRun: false, plannedCreates: [], plannedUpdates: [], plannedCancels: [], planOnly: false,
+        });
+        assert.deepStrictEqual(
+            parityPlanned.map((c: any) => c.chainOrderId).sort(),
+            executedIds.sort(),
+            'planOnly and execute select the identical excess cancel set'
+        );
+        const postExec = parityExec.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE).filter((o: any) => o && o.orderId);
+        assert.strictEqual(postExec.length, 8, 'execute branch converges to the window+edge target');
+    }
+
+    console.log(' - startup excess never cancels shelf/manual orders (issue #27 follow-up)...');
+    {
+        // Fork-kept shelf (non-slot-N ids, live below the rail with real manual
+        // sizes) heads the cheapest-first matched sort — without the slot-N gate
+        // the new matched-excess plan leg wipes it on the next boot. Shelf ids
+        // must never appear in planned cancels (same gate as reserveEdgeIdSet).
+        // No-op upstream (grids only mint slot-N).
+        const makeShelfMgr = async (liveCount: number) => {
+            const mgr = new OrderManager({
+                market: 'TEST/BTS', assetA: 'TEST', assetB: 'BTS',
+                startPrice: 100, incrementPercent: 1, targetSpreadPercent: 0,
+                activeOrders: { buy: 6, sell: 3 },
+                reserveOrders: { buy: 2, sell: 0 },
+            });
+            mgr.logger.level = 'silent';
+            mgr.assets = { assetA: { id: '1.3.0', precision: 8, symbol: 'TEST' }, assetB: { id: '1.3.1', precision: 5, symbol: 'BTS' } };
+            await mgr.setAccountTotals({ buy: 100000, sell: 100, buyFree: 100000, sellFree: 100 });
+            await mgr.resetFunds();
+            mgr._gapSlots = 0;
+            mgr.boundaryIdx = 12;
+            mgr.pauseFundRecalc();
+            for (let i = 0; i < 14; i++) {
+                const live = i < liveCount;
+                await mgr._updateOrder({
+                    id: `slot-${i}`, type: i < 12 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL,
+                    price: 80 + i, size: 100,
+                    state: live ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL,
+                    orderId: live ? `1.7.${900 + i}` : null,
+                });
+            }
+            await mgr.resumeFundRecalc();
+            return mgr;
+        };
+        const runShelfStartup = async (mgr: any, chainBuys: any[], unmatched: any[]) => {
+            const plannedCancels: any[] = [];
+            const plannedCreates: any[] = [];
+            await _reconcileStartupSide({
+                orderType: ORDER_TYPES.BUY, targetCount: 8,
+                chainSideOrders: chainBuys, unmatchedSideOrders: unmatched,
+                manager: mgr, chainOrders: {}, account: 'acct', privateKey: 'pk',
+                dryRun: true, plannedCreates, plannedUpdates: [], plannedCancels, planOnly: true,
+            });
+            return { plannedCancels, plannedCreates };
+        };
+        const shelfMgr = await makeShelfMgr(12);
+        shelfMgr.pauseFundRecalc();
+        const shelfIds = [
+            { id: 'deep-2', price: 70, orderId: '1.7.800' },
+            { id: 'deep-1', price: 71, orderId: '1.7.801' },
+            { id: 'deep-0', price: 72, orderId: '1.7.802' },
+        ];
+        for (const s of shelfIds) {
+            await shelfMgr._updateOrder({
+                id: s.id, type: ORDER_TYPES.BUY,
+                price: s.price, size: 500,
+                state: ORDER_STATES.ACTIVE,
+                orderId: s.orderId,
+            });
+        }
+        await shelfMgr.resumeFundRecalc();
+        const railChain = Array.from({ length: 12 }, (_, i) => ({ id: `1.7.${900 + i}` }));
+        const shelfChain = shelfIds.map((s) => ({ id: s.orderId }));
+        const fullChain = [...railChain, ...shelfChain];
+        // chain 15 (12 rail + 3 shelf) vs target 8 => cancelCount 7, all from rail.
+        const shelfPlan = await runShelfStartup(shelfMgr, fullChain, []);
+        assert.deepStrictEqual(
+            shelfPlan.plannedCancels.map((c: any) => c.chainOrderId),
+            ['1.7.902', '1.7.903', '1.7.904', '1.7.905', '1.7.906', '1.7.907', '1.7.908'],
+            'cheapest non-reserve rail cancels first, floor reserves (900/901) last, shelf never a candidate'
+        );
+        const cancelled = new Set(shelfPlan.plannedCancels.map((c: any) => c.chainOrderId));
+        for (const s of shelfIds) {
+            assert(!cancelled.has(s.orderId), `shelf ${s.id} (${s.orderId}) is never a cancel candidate`);
+        }
+        assert(!cancelled.has('1.7.900') && !cancelled.has('1.7.901'), 'floor reserve slots cancel last');
+        // Every planned cancel resolves to a slot-N grid slot.
+        for (const c of shelfPlan.plannedCancels) {
+            const slot = shelfMgr.orders.get((c.chainOrderObj as any)?.id);
+            assert(slot && /^slot-\d+$/.test(String(slot.id)), `cancel candidate is slot-N (got ${String(slot?.id)})`);
+        }
+        // Plan/execute parity with shelf present: the execute branch selects
+        // the identical set and leaves shelf + floor reserves + closest window.
+        const execMgr = await makeShelfMgr(12);
+        execMgr.pauseFundRecalc();
+        for (const s of shelfIds) {
+            await execMgr._updateOrder({
+                id: s.id, type: ORDER_TYPES.BUY,
+                price: s.price, size: 500,
+                state: ORDER_STATES.ACTIVE,
+                orderId: s.orderId,
+            });
+        }
+        await execMgr.resumeFundRecalc();
+        const executedIds: string[] = [];
+        const stubChain = {
+            cancelOrder: async (_a: any, _p: any, orderId: string) => { executedIds.push(orderId); return {}; },
+            createOrder: async () => ({}),
+            readOpenOrders: async () => [],
+        };
+        await _reconcileStartupSide({
+            orderType: ORDER_TYPES.BUY, targetCount: 8,
+            chainSideOrders: fullChain, unmatchedSideOrders: [],
+            manager: execMgr, chainOrders: stubChain, account: 'acct', privateKey: 'pk',
+            dryRun: false, plannedCreates: [], plannedUpdates: [], plannedCancels: [], planOnly: false,
+        });
+        assert.deepStrictEqual(
+            executedIds.sort(),
+            [...cancelled].sort(),
+            'execute selects the identical shelf-safe cancel set'
+        );
+        const liveBuys = execMgr.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE).filter((o: any) => o && o.orderId);
+        assert.strictEqual(liveBuys.length, 8, 'post-state converges to target count (5 rail + 3 shelf)');
+        const liveIds = new Set(liveBuys.map((o: any) => o.id));
+        for (const s of shelfIds) {
+            assert(liveIds.has(s.id), `shelf ${s.id} survives execution`);
+        }
+        for (const rid of ['slot-0', 'slot-1', 'slot-9', 'slot-10', 'slot-11']) {
+            assert(liveIds.has(rid), `rail survivor ${rid} stays live (floor reserves + closest window)`);
+        }
     }
 
     console.log('✓ Reserve orders tests passed!');
