@@ -143,12 +143,12 @@ This directory contains the comprehensive technical documentation for the DEXBot
 
 ### 🧭 [Evolution Report](EVOLUTION.md)
 *Project timeline and major architecture phases.*
-- **Coverage**: Historical milestones from the initial December 2025 bootstrap through the v1.6.0 stable release (grid persistence safety, dust pipeline fix, net inventory lots); credit/debt runtime and maintenance hardening are covered under Phase 5 (Mar–Jun 2026)
-- **Focus**: Architecture evolution, release history, test growth, and documentation changes
+- **Coverage**: Historical milestones from bootstrap through the current stable release; per-release detail lives in [CHANGELOG.md](../CHANGELOG.md)
+- **Focus**: Architecture evolution, release history, and test growth
 
 ### 🗒️ [Changelog](../CHANGELOG.md)
 *Release notes and documentation history.*
-- **Scope**: Versioned notes for patch releases and the current unreleased documentation refresh
+- **Scope**: Versioned notes per release
 
 ### 🧩 [Copy-on-Write Master Plan](COPY_ON_WRITE_MASTER_PLAN.md)
 *COW design, phases, and state machine details.*

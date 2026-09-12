@@ -849,6 +849,10 @@ suppress writes via `unresolved_candle_gaps` until repaired on a future cycle.
 The adapter prunes old candles to the required AMA window and acts only on
 closed 1h candles.
 
+#### Shared Chunk Cache and Fetch Robustness
+
+Pool, book, and feed candle fetches share one cache entry point (`runCachedWindows` in `market_adapter/inputs/window_cache.ts`): sibling chunk files load once, only missing buckets plus a bounded 48h tail refresh are queried, and chunk metas record the ranges actually queried (`meta.queriedRanges`). A missing range is pruned only when recorded query coverage genuinely covers it — the absence of local buckets alone never certifies history as empty. Partial windows merge into the run output but are never persisted, and orphan chunks are deleted after complete runs only. Every range fetch runs through `fetchRangeWithRetry` (per-range attempts + linear backoff + abort-signal timeout; the LP path keeps a 4-attempt budget), one-shot Kibana queries retry transient errors (3 attempts), paged fetchers cap at `kibanaMaxPages` (500), and bidirectional fetches tolerate a one-direction failure.
+
 #### AMA Warmup Window — Why Candle Length Matters
 
 The AMA is a recursive (infinite impulse response) filter. On cold start, the adapter uses an initial warmup phase: it calculates an **SMA (Simple Moving Average)** over the first `erPeriod` candles to establish a stable seed price, while simultaneously building the price history needed to calculate the first valid Efficiency Ratio (ER).

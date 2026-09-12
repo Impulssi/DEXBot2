@@ -171,7 +171,7 @@ Deliberately no per-side chain-total-drop leg: a normal fill moves value across 
 **How It Works (shrink)**:
 1. External removal (manual transfer/withdrawal) → `chainTotal` drops → `funds.allocated` (chainTotal × `botFunds`%) drops while the grid-tracked size stays put
 2. Divergence check flags the side when grid-tracked size exceeds the allocation by ≥ 3% (slow bleeds accumulate across ticks: the grid stays fixed while the allocation sinks)
-3. The same regeneration path runs: `_recalculateGridOrderSizesFromBlockchain` recomputes geometric ideals on the smaller budget and queues `UPDATE` actions shrinking affected on-chain orders (`delta < 0` releases the difference back to free balance on chain)
+3. The same regeneration path runs: `_recalculateGridOrderSizesFromBlockchain` recomputes geometric ideals on the smaller budget and queues `UPDATE` actions shrinking affected on-chain orders (`delta < 0` releases the difference back to free balance on chain). Fork-kept shelf orders (live non-slot-N ids below the rail) are skipped by the per-slot loop — their manual sizes survive the resize while still counting in the budget denominator.
 4. Under-deployed grids (grid-tracked size still within the shrunken allocation) correctly do NOT trigger — their orders remain fully funded
 
 #### Recovery Retry System
