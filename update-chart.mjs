@@ -71,6 +71,9 @@ if (FULL_HISTORY) {
 }
 let payload;
 const forceFull = process.argv.includes('--full');
+// Tiedostoon leimattu kattavuus (offline, ei verkkoriippuvuutta): mista
+// alkaen sarja on taydellinen. Puuttuu vanhoista tiedostoista.
+let storedCoverageFromMs = null;
 if (!forceFull) {
     // Inkrementaalinen: tallennettu sarja kattaa pyydetyn ikkunan alun?
     let covered = false;
@@ -79,6 +82,8 @@ if (!forceFull) {
         if (existsSync(f)) {
             const oldRaw = JSON.parse(readFileSync(f, 'utf8'));
             const oc = Array.isArray(oldRaw.candles) ? oldRaw.candles : [];
+            const scf = Number(oldRaw.coverageFromMs);
+            if (Number.isFinite(scf) && scf > 0) storedCoverageFromMs = scf;
             if (oc.length > 0) {
                 const firstOld = Number(oc[0][0]);
                 // FULL_HISTORY (kaikki) kattaa aina; muuten vaaditaan alku + 1h toleranssi.
@@ -86,12 +91,22 @@ if (!forceFull) {
                 // ensimmaista kauppaa — sita vanhempaa dataa ei ole olemassa,
                 // joten sarja on silti kattava (esim. --alku 2024-08-11 kun
                 // eka kauppa on 2024-08-11T02:00).
+                console.log('  Tiedosto: eka=' + (Number.isFinite(firstOld) ? new Date(firstOld).toISOString() : 'n/a') + ' leima=' + (storedCoverageFromMs != null ? new Date(storedCoverageFromMs).toISOString() : 'n/a'));
                 if (FULL_HISTORY) {
+                    covered = true;
+                } else if (storedCoverageFromMs != null && startMs >= storedCoverageFromMs - 3600000) {
+                    console.log('  Kattavuusleima kattaa pyydetyn alun — inkrementaalinen.');
                     covered = true;
                 } else if (Number.isFinite(firstOld) && firstOld <= startMs + 3600000) {
                     covered = true;
                 } else {
-                    const earliest = await findEarliestTradeMs();
+                    let earliest = null;
+                    try {
+                        earliest = await findEarliestTradeMs();
+                    } catch (e) {
+                        console.log('  earliest-kysely epaonnistui: ' + (e && e.message ? e.message : String(e)));
+                    }
+                    console.log('  earliest-tulos: ' + (earliest != null ? new Date(earliest).toISOString() : 'null'));
                     if (earliest != null && startMs <= earliest + 3600000) {
                         console.log('  Pyydetty alku on ennen poolin ensimmaista kauppaa (' + new Date(earliest).toISOString() + ') — sarja kattaa kaiken olemassaolevan.');
                         covered = true;
@@ -146,6 +161,9 @@ try {
 if (prevUpdate) {
     const newBars = payload.candles.filter((c) => Math.floor(Number(c[0]) / 1000) > prevUpdate.lastCandleSec).length;
     prevUpdate.newBars = newBars;
+}
+if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    payload.coverageFromMs = storedCoverageFromMs != null ? storedCoverageFromMs : startMs;
 }
 writeLpFile(payload, dataFile);
 console.log('  Tallennettu: ' + dataFile);
