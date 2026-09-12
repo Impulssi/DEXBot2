@@ -976,6 +976,10 @@ async function runTests() {
                 startPrice: 100, incrementPercent: 1, targetSpreadPercent: 0,
                 activeOrders: { buy: 6, sell: 3 },
                 reserveOrders: { buy: 2, sell: 0 },
+                // Pinned closest-first: post-state asserts closest window
+                // survivors (slot-9/10/11) and cheapest-first cancel order.
+                // Same fork-default reason as above.
+                buyWindowMode: 'closest',
             });
             mgr.logger.level = 'silent';
             mgr.assets = { assetA: { id: '1.3.0', precision: 8, symbol: 'TEST' }, assetB: { id: '1.3.1', precision: 5, symbol: 'BTS' } };
