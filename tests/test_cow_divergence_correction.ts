@@ -7,7 +7,8 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { applyGridDivergenceCorrections } = require('../modules/order/utils/system');
-const { updateGridFromBlockchainSnapshot } = require('../modules/order/grid');
+const { updateGridFromBlockchainSnapshot, _recalculateGridOrderSizesFromBlockchain } = require('../modules/order/grid');
+const { WorkingGrid } = require('../modules/order/working_grid');
 const { ORDER_STATES, ORDER_TYPES, COW_ACTIONS } = require('../modules/constants');
 
 async function testCOWDivergenceCorrection() {
@@ -438,6 +439,85 @@ async function testCOWDivergenceCorrection() {
         }
 
         console.log('  ✓ Gap-band strays cancelled; in-rail sells kept\n');
+    }
+
+    // Test 7: shelf/manual orders (non-slot-N ids) are never resized by the
+    // geometric recalc (issue #27 follow-up). The recalc distributes the
+    // side budget over every slot carrying the side's type — without the
+    // slot-N gate a fork-kept shelf below the rail takes curve ideals and
+    // emits on-chain UPDATEs, melting manuals. Same gate as reserve
+    // classification and startup cancel candidates; no-op upstream.
+    console.log('Test 7: Shelf orders keep manual sizes through the geometric recalc');
+    {
+        const shelfMgr = new OrderManager({
+            assetA: 'TESTA',
+            assetB: 'TESTB',
+            startPrice: 100,
+            incrementPercent: 1,
+            targetSpreadPercent: 2,
+            activeOrders: { buy: 5, sell: 3 },
+            botFunds: { buy: 1000, sell: 1000 }
+        });
+        shelfMgr.assets = {
+            assetA: { id: '1.3.1', symbol: 'TESTA', precision: 5 },
+            assetB: { id: '1.3.2', symbol: 'TESTB', precision: 5 }
+        };
+        shelfMgr.boundaryIdx = 6;
+        shelfMgr.outOfSpread = 0;
+        shelfMgr._gridVersion = 1;
+        for (let i = 0; i < 10; i++) {
+            await shelfMgr._updateOrder({
+                id: `slot-${i}`,
+                price: 95 + i,
+                type: i < 6 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL,
+                state: ORDER_STATES.VIRTUAL,
+                size: 0
+            });
+        }
+        await shelfMgr.setAccountTotals({
+            buy: 1000,
+            sell: 100,
+            buyFree: 1000,
+            sellFree: 100
+        });
+        await shelfMgr.recalculateFunds();
+        // Rail actives at curve-agnostic sizes plus a live shelf with manual
+        // sizes deliberately far from any geometric ideal (500 vs a ~1000
+        // budget split across 8 buy-typed slots).
+        for (const i of [3, 4, 5]) {
+            await shelfMgr._updateOrder({
+                id: `slot-${i}`,
+                price: 95 + i,
+                type: ORDER_TYPES.BUY,
+                state: ORDER_STATES.ACTIVE,
+                size: 100,
+                orderId: `chain-shelf-rail-${i}`
+            });
+        }
+        for (const [id, price] of [['deep-1', 70], ['deep-0', 71]]) {
+            await shelfMgr._updateOrder({
+                id,
+                price,
+                type: ORDER_TYPES.BUY,
+                state: ORDER_STATES.ACTIVE,
+                size: 500,
+                orderId: `chain-shelf-${id}`
+            });
+        }
+        const workingGrid = new WorkingGrid(shelfMgr.orders, { baseVersion: shelfMgr._gridVersion });
+        const result = await _recalculateGridOrderSizesFromBlockchain(shelfMgr, ORDER_TYPES.BUY, { workingGrid });
+        assert(result, 'recalc should return a COW result');
+        assert.strictEqual(result.changed, true, 'rail virtuals take ideals, so the recalc path demonstrably ran');
+        const shelfActions = (result.actions || []).filter((a: any) => String(a.id || '').startsWith('deep-'));
+        console.log(`  - UPDATE actions for shelf ids: ${shelfActions.length}`);
+        assert.strictEqual(shelfActions.length, 0, 'shelf slots must never emit resize UPDATEs');
+        for (const id of ['deep-1', 'deep-0']) {
+            const workingOrder = workingGrid.get(id);
+            assert(workingOrder, `working grid should still hold ${id}`);
+            assert.strictEqual(Number(workingOrder.size), 500, `shelf ${id} keeps its manual size`);
+            assert.strictEqual(workingOrder.orderId, `chain-shelf-${id}`, `shelf ${id} keeps its chain binding`);
+        }
+        console.log('  ✓ Shelf manuals untouched; rail ideals still applied\n');
     }
 
     console.log('✓ All COW Divergence Correction tests PASSED!\n');

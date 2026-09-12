@@ -1796,6 +1796,14 @@ export async function _recalculateGridOrderSizesFromBlockchain(manager: any, ord
             // Apply new sizes to all slots on the side
             for (let i = 0; i < allSideSlots.length; i++) {
                 const slot = allSideSlots[i];
+                // Shelf/manual orders (non-slot-N ids, e.g. fork-kept deep-*
+                // below the rail) sit outside window accounting: geometric
+                // ideals must never resize them on-chain. Same gate as reserve
+                // classification and startup cancel candidates (issue #27
+                // follow-up). No-op upstream (grids only mint slot-N).
+                // NB: they stay in the denominator above (budget math
+                // unchanged); only the per-slot mutation below is skipped.
+                if (parseSlotIndex(slot?.id) === null) continue;
                 let newSize = newSizes[i] || 0;
 
                 // FUND CAPPING FOR COMMITTED (ON-CHAIN) ORDERS:
