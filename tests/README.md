@@ -48,7 +48,7 @@ Key validation, balance queries, account selection.
 
 ### Market Data & Pricing
 Price derivation, orderbook inspection, tolerance checks.
-*Examples:* `test_market_price.ts`, `test_price_derive.ts`, `test_price_tolerance.ts`, `test_any_pair.ts`, `test_kibana_candles.ts`
+*Examples:* `test_market_price.ts`, `test_price_derive.ts`, `test_price_tolerance.ts`, `test_any_pair.ts`, `test_kibana_candles.ts`, `test_fetch_book_data.ts`, `test_window_cache.ts`
 
 ### Market Adapter
 AMA signal processing, price offset, bound clamping, signal gates.
@@ -60,7 +60,7 @@ Order lifecycle, fill processing, trade history, batch execution.
 
 ### Strategy & Grid Logic
 Grid generation, sizing, rotation, divergence detection, reconciliation.
-*Examples:* `test_order_grid.ts`, `test_strategy_logic.ts`, `test_grid_reconcile.ts`, `test_working_grid.ts`, `test_rotation_order_sizing.ts`, `test_strategy_edge_cases.ts`
+*Examples:* `test_order_grid.ts`, `test_strategy_logic.ts`, `test_grid_reconcile.ts`, `test_working_grid.ts`, `test_rotation_order_sizing.ts`, `test_strategy_edge_cases.ts`, `test_reserve_orders.ts`
 
 ### Copy-on-Write (COW) Rebalancing
 Concurrent-safe rebalancing with isolated working grids — dedicated test suite.

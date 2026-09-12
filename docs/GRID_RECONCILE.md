@@ -93,7 +93,8 @@ Phase 2 and 3 both respect the `dryRun` flag: when true, no on-chain mutations a
    - Match sorted unmatched chain orders to virtual slots → `plannedUpdates`
    - Detect grid-edge lock and plan a largest-order cancel
    - Plan creates for remaining slots
-   - Plan excess cancellations (guarded by `matchedOnGrid > 0`)
+   - Plan excess cancellations (guarded by `matchedOnGrid > 0`): orphans first, then **matched surplus** (`chainCount - targetCount`, reserve edge slots last) — the matched-excess selection is shared by the planOnly and execute branches so planning can never drift from execution; planOnly omits `releaseUntrackedFunds` for matched slots (their funds are tracked on the grid slot)
+   - Fork-kept **shelf orders** (live non-slot-N ids below the rail, e.g. `deep-*`) are never cancel candidates or reserve members — see [Shelf Orders](#shelf-orders-fork-kept-manual-orders)
    - **Vacated-rail refill**: each PROCEEDING update whose vacated price exactly matches (`priceSlotEqual`) an empty, sized, in-rail slot of the same side queues a refill CREATE in the same plan (`source startupVacatedRailRefill`) — skipped updates, ghost prices (lattice moved), in-band slots, and already-desired slots never refill; refill targets require VIRTUAL state with no `orderId`
 
 Returns `{ plannedCreates, plannedUpdates, plannedCancels, chainSellCount, chainBuyCount }`.
@@ -176,6 +177,14 @@ Up to 3 batch attempts. Each failure triggers a recovery sync + plan refresh. If
 
 **`grid_reconcile.ts:211-244`** — Reconcile's role in the defense-in-depth: during Phase 1, any ACTIVE/PARTIAL order whose `orderId` is not found on-chain is reset to VIRTUAL with `skipAccounting`. The freshly-assigned deferral protects in-flight broadcasts, and the ghost heuristic lets known fills pass. See [`developer_guide.md`](developer_guide.md#phantom-orders-prevention-defense-in-depth) for the full 3-layer defense.
 
+### Shelf Orders (Fork-Kept Manual Orders)
+
+Live on-chain orders with non-slot-N ids below the rail (e.g. `deep-*` manuals kept across a fork) are **shelf orders**: they sit outside the grid contract and must survive every startup path untouched. Three gates enforce this (all no-ops on grids that only mint slot-N ids):
+
+- **Reserve classification/placement** (`order.ts`, `grid_reconcile_internal.ts`, `manager.ts`): `reserveEdgeIdSet`, the Tier-2 live-anchor scan, `_pickEdgeReserveSlots`, and `pickEdgeReserves` all gate to `parseSlotIndex(id) !== null`, so a shelf can never count as the reserve edge (which would mask a real reserve deficit) nor be activated as a reserve it would never be counted as. The live-reserve count additionally excludes window members via `liveWindowIdSet`, so an edge-reaching window cannot masquerade as dedicated reserves.
+- **Startup excess cancels** (`grid_reconcile_internal.ts`): the matched-excess selection filters to slot-N ids in both planOnly and execute branches — the cheapest-first sort would otherwise wipe the shelf on the next boot.
+- **Geometric size recalc** (`grid.ts`): `_recalculateGridOrderSizesFromBlockchain` skips non-slot-N slots in the per-slot loop, so divergence-triggered resizing never overwrites manual shelf sizes on-chain (the shelf stays in the budget denominator, so allocation math is unchanged).
+
 ### COW Interaction
 
 Reconcile Phase 1 runs under `_gridLock` with no side effects on the frozen master Map. The working grid is not involved — reconcile is a startup operation that runs before the COW pipeline is active. See [`COPY_ON_WRITE_MASTER_PLAN.md`](COPY_ON_WRITE_MASTER_PLAN.md#safety-guardrails) and [`COW_INVARIANTS.md`](COW_INVARIANTS.md#reconcile-grid_reconcilemd) for COW rules.
@@ -242,6 +251,7 @@ Commit `e64db685` replaced 6 single-value boolean state fields with refcounts/st
 | `tests/test_race_condition_fixes_batch1.ts` | ABBA deadlock (RC-1B) |
 | `tests/test_async_lock_force_release.ts` | Nested multi-lock re-entrancy |
 | `tests/test_targeted_drift_reconcile.ts` | Active-order shortfall triggers sync |
+| `tests/test_reserve_orders.ts` | Reserve startup coverage: fully-placed matched-surplus cancels, orphan+matched ordering, at-target silence, plan/execute parity, shelf-order survival, reserve-deficit trigger (`buy reserves 0/2`) with filled/disabled/empty-budget silence, window-exclusion counting |
 | `tests/repro_phantom_orders.ts` | Phantom order prevention |
 
 ---
