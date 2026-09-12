@@ -373,6 +373,13 @@ async function runTests() {
                 startPrice: 100, incrementPercent: 1, targetSpreadPercent: 0,
                 activeOrders: { buy: 3, sell: 2 }, weightDistribution: { sell: 0.5, buy: 0.5 },
                 reserveOrders: { buy: 2, sell: 1 },
+                // Pinned closest-first: this block verifies RESERVE hold-back
+                // mechanics, which assume the window starts at the market
+                // boundary (slot-9/8/7) and the edge at slot-0/1. Our fork
+                // defaults buyWindowMode to 'low' (keep-low takes the rail
+                // bottom first), under which slot-0/1 are WINDOW slots and
+                // the expectations below do not apply.
+                buyWindowMode: 'closest',
             });
             mgr.logger.level = 'silent';
             mgr.assets = {
