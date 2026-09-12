@@ -240,7 +240,80 @@ async function deepAdoptChecks() {
 
 deepAdoptChecks().then(() => {
     console.log(`✓ Buy window config tests passed! (${passed} assertions)`);
+    return startupExcessDeepChecks();
+}).then(() => {
+    console.log(`✓ Startup excess deep checks passed! (${passed} assertions)`);
 }).catch((e) => {
     console.error('Deep adopt checks failed:', e);
     process.exit(1);
 });
+
+// --- Startup excess with live deep shelf (issue #27 follow-up) ---
+// Live grid: 9 rail buys (slot-0..8) + 3 deep buys, all ACTIVE with chain
+// ids, keep-low window, target 6. Excess math must exclude deep-adopted
+// chain orders (12-3=9 vs 6 -> 3 cancels, not 12-6=6), and keep-low must
+// cancel stranded TOP first (slot-8,7,6), never the window bottom or shelf.
+const { OrderManager: ExcessOrderManager } = require('../modules/order/index').default;
+const { ORDER_TYPES: ExcessOT, ORDER_STATES: ExcessOS } = require('../modules/constants');
+const { _reconcileStartupSide: excessReconcile } = require('../modules/order/grid_reconcile_internal');
+
+async function makeExcessMgr(buyWindowMode?: string) {
+    const cfg: any = {
+        market: 'TEST/BTS', assetA: 'TEST', assetB: 'BTS',
+        startPrice: 100, incrementPercent: 1, targetSpreadPercent: 0,
+        activeOrders: { buy: 6, sell: 2 }, weightDistribution: { sell: 0.5, buy: 0.5 },
+        reserveOrders: { buy: 0, sell: 0 },
+    };
+    if (buyWindowMode) cfg.buyWindowMode = buyWindowMode;
+    const mgr = new ExcessOrderManager(cfg);
+    mgr.logger.level = 'silent';
+    mgr.assets = {
+        assetA: { id: '1.3.0', precision: 8, symbol: 'TEST' },
+        assetB: { id: '1.3.1', precision: 5, symbol: 'BTS' },
+    };
+    await mgr.setAccountTotals({ buy: 10000, sell: 100, buyFree: 10000, sellFree: 100 });
+    await mgr.resetFunds();
+    mgr._gapSlots = 0;
+    mgr.boundaryIdx = 9;
+    mgr.pauseFundRecalc();
+    for (let i = 0; i < 9; i++) {
+        await mgr._updateOrder({
+            id: `slot-${i}`, type: ExcessOT.BUY, price: 80 + i, size: 10,
+            state: ExcessOS.ACTIVE, orderId: `1.7.${901 + i}`,
+        });
+    }
+    for (let i = 0; i < 3; i++) {
+        await mgr._updateOrder({
+            id: `deep-${i}`, type: ExcessOT.BUY, price: 70 + i, size: 5,
+            state: ExcessOS.ACTIVE, orderId: `1.7.${910 + i}`,
+        });
+    }
+    await mgr.resumeFundRecalc();
+    return mgr;
+}
+
+async function planExcessCancels(mgr) {
+    const chainSideOrders = [];
+    for (let i = 0; i < 9; i++) chainSideOrders.push({ id: `1.7.${901 + i}` });
+    for (let i = 0; i < 3; i++) chainSideOrders.push({ id: `1.7.${910 + i}` });
+    const plannedCancels = [];
+    await excessReconcile({
+        orderType: ExcessOT.BUY, targetCount: 6,
+        chainSideOrders, unmatchedSideOrders: [],
+        manager: mgr, chainOrders: {}, account: 'acct', privateKey: 'pk',
+        dryRun: true, plannedCreates: [], plannedUpdates: [], plannedCancels, planOnly: true,
+    });
+    return plannedCancels.map((c) => c.chainOrderId);
+}
+
+async function startupExcessDeepChecks() {
+    // Keep-low (default): 3 cancels, stranded top first, shelf untouched.
+    const lowCancels = await planExcessCancels(await makeExcessMgr());
+    check('keep-low cancels exactly 3 (not 6)', lowCancels.length, 3);
+    check('keep-low cancels stranded top first', JSON.stringify(lowCancels), JSON.stringify(['1.7.909', '1.7.908', '1.7.907']));
+    check('keep-low never cancels shelf', lowCancels.some((id) => ['1.7.910', '1.7.911', '1.7.912'].includes(id)), false);
+    // Closest: upstream order preserved (lowest first).
+    const closestCancels = await planExcessCancels(await makeExcessMgr('closest'));
+    check('closest cancels exactly 3', closestCancels.length, 3);
+    check('closest cancels lowest first', JSON.stringify(closestCancels), JSON.stringify(['1.7.901', '1.7.902', '1.7.903']));
+}

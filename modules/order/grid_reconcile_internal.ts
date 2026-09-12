@@ -389,8 +389,12 @@ function _pickEdgeReserveSlots(manager: any, orderType: any, count: any, exclude
 }
 
 
-function _getStartupSideComparators(orderType: any, assets: any): { sortUpdateComparator: (a: any, b: any) => number; sortExcessCancelComparator: (a: any, b: any) => number; sortMatchedCancelComparator: (a: any, b: any) => number } {
+function _getStartupSideComparators(orderType: any, assets: any, buyWindowMode: string = 'closest'): { sortUpdateComparator: (a: any, b: any) => number; sortExcessCancelComparator: (a: any, b: any) => number; sortMatchedCancelComparator: (a: any, b: any) => number } {
     const isSell = orderType === ORDER_TYPES.SELL;
+    // Keep-low window sits at the rail bottom, so rail surplus strands at the
+    // TOP: cancel highest-first to remove stranded orders, not the window.
+    // Default 'closest' preserves upstream order (surplus at the bottom).
+    const windowLow = !isSell && buyWindowMode !== 'closest';
 
     const sortUpdateComparator = isSell
         ? (a: any, b: any) => (parseChainOrder(a, assets)?.price || 0) - (parseChainOrder(b, assets)?.price || 0)
@@ -402,7 +406,9 @@ function _getStartupSideComparators(orderType: any, assets: any): { sortUpdateCo
 
     const sortMatchedCancelComparator = isSell
         ? (a: any, b: any) => (b.price || 0) - (a.price || 0)
-        : (a: any, b: any) => (a.price || 0) - (b.price || 0);
+        : windowLow
+            ? (a: any, b: any) => (b.price || 0) - (a.price || 0)
+            : (a: any, b: any) => (a.price || 0) - (b.price || 0);
 
     return {
         sortUpdateComparator,
@@ -1767,7 +1773,7 @@ async function _reconcileStartupSide({
         sortUpdateComparator,
         sortExcessCancelComparator,
         sortMatchedCancelComparator,
-    } = _getStartupSideComparators(orderType, manager.assets);
+    } = _getStartupSideComparators(orderType, manager.assets, resolveBuyWindowMode(manager?.config));
 
     const matchedOnGrid = _countActiveOnGrid(manager, orderType);
     const neededSlots = Math.max(0, targetCount - matchedOnGrid);
@@ -1984,7 +1990,18 @@ async function _reconcileStartupSide({
     }
 
     const processedUnmatched = sortedUnmatched.slice(updateCount);
-    const chainCount = chainSideOrders.length;
+    // Deep shelf orders live on-chain under their own target (buyDeepCount),
+    // not the rail window target: exclude chain orders adopted by deep slots
+    // from the rail excess math. Without this, every startup over-cancels by
+    // the shelf size (12 chain vs 6 target with a live 3-deep shelf = 6
+    // cancels instead of 3), and the now-executing matched leg would eat
+    // the rail window to pay for shelf orders that were never surplus.
+    const deepAdoptedChainIds = new Set(
+        (Array.from((manager as any)?.orders?.values?.() || []) as any[])
+            .filter((s: any) => isDeepShelfId(s?.id) && s?.orderId)
+            .map((s: any) => String(s.orderId))
+    );
+    const chainCount = chainSideOrders.filter((co: any) => !deepAdoptedChainIds.has(String(co?.id))).length;
     const createCount = Math.max(0, targetCount - chainCount);
     const remainingSlots = desiredSlots.slice(updateCount);
 
