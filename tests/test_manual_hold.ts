@@ -15,8 +15,7 @@ const {
     clearManualHold,
     pruneManualHolds,
     isSlotHeld,
-    serializeManualHolds,
-    restoreManualHolds,
+    getManualHoldMap,
     classifyDisappearance,
 } = require('../modules/order/manual_hold');
 const chainOrders = require('../modules/chain_orders');
@@ -75,21 +74,14 @@ check('null hold expires', isManualHoldExpired(null, 100, 0.075), true);
     check('far gone', isSlotHeld(mgr, 'far'), false);
 }
 
-// --- serialize / restore roundtrip (restart resilience) ---
+// --- holds are session-scoped: a fresh manager starts empty (restart = restore) ---
 {
     const mgr = fakeManager({});
-    mgr.orders.set('slot-1', { id: 'slot-1', price: 100 });
     recordManualHold(mgr, 'slot-1', 100);
-    recordManualHold(mgr, 'slot-gone', 50);
-    const snap = serializeManualHolds(mgr);
-    check('serializes both', snap.length, 2);
+    check('held in session', isSlotHeld(mgr, 'slot-1'), true);
     const mgr2 = fakeManager({});
-    mgr2.orders.set('slot-1', { id: 'slot-1', price: 100 });
-    const restored = restoreManualHolds(mgr2, snap);
-    check('restores only surviving slot', restored, 1);
-    check('survivor held', isSlotHeld(mgr2, 'slot-1'), true);
-    check('dead id dropped', isSlotHeld(mgr2, 'slot-gone'), false);
-    check('garbage input restores zero', restoreManualHolds(fakeManager({}), null), 0);
+    check('fresh manager has no holds', isSlotHeld(mgr2, 'slot-1'), false);
+    check('fresh map is empty', getManualHoldMap(mgr2).size, 0);
 }
 
 // --- classifyDisappearance: fill / own / manual ---

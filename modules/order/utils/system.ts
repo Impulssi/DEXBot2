@@ -909,14 +909,6 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
                 .slice(-500)
                 .map((e: any) => ({ slotId: e.slotId, side: e.side, ts: Number(e.ts) }))
             : undefined;
-        // Manual-cancel holds (restart resilience): Map -> plain array;
-        // empty map persists as cleared so released holds never resurrect.
-        // Non-Map (legacy callers without the field) passes undefined so
-        // storeMasterGrid leaves any previously stored holds untouched.
-        const { serializeManualHolds: serializeHolds } = require('../manual_hold.js');
-        const manualHolds = (manager as any).manualHolds instanceof Map
-            ? serializeHolds(manager)
-            : undefined;
         await accountOrders.storeMasterGrid(
             orders,
             btsFeesOwed,
@@ -931,8 +923,7 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
             fillKeys,
             genesis,
             gapEvacStreaks,
-            pendingFillCrawls,
-            manualHolds
+            pendingFillCrawls
         );
         return true;
     } catch (e: any) {
@@ -967,23 +958,6 @@ export function restoreGapEvacStreaks(manager: any, persisted: any): number {
     }
     manager._gapEvacStreaks = streaks;
     return streaks.size;
-}
-
-/**
- * Restore persisted manual-cancel holds into the manager (restart
- * resilience). Only holds for slots that still exist are restored, so a
- * grid reset with a renamed scheme can never resurrect stale holds.
- * Expired holds (market moved past them while offline) are pruned on the
- * next sync/strategy pass, not here — restore is deliberately lossless.
- *
- * @param {Object} manager - OrderManager instance
- * @param {Array|null} persisted - [{slotId, price, ts}] from loadManualHolds
- * @returns {number} Number of hold entries restored
- */
-export function restoreManualHolds(manager: any, persisted: any): number {
-    if (!manager) return 0;
-    const { restoreManualHolds: restore } = require('../manual_hold.js');
-    return restore(manager, persisted);
 }
 
 /**

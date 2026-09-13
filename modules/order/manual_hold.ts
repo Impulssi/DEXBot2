@@ -10,8 +10,9 @@
  *
  * Detection lives in sync_engine (a disappearance with no fill record and
  * no recent own-cancel). Suppression lives in the placement pickers
- * (strategy windows, startup activation, reserve edges). Persistence mirrors
- * pendingFillCrawls through AccountOrders so holds survive restarts.
+ * (strategy windows, startup activation, reserve edges). Holds are
+ * deliberately session-scoped: a restart clears them and the grid refills
+ * normally, which doubles as the operator's explicit "restore" action.
  *
  * Move threshold: MANUAL_HOLD_MOVE_MULT * incrementPercent (default 5x).
  * At 1.5% increment a hold releases after a ~7.5% market move past it.
@@ -156,39 +157,6 @@ function classifyDisappearance(manager: any, slot: any): 'fill' | 'own' | 'manua
     }
 }
 
-function serializeManualHolds(manager: any): Array<{ slotId: string; price: number; ts: number }> {
-    const holds = getManualHoldMap(manager);
-    const out: Array<{ slotId: string; price: number; ts: number }> = [];
-    for (const [slotId, hold] of holds) {
-        const price = Number(hold?.price);
-        const ts = Number(hold?.ts);
-        if (!slotId || !Number.isFinite(price) || price <= 0) continue;
-        out.push({ slotId: String(slotId), price, ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now() });
-    }
-    return out.slice(-500);
-}
-
-function restoreManualHolds(manager: any, persisted: any): number {
-    if (!manager) return 0;
-    const holds = getManualHoldMap(manager);
-    let restored = 0;
-    const list = Array.isArray(persisted) ? persisted : [];
-    for (const e of list) {
-        const slotId = e?.slotId != null ? String(e.slotId) : '';
-        const price = Number(e?.price);
-        const ts = Number(e?.ts);
-        if (!slotId || !Number.isFinite(price) || price <= 0) continue;
-        // Only restore for slots that still exist: a grid reset/regen with a
-        // renamed scheme must never resurrect holds for dead ids.
-        try {
-            if (manager.orders instanceof Map && !manager.orders.has(slotId)) continue;
-        } catch { /* fall through without the existence check */ }
-        holds.set(slotId, { price, ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now() });
-        restored++;
-    }
-    return restored;
-}
-
 export {
     MANUAL_HOLD_MOVE_MULT,
     getManualHoldMap,
@@ -200,6 +168,4 @@ export {
     pruneManualHolds,
     isSlotHeld,
     classifyDisappearance,
-    serializeManualHolds,
-    restoreManualHolds,
 };
