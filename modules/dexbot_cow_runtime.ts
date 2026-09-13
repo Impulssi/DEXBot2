@@ -1413,11 +1413,11 @@ function formatPartialBroadcastSummary(err: any) {
 }
 
 /**
- * Execute a batch with retry-on-uncertain semantics, enforcing a per-broadcast
- * operation cap (MAX_OPS_PER_BROADCAST). When the batch carries more
- * operations than the cap, it is split into sequential broadcast chunks of at
- * most `maxOps` operations each, so a single on-chain transaction never holds
- * more than the configured number of order operations (the original "N fills
+ * Execute a batch with retry-on-uncertain semantics, enforcing a gap-slot
+ * per-broadcast operation cap (_getGapSlotBatchSize). When the batch carries
+ * more operations than the cap, it is split into sequential broadcast chunks
+ * of at most `maxOps` operations each, so a single on-chain transaction never
+ * holds more than gapSlots order operations (the original "N fills
  * per broadcast" intent, applied at the op level rather than the fill level).
  *
  * Failure isolation — no swallowed orders: if one chunk's broadcast is
@@ -1443,12 +1443,11 @@ function formatPartialBroadcastSummary(err: any) {
  * @returns {Promise<{result: Object, opContexts: Array}>}
  */
 async function executeChunkedWithRetryOnUncertain(bot: any, operations: any, opContexts: any) {
-    const configuredMax = typeof bot._getMaxOpsPerBroadcast === 'function'
+    const fromAccessor = typeof bot._getMaxOpsPerBroadcast === 'function'
         ? bot._getMaxOpsPerBroadcast()
-        : COW_PERFORMANCE?.MAX_OPS_PER_BROADCAST;
-    const maxOps = Number.isFinite(configuredMax) && configuredMax >= 1
-        ? Math.floor(configuredMax)
-        : 1;
+        : (typeof bot._getGapSlotBatchSize === 'function' ? bot._getGapSlotBatchSize() : undefined);
+    const requested = Number(fromAccessor);
+    const maxOps = Number.isFinite(requested) && requested >= 1 ? Math.floor(requested) : 1;
     if (!Array.isArray(operations) || operations.length <= maxOps) {
         return await executeWithRetryOnUncertain(bot, operations, opContexts);
     }
@@ -1462,7 +1461,7 @@ async function executeChunkedWithRetryOnUncertain(bot: any, operations: any, opC
     }
 
     bot.manager.logger.log(
-        `[COW] Splitting ${operations.length} operations into ${chunks.length} broadcast chunk(s) of at most ${maxOps} ops each (MAX_OPS_PER_BROADCAST).`,
+        `[COW] Splitting ${operations.length} operations into ${chunks.length} broadcast chunk(s) of at most ${maxOps} ops each (gap-slot batch size).`,
         'info'
     );
 
@@ -3168,7 +3167,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     const clampedUpdateSlotIds = new Set();
     // orderId -> operations index of its cancel op. A crossing re-pricing
     // update is only safe when the crossed order's cancel was already queued
-    // at an earlier position: ops broadcast in MAX_OPS_PER_BROADCAST chunks,
+    // at an earlier position: ops broadcast in gap-slot-sized chunks,
     // so an earlier index means the cancel confirms on chain (same or earlier
     // chunk, applied sequentially) before the crossing order lands.
     const cancelOpIndexByOrderId = new Map<string, number>();

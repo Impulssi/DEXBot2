@@ -1,8 +1,8 @@
 /**
  * tests/test_cow_ops_per_broadcast.ts
  *
- * Verifies the per-broadcast operation cap (MAX_OPS_PER_BROADCAST) enforced by
- * executeChunkedWithRetryOnUncertain:
+ * Verifies the gap-slot-derived per-broadcast operation cap enforced by
+ * executeChunkedWithRetryOnUncertain (batch size = manager._gapSlots):
  *   1. Batches at or below the cap broadcast as a single transaction.
  *   2. Batches above the cap are split into sequential broadcast chunks of at
  *      most `maxOps` operations each; the merged result preserves the
@@ -24,7 +24,6 @@ const { ensureFeeCache } = require('./helpers/fee_cache_init');
 ensureFeeCache();
 
 const { BroadcastUncertainError } = require('../modules/dexbot_credential_client');
-const { COW_PERFORMANCE } = require('../modules/constants');
 
 const chainOrdersPath = require.resolve('../modules/chain_orders');
 // Consumers capture named-export bindings at link time, so executeBatch is a
@@ -46,7 +45,7 @@ const chainOrders = defineEsmMockAbs(chainOrdersPath, [
     executeBatch: (...args: any[]) => executeBatchImpl(...args),
 });
 
-const DEFAULT_MAX_OPS = COW_PERFORMANCE.MAX_OPS_PER_BROADCAST;
+const DEFAULT_MAX_OPS = 4; // gap-slot batch size mirrored in makeBot via manager._gapSlots
 
 function makeOps(n: number) {
     const operations = [];
@@ -81,6 +80,7 @@ function makeBot(opts: { maxOps?: number } = {}) {
         incrementPercent: 0.5
     });
     bot.manager = {
+        _gapSlots: opts.maxOps ?? DEFAULT_MAX_OPS,
         assets: {
             assetA: { id: '1.3.0', precision: 8, symbol: 'BTS' },
             assetB: { id: '1.3.121', precision: 5, symbol: 'USD' }
@@ -109,7 +109,6 @@ function makeBot(opts: { maxOps?: number } = {}) {
     bot.account = 'test-account';
     bot.privateKey = 'test-private-key';
     bot._currentCycleId = 1;
-    if (opts.maxOps) bot._getMaxOpsPerBroadcast = () => opts.maxOps;
     return bot;
 }
 
@@ -194,15 +193,16 @@ async function testFailedChunkDoesNotSwallowRemaining() {
 }
 
 async function testAccessorDefault() {
-    console.log('[OPSCAP-004] _getMaxOpsPerBroadcast defaults from COW_PERFORMANCE...');
+    console.log('[OPSCAP-004] _getMaxOpsPerBroadcast resolves from gap slots...');
     const bot = makeBot();
     assert.strictEqual(bot._getMaxOpsPerBroadcast(), Math.max(1, DEFAULT_MAX_OPS));
+    assert.strictEqual(bot._getMaxOpsPerBroadcast(), bot._getGapSlotBatchSize(), 'ops cap must equal gap-slot batch size');
     assert.ok(bot._getMaxOpsPerBroadcast() >= 1, 'cap must be at least 1');
     console.log('✓ OPSCAP-004 passed');
 }
 
 async function testConfigOverride() {
-    console.log('[OPSCAP-005] _getMaxOpsPerBroadcast honors bot-level cowPerformance override...');
+    console.log('[OPSCAP-005] _getMaxOpsPerBroadcast follows manager._gapSlots...');
     const DEXBot = require('../modules/dexbot_class').default;
     const bot = new DEXBot({
         botKey: 'test_cow_ops_per_broadcast_override',
@@ -211,20 +211,20 @@ async function testConfigOverride() {
         assetA: 'BTS',
         assetB: 'USD',
         incrementPercent: 0.5,
-        cowPerformance: { MAX_OPS_PER_BROADCAST: 2 }
     });
     bot.manager = {
+        _gapSlots: 2,
         assets: {},
         orders: new Map(),
         logger: { log: () => {}, logFundsStatus: () => {} },
         _pendingBroadcasts: new Map(),
     };
-    assert.strictEqual(bot._getMaxOpsPerBroadcast(), 2, 'must honor bot-level override');
+    assert.strictEqual(bot._getMaxOpsPerBroadcast(), 2, 'must follow manager gap slots');
     console.log('✓ OPSCAP-005 passed');
 }
 
 async function testNonNumericCapFallsBackToMin() {
-    console.log('[OPSCAP-006] Non-numeric cap (NaN) → accessor and chunked execution fall back to min 1 (no infinite loop)...');
+    console.log('[OPSCAP-006] Invalid gap slots → accessor derives from config (min 1), chunked execution survives non-numeric accessor (no infinite loop)...');
     const DEXBot = require('../modules/dexbot_class').default;
     const bot = new DEXBot({
         botKey: 'test_cow_ops_per_broadcast_nan',
@@ -233,15 +233,22 @@ async function testNonNumericCapFallsBackToMin() {
         assetA: 'BTS',
         assetB: 'USD',
         incrementPercent: 0.5,
-        cowPerformance: { MAX_OPS_PER_BROADCAST: 'abc' as any }
     });
     bot.manager = {
+        _gapSlots: 'abc' as any,
         assets: {},
         orders: new Map(),
         logger: { log: () => {}, logFundsStatus: () => {} },
         _pendingBroadcasts: new Map(),
     };
-    assert.strictEqual(bot._getMaxOpsPerBroadcast(), 1, 'non-numeric cap must resolve to 1');
+    assert.ok(bot._getMaxOpsPerBroadcast() >= 1, 'invalid gap slots must fall back to a positive derived size');
+    // Strict check against the config-derived expectation (same inputs the
+    // accessor feeds calculateGapSlots: bot config, since manager.config is unset).
+    const { calculateGapSlots } = require('../modules/order/utils/math');
+    const expectedDerived = Math.max(1, Math.floor(Number(calculateGapSlots(
+        bot.config.incrementPercent, bot.config.targetSpreadPercent, bot.config.gridLimits))));
+    assert.strictEqual(bot._getMaxOpsPerBroadcast(), expectedDerived,
+        'invalid gap slots must derive exactly from config');
 
     // Runtime guard in executeChunkedWithRetryOnUncertain must also survive a
     // NaN/string maxOps even if the accessor is bypassed (e.g. fake bot).

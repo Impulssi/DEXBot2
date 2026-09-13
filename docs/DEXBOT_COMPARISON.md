@@ -674,14 +674,10 @@ Where:
 | `docs/COW_INVARIANTS.md` | Non-negotiable COW behavioral invariants |
 | `docs/CREDENTIAL_SECURITY.md` | Credential daemon, key policy, and security model |
 | `docs/MPA_CREDIT_USAGE.md` | Credit runtime and MPA usage guidance |
-| `docs/BROWSER_COMPAT_PLAN.md` | Browser-safe surface plan and Node/browser split |
-| `docs/PLAN_MIN_BTS_VALUE.md` | Minimum BTS value / dust handling planning |
 | `claw/docs/AI_BOT_LIBRARY_API.md` | Claw API boundary and responsibility split |
 | `claw/docs/DEXBOT2_TUNING_CHEAT_SHEET.md` | Grid tuning reference |
 | `claw/docs/POSITION_HEALTH.md` | Position health monitoring guide |
 | `claw/docs/RUNTIME_COMPARISON.md` | Claw runtime comparison |
-| ~~`docs/TYPESCRIPT_MIGRATION_ANALYSIS.md`~~ | ~~Removed — migration complete~~ |
-| `docs/crash_report_jan_mar_2026.md` | Production incident analysis |
 | `docs/docker.md` | Docker deployment guide |
 | `docs/README.md` | Docs index |
 | `AGENTS.md` | AI development context |

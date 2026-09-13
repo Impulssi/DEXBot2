@@ -482,7 +482,7 @@ Stale-Plan & Stack Discipline Tests (v1.4.8):
 - `COW_PERFORMANCE.MAX_REBALANCE_PLANNING_MS` — planning-phase duration above which a slow-plan warning is logged (100ms).
 - `COW_PERFORMANCE.GRID_MEMORY_WARNING` — working grid size (bytes) that triggers a memory warning (5,000).
 - `COW_PERFORMANCE.WORKING_GRID_BYTES_PER_ORDER` — estimated memory per order (500 bytes).
-- `COW_PERFORMANCE.MAX_OPS_PER_BROADCAST` — maximum order operations (creates, updates, cancels) per broadcast transaction (4); larger batches are split into sequential broadcasts.
+- `COW_PERFORMANCE.MAX_OPS_PER_BROADCAST` — *removed*; the per-broadcast operation cap is now derived from the grid gap-slot count (`DEXBot._getGapSlotBatchSize`); larger batches are split into sequential broadcasts.
 
 ### Pipeline Timing
 - `PIPELINE_TIMING.RECOVERY_DECAY_FALLBACK_MS` — recovery decay fallback (180 seconds).

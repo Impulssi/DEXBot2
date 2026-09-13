@@ -64,8 +64,10 @@
  *
  * FILL PROCESSING:
  *   9. FILL_PROCESSING - Fill event handling configuration
- *      MODE, OPERATION_TYPE, MAX_FILL_BATCH_SIZE
+ *      MODE, OPERATION_TYPE,
  *      MAX_CONSECUTIVE_CONSUMER_FAILURES, CONSUMER_BACKOFF_INITIAL_MS, CONSUMER_BACKOFF_MAX_MS
+ *      (Fill/broadcast batch sizing is derived from the grid gap-slot count;
+ *       see DEXBot._getGapSlotBatchSize.)
  *
  * MARKET ADAPTER CONFIGURATION:
  *   10. MARKET_ADAPTER - Price tracking and grid recalculation trigger settings
@@ -844,12 +846,9 @@ let FILL_PROCESSING = {
     // Operation type for fill_order blockchain operations
     OPERATION_TYPE: 4,
 
-    // Maximum fills processed per rebalance/broadcast cycle.
-    // Behavior:
-    // - 1..MAX_FILL_BATCH_SIZE fills -> single unified batch
-    // - >MAX_FILL_BATCH_SIZE fills   -> fixed-size chunking at MAX_FILL_BATCH_SIZE
-    // Set to 1 for current sequential behavior.
-    MAX_FILL_BATCH_SIZE: 4,
+    // NOTE: fill/broadcast batch sizing is derived from the grid gap-slot
+    // count (DEXBot._getGapSlotBatchSize). There is deliberately no fixed
+    // fill-batch or ops-per-broadcast constant here.
 
     // MAX_CONSECUTIVE_CONSUMER_FAILURES: Threshold for the _consumeFillQueue
     // watchdog. Below this count, the consumer re-schedules on every failure
@@ -1545,20 +1544,18 @@ let COW_PERFORMANCE = {
     // Default: 500 bytes (includes order object, metadata, and overhead).
     WORKING_GRID_BYTES_PER_ORDER: 500,
 
-    // MAX_OPS_PER_BROADCAST: Maximum number of order operations (creates,
-    // updates, cancels) carried by a single on-chain broadcast transaction.
-    // FILL_PROCESSING.MAX_FILL_BATCH_SIZE caps the number of FILLS per
-    // rebalance cycle, but one fill batch can expand into many more order
-    // operations (e.g. 4 fills -> 12 creates + 4 updates = 16 ops), so the
-    // fill cap is a weak proxy for broadcast size. Batches larger than this
-    // cap are split into sequential broadcasts of at most this many ops each,
+    // NOTE: the per-broadcast operation cap is derived from the grid
+    // gap-slot count (DEXBot._getGapSlotBatchSize, surfaced via
+    // _getMaxOpsPerBroadcast for backward compatibility). One fill batch can
+    // expand into many more order operations (e.g. 4 fills -> 12 creates +
+    // 4 updates = 16 ops), so batches larger than the gap-slot count are
+    // split into sequential broadcasts of at most gapSlots ops each,
     // bounding per-transaction stress on the chain.
-    MAX_OPS_PER_BROADCAST: 4,
 
     // MAX_CANCELS_PER_BROADCAST: Maximum number of limit_order_cancel ops in a
     // single batched orphan/surplus cancellation transaction
     // (correctAllPriceMismatches). Cancels are zero-fee and carry no balance
-    // state, so they can be far denser than MAX_OPS_PER_BROADCAST creates.
+    // state, so they can be far denser than gap-slot-sized create broadcasts.
     // This replaces the old serial path (one cancel tx + sleep per orphan,
     // ~1 order per 3s block) that let a 50-orphan duplicate backlog starve
     // CREATES for minutes.

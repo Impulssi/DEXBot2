@@ -105,7 +105,7 @@ sequenceDiagram
 ```
 
 Why it matters:
-- **Fixed-cap batching** (`MAX_FILL_BATCH_SIZE`, default 4) keeps bursts
+- **Gap-slot batching** (batch size = grid gap-slot count, `DEXBot._getGapSlotBatchSize`) keeps bursts
   deterministic — see `docs/architecture.md` §"Fill Processing Pipeline".
 - **Single rebalance cycle**: all fills in a batch share one broadcast, so proceeds
   are immediately available for replacement sizing (no split-across-cycles delay).
@@ -179,7 +179,7 @@ enforced*, not compiler-enforced — learn them or you will introduce fund bugs.
 | **Fund SSOT** | `Accounting` owns every fund number. Nothing else computes available funds. | `docs/architecture.md` §"Fund Flow Architecture" |
 | **Replay-safe fills** | A fill is credited exactly once via processed-fill keys; retries are idempotent. | `modules/dexbot_fill_runtime.ts` |
 | **Single broadcast per cycle** | One `updateOrdersOnChainBatch` per rebalance — never scatter writes. | `docs/architecture.md` §"Fill Processing Pipeline" |
-| **Browser/Node split** | Heavy runtime is Node-only; never import it from a browser bundle. | `AGENTS.md` "Browser-Safe Surface", `docs/BROWSER_COMPAT_PLAN.md` |
+| **Browser/Node split** | Heavy runtime is Node-only; never import it from a browser bundle. | `AGENTS.md` "Browser-Safe Surface", `package.json` "browser" field |
 | **Lock ordering** | Fill drain and maintenance must not run a rebalance concurrently. | `docs/developer_guide.md` §"Startup Sequence & Lock Ordering" |
 
 ---
