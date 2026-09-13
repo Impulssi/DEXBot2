@@ -504,6 +504,16 @@ async function checkAndApplyBotConfigChanges(bot: any, context: any = 'bots-conf
         }
         bot._appliedBotConfigFingerprint = fingerprint;
         bot._appliedBotConfigEntry = normalized;
+        // Operator "restore" signal: `dexbot clear-holds <bot>` drops a
+        // marker file; the next poll tick clears in-memory holds (no
+        // restart, no resync — plain file unilateral signaling, consumed
+        // once). Distinct from recalculate.*.trigger files, which the resync
+        // watcher owns.
+        try {
+            const { consumeClearMarker: consumeHolds } = require('./order/manual_hold.js');
+            const clearKey = bot?.config?.botKey || bot?.manager?.config?.botKey || null;
+            if (clearKey) consumeHolds(bot?.manager, PROFILES_DIR, clearKey);
+        } catch { /* never break the poll tick */ }
         if (liveChanges.length > 0) {
             const summary = liveChanges
                 .map((c: any) => `${c.key} ${stableStringifyForBotConfig(c.oldValue)}->${stableStringifyForBotConfig(c.newValue)}`)

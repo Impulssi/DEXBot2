@@ -641,8 +641,9 @@ class OrderManager {
         this.processedFillStore = null;
         // Manual-cancel holds (slotId -> {price, ts}): user-cancelled slots
         // stay empty until the market moves significantly past them.
-        // Session-scoped on purpose: a restart clears holds and the grid
-        // refills normally, which is the operator's explicit restore action.
+        // Persisted across crashes (holds survive); a graceful shutdown
+        // clears them so an operator restart refills normally. `dexbot
+        // clear-holds <bot>` clears them live via marker file.
         this.manualHolds = new Map();
 
         // LOCK HIERARCHY (convention — not enforced at runtime to avoid false

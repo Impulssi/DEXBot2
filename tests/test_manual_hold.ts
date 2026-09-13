@@ -17,6 +17,10 @@ const {
     isSlotHeld,
     getManualHoldMap,
     classifyDisappearance,
+    clearMarkerPath,
+    consumeClearMarker,
+    serializeManualHolds,
+    restoreManualHolds,
 } = require('../modules/order/manual_hold');
 const chainOrders = require('../modules/chain_orders');
 
@@ -74,14 +78,21 @@ check('null hold expires', isManualHoldExpired(null, 100, 0.075), true);
     check('far gone', isSlotHeld(mgr, 'far'), false);
 }
 
-// --- holds are session-scoped: a fresh manager starts empty (restart = restore) ---
+// --- serialize / restore roundtrip (crash survival; graceful stop clears instead) ---
 {
     const mgr = fakeManager({});
+    mgr.orders.set('slot-1', { id: 'slot-1', price: 100 });
     recordManualHold(mgr, 'slot-1', 100);
-    check('held in session', isSlotHeld(mgr, 'slot-1'), true);
+    recordManualHold(mgr, 'slot-gone', 50);
+    const snap = serializeManualHolds(mgr);
+    check('serializes both', snap.length, 2);
     const mgr2 = fakeManager({});
-    check('fresh manager has no holds', isSlotHeld(mgr2, 'slot-1'), false);
-    check('fresh map is empty', getManualHoldMap(mgr2).size, 0);
+    mgr2.orders.set('slot-1', { id: 'slot-1', price: 100 });
+    const restored = restoreManualHolds(mgr2, snap);
+    check('restores only surviving slot', restored, 1);
+    check('survivor held', isSlotHeld(mgr2, 'slot-1'), true);
+    check('dead id dropped', isSlotHeld(mgr2, 'slot-gone'), false);
+    check('garbage input restores zero', restoreManualHolds(fakeManager({}), null), 0);
 }
 
 // --- classifyDisappearance: fill / own / manual ---
@@ -97,6 +108,28 @@ check('null hold expires', isManualHoldExpired(null, 100, 0.075), true);
     mgr._fillBatchInFlight = 1;
     check('in-flight fills -> fill (fail-open)', classifyDisappearance(mgr, { id: 's', orderId: '1.7.999' }), 'fill');
     mgr._fillBatchInFlight = 0;
+}
+
+// --- clear-marker consume (dexbot clear-holds handshake) ---
+{
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'holds-'));
+    try {
+        check('no marker -> -1', consumeClearMarker(fakeManager({}), tmp, 'bot1'), -1);
+        check('bad args -> -1', consumeClearMarker(fakeManager({}), '', ''), -1);
+        const mgr = fakeManager({});
+        recordManualHold(mgr, 'slot-9', 100);
+        fs.writeFileSync(path.join(tmp, 'manual-holds.clear.bot1'), 'clear\n', 'utf8');
+        check('marker clears holds', consumeClearMarker(mgr, tmp, 'bot1'), 1);
+        check('holds gone', isSlotHeld(mgr, 'slot-9'), false);
+        check('marker consumed', fs.existsSync(path.join(tmp, 'manual-holds.clear.bot1')), false);
+        check('second consume -> -1', consumeClearMarker(mgr, tmp, 'bot1'), -1);
+        check('marker path null on empty', clearMarkerPath('', ''), null);
+    } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+    }
 }
 
 console.log(`✓ Manual hold tests passed! (${passed} assertions)`);

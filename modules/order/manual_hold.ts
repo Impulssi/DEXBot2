@@ -10,17 +10,20 @@
  *
  * Detection lives in sync_engine (a disappearance with no fill record and
  * no recent own-cancel). Suppression lives in the placement pickers
- * (strategy windows, startup activation, reserve edges). Holds are
- * deliberately session-scoped: a restart clears them and the grid refills
- * normally, which doubles as the operator's explicit "restore" action.
+ * (strategy windows, startup activation, reserve edges). Holds persist
+ * across crashes (snapshot) so an auto-restart never refills what the
+ * operator removed; a graceful shutdown clears them (operator stop =
+ * explicit restore), as does `dexbot clear-holds <bot>` via marker file.
  *
  * Move threshold: MANUAL_HOLD_MOVE_MULT * incrementPercent (default 5x).
  * At 1.5% increment a hold releases after a ~7.5% market move past it.
  */
 
+import fs from 'node:fs';
 import { loadAmaCenterPrice, loadAmaCenterSnapshot } from './utils/system.js';
 import { getErrorMessage } from '../utils/errors.js';
 import { wasRecentlyOwnCancelled } from '../chain_orders.js';
+import { path } from '../path_api.js';
 
 // How many grid increments of market movement release a hold, measured
 // from the held price. Relative to incrementPercent so the rule scales
@@ -112,6 +115,46 @@ function isSlotHeld(manager: any, slotId: string | null | undefined): boolean {
     return getManualHoldMap(manager).has(String(slotId));
 }
 
+function clearMarkerPath(profilesDir: string, botKey: string): string | null {
+    try {
+        if (!profilesDir || !botKey) return null;
+        return path.join(profilesDir, `manual-holds.clear.${botKey}`);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Consume an operator "restore" marker (`dexbot clear-holds <bot>`).
+ * Clears in-memory holds so held slots refill normally; the marker is
+ * deleted whether or not holds existed (one-shot signal). Distinct from
+ * recalculate.*.trigger files, which the resync watcher owns.
+ *
+ * @param {Object} manager - OrderManager
+ * @param {string} profilesDir - Profiles directory holding marker files
+ * @param {string} botKey - Bot key used in the marker filename
+ * @returns {number} Holds cleared (-1 when no marker present)
+ */
+function consumeClearMarker(manager: any, profilesDir: string, botKey: string): number {
+    try {
+        const marker = clearMarkerPath(profilesDir, botKey);
+        if (!marker || !fs.existsSync(marker)) return -1;
+        const holds = getManualHoldMap(manager);
+        const n = holds.size;
+        holds.clear();
+        try { fs.unlinkSync(marker); } catch { /* consumed anyway */ }
+        if (n > 0) {
+            manager?.logger?.log?.(
+                `[HOLD] Cleared ${n} manual-cancel hold(s) via operator marker (grid refills normally)`,
+                'info'
+            );
+        }
+        return n;
+    } catch {
+        return -1;
+    }
+}
+
 /**
  * Classify why a live order disappeared from chain between syncs.
  *
@@ -157,6 +200,39 @@ function classifyDisappearance(manager: any, slot: any): 'fill' | 'own' | 'manua
     }
 }
 
+function serializeManualHolds(manager: any): Array<{ slotId: string; price: number; ts: number }> {
+    const holds = getManualHoldMap(manager);
+    const out: Array<{ slotId: string; price: number; ts: number }> = [];
+    for (const [slotId, hold] of holds) {
+        const price = Number(hold?.price);
+        const ts = Number(hold?.ts);
+        if (!slotId || !Number.isFinite(price) || price <= 0) continue;
+        out.push({ slotId: String(slotId), price, ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now() });
+    }
+    return out.slice(-500);
+}
+
+function restoreManualHolds(manager: any, persisted: any): number {
+    if (!manager) return 0;
+    const holds = getManualHoldMap(manager);
+    let restored = 0;
+    const list = Array.isArray(persisted) ? persisted : [];
+    for (const e of list) {
+        const slotId = e?.slotId != null ? String(e.slotId) : '';
+        const price = Number(e?.price);
+        const ts = Number(e?.ts);
+        if (!slotId || !Number.isFinite(price) || price <= 0) continue;
+        // Only restore for slots that still exist: a grid reset/regen with a
+        // renamed scheme must never resurrect holds for dead ids.
+        try {
+            if (manager.orders instanceof Map && !manager.orders.has(slotId)) continue;
+        } catch { /* fall through without the existence check */ }
+        holds.set(slotId, { price, ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now() });
+        restored++;
+    }
+    return restored;
+}
+
 export {
     MANUAL_HOLD_MOVE_MULT,
     getManualHoldMap,
@@ -168,4 +244,8 @@ export {
     pruneManualHolds,
     isSlotHeld,
     classifyDisappearance,
+    serializeManualHolds,
+    restoreManualHolds,
+    clearMarkerPath,
+    consumeClearMarker,
 };

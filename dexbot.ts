@@ -179,7 +179,7 @@ if (typeof credentialPolicy.checkPolicyFileSecurity === 'function') credentialPo
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
 
-const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'tv', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'reload', 'help'];
+const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'tv', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'clear-holds', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'reload', 'help'];
 const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'unlock', defaults: 'default', stp: 'stop', stopall: 'stop', restartall: 'restart', reloadall: 'reload' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
@@ -199,6 +199,7 @@ const CLI_EXAMPLES = [
     { title: 'Show live credit/MPA positions', command: 'dexbot credit', notes: 'Queries get_margin_positions + get_credit_deals_by_borrower per preferredAccount and prints debt/collateral sums plus one Curr. CR line per whitelisted pair (active CR, else borrow-now CR vs funds avail. on the offer) and one Avar. CR line per bot. CR covers only pairs whitelisted in bots.json and listed on the current credit offer. Add a bot key to render only that bot.' },
     { title: 'TradingView chart for a bot, pool, or pair', command: 'dexbot tv <bot|pool-id|AssetA/AssetB> --month 3', notes: 'Fetches 1h candles for N months (default 3, pool-first with orderbook fallback; --feed charts MPA price-feed history) and writes an auto-named HTML chart.' },
     { title: 'Clear all bot log files', command: 'dexbot clear', notes: 'Runs scripts/clear-logs.sh to remove log files from the logs directory (<profiles>/logs).' },
+    { title: 'Clear manual-cancel holds', command: 'dexbot clear-holds <bot>', notes: 'Clears the refill suppression for operator-cancelled slots so they refill normally (running bot picks it up on next poll, no restart).' },
     { title: 'Reset settings to defaults', command: 'dexbot default', notes: 'Runs scripts/reset-settings.sh to delete general.settings.json, market_profiles.json, and market_adapter_settings.json.' }
 ];
 
@@ -1084,6 +1085,24 @@ async function handleCLICommands() {
             });
             if (result.error) {
                 console.error(`tv: ${result.error.message}`);
+                process.exit(1);
+            }
+            process.exit(result.status ?? 0);
+            return true;
+        }
+        case 'clear-holds': {
+            const { spawnSync } = require('child_process') as any as any;
+            const scriptArgs = buildRuntimeScriptArgs({
+                codeRoot: __dirname,
+                scriptSegments: ['scripts', 'clear-holds'],
+                scriptArgs: cliArgs.slice(1),
+            });
+            const result = spawnSync(Config.EXEC_PATH, scriptArgs, {
+                cwd: PATHS.PROJECT_ROOT,
+                stdio: 'inherit',
+            });
+            if (result.error) {
+                console.error(`clear-holds: ${result.error.message}`);
                 process.exit(1);
             }
             process.exit(result.status ?? 0);

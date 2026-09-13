@@ -2059,6 +2059,18 @@ class DEXBot {
                         if (this._incomingFillQueue.length > 0) {
                             this._warn(`${this._incomingFillQueue.length} fills queued but not processed at shutdown`);
                         }
+                        // Graceful shutdown clears manual-cancel holds: an
+                        // operator stop is the explicit "restore the grid"
+                        // action. A crash never reaches here, so crash
+                        // restarts keep holds from the last snapshot instead.
+                        try {
+                            const holds = this.manager?.manualHolds;
+                            if (holds instanceof Map && holds.size > 0) {
+                                const n = holds.size;
+                                holds.clear();
+                                this._log(`[HOLD] Cleared ${n} manual-cancel hold(s) on graceful shutdown (grid refills normally)`);
+                            }
+                        } catch { /* never block shutdown */ }
                         await this._flushProcessedFillPersistence(label);
                         if (this.manager && this.accountOrders && this.config?.botKey) {
                             try {
