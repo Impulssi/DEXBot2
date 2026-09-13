@@ -22,7 +22,13 @@ async function testCOWDivergenceCorrection() {
         incrementPercent: 1,
         targetSpreadPercent: 2,
         activeOrders: { buy: 3, sell: 3 },
-        botFunds: { buy: 1000, sell: 1000 }
+        botFunds: { buy: 1000, sell: 1000 },
+        // Pinned closest-first: these divergence-mechanics tests place
+        // fixtures at the top buy slots and assume closest-first window
+        // membership. Our fork defaults to keep-low ('low'), which would
+        // strand the fixtures as surplus. Direction is orthogonal here;
+        // keep-low itself is covered by test_buy_window_config.
+        buyWindowMode: 'closest',
     });
 
     manager.assets = {
