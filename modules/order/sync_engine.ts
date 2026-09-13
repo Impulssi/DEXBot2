@@ -139,6 +139,7 @@ import {
     resolveProcessedFillPersistenceMode
 } from './processed_fill_store.js';
 import { getErrorMessage } from '../utils/errors.js';
+import { classifyDisappearance, recordManualHold, pruneManualHolds } from './manual_hold.js';
 
 /**
  * Confirming re-read for the suspect-empty-read guard: after
@@ -685,6 +686,12 @@ class SyncEngine {
 
         mgr.logger?.log?.(`[SYNC] Starting synchronization from ${parsedChainOrders.size} blockchain orders...`, 'info');
 
+        // Release manual-cancel holds the market moved past: a hold must
+        // never pin a slot forever if the operator forgets it.
+        try {
+            pruneManualHolds(mgr);
+        } catch { /* never block sync */ }
+
         // SUSPECT EMPTY READ GUARD (Fix C): an empty chain read while the grid
         // still holds placed orders (slots with orderIds) is far more likely a
         // lagging/partial node response than a genuinely emptied account — a
@@ -1135,18 +1142,29 @@ class SyncEngine {
 
                 // Only genuine disappearances (had orderId) count as fills.
                 if (hadOrderId) {
-                    // A SPREAD slot can carry an on-chain order (spread-correction
-                    // activation). Resolve the real side before pushing: the fill
-                    // drives deriveTargetBoundary, which only shifts on BUY/SELL —
-                    // a SPREAD-typed fill would silently drop the boundary crawl
-                    // for this completed order. Same price-vs-startPrice convention
-                    // as the funds check (manager.ts) since no chain order remains
-                    // to resolve the side from.
-                    let resolvedType = currentGridOrder.type;
-                    if (resolvedType === ORDER_TYPES.SPREAD) {
-                        resolvedType = resolveSpreadOrderSide(currentGridOrder.price, mgr.config.startPrice);
+                    // Manual-cancel hold: an order that vanished with no fill
+                    // record and no recent own-cancel was almost certainly
+                    // cancelled by the operator by hand. Book nothing (no
+                    // boundary crawl, no fund/weight churn) and hold the slot
+                    // empty instead of refilling it on the next cycle. The
+                    // virtualization above already released the funds.
+                    const disappearance = classifyDisappearance(mgr, currentGridOrder);
+                    if (disappearance === 'manual') {
+                        recordManualHold(mgr, currentGridOrder.id, currentGridOrder.price);
+                    } else {
+                        // A SPREAD slot can carry an on-chain order (spread-correction
+                        // activation). Resolve the real side before pushing: the fill
+                        // drives deriveTargetBoundary, which only shifts on BUY/SELL —
+                        // a SPREAD-typed fill would silently drop the boundary crawl
+                        // for this completed order. Same price-vs-startPrice convention
+                        // as the funds check (manager.ts) since no chain order remains
+                        // to resolve the side from.
+                        let resolvedType = currentGridOrder.type;
+                        if (resolvedType === ORDER_TYPES.SPREAD) {
+                            resolvedType = resolveSpreadOrderSide(currentGridOrder.price, mgr.config.startPrice);
+                        }
+                        filledOrders.push({ ...currentGridOrder, type: resolvedType });
                     }
-                    filledOrders.push({ ...currentGridOrder, type: resolvedType });
                 }
             }
         }

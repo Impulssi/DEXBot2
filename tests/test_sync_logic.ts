@@ -82,14 +82,17 @@ async function runTests() {
             id: 'g-1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY,
             size: 100, price: 50, orderId: 'c-123'
         });
-        // Sync with empty chain -> order filled
+        // Sync with empty chain + fill record present -> order filled.
+        // (Without a fill record the same disappearance is a manual hold;
+        // see the manual-hold block below.)
+        manager.processedFillTracker.set('c-123:1:abc', Date.now());
         const result = await manager.sync.syncFromOpenOrders([]);
         assert.strictEqual(result.filledOrders.length, 1, 'Missing ACTIVE order should be reported as filled');
         assert.strictEqual(result.filledOrders[0].id, 'g-1', 'Filled order should map to grid slot');
         assert.strictEqual(result.filledOrders[0].orderId, 'c-123', 'Filled order should preserve chain orderId');
     }
 
-    console.log(' - Testing Missing ACTIVE with orderId Is Fill Signal...');
+    console.log(' - Testing Missing ACTIVE with orderId and no fill record Is Manual Hold...');
     {
         const manager = await createManager();
         await manager._updateOrder({
@@ -100,8 +103,10 @@ async function runTests() {
         const result = await manager.sync.syncFromOpenOrders([]);
         const hit = result.filledOrders.find(o => o.id === 'fill-signal-1');
 
-        assert(hit, 'Missing ACTIVE/PARTIAL order with orderId must appear in filledOrders');
-        assert.strictEqual(hit.orderId, 'c-fill-signal-1', 'Fill signal should retain chain order id');
+        assert(!hit, 'Disappearance without fill evidence must NOT book a fill (manual hold)');
+        assert(manager.manualHolds.has('fill-signal-1'), 'Slot must carry a manual hold');
+        const slot = manager.orders.get('fill-signal-1');
+        assert.strictEqual(slot.state, ORDER_STATES.VIRTUAL, 'Slot still virtualizes (funds released)');
     }
 
     console.log(' - Testing Partial Fill Detection...');

@@ -141,6 +141,7 @@ async function initializeStartupState(bot: any) {
     const persistedRecentFillKeys = bot.accountOrders.loadRecentFillKeys();
     const persistedGenesis = bot.accountOrders.loadGenesis?.() ?? null;
     const persistedGapEvacStreaks = bot.accountOrders.loadGapEvacStreaks?.() ?? null;
+    const persistedManualHolds = bot.accountOrders.loadManualHolds?.() ?? null;
 
     return {
         persistedGrid: repairedGrid,
@@ -150,6 +151,7 @@ async function initializeStartupState(bot: any) {
         persistedRecentFillKeys,
         persistedGenesis,
         persistedGapEvacStreaks,
+        persistedManualHolds,
     };
 }
 
@@ -167,6 +169,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
         persistedRecentFillKeys,
         persistedGenesis,
         persistedGapEvacStreaks,
+        persistedManualHolds,
     } = startupState;
 
     try {
@@ -582,6 +585,13 @@ async function finishStartupSequence(bot: any, startupState: any) {
                     const restoredStreaks = restoreGapEvacStreaks(bot.manager, persistedGapEvacStreaks);
                     if (restoredStreaks > 0) {
                         bot._log(`[GAP-EVAC] Restored ${restoredStreaks} persisted in-band streak(s) from snapshot`);
+                    }
+                    // Manual-cancel holds: user-cancelled slots stay empty
+                    // across restarts until the market moves past them.
+                    const { restoreManualHolds: restoreHolds } = require('./order/manual_hold.js');
+                    const restoredHolds = restoreHolds(bot.manager, persistedManualHolds);
+                    if (restoredHolds > 0) {
+                        bot._log(`[HOLD] Restored ${restoredHolds} persisted manual-cancel hold(s) from snapshot`);
                     }
                     // Pending-crawl application: fills recorded but never
                     // committed before shutdown (refused broadcast, aborted

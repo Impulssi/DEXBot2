@@ -58,7 +58,8 @@ async function runTests() {
         assert.strictEqual(manager.accountId, undefined, 'precondition: no accountId in unit manager');
         manager._suspectEmptyReads = { count: LIMIT - 1, firstAt: 1 };
         const result = await manager.sync.syncFromOpenOrders([]);
-        assert.strictEqual(result.filledOrders.length, 1, 'legacy accept: missing ACTIVE reported filled');
+        assert.strictEqual(result.filledOrders.length, 0, 'legacy accept: missing ACTIVE without fill evidence is a manual hold, not a fill');
+        assert(manager.manualHolds.has('slot-1'), 'Slot must carry a manual hold');
         assert.deepStrictEqual(manager._suspectEmptyReads, { count: 0, firstAt: 0 }, 'counter reset after accept');
     }
 
@@ -102,7 +103,8 @@ async function runTests() {
         manager._confirmEmptyReadFn = async () => [];
         manager._suspectEmptyReads = { count: LIMIT - 1, firstAt: 1 };
         const result = await manager.sync.syncFromOpenOrders([]);
-        assert.strictEqual(result.filledOrders.length, 1, 'confirmed empty reconciles (fill detected)');
+        assert.strictEqual(result.filledOrders.length, 0, 'confirmed empty reconciles without fill booking (manual hold)');
+        assert(manager.manualHolds.has('slot-1'), 'Slot must carry a manual hold');
         assert.deepStrictEqual(manager._suspectEmptyReads, { count: 0, firstAt: 0 }, 'counter reset after accept');
         delete manager._confirmEmptyReadFn;
     }

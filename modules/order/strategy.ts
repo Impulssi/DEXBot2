@@ -49,6 +49,7 @@
 
 
 import { ORDER_TYPES, ORDER_STATES } from '../constants.js';
+import { pruneManualHolds, isSlotHeld } from './manual_hold.js';
 
 import { calculateGapSlots } from './grid.js';
 import { isSlotInRail, resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, isDeepShelfId } from './utils/math.js';
@@ -400,12 +401,18 @@ class StrategyEngine {
         const windowLow = resolveBuyWindowMode(config) !== 'closest';
         // Rail window never contains shelf ids: they sit below the rail and
         // would otherwise displace the window upward (slice takes lowest).
+        // Manual-cancel holds: user-emptied slots are not candidates until
+        // the market moves significantly past them (pruned by price here).
+        try { pruneManualHolds(this.manager); } catch { /* never block placement */ }
+        const notHeld = (o: any) => !isSlotHeld(this.manager, o?.id);
         const buyCandidates = allBuySlots
             .filter(inBuyRail)
             .filter((o: any) => !isDeepShelfId(o.id))
+            .filter(notHeld)
             .sort((a: any, b: any) => windowLow ? a.price - b.price : b.price - a.price);
         const sellCandidates = allSellSlots
             .filter(inSellRail)
+            .filter(notHeld)
             .sort((a: any, b: any) => a.price - b.price);
 
         const snapRail = (slots: any[], dir: number) => {

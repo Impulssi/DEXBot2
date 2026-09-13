@@ -14,6 +14,7 @@ import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPai
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
+import { pruneManualHolds, isSlotHeld } from './manual_hold.js';
 
 function computePlacementPriceCollision(manager: any, gridOrder: any): any {
     const precision = gridOrder.type === ORDER_TYPES.SELL ? manager.assets.assetA.precision : manager.assets.assetB.precision;
@@ -202,10 +203,14 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
     // strategy.ts / manager.ts guard. BUY size is in quote (USDT).
     const windowLow = type !== ORDER_TYPES.BUY || resolveBuyWindowMode(manager?.config) !== 'closest';
     const buyFloorUsdt = type === ORDER_TYPES.BUY ? resolveBuyFloorUsdt(manager?.config) : 0;
+    // Manual-cancel holds: user-emptied slots stay empty until the market
+    // moves significantly past them (pruned by price here).
+    try { pruneManualHolds(manager); } catch { /* never block activation */ }
     const slotsOfType = (Array.from(manager.orders.values()) as any[])
         .filter(typeFilter)
         .filter(inRail)
         .filter((s: any) => !isDeepShelfId(s?.id))
+        .filter((s: any) => !isSlotHeld(manager, s?.id))
         .sort((a: any, b: any) => (type === ORDER_TYPES.BUY && windowLow) || type !== ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
     const candidates = type === ORDER_TYPES.BUY && windowLow
         ? slotsOfType.slice(0, count)
@@ -360,6 +365,7 @@ function _pickEdgeReserveSlots(manager: any, orderType: any, count: any, exclude
         .filter(typeFilter)
         .filter(gridSlot)
         .filter(inRail)
+        .filter((s: any) => !isSlotHeld(manager, s?.id))
         .sort((a: any, b: any) => compareReserveEdge(a, b, edgeDesc ? 'ceiling' : 'floor', edgeAnchor));
     let effectiveMin = 0;
     try {
@@ -1843,6 +1849,7 @@ async function _reconcileStartupSide({
             // reaches this scan as a candidate.
             if (slotOrder.state !== ORDER_STATES.VIRTUAL) continue;
             if (slotOrder.orderId) continue;
+            if (isSlotHeld(manager, slotOrder.id)) continue;
             if (desiredSlotIds.has(slotOrder.id) || vacatedRefillPlanned.has(slotOrder.id)) continue;
             if (slotOrder.type !== orderType) continue;
             if (isOrderPlaced(slotOrder)) continue;

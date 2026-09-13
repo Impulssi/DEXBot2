@@ -68,8 +68,8 @@ async function runTests() {
         const result = await syncEmptyUntilConfirmed(manager);
         const order = manager.orders.get('slot-2');
         assert.strictEqual(order.state, ORDER_STATES.VIRTUAL, 'Non-committed order should be virtualized after confirmed empty');
-        assert.strictEqual(result.filledOrders.length, 1, 'Fill should be reported for non-committed order');
-        assert.strictEqual(result.filledOrders[0].id, 'slot-2', 'Fill should reference the correct slot');
+        assert.strictEqual(result.filledOrders.length, 0, 'Disappearance without fill evidence is a manual hold, not a fill');
+        assert(manager.manualHolds.has('slot-2'), 'Slot must carry a manual hold');
     }
 
     console.log(' - Order removed from committed set is not protected...');
@@ -84,7 +84,8 @@ async function runTests() {
         const result = await syncEmptyUntilConfirmed(manager);
         const order = manager.orders.get('slot-3');
         assert.strictEqual(order.state, ORDER_STATES.VIRTUAL, 'Order removed from committed set should be virtualized');
-        assert.strictEqual(result.filledOrders.length, 1, 'Fill should be reported');
+        assert.strictEqual(result.filledOrders.length, 0, 'Disappearance without fill evidence is a manual hold, not a fill');
+        assert(manager.manualHolds.has('slot-3'), 'Slot must carry a manual hold');
     }
 
     console.log(' - Protection works through synchronizeWithChain readOpenOrders...');
@@ -129,8 +130,8 @@ async function runTests() {
         const result = await syncEmptyUntilConfirmed(manager);
         const order = manager.orders.get('ghost-slot');
         assert.strictEqual(order.state, ORDER_STATES.VIRTUAL, 'Ghost order (PARTIAL+size=0) should be virtualized despite being in committed set');
-        assert.strictEqual(result.filledOrders.length, 1, 'Fill should be reported for ghost order');
-        assert.strictEqual(result.filledOrders[0].id, 'ghost-slot', 'Fill should reference ghost slot');
+        assert.strictEqual(result.filledOrders.length, 0, 'Ghost disappearance without fill evidence is a manual hold, not a fill');
+        assert(manager.manualHolds.has('ghost-slot'), 'Slot must carry a manual hold');
     }
 
     console.log(' - Old committed order escapes protection via time-based hatch...');
@@ -145,7 +146,8 @@ async function runTests() {
         const result = await syncEmptyUntilConfirmed(manager);
         const order = manager.orders.get('old-committed');
         assert.strictEqual(order.state, ORDER_STATES.VIRTUAL, 'Old committed order should be virtualized via time-based hatch');
-        assert.strictEqual(result.filledOrders.length, 1, 'Fill should be reported for old committed order');
+        assert.strictEqual(result.filledOrders.length, 0, 'Disappearance without fill evidence is a manual hold, not a fill');
+        assert(manager.manualHolds.has('old-committed'), 'Slot must carry a manual hold');
     }
 
     console.log(' - Recently committed order stays protected within grace window...');

@@ -16,7 +16,7 @@
  * 1. AccountOrders(options) - Class for per-bot order persistence
  *    Constructor options: { botKey, ordersDir?, profilesPath? } (botKey required, throws if missing)
  *    Methods:
- *      syncMeta(botConfig), storeMasterGrid(orders, btsFeesOwed, boundaryIdx, assets, debugInputs, recentFillKeys, genesis, gapEvacStreaks, pendingFillCrawls)
+  *      syncMeta(botConfig), storeMasterGrid(orders, btsFeesOwed, boundaryIdx, assets, debugInputs, recentFillKeys, genesis, gapEvacStreaks, pendingFillCrawls, manualHolds)
  *      loadGrid(forceReload), loadRecentFillKeys(forceReload), loadPersistedAssets(forceReload), loadPendingFillCrawls(forceReload)
  *      loadBoundaryIdx(forceReload), loadBtsBalance(forceReload), loadBtsFeesOwed(forceReload), loadGapEvacStreaks(forceReload), loadGenesis(forceReload)
  *      clearGrid()
@@ -335,7 +335,7 @@ class AccountOrders {
    * @param {Object|null} recentFillKeys - Optional fill key dedup snapshot for crash recovery
    * @param {Object|null} genesis - Optional frozen genesis (priceLevels etc)
    */
-  async storeMasterGrid(orders: any[] = [], btsFeesOwed: any = null, boundaryIdx: any = null, assets: any = null, debugInputs: any = null, recentFillKeys: any = null, genesis: any = null, gapEvacStreaks: any = undefined, pendingFillCrawls: any = undefined) {
+  async storeMasterGrid(orders: any[] = [], btsFeesOwed: any = null, boundaryIdx: any = null, assets: any = null, debugInputs: any = null, recentFillKeys: any = null, genesis: any = null, gapEvacStreaks: any = undefined, pendingFillCrawls: any = undefined, manualHolds: any = undefined) {
     // Use AsyncLock to serialize read-modify-write operations
     await this._persistenceLock.acquire(async () => {
       // Reload from disk before writing to prevent race conditions
@@ -420,6 +420,27 @@ class AccountOrders {
           delete (this.data as any).pendingFillCrawls;
         }
       }
+      // Persist manual-cancel holds (restart resilience): user-cancelled
+      // slots stay empty across restarts until the market moves past them.
+      // Same empty-clears semantics as pendingFillCrawls above.
+      if (manualHolds !== undefined) {
+        const sanitized: { slotId: string; price: number; ts: number }[] = [];
+        if (Array.isArray(manualHolds)) {
+          for (const e of manualHolds.slice(-500)) {
+            const slotId = e?.slotId != null ? String(e.slotId) : '';
+            const price = Number(e?.price);
+            const ts = Number(e?.ts);
+            if (slotId && Number.isFinite(price) && price > 0) {
+              sanitized.push({ slotId, price, ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now() });
+            }
+          }
+        }
+        if (sanitized.length > 0) {
+          (this.data as any).manualHolds = sanitized;
+        } else {
+          delete (this.data as any).manualHolds;
+        }
+      }
 
       const timestamp = nowIso();
       this.data.lastUpdated = timestamp;
@@ -498,6 +519,30 @@ class AccountOrders {
         if (e && typeof e.slotId === 'string' && e.slotId.length > 0
           && (e.side === 'buy' || e.side === 'sell') && Number.isFinite(Number(e.ts))) {
           out.push({ slotId: e.slotId, side: e.side, ts: Number(e.ts) });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Load persisted manual-cancel holds for this bot.
+   * @param {boolean} forceReload - If true, reload from disk
+   * @returns {Array} Sanitized hold entries {slotId, price, ts} (possibly empty)
+   */
+  loadManualHolds(forceReload: boolean = false) {
+    if (forceReload) {
+      this.data = this._loadData() || emptyData();
+    }
+    const out: { slotId: string; price: number; ts: number }[] = [];
+    const stored = this.data && (this.data as any).manualHolds;
+    if (Array.isArray(stored)) {
+      for (const e of stored) {
+        const slotId = e?.slotId != null ? String(e.slotId) : '';
+        const price = Number(e?.price);
+        const ts = Number(e?.ts);
+        if (slotId && Number.isFinite(price) && price > 0) {
+          out.push({ slotId, price, ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now() });
         }
       }
     }

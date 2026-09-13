@@ -71,6 +71,7 @@ import {
 } from './utils/validate.js';
 import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, getSideBudget, getActiveOrdersTotal, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge, collectRefillSlotIds } from './utils/order.js';
 import { getErrorMessage } from '../utils/errors.js';
+import { clearManualHold } from './manual_hold.js';
 const { toFiniteNumber } = Format;
 
 // ===============================================================================
@@ -527,6 +528,7 @@ class OrderManager {
     shadowOrderIds: Map<any, any>;
     processedFillTracker: Map<any, any>;
     processedFillStore: any;
+    manualHolds: Map<any, any>;
     _syncLock: any;
     _fillProcessingLock: any;
     _divergenceLock: any;
@@ -637,6 +639,10 @@ class OrderManager {
         this.shadowOrderIds = new Map();
         this.processedFillTracker = new Map();
         this.processedFillStore = null;
+        // Manual-cancel holds (slotId -> {price, ts}): user-cancelled slots
+        // stay empty until the market moves significantly past them.
+        // Persisted via AccountOrders (see restoreManualHolds at boot).
+        this.manualHolds = new Map();
 
         // LOCK HIERARCHY (convention — not enforced at runtime to avoid false
         // positives from async contention and multi-bot sharing a process).
@@ -1475,6 +1481,12 @@ class OrderManager {
         // validation.normalizedOrder may reference a frozen master-grid order,
         // and _resolveBtsFeeLifecycle mutates btsFeeState on the order object.
         let nextOrder = { ...validation.normalizedOrder };
+        // A slot that (re)gains an on-chain order is not held anymore: the
+        // operator re-placed it by hand, or the bot (re)filled the level.
+        // Either way the manual hold for this slot is over.
+        try {
+            if (nextOrder?.id != null && nextOrder?.orderId) clearManualHold(this, nextOrder.id);
+        } catch { /* hold bookkeeping must never break order updates */ }
 
         // Apply phantom order auto-correction to the normalized order
         const phantomError = validation.errors.find((e: any) => e.code === 'PHANTOM_ORDER');
