@@ -1030,11 +1030,16 @@ async function runTests() {
         const railChain = Array.from({ length: 12 }, (_, i) => ({ id: `1.7.${900 + i}` }));
         const shelfChain = shelfIds.map((s) => ({ id: s.orderId }));
         const fullChain = [...railChain, ...shelfChain];
-        // chain 15 (12 rail + 3 shelf) vs target 8 => cancelCount 7, all from rail.
+        // Fork additive shelf economics: the shelf lives under its own target
+        // (buyDeepCount), so rail excess is 12 - 8 = 4, all from rail. Upstream
+        // counts the shelf toward the target (15 - 8 = 7); that would eat live
+        // rail on every boot here, while the live grid demonstrably funds
+        // rail-8 + shelf-3. Shelf stays excluded from BOTH the count and
+        // the candidacy.
         const shelfPlan = await runShelfStartup(shelfMgr, fullChain, []);
         assert.deepStrictEqual(
             shelfPlan.plannedCancels.map((c: any) => c.chainOrderId),
-            ['1.7.902', '1.7.903', '1.7.904', '1.7.905', '1.7.906', '1.7.907', '1.7.908'],
+            ['1.7.902', '1.7.903', '1.7.904', '1.7.905'],
             'cheapest non-reserve rail cancels first, floor reserves (900/901) last, shelf never a candidate'
         );
         const cancelled = new Set(shelfPlan.plannedCancels.map((c: any) => c.chainOrderId));
@@ -1078,7 +1083,7 @@ async function runTests() {
             'execute selects the identical shelf-safe cancel set'
         );
         const liveBuys = execMgr.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE).filter((o: any) => o && o.orderId);
-        assert.strictEqual(liveBuys.length, 8, 'post-state converges to target count (5 rail + 3 shelf)');
+        assert.strictEqual(liveBuys.length, 11, 'post-state converges to rail target + shelf (8 rail + 3 shelf)');
         const liveIds = new Set(liveBuys.map((o: any) => o.id));
         for (const s of shelfIds) {
             assert(liveIds.has(s.id), `shelf ${s.id} survives execution`);
