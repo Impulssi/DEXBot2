@@ -243,6 +243,9 @@ deepAdoptChecks().then(() => {
     return startupExcessDeepChecks();
 }).then(() => {
     console.log(`✓ Startup excess deep checks passed! (${passed} assertions)`);
+    return fundPressureVictimChecks();
+}).then(() => {
+    console.log(`✓ Fund pressure victim checks passed! (${passed} assertions)`);
 }).catch((e) => {
     console.error('Deep adopt checks failed:', e);
     process.exit(1);
@@ -255,7 +258,7 @@ deepAdoptChecks().then(() => {
 // cancel stranded TOP first (slot-8,7,6), never the window bottom or shelf.
 const { OrderManager: ExcessOrderManager } = require('../modules/order/index').default;
 const { ORDER_TYPES: ExcessOT, ORDER_STATES: ExcessOS } = require('../modules/constants');
-const { _reconcileStartupSide: excessReconcile } = require('../modules/order/grid_reconcile_internal');
+const { _reconcileStartupSide: excessReconcile, _cancelLargestOrder: cancelLargest } = require('../modules/order/grid_reconcile_internal');
 
 async function makeExcessMgr(buyWindowMode?: string) {
     const cfg: any = {
@@ -316,4 +319,32 @@ async function startupExcessDeepChecks() {
     const closestCancels = await planExcessCancels(await makeExcessMgr('closest'));
     check('closest cancels exactly 3', closestCancels.length, 3);
     check('closest cancels lowest first', JSON.stringify(closestCancels), JSON.stringify(['1.7.901', '1.7.902', '1.7.903']));
+}
+
+async function fundPressureVictimChecks() {
+    // Deep shelf orders must never be fund-pressure victims, even as the
+    // largest unmatched buys (live incident: deep-1 x5.00 cancelled to
+    // "free up funds" for rail updates).
+    const mgr = await makeExcessMgr();
+    const unmatched = [
+        { id: '1.7.910', for_sale: 5000000 },
+        { id: '1.7.901', for_sale: 1000 },
+    ];
+    const victim = await cancelLargest({
+        chainOrders: {}, account: 'acct', privateKey: 'pk', manager: mgr,
+        unmatchedOrders: unmatched, updateCount: 2, orderType: ExcessOT.BUY,
+        dryRun: false, planOnly: true,
+    });
+    check('victim skips deep-adopted chain id', victim && victim.chainOrderObj.id, '1.7.901');
+    // No deep slots, no exclusion: largest wins (previous behavior intact).
+    const mgr2 = await makeExcessMgr();
+    mgr2.orders.delete('deep-0');
+    mgr2.orders.delete('deep-1');
+    mgr2.orders.delete('deep-2');
+    const victim2 = await cancelLargest({
+        chainOrders: {}, account: 'acct', privateKey: 'pk', manager: mgr2,
+        unmatchedOrders: unmatched, updateCount: 2, orderType: ExcessOT.BUY,
+        dryRun: false, planOnly: true,
+    });
+    check('no shelf: largest wins as before', victim2 && victim2.chainOrderObj.id, '1.7.910');
 }

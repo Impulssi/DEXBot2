@@ -510,8 +510,31 @@ async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, 
 
     const logger = manager && manager.logger;
 
+    // Deep shelf orders are never fund-pressure victims: dip insurance with
+    // its own target/size model must not be sacrificed to fund rail updates.
+    // A deep chain order can show up as unmatched (slot linkage lost across
+    // a resync), and as the largest buy it would always be picked first.
+    // Exclude chain ids adopted by deep slots from victim selection.
+    let victimPool = unmatchedOrders;
+    try {
+        const deepChainIds = new Set(
+            (Array.from(manager?.orders?.values?.() || []) as any[])
+                .filter((s: any) => isDeepShelfId(s?.id) && s?.orderId)
+                .map((s: any) => String(s.orderId))
+        );
+        if (deepChainIds.size > 0 && Array.isArray(unmatchedOrders)) {
+            const filtered = unmatchedOrders.filter((o: any) => !deepChainIds.has(String(o?.id)));
+            if (filtered.length !== unmatchedOrders.length) {
+                logger?.log?.(
+                    `Grid edge: skipping ${unmatchedOrders.length - filtered.length} deep-shelf order(s) in fund-pressure victim selection`,
+                    'info'
+                );
+            }
+            victimPool = filtered;
+        }
+    } catch { /* fail-open: unfiltered pool preserves previous behavior */ }
     // Find the largest order among those being updated
-    const largestInfo = _findLargestOrder(unmatchedOrders, updateCount);
+    const largestInfo = _findLargestOrder(victimPool, updateCount);
     if (!largestInfo) return null;
 
     const { order: largestOrder, index: largestIndex } = largestInfo;
@@ -2191,5 +2214,5 @@ async function _reconcileStartupSide({
     };
 }
 
-export { _countActiveOnGrid, _pickVirtualSlotsToActivate, _createOrderFromGrid, _prepareStartupUpdatePlan, _markSlotsCreateUncertain, _cancelChainOrder, _recoverStartupSyncFailure, _refreshStartupUpdatePlans, _executeStartupUpdateBatch, _executeStartupSequentialUpdateFallback, _executeStartupCreateGroupBatch, _createStartupOrderWithHandling, _executePlannedStartupCreates, _reconcileStartupSide }
+export { _countActiveOnGrid, _pickVirtualSlotsToActivate, _createOrderFromGrid, _prepareStartupUpdatePlan, _markSlotsCreateUncertain, _cancelChainOrder, _recoverStartupSyncFailure, _refreshStartupUpdatePlans, _executeStartupUpdateBatch, _executeStartupSequentialUpdateFallback, _executeStartupCreateGroupBatch, _createStartupOrderWithHandling, _executePlannedStartupCreates, _reconcileStartupSide, _cancelLargestOrder }
 
