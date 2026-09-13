@@ -595,6 +595,70 @@ function scheduleFillConsumerRestart(bot: any, chainOrders: any) {
 }
 
 /**
+ * Level-triggered retry for fills parked by consumeFillQueue's pre-lock
+ * gates (order-pipeline or broadcast deferral).
+ *
+ * Incident (2026-09-13, H-BTS slot-86): a lone fill deferred by an active
+ * broadcast never drained — the defer branches returned without
+ * rescheduling, and none of the edge-triggered wake-ups came: the flag was
+ * leaked (no region end would ever fire), no second fill arrived to trip
+ * the 60s edge-triggered bound, and the non-empty queue held the
+ * maintenance idle gate shut (so the maintenance watchdog never ran).
+ *
+ * This arms a single deduped timer at defer time; on fire it refreshes the
+ * stale-broadcast watchdog (outside maintenance) and re-invokes the
+ * consumer. While still gated the consumer re-arms, so the loop is
+ * self-sustaining until the stuck-fallback bound trips and the queue
+ * drains; once drained the timer settles. At most one retry is pending per
+ * bot. The timer is unref'd so a parked queue never holds the process open
+ * (and fakes that never clear the gate cannot hang the test runner).
+ * @param {any} bot
+ * @param {Object} chainOrders - Chain orders module for blockchain operations
+ * @param {string} reason - Gate label for logging
+ */
+function scheduleDeferredFillRetry(bot: any, chainOrders: any, reason: string) {
+    if (!bot || bot._shuttingDown) return;
+    if (bot._deferredFillRetryTimer) return;
+    if (!Array.isArray(bot._incomingFillQueue) || bot._incomingFillQueue.length === 0) return;
+    const deferMaxMs = Number((TIMING as any)?.FILL_BROADCAST_DEFER_MAX_MS) > 0
+        ? Number((TIMING as any).FILL_BROADCAST_DEFER_MAX_MS)
+        : 60000;
+    const retryMs = Math.min(5000, Math.max(250, Math.floor(deferMaxMs / 12)));
+    bot._deferredFillRetryWaits = (Number(bot._deferredFillRetryWaits) || 0) + 1;
+    const waits = bot._deferredFillRetryWaits;
+    if (waits === 1 || waits % 12 === 0) {
+        bot.manager?.logger?.log?.(
+            `[FILL-QUEUE] Fill consumer deferred (${reason}, ${bot._incomingFillQueue.length} queued); ` +
+            `retry ${waits} in ${Math.round(retryMs / TIMING.MILLISECONDS_PER_SECOND)}s`,
+            waits === 1 ? 'debug' : 'warn'
+        );
+    }
+    bot._deferredFillRetryTimer = setTimeout(() => {
+        bot._deferredFillRetryTimer = null;
+        if (bot._shuttingDown) return;
+        if (!Array.isArray(bot._incomingFillQueue) || bot._incomingFillQueue.length === 0) {
+            bot._deferredFillRetryWaits = 0;
+            return;
+        }
+        // Refresh the stale-broadcast watchdog on the retry path, not just
+        // in maintenance — a parked queue holds the maintenance idle gate
+        // shut, so maintenance can never clear a leaked flag.
+        try {
+            if (typeof bot.manager?._clearStaleBroadcastFlag === 'function') {
+                bot.manager._clearStaleBroadcastFlag();
+            }
+        } catch { /* watchdog must never break the retry */ }
+        const consume = typeof bot._consumeFillQueue === 'function'
+            ? () => bot._consumeFillQueue(chainOrders)
+            : () => consumeFillQueue(bot, chainOrders);
+        consume().catch((err: any) => {
+            bot._warn?.(`Deferred fill retry failed: ${getErrorMessage(err)}`);
+        });
+    }, retryMs);
+    try { (bot._deferredFillRetryTimer as any)?.unref?.(); } catch { /* browser-safe: no unref */ }
+}
+
+/**
  * Process fills during bootstrap phase using the standard fill pipeline.
  * Delegates to the same fill pipeline as the post-reset path.
  * @param {import('./dexbot_class.js').DEXBot} bot
@@ -870,6 +934,9 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
     const markDeferredDrain = () => { (bot as any)._deferredFillsPending = true; };
 
     if (bot._incomingFillQueue.length === 0) {
+        // Settled: retire the deferred-retry counter so the deferral log
+        // cadence cannot stay elevated after the queue drained elsewhere.
+        bot._deferredFillRetryWaits = 0;
         resetFailureWatchdogIfSet();
         return;
     }
@@ -880,6 +947,16 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
         return;
     }
 
+    // Refresh the stale-broadcast watchdog on every consume attempt, not
+    // just in maintenance — a leaked flag with a parked queue holds the
+    // maintenance idle gate shut, so maintenance would never run to clear
+    // it. Guarded: fakes without a manager must still defer cleanly.
+    try {
+        if (typeof bot.manager?._clearStaleBroadcastFlag === 'function') {
+            bot.manager._clearStaleBroadcastFlag();
+        }
+    } catch { /* watchdog must never break fill consumption */ }
+
     if (bot._batchInFlight || bot._recoverySyncInFlight) {
         bot.manager?.logger?.log?.(
             `Fill processing deferred: order pipeline active (${bot._incomingFillQueue.length} queued)`,
@@ -887,6 +964,10 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
         );
         markDeferredDrain();
         resetFailureWatchdogIfSet();
+        // Level-triggered retry: without this, a lone fill parked here
+        // waits for a region end / second fill / maintenance tick that may
+        // never come (2026-09-13 H-BTS slot-86).
+        scheduleDeferredFillRetry(bot, chainOrders, 'order pipeline active');
         return;
     }
 
@@ -903,6 +984,10 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
         );
         markDeferredDrain();
         resetFailureWatchdogIfSet();
+        // Level-triggered retry: without this, a lone fill parked here
+        // waits for a region end / second fill / maintenance tick that may
+        // never come (2026-09-13 H-BTS slot-86).
+        scheduleDeferredFillRetry(bot, chainOrders, 'broadcast active');
         return;
     }
     if (broadcastDefer.stuckFallback) {
@@ -1395,10 +1480,18 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
         if (err.stack) bot._log(err.stack, 'error');
     }
 
+    // Clean settle: a drain that reached the end with an empty queue is the
+    // only place the retry counter is retired — otherwise the elevated count
+    // only matters for log cadence (every 12th defer warns), so reset it here
+    // rather than waiting for a pending retry to fire against an empty queue.
+    if (!bot._incomingFillQueue || bot._incomingFillQueue.length === 0) {
+        bot._deferredFillRetryWaits = 0;
+    }
+
     if (!bot._shuttingDown && bot._incomingFillQueue.length > 0) {
         scheduleFillConsumerRestart(bot, chainOrders);
     }
 }
 
-export { wireProcessedFillTracking, flushProcessedFillPersistence, flushProcessedFillPersistenceForKeys, buildOrphanFillFallbackKey, applyReplaySafeFillAccounting, applyReplaySafeTrackedFillAccounting, applyReplaySafeOrphanFillAccounting, processSweepOrphanFill, createFillCallback, maxConsecutiveFillConsumerFailures, computeFillConsumerBackoffMs, scheduleFillConsumerRestart, shouldDeferFillForBroadcast, consumeFillQueue, processFillsWithBootstrapMode }
+export { wireProcessedFillTracking, flushProcessedFillPersistence, flushProcessedFillPersistenceForKeys, buildOrphanFillFallbackKey, applyReplaySafeFillAccounting, applyReplaySafeTrackedFillAccounting, applyReplaySafeOrphanFillAccounting, processSweepOrphanFill, createFillCallback, maxConsecutiveFillConsumerFailures, computeFillConsumerBackoffMs, scheduleFillConsumerRestart, scheduleDeferredFillRetry, shouldDeferFillForBroadcast, consumeFillQueue, processFillsWithBootstrapMode }
 

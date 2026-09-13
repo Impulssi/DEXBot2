@@ -156,6 +156,7 @@ class DEXBot {
     // (orphan-equivalent) for that drain cycle only.
     _deferredFillsPending: boolean;
     _postRecoveryRebalanceTimer: any;
+    _deferredFillRetryTimer: any;
     _lastTargetedDriftSyncAt: number;
     _lightweightSyncCheckAt: number;
     _targetedDriftSyncCooldownMs: number;
@@ -280,6 +281,7 @@ class DEXBot {
         this._recoverySyncInFlight = 0;
         this._deferredFillsPending = false;
         this._postRecoveryRebalanceTimer = null;
+        this._deferredFillRetryTimer = null;
         this._lastTargetedDriftSyncAt = 0;
         this._lightweightSyncCheckAt = 0;
         this._targetedDriftSyncCooldownMs = this.config.timing.TARGETED_DRIFT_SYNC_COOLDOWN_MS;
@@ -2067,6 +2069,11 @@ class DEXBot {
         if (this._postRecoveryRebalanceTimer) {
             clearTimeout(this._postRecoveryRebalanceTimer);
             this._postRecoveryRebalanceTimer = null;
+        }
+
+        if (this._deferredFillRetryTimer) {
+            clearTimeout(this._deferredFillRetryTimer);
+            this._deferredFillRetryTimer = null;
         }
 
         this._stopCreditWatchdogInterval();
