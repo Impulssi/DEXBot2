@@ -121,12 +121,22 @@ check('null hold expires', isManualHoldExpired(null, 100, 0.075), true);
         check('bad args -> -1', consumeClearMarker(fakeManager({}), '', ''), -1);
         const mgr = fakeManager({});
         recordManualHold(mgr, 'slot-9', 100);
-        fs.writeFileSync(path.join(tmp, 'manual-holds.clear.bot1'), 'clear\n', 'utf8');
+        fs.writeFileSync(path.join(tmp, 'manual-holds.clear.bot1'), 'clear-holds unit-test\n', 'utf8');
         check('marker clears holds', consumeClearMarker(mgr, tmp, 'bot1'), 1);
         check('holds gone', isSlotHeld(mgr, 'slot-9'), false);
         check('marker consumed', fs.existsSync(path.join(tmp, 'manual-holds.clear.bot1')), false);
         check('second consume -> -1', consumeClearMarker(mgr, tmp, 'bot1'), -1);
         check('marker path null on empty', clearMarkerPath('', ''), null);
+        // Single-slot marker clears only that hold.
+        recordManualHold(mgr, 'slot-a', 100);
+        recordManualHold(mgr, 'slot-b', 100);
+        fs.writeFileSync(path.join(tmp, 'manual-holds.clear.bot1'), 'slot:slot-a\n', 'utf8');
+        check('single-slot clears 1', consumeClearMarker(mgr, tmp, 'bot1'), 1);
+        check('target gone', isSlotHeld(mgr, 'slot-a'), false);
+        check('other kept', isSlotHeld(mgr, 'slot-b'), true);
+        fs.writeFileSync(path.join(tmp, 'manual-holds.clear.bot1'), 'slot:slot-missing\n', 'utf8');
+        check('unknown slot clears 0', consumeClearMarker(mgr, tmp, 'bot1'), 0);
+        check('other still kept', isSlotHeld(mgr, 'slot-b'), true);
     } finally {
         fs.rmSync(tmp, { recursive: true, force: true });
     }

@@ -199,7 +199,7 @@ const CLI_EXAMPLES = [
     { title: 'Show live credit/MPA positions', command: 'dexbot credit', notes: 'Queries get_margin_positions + get_credit_deals_by_borrower per preferredAccount and prints debt/collateral sums plus one Curr. CR line per whitelisted pair (active CR, else borrow-now CR vs funds avail. on the offer) and one Avar. CR line per bot. CR covers only pairs whitelisted in bots.json and listed on the current credit offer. Add a bot key to render only that bot.' },
     { title: 'TradingView chart for a bot, pool, or pair', command: 'dexbot tv <bot|pool-id|AssetA/AssetB> --month 3', notes: 'Fetches 1h candles for N months (default 3, pool-first with orderbook fallback; --feed charts MPA price-feed history) and writes an auto-named HTML chart.' },
     { title: 'Clear all bot log files', command: 'dexbot clear', notes: 'Runs scripts/clear-logs.sh to remove log files from the logs directory (<profiles>/logs).' },
-    { title: 'Clear manual-cancel holds', command: 'dexbot clear-holds <bot>', notes: 'Clears the refill suppression for operator-cancelled slots so they refill normally (running bot picks it up on next poll, no restart).' },
+    { title: 'Clear manual-cancel holds', command: 'dexbot clear-holds <bot> [slot]', notes: 'Clears the refill suppression for operator-cancelled slots so they refill normally (running bot picks it up on next poll, no restart). Optional slot id clears a single hold.' },
     { title: 'Reset settings to defaults', command: 'dexbot default', notes: 'Runs scripts/reset-settings.sh to delete general.settings.json, market_profiles.json, and market_adapter_settings.json.' }
 ];
 

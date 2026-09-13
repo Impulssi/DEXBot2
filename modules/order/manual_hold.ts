@@ -125,10 +125,11 @@ function clearMarkerPath(profilesDir: string, botKey: string): string | null {
 }
 
 /**
- * Consume an operator "restore" marker (`dexbot clear-holds <bot>`).
+ * Consume an operator "restore" marker (`dexbot clear-holds <bot> [slot]`).
  * Clears in-memory holds so held slots refill normally; the marker is
  * deleted whether or not holds existed (one-shot signal). Distinct from
- * recalculate.*.trigger files, which the resync watcher owns.
+ * recalculate.*.trigger files, which the resync watcher owns. A marker
+ * containing a slot id clears only that slot; an empty marker clears all.
  *
  * @param {Object} manager - OrderManager
  * @param {string} profilesDir - Profiles directory holding marker files
@@ -139,13 +140,25 @@ function consumeClearMarker(manager: any, profilesDir: string, botKey: string): 
     try {
         const marker = clearMarkerPath(profilesDir, botKey);
         if (!marker || !fs.existsSync(marker)) return -1;
+        // Explicit `slot:<id>` content clears one hold; anything else
+        // (legacy `clear-holds <timestamp>`, empty) clears all.
+        let onlySlot: string | null = null;
+        try {
+            const raw = fs.readFileSync(marker, 'utf8').trim();
+            if (raw.startsWith('slot:')) onlySlot = raw.slice(5).trim() || null;
+        } catch { /* empty marker clears all */ }
         const holds = getManualHoldMap(manager);
-        const n = holds.size;
-        holds.clear();
+        let n = 0;
+        if (onlySlot) {
+            if (holds.delete(onlySlot)) n = 1;
+        } else {
+            n = holds.size;
+            holds.clear();
+        }
         try { fs.unlinkSync(marker); } catch { /* consumed anyway */ }
         if (n > 0) {
             manager?.logger?.log?.(
-                `[HOLD] Cleared ${n} manual-cancel hold(s) via operator marker (grid refills normally)`,
+                `[HOLD] Cleared ${n} manual-cancel hold(s) via operator marker${onlySlot ? ` (${onlySlot})` : ''} (grid refills normally)`,
                 'info'
             );
         }
