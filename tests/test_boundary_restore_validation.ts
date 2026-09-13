@@ -1,7 +1,9 @@
 const assert = require('assert');
 const {
     validateBoundaryCommit,
-    validatePersistedBoundary
+    validatePersistedBoundary,
+    isTransientInBandRejection,
+    BOUNDARY_REJECT_PLACED_IN_BAND
 } = require('../modules/order/utils/math');
 const { loadGrid } = require('../modules/order/grid');
 const { recoverFromPersistedGrid } = require('../modules/dexbot_state_recovery');
@@ -134,7 +136,9 @@ async function testValidatorSemantics() {
 
     // Stranding: placed order strictly inside the implied band.
     // Default commit gate tolerates it (upstream caps prevent it; post-commit
-    // detector owns it) — restore gate rejects it (safe fallback = rebuild).
+    // detector owns it) — restore gate REPORTS it.  Callers separate the
+    // transient case (SPREAD-GUARD mid-evacuation strand: warn + keep boundary,
+    // GAP-EVAC owns cleanup) from true poison via isTransientInBandRejection().
     const stranded = buildGrid();
     stranded[6] = { ...stranded[6], orderId: '1.7.999', state: ORDER_STATES.ACTIVE, size: 10 };
     assert.strictEqual(
@@ -142,15 +146,23 @@ async function testValidatorSemantics() {
         'commit gate does NOT own in-band placements'
     );
     const strandResult = validatePersistedBoundary(5, stranded, 2);
-    assert.strictEqual(strandResult.ok, false, 'restore gate rejects stranded placement');
-    assert.strictEqual(strandResult.reason, 'placed_order_in_band');
+    assert.strictEqual(strandResult.ok, false, 'restore gate reports stranded placement');
+    assert.strictEqual(strandResult.reason, BOUNDARY_REJECT_PLACED_IN_BAND);
+    assert.strictEqual(isTransientInBandRejection(strandResult), true,
+        'in-band placement without structural signal classifies as transient (no rebuild)');
+    assert.strictEqual(isTransientInBandRejection({ ok: true }), false,
+        'ok result is not transient');
+    assert.strictEqual(isTransientInBandRejection(validatePersistedBoundary(9, grid, 2)), false,
+        'ceiling overrun stays rebuild-worthy');
 
     // Downward overrun poison (the pre-5eb3ca7 failure shape): boundary slid
     // onto the buy rail so placed BUYs sit inside the implied band. No price
     // crossing — only geometry detects it.
     const downResult = validatePersistedBoundary(3, grid, 2);
     assert.strictEqual(downResult.ok, false, 'downward-overrun boundary rejected at restore');
-    assert.strictEqual(downResult.reason, 'placed_order_in_band');
+    assert.strictEqual(downResult.reason, BOUNDARY_REJECT_PLACED_IN_BAND);
+    assert.ok(/count=2/.test(downResult.detail || ''),
+        `detail carries the strand count (got: ${downResult.detail})`);
 
     console.log('  PASS: validator semantics match commit vs restore strictness');
 }
@@ -266,6 +278,10 @@ async function testLoadGridRepairMapsToStoredOrder() {
 }
 
 // ── recovery: poisoned snapshot refused so resync rebuilds clean ────────
+// NOTE: transient stranding (placed_order_in_band) is tolerated by recovery
+// (H-BTS 2026-09-13: stale snapshot mid-evacuation must not force a resync
+// that wipes the evacuation).  This test pins the still-rejected structural
+// poison shape: sell-rail ceiling overrun (N=10, g=2 -> maxAllowed 7).
 
 async function testRecoveryRejectsPoisonedSnapshot() {
     console.log('Running test: recoverFromPersistedGrid refuses a snapshot with invalid boundary');
@@ -275,7 +291,7 @@ async function testRecoveryRejectsPoisonedSnapshot() {
         accountId: '1.2.3',
         accountOrders: {
             loadGrid: () => grid,
-            loadBoundaryIdx: () => 3
+            loadBoundaryIdx: () => 9
         },
         // Gate reads config-derived gapSlots (calculateGapSlots(1,1) = 2),
         // matching loadGrid's restore gate exactly.
@@ -292,21 +308,130 @@ async function testRecoveryRejectsPoisonedSnapshot() {
     assert.strictEqual(result.success, false, 'recovery refuses poisoned snapshot');
     assert.ok(/persisted boundary rejected/.test(result.reason || ''),
         `reason must cite the boundary gate (got: ${result.reason})`);
+    assert.ok(/sell_rail_ceiling_exceeded/.test(result.reason || ''),
+        `structural poison reason preserved (got: ${result.reason})`);
     assert.ok(bot.manager.logs.some(l => l.msg.includes('[RECOVERY] Persisted boundary failed validation')),
         'rejection logged');
 
     console.log('  PASS: structural resync falls through to clean rebuild on poisoned snapshot');
 }
 
+// ── recovery: transient stranding proceeds (no structural resync) ───────
+
+async function testRecoveryToleratesTransientStranding() {
+    console.log('Running test: recoverFromPersistedGrid tolerates transient in-band stranding');
+
+    // Single SPREAD-GUARD strand: honest boundary 5 with slot-6 still placed
+    // (fill-driven crawl moved it into the band; GAP-EVAC pending).  Under
+    // the old gate this forced rms_structural_grid_resync and wiped the
+    // in-progress evacuation (H-BTS 2026-09-13: slot-96 → slot-116 plan lost).
+    const grid = buildGrid();
+    grid[6] = { ...grid[6], orderId: '1.7.999', state: ORDER_STATES.ACTIVE, size: 10 };
+    const bot = {
+        accountId: '1.2.3',
+        accountOrders: {
+            loadGrid: () => grid,
+            loadBoundaryIdx: () => 5
+        },
+        manager: buildFakeManager({ incrementPercent: 1, targetSpreadPercent: 1 }),
+        // Sentinel AFTER the load: reaching it proves the gate tolerated the
+        // strand (old behavior returned 'persisted boundary rejected' before
+        // loading).  Placed before the chain read so no network is touched.
+        _rejectCorruptedGridSnapshot: async () => { throw new Error('SENTINEL-reached-post-load'); }
+    };
+
+    // NOTE: recoverFromPersistedGrid wraps its body in a catch-all that
+    // converts throws to { success:false, reason }, so the sentinel surfaces
+    // as result.reason — reaching it still proves the gate loaded (old
+    // behavior returned 'persisted boundary rejected' before loading).
+    const result = await recoverFromPersistedGrid(bot);
+    assert.ok(result && /SENTINEL-reached-post-load/.test(result.reason || ''),
+        `gate must proceed to load on transient stranding (got: ${result && result.reason})`);
+    assert.strictEqual(bot.manager.boundaryIdx, 5,
+        'transient snapshot boundary kept, not nulled/re-derived');
+    assert.ok(bot.manager.logs.some(l => l.msg.includes('transient in-band placement') && l.level === 'warn'),
+        'transient tolerance logged at warn level');
+    assert.ok(!bot.manager.logs.some(l => l.msg.includes('[RECOVERY] Persisted boundary failed validation')),
+        'no poison rejection logged for transient stranding');
+
+    console.log('  PASS: transient stranding loads without structural resync');
+}
+
+// ── loadGrid: tolerate flag keeps transient boundary ────────────────────
+
+async function testLoadGridToleratesTransientStranding() {
+    console.log('Running test: loadGrid keeps boundary with tolerateTransientStranding');
+
+    const grid = buildGrid();
+    grid[6] = { ...grid[6], orderId: '1.7.999', state: ORDER_STATES.ACTIVE, size: 10 };
+    const manager = buildFakeManager({ incrementPercent: 1, targetSpreadPercent: 1, startPrice: 1.07 });
+
+    await loadGrid(manager, grid, 5, null, { tolerateTransientStranding: true });
+
+    assert.strictEqual(manager.boundaryIdx, 5, 'transient boundary kept verbatim');
+    assert.ok(manager.logs.some(l => l.msg.includes('transient in-band placement') && l.level === 'warn'),
+        'tolerance logged at warn level');
+    assert.ok(!manager.logs.some(l => l.msg.includes('Persisted boundary rejected')),
+        'no rejection/repair logged for tolerated stranding');
+
+    // Default (strict) path unchanged: same snapshot without the flag takes
+    // the repair path (rejection logged, boundary re-derived).
+    const strictManager = buildFakeManager({ incrementPercent: 1, targetSpreadPercent: 1, startPrice: 1.07 });
+    await loadGrid(strictManager, buildGrid().map((s, i) => i === 6
+        ? { ...s, orderId: '1.7.999', state: ORDER_STATES.ACTIVE, size: 10 } : s), 5);
+    assert.ok(strictManager.logs.some(l => l.msg.includes('Persisted boundary rejected')),
+        'strict loadGrid still rejects transient stranding (repair path)');
+
+    console.log('  PASS: tolerate flag keeps transient boundary');
+}
+
 // ── runner ──────────────────────────────────────────────────────────────
+
+// ── crossed-book takes precedence over co-occurring stranding ──────────
+
+async function testCrossedBookPrecedenceOverStranding() {
+    console.log('Running test: crossed-book takes precedence over co-occurring stranding');
+
+    // Flat prices: every placed slot prices 1.00, so bestPlacedBuy (idx<=2)
+    // equals bestImpliedSell (idx>=4) -> crossed — while slot-3 is also
+    // stranded in the band (2,4). Must report crossed (structural, rebuild),
+    // never the transient strand (which recovery would tolerate and load).
+    // N=6, gap=1 -> ceiling maxAllowed=4, so boundary 2 clears it.
+    const flat = [];
+    for (let i = 0; i < 6; i++) {
+        flat.push({
+            id: `slot-${i}`,
+            price: 1.00,
+            // slot-3 keeps a rail type: the SPREAD-GUARD survivor shape.
+            // (Stored type is irrelevant to the validator; position rules.)
+            type: i <= 3 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL,
+            state: ORDER_STATES.ACTIVE,
+            size: 10,
+            orderId: `1.7.${300 + i}`
+        });
+    }
+    const result = validatePersistedBoundary(2, flat, 1);
+    assert.strictEqual(result.reason, 'crossed_book_geometry',
+        `crossed book must take precedence (got: ${result.reason}: ${result.detail})`);
+    assert.strictEqual(isTransientInBandRejection(result), false,
+        'crossed snapshot must NOT classify as transient');
+    // Commit gate (no in-band flag) agrees — cross is flag-independent.
+    assert.strictEqual(validateBoundaryCommit(2, flat, 1).reason, 'crossed_book_geometry',
+        'commit gate reports the same cross');
+
+    console.log('  PASS: crossed-book outranks stranding');
+}
 
 async function runAll() {
     await testValidatorSemantics();
+    await testCrossedBookPrecedenceOverStranding();
     await testLoadGridValidBoundaryPassthrough();
     await testLoadGridRepairsPoisonedBoundary();
     await testLoadGridFallsBackToNullBoundary();
     await testLoadGridRepairMapsToStoredOrder();
     await testRecoveryRejectsPoisonedSnapshot();
+    await testRecoveryToleratesTransientStranding();
+    await testLoadGridToleratesTransientStranding();
     console.log('All boundary restore validation tests passed');
 }
 

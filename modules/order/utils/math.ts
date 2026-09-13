@@ -1424,6 +1424,13 @@ function resolveGapBand(manager: { _gapSlots?: any; boundaryIdx?: any; config?: 
 }
 
 /**
+ * Stable reason code for the in-band-placement rejection.  Shared by the
+ * validator and isTransientInBandRejection() so a rename cannot silently
+ * break the classifier.
+ */
+const BOUNDARY_REJECT_PLACED_IN_BAND = 'placed_order_in_band';
+
+/**
  * Validate a proposed boundary commit against geometry INDEPENDENT of the
  * mutable committed boundary.
  *
@@ -1449,14 +1456,21 @@ function resolveGapBand(manager: { _gapSlots?: any; boundaryIdx?: any; config?: 
  * geometry.  Fill-skewed boundaries legitimately sit far from the structural
  * center, so a startPrice-distance rule would false-positive on valid shifts.
  *
- * @param options.rejectInBandPlacements - When true, additionally reject a
- *   boundary under which a PLACED order sits strictly inside the implied gap
- *   band (stranding).  Honest writers never produce this — the promotion walk
- *   caps depth upstream and the fill path carries its rotations in the same
- *   batch — so it is OFF at commit time (a refusal could not repair the
+ * @param options.rejectInBandPlacements - When true, additionally report a
+ *   boundary under which PLACED order(s) sit strictly inside the implied gap
+ *   band (stranding).  Note: honest writers CAN produce transient stranding —
+ *   SPREAD GUARD (assignGridRoles) deliberately keeps live ACTIVE/PARTIAL
+ *   orders rail-typed when a fill-driven boundary crawl moves their slots
+ *   into the band (a fill chunk can strand several at once), and GAP-EVAC
+ *   heals them per-slot over 2-3 cycles (rotation or cancel-only teeth;
+ *   LAST-FILL-GUARD / uncertain-broadcast backpressure may delay it
+ *   further).  So it is OFF at commit time (a refusal could not repair it
  *   anyway) but ON for
- *   persisted-state validation, where stranding is exactly the poison
- *   signature and the safe fallback is a rebuild.
+ *   persisted-state validation — with the caveat that callers must treat a
+ *   pure `placed_order_in_band` result (any count, no accompanying
+ *   structural signal) as transient (warn + load, GAP-EVAC owns cleanup)
+ *   and only treat other reasons as rebuild-worthy.
+ *   See isTransientInBandRejection().
  *
  * @returns `{ ok: true }`, or `{ ok: false, reason, detail }` where `reason`
  *   is a stable short code and `detail` carries indices/prices for logs.
@@ -1500,6 +1514,18 @@ function validateBoundaryCommit(
     const sellStart = raw + gapSlots + 1;
     let maxBuyPrice = -Infinity;
     let minSellPrice = Infinity;
+    // Strands are RECORDED, not returned immediately: crossed-book is the
+    // stronger structural signal and is computed from rail slots only, so it
+    // takes precedence over a co-occurring strand — otherwise a snapshot that
+    // is both stranded AND crossed would be misclassified as transient and
+    // loaded.  (Recording also fixes a latent miss: the old early-return
+    // skipped rail slots after the first strand, under-computing the cross.)
+    // Every strand is counted for the detail line; any pure-stranding result
+    // (no cross) is transient regardless of count — fill chunks can strand
+    // several slots at once and GAP-EVAC tracks/heals per-slot.
+    let inBandCount = 0;
+    let firstInBandIdx: number | null = null;
+    let firstInBandPrice: number | null = null;
     for (let idx = 0; idx < sorted.length; idx++) {
         const o = sorted[idx];
         if (!o.orderId) continue;
@@ -1509,12 +1535,11 @@ function validateBoundaryCommit(
         } else if (idx >= sellStart) {
             if (price < minSellPrice) minSellPrice = price;
         } else if (options.rejectInBandPlacements) {
-            return {
-                ok: false,
-                reason: 'placed_order_in_band',
-                detail: `boundary=${raw} gapSlots=${gapSlots} placed idx=${idx} price=${price} ` +
-                    `sits strictly inside implied band (${raw}, ${sellStart})`
-            };
+            inBandCount++;
+            if (firstInBandIdx === null) {
+                firstInBandIdx = idx;
+                firstInBandPrice = price;
+            }
         }
     }
     if (Number.isFinite(maxBuyPrice) && Number.isFinite(minSellPrice) && minSellPrice <= maxBuyPrice) {
@@ -1522,6 +1547,14 @@ function validateBoundaryCommit(
             ok: false,
             reason: 'crossed_book_geometry',
             detail: `boundary=${raw} gapSlots=${gapSlots} bestPlacedBuy=${maxBuyPrice} >= bestImpliedSell=${minSellPrice}`
+        };
+    }
+    if (inBandCount > 0) {
+        return {
+            ok: false,
+            reason: BOUNDARY_REJECT_PLACED_IN_BAND,
+            detail: `boundary=${raw} gapSlots=${gapSlots} placed count=${inBandCount} first idx=${firstInBandIdx} price=${firstInBandPrice} ` +
+                `sits strictly inside implied band (${raw}, ${sellStart})`
         };
     }
     return { ok: true };
@@ -1535,14 +1568,25 @@ function validateBoundaryCommit(
  * writer bug (e.g. the pre-5eb3ca7 promotion overrun) may have committed AND
  * persisted an invalid boundary that would otherwise legalize itself on every
  * restart.  This is strictly stricter than validateBoundaryCommit — it also
- * rejects stranding (a placed order inside the implied band) because at
- * restore time the safe fallback is a rebuild/re-derivation, not a refusal.
+ * reports stranding (a placed order inside the implied band).
+ *
+ * Stranding alone is NOT proof of poison: SPREAD GUARD + GAP-EVAC produce it
+ * transiently on every boundary crawl (see validateBoundaryCommit docs).
+ * Callers must use isTransientInBandRejection() to separate the transient
+ * case (warn + keep boundary, GAP-EVAC/sync sweeps own cleanup) from true
+ * poison (ceiling/range/crossed-book, or recurring stranding) which falls
+ * back to rebuild/re-derivation.
  *
  * Callers:
- * - loadGrid (grid.ts) before _restoreBoundary — repairs via re-derivation.
- * - recoverFromPersistedGrid (dexbot_state_recovery.ts) BEFORE loading, so a
- *   poisoned snapshot is refused and structural resync falls through to the
- *   clean full-grid reset instead of re-ingesting the damage.
+ * - loadGrid (grid.ts) before _restoreBoundary — strict by default; pass
+ *   { tolerateTransientStranding: true } when the caller owns the heal path
+ *   (runtime recovery: in-memory state is newer than the snapshot and
+ *   GAP-EVAC is already tracking the strand).
+ * - recoverFromPersistedGrid (dexbot_state_recovery.ts) BEFORE loading —
+ *   tolerates transient stranding (warn + load) so a stale snapshot carrying
+ *   a pre-evacuation strand cannot force a structural resync that wipes the
+ *   in-progress evacuation; true poison still refuses and structural resync
+ *   falls through to the clean full-grid reset instead of re-ingesting damage.
  */
 function validatePersistedBoundary(
     proposedBoundary: any,
@@ -1550,6 +1594,31 @@ function validatePersistedBoundary(
     gapSlots: number
 ): { ok: boolean; reason?: string; detail?: string } {
     return validateBoundaryCommit(proposedBoundary, orders, gapSlots, { rejectInBandPlacements: true });
+}
+
+/**
+ * Whether a persisted-boundary rejection is the TRANSIENT kind that must not
+ * trigger a rebuild: stranding (`placed_order_in_band`) with no accompanying
+ * structural signal.
+ *
+ * SPREAD GUARD strands live orders in-band on every fill-driven crawl (any
+ * count — a fill chunk can strand several) and GAP-EVAC heals them per-slot
+ * over 2-3 cycles, so a snapshot taken mid-evacuation (or stale by one
+ * crawl, as in recovery-before-CREATE) legitimately reports this.  Nuking
+ * the snapshot for it discards the boundary progression, pending crawls,
+ * streaks and the queued evacuation — the exact sabotage loop seen in H-BTS
+ * 2026-09-13 (GAP-EVAC flags slot-96, COW plans 96→116, stale snapshot with
+ * slot-94 still stranded fails validation, structural resync wipes the
+ * plan).  All other reasons (ceiling/range/crossed-book/...) are structural
+ * and stay rebuild-worthy; crossed-book is evaluated first by the validator
+ * so a simultaneously-stranded-and-crossed snapshot is never misclassified
+ * as transient here.
+ *
+ * @param check - validatePersistedBoundary / validateBoundaryCommit result
+ * @returns True when the check is pure in-band placement (transient).
+ */
+function isTransientInBandRejection(check: any): boolean {
+    return !!check && check.ok !== true && check.reason === BOUNDARY_REJECT_PLACED_IN_BAND;
 }
 
 /**
@@ -1866,7 +1935,7 @@ function buildGenesisFromPriceLevels(startPrice: number, incrementPercent: numbe
     };
 }
 
-export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, isSlotIndexInGapBand, isEvacuationRotationAllowed, isEvacuationSizeStillValid, validateBoundaryCommit, validatePersistedBoundary, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals, priceLevelsForGenesis, priceForSlot, slotIndexForPrice, slotIdForPrice, assertSlotPriceInvariant, priceSlotEqual, buildGenesisFromPriceLevels, hashPriceLevels, isChainPriceOutOfGrid }
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, isSlotIndexInGapBand, isEvacuationRotationAllowed, isEvacuationSizeStillValid, validateBoundaryCommit, validatePersistedBoundary, isTransientInBandRejection, BOUNDARY_REJECT_PLACED_IN_BAND, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals, priceLevelsForGenesis, priceForSlot, slotIndexForPrice, slotIdForPrice, assertSlotPriceInvariant, priceSlotEqual, buildGenesisFromPriceLevels, hashPriceLevels, isChainPriceOutOfGrid }
 
 /**
  * Round a value to a given factor.

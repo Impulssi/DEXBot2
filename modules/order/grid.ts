@@ -141,6 +141,7 @@ import {
     resolveGapBand,
     countGapBandSpread,
     validatePersistedBoundary,
+    isTransientInBandRejection,
     adjustBudgetForBtsFees,
     clamp,
     buildGenesisFromPriceLevels,
@@ -574,7 +575,7 @@ function _clearOrderCachesLogic(manager: any): void {
      * @param {number|null} [boundaryIdx=null] - The master boundary index.
      * @returns {Promise<void>}
      */
-export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null, genesisInput: any = null): Promise<any> {
+export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null, genesisInput: any = null, options: { tolerateTransientStranding?: boolean } = {}): Promise<any> {
         if (!Array.isArray(grid)) return;
         return await manager._gridLock.acquire(async () => {
             // Genesis determinism: if snapshot provided genesis, validate slots
@@ -743,7 +744,18 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null,
             let restoredBoundary = typeof boundaryIdx === 'number' ? boundaryIdx : null;
             if (restoredBoundary !== null) {
                 const check = validatePersistedBoundary(restoredBoundary, grid, loadGapSlots);
-                if (!check.ok) {
+                if (!check.ok && options?.tolerateTransientStranding && isTransientInBandRejection(check)) {
+                    // Transient SPREAD-GUARD strand (live order crawled into the
+                    // band, GAP-EVAC already tracking it): keep the boundary so
+                    // the heal path (rotation/teeth/sweeps) can run.  Nuking it
+                    // here would discard the evacuation state for exactly the
+                    // condition evacuation exists to fix (H-BTS 2026-09-13).
+                    manager.logger?.log?.(
+                        `[GRID-LOAD] Persisted snapshot has transient in-band placement (${check.reason}): ${check.detail}. ` +
+                        `Keeping boundary ${restoredBoundary}; GAP-EVAC/sync sweeps own cleanup.`,
+                        'warn'
+                    );
+                } else if (!check.ok) {
                     manager.logger?.log?.(
                         `[GRID-LOAD] Persisted boundary rejected (${check.reason}): ${check.detail}. ` +
                         `Attempting re-derivation from slot prices.`,

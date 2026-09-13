@@ -9,7 +9,7 @@ import * as Format from './order/format.js';
 import * as grid from './order/grid.js';
 import { convertToSpreadPlaceholder, parseChainOrder, isNonBlockingUnmatchedOrder } from './order/utils/order.js';
 import { restoreGapEvacStreaks, applyPersistedPendingCrawls } from './order/utils/system.js';
-import { blockchainToFloat, calculateGapSlots, validatePersistedBoundary } from './order/utils/math.js';
+import { blockchainToFloat, calculateGapSlots, validatePersistedBoundary, isTransientInBandRejection } from './order/utils/math.js';
 import { hasExecutableActions } from './order/utils/validate.js';
 import { getErrorMessage } from './utils/errors.js';
 const { isGridBloated } = grid;
@@ -339,6 +339,14 @@ async function recoverFromPersistedGrid(bot: any) {
         // geometry instead of re-ingesting the damage and reporting success.
         // Without this, structural resync would "recover" straight back into
         // the corrupted state on every attempt.
+        // Transient exception: `placed_order_in_band` (any count) is the normal
+        // SPREAD-GUARD mid-evacuation state (live orders crawled into the band,
+        // GAP-EVAC streak already tracking it; the snapshot may also be stale
+        // by one crawl).  Rejecting it here forces a structural resync that
+        // wipes the in-progress evacuation — the H-BTS 2026-09-13 sabotage
+        // loop.  Warn + load instead; GAP-EVAC/sync sweeps own the cleanup.
+        // All other reasons stay rebuild-worthy.
+        let tolerateTransientStranding = false;
         if (typeof boundaryIdx === 'number') {
             // Same gapSlots source as loadGrid's restore gate (config-derived,
             // NOT manager._gapSlots — a stale value from a prior load with a
@@ -349,7 +357,14 @@ async function recoverFromPersistedGrid(bot: any) {
                 bot.manager.config?.gridLimits
             );
             const check = validatePersistedBoundary(boundaryIdx, persistedGrid, gapSlots);
-            if (!check.ok) {
+            if (!check.ok && isTransientInBandRejection(check)) {
+                tolerateTransientStranding = true;
+                bot.manager.logger.log(
+                    `[RECOVERY] Persisted snapshot has transient in-band placement (${check.reason}: ${check.detail}). ` +
+                    `Proceeding with load; GAP-EVAC/sync sweeps own cleanup (no structural resync).`,
+                    'warn'
+                );
+            } else if (!check.ok) {
                 bot.manager.logger.log(
                     `[RECOVERY] Persisted boundary failed validation (${check.reason}: ${check.detail}). ` +
                     `Rejecting snapshot so structural resync rebuilds clean geometry.`,
@@ -360,7 +375,7 @@ async function recoverFromPersistedGrid(bot: any) {
         }
 
         const persistedGenesis = bot.accountOrders.loadGenesis?.(true) ?? null;
-        await grid.loadGrid(bot.manager, persistedGrid, boundaryIdx, persistedGenesis);
+        await grid.loadGrid(bot.manager, persistedGrid, boundaryIdx, persistedGenesis, { tolerateTransientStranding });
         // Restart resilience: same pruning rules as the startup path — streaks
         // only survive for slots that still exist in the reloaded grid.
         const restoredStreaks = restoreGapEvacStreaks(bot.manager, bot.accountOrders.loadGapEvacStreaks?.(true) ?? null);
