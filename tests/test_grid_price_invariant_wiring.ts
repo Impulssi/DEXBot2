@@ -261,7 +261,9 @@ async function runCreateBatchWithSpy(bot: any, cowResult: any) {
     };
 
     try {
-        const result = await bot._updateOrdersOnChainBatchCOW(cowResult);
+        // pollIntervalMs: 0 skips the production 1.5s missing-create poll
+        // pacing; the wiring assertions (skip vs broadcast) are unaffected.
+        const result = await bot._updateOrdersOnChainBatchCOW(cowResult, { pollIntervalMs: 0 });
         return { result, executeBatchCalls, builtOps };
     } finally {
         chainOrders.executeBatch = originalExecuteBatch;

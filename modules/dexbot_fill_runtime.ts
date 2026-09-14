@@ -6,7 +6,7 @@ const require = createRequire(import.meta.url);
 import * as chainOrders from './chain_orders.js';
 import { PROCESSED_FILL_PERSISTENCE_MODES } from './order/processed_fill_store.js';
 import { NATIVE_CLIENT, FILL_PROCESSING, TIMING, MAINTENANCE, ORDER_TYPES } from './constants.js';
-import { getErrorMessage } from './utils/errors.js';
+import { getErrorMessage, resolveSeamMsOrNull } from './utils/errors.js';
 import { isOrderDoesNotExistError } from './dexbot_maintenance_runtime.js';
 import { slotIndexForPrice, isChainPriceOutOfGrid, isSlotInRail } from './order/utils/math.js';
 import { ORDER_STATES } from './constants.js';
@@ -615,15 +615,26 @@ function scheduleFillConsumerRestart(bot: any, chainOrders: any) {
  * @param {any} bot
  * @param {Object} chainOrders - Chain orders module for blockchain operations
  * @param {string} reason - Gate label for logging
+ * @param {Object} [options]
+ * @param {number} [options.retryDelayMs] - Override the derived backoff (tests)
  */
-function scheduleDeferredFillRetry(bot: any, chainOrders: any, reason: string) {
+function scheduleDeferredFillRetry(bot: any, chainOrders: any, reason: string, options: { retryDelayMs?: number } = {}) {
     if (!bot || bot._shuttingDown) return;
     if (bot._deferredFillRetryTimer) return;
     if (!Array.isArray(bot._incomingFillQueue) || bot._incomingFillQueue.length === 0) return;
-    const deferMaxMs = Number((TIMING as any)?.FILL_BROADCAST_DEFER_MAX_MS) > 0
-        ? Number((TIMING as any).FILL_BROADCAST_DEFER_MAX_MS)
-        : 60000;
-    const retryMs = Math.min(5000, Math.max(250, Math.floor(deferMaxMs / 12)));
+    const seamRetryMs = resolveSeamMsOrNull((options as any)?.retryDelayMs);
+    const retryMs = seamRetryMs ?? (() => {
+        const deferMaxMs = Number((TIMING as any)?.FILL_BROADCAST_DEFER_MAX_MS) > 0
+            ? Number((TIMING as any).FILL_BROADCAST_DEFER_MAX_MS)
+            : 60000;
+        return Math.min(5000, Math.max(250, Math.floor(deferMaxMs / 12)));
+    })();
+    // Expose the resolved delay so tests can assert the seam resolution itself
+    // (a `||`-vs-`??` regression here is otherwise invisible: the only
+    // observable effect is a slower retry timer, which nothing measures).
+    // Only written when resolution is reached — the early guards above
+    // (_shuttingDown, timer already armed, empty queue) return before this.
+    bot._deferredFillRetryDelayMs = retryMs;
     bot._deferredFillRetryWaits = (Number(bot._deferredFillRetryWaits) || 0) + 1;
     const waits = bot._deferredFillRetryWaits;
     if (waits === 1 || waits % 12 === 0) {
@@ -858,8 +869,14 @@ export function parkFillsForTotalsRetry(bot: any, chainOrders: any, fills: any[]
     const maxMs = Number((TIMING as any)?.FILL_TOTALS_RETRY_MAX_MS) > 0
         ? Number((TIMING as any).FILL_TOTALS_RETRY_MAX_MS)
         : 60000;
-    const delayMs = (options as any)?.retryDelayMs
+    const delayMs = resolveSeamMsOrNull((options as any)?.retryDelayMs)
         ?? Math.min(baseMs * Math.pow(2, Math.min(attempt, 3)), maxMs);
+    // Expose the resolved delay so tests can assert the seam resolution itself
+    // (a `||`-vs-`??` regression here is otherwise invisible: the only
+    // observable effect is a slower retry timer, which nothing measures).
+    // Only written when resolution is reached — the early guards above (empty
+    // fills, already-armed timer) return before this point.
+    (bot as any)._fillTotalsRetryDelayMs = delayMs;
     bot.manager?.logger?.log?.(
         `[FILL] Parked ${fills.length} fill(s) on totals-refresh failure ` +
         `(parked=${parked.length}, attempt=${attempt + 1}, retry in ${Math.round(delayMs / 1000)}s); accounting not yet applied`,

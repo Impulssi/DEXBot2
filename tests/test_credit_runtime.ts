@@ -4058,9 +4058,10 @@ async function testMaxBorrowAmountPerOperationWithSelection() {
 }
 
 async function testSplitOversizedCreditDealsSplitsCorrectly() {
-  // The split logic sleeps BLOCKCHAIN_SETTLE_DELAY_MS (default 6000ms) between
-  // pieces to let on-chain state settle; the real delay applies here since the
-  // shared constants namespace cannot be stubbed per-test under compiled ESM.
+  // The split logic paces pieces with BLOCKCHAIN_SETTLE_DELAY_MS (default
+  // 6000ms) to let on-chain state settle; the test passes settleDelayMs: 0
+  // through the runtimeContext seam so it covers the split sequencing
+  // without sleeping on wall-clock time.
   const calls = [];
   const dbCalls = [];
   const baseAssets = {
@@ -4138,10 +4139,23 @@ async function testSplitOversizedCreditDealsSplitsCorrectly() {
       runtime.debtPolicy.lending.find((l) => l.type === 'creditOffer'),
       '1.3.10',
       runtime.state.positions[posKey],
+      // Skip the production BLOCKCHAIN_SETTLE_DELAY_MS pacing between
+      // split pieces; the split sequencing assertions are unaffected.
+      { settleDelayMs: 0 },
     );
 
     assert.ok(result, 'split function should return a result');
     assert.strictEqual(result.action, 'restructured', 'result should indicate restructuring happened');
+
+    // Pin the seam *resolution*, not just the helper: settleDelayMs: 0 must
+    // resolve to 0 and not fall through to BLOCKCHAIN_SETTLE_DELAY_MS. A
+    // caller-side `||` simplification would make this 6000 and is otherwise
+    // invisible (the only effect is a slower sleep nothing measures).
+    assert.strictEqual(
+      (runtime as any)._lastResolvedSettleDelayMs,
+      0,
+      'settleDelayMs: 0 must resolve to 0 (caller must use ?: / ??, not ||)'
+    );
 
     // 500/200 = 2.5 → ceil = 3 pieces, split 2 times (3-1)
     assert.strictEqual(repayCalls.length, 2, 'should have called repayCreditDeal 2 times for 3 pieces');

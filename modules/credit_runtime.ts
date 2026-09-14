@@ -40,7 +40,7 @@ import {
     normalizeCollateralMap,
     requiredCollateralForBorrow as sharedRequiredCollateralForBorrow,
 } from './credit_pricing.js';
-import { getErrorMessage } from './utils/errors.js';
+import { getErrorMessage, resolveSeamMsOrNull } from './utils/errors.js';
 
 const CREDIT_FEE_RATE_DENOM = FEE_PARAMETERS.GRAPHENE_FEE_RATE_DENOM;
 const ZERO_ASSET_ID = NATIVE_CLIENT.CHAIN.CORE_ASSET_ID;
@@ -1299,7 +1299,12 @@ class CreditRuntime {
 
         const debtAmount = blockchainAmountToFloat(callOrder?.debt, debtAsset) || 0;
         const collateralAmount = blockchainAmountToFloat(callOrder?.collateral, collateralAsset) || 0;
-        const collateralBalances = callOrderCollateralAssetId ? await chainOrders.getOnChainAssetBalances(accountRef, [callOrderCollateralAssetId]) : {};
+        // Test seam: runtime._getOnChainAssetBalancesFn overrides the live
+        // balance fetch so offline tests do not open a chain connection.
+        const balancesFn = typeof (this as any)._getOnChainAssetBalancesFn === 'function'
+            ? (this as any)._getOnChainAssetBalancesFn
+            : (acct: any, assets: any) => chainOrders.getOnChainAssetBalances(acct, assets);
+        const collateralBalances = callOrderCollateralAssetId ? await balancesFn(accountRef, [callOrderCollateralAssetId]) : {};
         const collateralBalance = callOrderCollateralAssetId ? ((collateralBalances as Record<string, any>)?.[String(callOrderCollateralAssetId)] || (collateralBalances as Record<string, any>)?.[String(collateralAsset?.symbol)] || null) : null;
         let currentCollateralFundsTotal = toFiniteNumber(collateralBalance?.total, undefined);
 
@@ -2474,10 +2479,23 @@ class CreditRuntime {
         });
         if (oversized.length === 0) return null;
 
-        // T3: Use canonical settle-delay resolution matching dexbot_maintenance_runtime.ts
-        const settleDelay = Number.isFinite(TIMING.BLOCKCHAIN_SETTLE_DELAY_MS)
-            ? Math.max(0, TIMING.BLOCKCHAIN_SETTLE_DELAY_MS)
-            : 6_000;
+        // T3: Use canonical settle-delay resolution matching dexbot_maintenance_runtime.ts.
+        // Test seam: runtimeContext.settleDelayMs overrides the production
+        // BLOCKCHAIN_SETTLE_DELAY_MS pacing so tests do not sleep on
+        // wall-clock time; the split sequencing itself is unchanged.
+        const seamDelay = resolveSeamMsOrNull((_runtimeContext as any)?.settleDelayMs);
+        const settleDelay = seamDelay != null
+            ? seamDelay
+            : (Number.isFinite(TIMING.BLOCKCHAIN_SETTLE_DELAY_MS)
+                ? Math.max(0, TIMING.BLOCKCHAIN_SETTLE_DELAY_MS)
+                : 6_000);
+        // Expose the resolved delay so tests can assert the seam resolution
+        // itself (a `||`-vs-`??` regression here is otherwise invisible: the
+        // only observable effect is a slower sleep, which nothing measures).
+        // Only written when resolution is reached — the oversized.length === 0
+        // early return above precedes this point, so a caller reusing one
+        // runtime across scenarios can observe a stale value.
+        (this as any)._lastResolvedSettleDelayMs = settleDelay;
 
         // T4: Hard cap on pieces per cycle so the watchdog interval is never exceeded
         const MAX_PIECES_PER_CYCLE = Number.isFinite(TIMING.CREDIT_DEAL_SPLIT_MAX_PIECES)

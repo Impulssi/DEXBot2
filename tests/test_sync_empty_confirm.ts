@@ -39,6 +39,9 @@ const createManager = async () => {
     const mgr = new OrderManager({
         market: 'TEST/BTS', assetA: 'TEST', assetB: 'BTS'
     });
+    // Skip the production SYNC_EMPTY_READ_CONFIRM_DELAY_MS pacing: this file
+    // covers the confirm state machine, not the delay duration.
+    mgr._skipEmptyReadConfirmDelay = true;
     mgr.logger = createSilentLogger();
     mgr.assets = { assetA: { id: '1.3.0', precision: 8 }, assetB: { id: '1.3.1', precision: 5 } };
     await mgr.setAccountTotals({ buy: 10000, sell: 100, buyFree: 10000, sellFree: 100 });

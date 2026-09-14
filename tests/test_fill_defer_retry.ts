@@ -112,9 +112,10 @@ async function testRETRY002_PipelineDeferralArmsRetry() {
 
 async function testRETRY003_RetryFiresWithoutNewFillOrRegionEnd() {
     console.log('\n[RETRY-003] The retry fires with no new fill and no region end...');
-    // Uses the real derived retry delay (5s at the default 60s defer
-    // bound): the point is the retry fires on its own wall-clock, with no
-    // second fill event and no region-end hook involved at all.
+    // Override the real derived retry delay (5s at the default 60s defer
+    // bound) so the test does not sleep on wall-clock time; the assertion
+    // is the retry behavior (watchdog refresh + consumer re-invoke), not
+    // the derived delay value (covered by the retryMs unit math).
     let watchdogCalls = 0;
     let consumeCalls = 0;
     const bot: any = {
@@ -130,9 +131,14 @@ async function testRETRY003_RetryFiresWithoutNewFillOrRegionEnd() {
         },
     };
     try {
-        scheduleDeferredFillRetry(bot, {}, 'test');
+        scheduleDeferredFillRetry(bot, {}, 'test', { retryDelayMs: 10 });
         assert.ok(bot._deferredFillRetryTimer != null, 'scheduler must arm the timer');
-        await sleep(6500);
+        assert.strictEqual(
+            bot._deferredFillRetryDelayMs,
+            10,
+            'retryDelayMs: 10 must resolve to 10'
+        );
+        await sleep(250);
         assert.ok(watchdogCalls >= 1, 'retry must refresh the stale-broadcast watchdog outside maintenance');
         assert.ok(consumeCalls >= 1, 'retry must re-invoke the consumer with no new fill and no region end');
         assert.strictEqual(bot._deferredFillRetryTimer, null, 'timer must settle once fired');
@@ -140,6 +146,38 @@ async function testRETRY003_RetryFiresWithoutNewFillOrRegionEnd() {
         clearRetryTimer(bot);
     }
     console.log('✓ RETRY-003 passed');
+}
+
+async function testRETRY003b_ZeroRetryDelayIsHonored() {
+    console.log('\n[RETRY-003b] An explicit retryDelayMs: 0 resolves to 0, not the derived default...');
+    // The discriminating case for `??` vs `||`: a truthy seam (10) is
+    // indistinguishable between the two, but 0 must NOT fall through to the
+    // derived 5s default. The caller resolving with `||` would reintroduce
+    // the original `> 0` semantics silently.
+    const bot: any = {
+        _incomingFillQueue: [{ order_id: '1.7.574247542' }],
+        _shuttingDown: false,
+        _deferredFillRetryTimer: null,
+        _deferredFillRetryWaits: 0,
+        _warn: () => {},
+        _consumeFillQueue: async () => {},
+        manager: {
+            _clearStaleBroadcastFlag: () => {},
+            logger: { log: () => {} },
+        },
+    };
+    try {
+        scheduleDeferredFillRetry(bot, {}, 'test', { retryDelayMs: 0 });
+        assert.ok(bot._deferredFillRetryTimer != null, 'scheduler must arm the timer for a 0 delay too');
+        assert.strictEqual(
+            bot._deferredFillRetryDelayMs,
+            0,
+            'retryDelayMs: 0 must resolve to 0, not the derived default (caller must use ??, not ||)'
+        );
+    } finally {
+        clearRetryTimer(bot);
+    }
+    console.log('✓ RETRY-003b passed');
 }
 
 async function testRETRY004_StaleFlagClearsOnConsumePath() {
@@ -261,6 +299,7 @@ async function runTests() {
     await testRETRY001_BroadcastDeferralArmsRetry();
     await testRETRY002_PipelineDeferralArmsRetry();
     await testRETRY003_RetryFiresWithoutNewFillOrRegionEnd();
+    await testRETRY003b_ZeroRetryDelayIsHonored();
     await testRETRY004_StaleFlagClearsOnConsumePath();
     await testRETRY005_FreshFlagStillDefers();
     await testRETRY006_CowFinallyDrainsOnBatchEndEdge();

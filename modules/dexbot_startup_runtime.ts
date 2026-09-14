@@ -453,7 +453,12 @@ async function finishStartupSequence(bot: any, startupState: any) {
         if (!bot.config.dryRun && !chainReadTruncated && Array.isArray(chainOpenOrders) && chainOpenOrders.length === 0
             && Array.isArray(persistedGrid) && persistedGrid.length > 0) {
             try {
-                await startupSleep(Math.max(0, Number((TIMING as any).SYNC_EMPTY_READ_CONFIRM_DELAY_MS) || 0));
+                // Test seam: bot._skipEmptyReadConfirmDelay skips the
+                // production SYNC_EMPTY_READ_CONFIRM_DELAY_MS pacing (tests
+                // cover the confirm state machine, not the delay duration).
+                if (!bot._skipEmptyReadConfirmDelay) {
+                    await startupSleep(Math.max(0, Number((TIMING as any).SYNC_EMPTY_READ_CONFIRM_DELAY_MS) || 0));
+                }
                 const confirmRead = await botGuardedOpenOrdersRead(bot, {
                     log: (message: string, level: any) => bot._log(message, level),
                     label: 'STARTUP-CONFIRM',

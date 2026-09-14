@@ -55,13 +55,23 @@ async function testCachedIdReusedWithoutChain() {
   // A cached ID must return WITHOUT importing the chain stack: prove it by
   // asserting the call settles even though no network exists for it to use.
   // (Any chain attempt would hang past this timeout and fail the test.)
+  // The guard timer is unref'd so a passing run never holds the process
+  // open for the leftover 5s after the assertions complete.
   const data = { preferredAccount: 'fixture-account', accountId: '1.2.1001' };
-  const res = await Promise.race([
-    ensureBotAccountId(data, 1000, true),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('chain hit on cached path')), 5000)),
-  ]);
-  assert.strictEqual(res.id, '1.2.1001');
-  assert.strictEqual(res.reason, 'cached');
+  let guard: any = null;
+  try {
+    const res = await Promise.race([
+      ensureBotAccountId(data, 1000, true),
+      new Promise((_, reject) => {
+        guard = setTimeout(() => reject(new Error('chain hit on cached path')), 5000);
+        try { (guard as any)?.unref?.(); } catch { /* browser-safe: no unref */ }
+      }),
+    ]);
+    assert.strictEqual(res.id, '1.2.1001');
+    assert.strictEqual(res.reason, 'cached');
+  } finally {
+    if (guard) clearTimeout(guard);
+  }
 }
 
 // ─── persistBotAccountId ───

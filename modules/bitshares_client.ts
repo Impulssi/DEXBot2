@@ -630,6 +630,13 @@ async function disconnectClient() {
     connected = false;
     try {
         try { _nativeClient.disconnect(); } catch (_: any) {}
+        // Stop periodic node health monitoring (see handleConnectionStatus:
+        // the monitor starts on 'connected' and its immediate checkAllNodes()
+        // sweep plus the transport reconnect it triggers open real WebSocket
+        // handshakes to every configured node). disconnectClient is the single
+        // teardown path, so stopping here covers both production shutdown
+        // and unit tests that initialized the client stack for one read.
+        try { nodeManager?.stop?.(); } catch (_: any) {}
         if (_subscriptionManager) {
             try {
                 if (typeof _subscriptionManager.removeNoticeSubscription === 'function') {

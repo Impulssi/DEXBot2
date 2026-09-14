@@ -100,6 +100,26 @@ import * as Format from './format.js';
 import { lookupAsset, sleep, resolveAccountRef } from './utils/system.js';
 import * as chainOrders from '../chain_orders.js';
 import * as client from '../bitshares_client.js';
+/**
+ * Test seam for targeted single-order refetches (drift refetch + sub-dust
+ * residual verification). When manager._readSingleOrderFn is a function it
+ * is used instead of the chain read. The chain path starts with
+ * waitForConnected (30s timeout against live nodes); tests that drive fill
+ * paths with a drift signal or a sub-dust residual would otherwise hang on
+ * that connect for a read whose result they do not even assert on.
+ * Production never sets this; default is the chain.
+ */
+function readSingleOrderSeam(mgr: any, orderId: any, timeoutMs: any): Promise<any> {
+    const seam = (mgr as any)?._readSingleOrderFn;
+    if (typeof seam === 'function') return seam(orderId, timeoutMs);
+    return (chainOrders as any).readSingleOrder(orderId, timeoutMs);
+}
+/** Same seam for the batched drift refetch (batch path). */
+function batchReadOrdersSeam(mgr: any, orderIds: any, timeoutMs: any): Promise<any> {
+    const seam = (mgr as any)?._batchReadOrdersFn;
+    if (typeof seam === 'function') return seam(orderIds, timeoutMs);
+    return (chainOrders as any).batchReadOrders(orderIds, timeoutMs);
+}
 const { BitShares } = client;
 import { NATIVE_CLIENT } from '../constants.js';
 const { toFiniteNumber } = Format;
@@ -147,6 +167,9 @@ import { getErrorMessage } from '../utils/errors.js';
  * Test seam: when manager._confirmEmptyReadFn is a function it is used
  * instead of the chain read (must resolve to a raw order array, or null
  * when the re-read itself is ambiguous). A throwing seam is 'ambiguous'.
+ * When manager._skipEmptyReadConfirmDelay is truthy the production
+ * SYNC_EMPTY_READ_CONFIRM_DELAY_MS pacing is skipped (tests); the confirm
+ * semantics (confirmed / contradicted / ambiguous / unavailable) are unchanged.
  *
  * @param {Object} mgr - OrderManager instance (accountId, config, logger).
  * @returns {Promise<string>} 'confirmed' (still empty — accept),
@@ -159,7 +182,9 @@ async function confirmSuspectEmptyRead(mgr: any): Promise<string> {
     try {
         if (mgr?.config?.dryRun) return 'unavailable';
         const seam = (mgr as any)?._confirmEmptyReadFn;
-        const delay = Math.max(0, Number(TIMING.SYNC_EMPTY_READ_CONFIRM_DELAY_MS) || 0);
+        const delay = (mgr as any)?._skipEmptyReadConfirmDelay
+            ? 0
+            : Math.max(0, Number(TIMING.SYNC_EMPTY_READ_CONFIRM_DELAY_MS) || 0);
         if (typeof seam === 'function') {
             if (delay > 0) await sleep(delay);
             let fresh: any = null;
@@ -1570,7 +1595,7 @@ class SyncEngine {
                     residualForSale = Math.round(effectiveRawForSale);
                 } else {
                     try {
-                        const residualOrder = await chainOrders.readSingleOrder(matchedGridOrder.orderId, 3000);
+                        const residualOrder = await readSingleOrderSeam(mgr, matchedGridOrder.orderId, 3000);
                         residualForSale = residualOrder ? toFiniteNumber(residualOrder.for_sale, null) : null;
                     } catch (residualErr: any) {
                         // The read is best-effort: if it fails, fall back to the old
@@ -1743,7 +1768,7 @@ class SyncEngine {
 
                     if (ctx.driftSignal) {
                         try {
-                            const fresh = await chainOrders.readSingleOrder(orderId, 3000);
+                            const fresh = await readSingleOrderSeam(mgr, orderId, 3000);
                             if (fresh) {
                                 const freshForSale = toFiniteNumber(fresh.for_sale, null);
                                 if (freshForSale !== null && Number.isFinite(freshForSale)) {
@@ -1981,7 +2006,7 @@ class SyncEngine {
 
                     if (driftOrderIds.size > 0) {
                         try {
-                            const batchResults = await chainOrders.batchReadOrders([...driftOrderIds], 3000);
+                            const batchResults = await batchReadOrdersSeam(mgr, [...driftOrderIds], 3000);
                             for (const [orderId, freshOrder] of batchResults) {
                                 if (freshOrder) {
                                     const freshForSale = toFiniteNumber(freshOrder.for_sale, null);

@@ -81,7 +81,7 @@ import * as FormatModule from './order/format.js';
 const Format = FormatModule as any;
 import * as workingGridModule from './order/working_grid.js';
 const { WorkingGrid } = workingGridModule as any;
-import { getErrorMessage } from './utils/errors.js';
+import { getErrorMessage, resolveSeamMs, resolveSeamMsOrNull } from './utils/errors.js';
 
 // Maximum number of times the pre-broadcast staleness guard may re-plan the
 // batch from a fresh master before proceeding anyway. Bounded so a master
@@ -2495,6 +2495,10 @@ function applyRotationTransitionsToWorkingGrid(bot: any, workingGrid: any, execu
  * CANCELs modify existing orders and cannot be reliably distinguished from
  * "not yet visible" state by simple polling.
  *
+ * @param {Object} [options]
+ * @param {number} [options.maxPollRetries] - Poll attempts before reconciliation fallback
+ * @param {number} [options.pollIntervalMs] - Delay between polls; tests pass 0
+ *   to skip the production 1.5s pacing without changing the poll semantics
  * @returns {{ allConfirmed: boolean, confirmed: Array, unconfirmed: Array }}
  */
 async function pollChainForConfirmation(bot: any, opContexts: any, options: any = {}): Promise<{
@@ -2504,7 +2508,15 @@ async function pollChainForConfirmation(bot: any, opContexts: any, options: any 
     confirmedChainIds: string[];
 }> {
     const maxPollRetries = options.maxPollRetries || 4;
-    const pollIntervalMs = options.pollIntervalMs || 1500;
+    // Test seam (see updateOrdersOnChainBatchCOW): bot._testPollIntervalMs
+    // overrides the production pacing when set by the tests. An explicit 0 is
+    // honored; null/undefined falls through to the production 1.5s default.
+    const explicitPollMs = options.pollIntervalMs;
+    const seamMs = (bot as any)?._testPollIntervalMs;
+    const pollIntervalMs = resolveSeamMs(
+        explicitPollMs,
+        resolveSeamMs(seamMs, 1500)
+    );
 
     // Only CREATE operations can be confirmed by polling (they appear as new orders on chain)
     const createContexts = opContexts.filter((ctx: any) => ctx && ctx.kind === 'create' && ctx.finalInts && ctx.order);
@@ -2758,7 +2770,7 @@ function restoreSkippedUpdateSlotsInWorkingGrid(bot: any, workingGrid: any, skip
  *   skipped as already-consistent); handled=false when the caller must proceed
  *   with the original plan.
  */
-async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, preBroadcastGuard: any): Promise<{ handled: boolean; result?: any }> {
+async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, preBroadcastGuard: any, seamPollIntervalMs?: number): Promise<{ handled: boolean; result?: any }> {
     const canReplan = replanDepth < STALE_PLAN_REPLAN_LIMIT
         && Array.isArray(cowResult.fills) && cowResult.fills.length > 0;
     if (!canReplan) {
@@ -2834,7 +2846,11 @@ async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, p
             return {
                 handled: true,
                 result: await updateOrdersOnChainBatchCOW(bot, replanned, {
-                    replanDepth: replanDepth + 1
+                    replanDepth: replanDepth + 1,
+                    // Carry the seam through the recursion explicitly: the inner
+                    // frame re-sets and re-restores it, so it must not depend on
+                    // the outer frame's side-channel value surviving.
+                    ...(seamPollIntervalMs != null ? { pollIntervalMs: seamPollIntervalMs } : {})
                 }),
             };
         }
@@ -3274,8 +3290,67 @@ async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
     return { proceed: true, crossingCandidates, intraBatchCandidates };
 }
 
+function restoreTestPollIntervalSeam(bot: any, prev: any) {
+    try {
+        if (prev === undefined) delete (bot as any)._testPollIntervalMs;
+        else (bot as any)._testPollIntervalMs = prev;
+    } catch { /* seam restore must never break the batch */ }
+}
+
 async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: any = {}) {
     const replanDepth = Number.isFinite(Number(options?.replanDepth)) ? Number(options.replanDepth) : 0;
+    // Test seam: options.pollIntervalMs overrides the production 1.5s pacing
+    // in pollChainForConfirmation (missing-create path below) so tests do
+    // not sleep on wall-clock time. Held on the bot only for the duration of
+    // this call (see the wrapper's finally) so the inner missing-create
+    // branch and any re-plan recursion pick it up without changing the
+    // production call signature used by the runtime.
+    const seamPollIntervalMs = resolveSeamMsOrNull((options as any)?.pollIntervalMs);
+    const prevSeamPollIntervalMs = (bot as any)?._testPollIntervalMs;
+    if (seamPollIntervalMs != null) {
+        (bot as any)._testPollIntervalMs = seamPollIntervalMs;
+    }
+    // Expose the resolved interval using the same precedence the missing-create
+    // poll path applies (explicit option > bot seam > production 1500ms).
+    // Recorded in the wrapper rather than in pollChainForConfirmation so it is
+    // observable on every batch exit, including the pre-broadcast guard
+    // refusals that never reach the poll (a `||`-vs-`??` regression here is
+    // otherwise invisible: the only effect is a slower poll).
+    (bot as any)._lastResolvedPollIntervalMs = resolveSeamMs(
+        seamPollIntervalMs,
+        resolveSeamMs((bot as any)?._testPollIntervalMs, 1500)
+    );
+    // The seam override must not survive this call: every exit path (dry run,
+    // entry/pre-broadcast single-flight aborts, guard refusals, re-plan
+    // recursion, throws) funnels through the body() finally below, so no exit
+    // can leak bot._testPollIntervalMs onto the bot.
+    try {
+        return await updateOrdersOnChainBatchCOWBody(
+            bot, cowResult, replanDepth,
+            seamPollIntervalMs ?? undefined
+        );
+    } finally {
+        // Restore only when this frame actually wrote a seam. The entry
+        // single-flight await (inside body()) lets a second, seam-less batch
+        // run concurrently: an unguarded restore would delete the seam owned
+        // by an in-flight sibling call (captured prev === undefined), and that
+        // sibling's pollChainForConfirmation — which reads the bot field only,
+        // since it takes no pollIntervalMs option at its call sites — would
+        // silently fall back to the production 1500ms pacing. Guarding keeps
+        // the write-ownership scoped to this call; the saved prev still makes
+        // the nested re-plan recursion LIFO-correct.
+        if (seamPollIntervalMs != null) {
+            restoreTestPollIntervalSeam(bot, prevSeamPollIntervalMs);
+        }
+    }
+}
+
+async function updateOrdersOnChainBatchCOWBody(
+    bot: any,
+    cowResult: any,
+    replanDepth: number,
+    seamPollIntervalMs: number | undefined
+) {
     bot._currentCycleId = (Number.isFinite(Number(bot._currentCycleId)) ? Number(bot._currentCycleId) : 0) + 1;
     const { workingGrid, workingIndexes, workingBoundary, actions } = cowResult;
     // Boundary-hold value: computed pre-broadcast after the skip-restore and
@@ -4282,7 +4357,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         });
         if (!preBroadcastGuard.canCommit) {
             // Bounded re-plan + proceed — policy documented on replanStaleBatch.
-            const replan = await replanStaleBatch(bot, cowResult, replanDepth, preBroadcastGuard);
+            const replan = await replanStaleBatch(bot, cowResult, replanDepth, preBroadcastGuard, seamPollIntervalMs);
             if (replan.handled) {
                 return replan.result;
             }

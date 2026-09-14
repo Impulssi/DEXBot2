@@ -200,7 +200,11 @@ async function testRefreshStateMulti() {
         };
     };
     runtime.persistState = async () => {};
-
+    // Offline seams: this scenario covers multi-position refresh wiring, not
+    // live collateral balances or deal discovery.
+    runtime._resolveAccountId = async () => '1.2.3';
+    (runtime as any)._fetchOwnedCreditOffers = async () => [];
+    (runtime as any)._getOnChainAssetBalancesFn = async () => ({});
     await runtime.refreshState();
 
     const usdPos = runtime.state.positions['1.3.1:1.3.0'];
@@ -533,6 +537,10 @@ async function testBackwardCompatibilityFlatMpa() {
         };
     };
     runtime.persistState = async () => {};
+    // Offline seam: this scenario covers MPA position wiring, not live
+    // collateral balances.
+    runtime._resolveAccountId = async () => '1.2.3';
+    (runtime as any)._getOnChainAssetBalancesFn = async () => ({});
 
     const lendingItem = bot.config.debtPolicy.lending[0];
     await runtime.refreshMpaState(lendingItem);
@@ -653,6 +661,10 @@ async function testCreditMaintenanceUsesDealCollateral() {
     runtime.executeOperations = async (ops) => { capturedOps = ops; return { tx_id: 'tx-test' }; };
     runtime._fetchBorrowerDeals = async () => [];
     runtime.refreshCreditState = async () => {};
+    // Offline seam: repayCreditDeal's post-repay refreshState would hit the
+    // live chain; refreshCreditState above already covers the state update
+    // this scenario asserts on (captured reborrow ops).
+    runtime.refreshState = async () => {};
     runtime.persistState = async () => {};
 
     const specificPolicy = bot.config.debtPolicy.lending[0];
@@ -721,6 +733,10 @@ async function testCreditMaintenanceResistsAssignedBudgetUnderflow() {
     runtime.executeOperations = async (ops) => { capturedOps = ops; return { tx_id: 'tx-test' }; };
     runtime._fetchBorrowerDeals = async () => [];
     runtime.refreshCreditState = async () => {};
+    // Offline seam: repayCreditDeal's post-repay refreshState would hit the
+    // live chain; refreshCreditState above already covers the state update
+    // this scenario asserts on (captured reborrow ops).
+    runtime.refreshState = async () => {};
     runtime.persistState = async () => {};
 
     const specificPolicy = bot.config.debtPolicy.lending[0];

@@ -173,6 +173,31 @@ async function testTOTALS003_SecondParkJoinsPendingTimer() {
     console.log('✓ TOTALS-003 passed');
 }
 
+async function testTOTALS004_ZeroRetryDelayIsHonored() {
+    console.log('\n[TOTALS-004] An explicit retryDelayMs: 0 resolves to 0, not the derived backoff...');
+    // The discriminating case for `??` vs `||`: the truthy retryDelayMs values
+    // used by TOTALS-002/003 are indistinguishable between the two. A caller
+    // resolving with `||` would silently fall back to the exponential backoff.
+    const bot: any = {
+        _incomingFillQueue: [],
+        _shuttingDown: false,
+        _fillTotalsRetryAttempt: 0,
+        _warn: () => {},
+        manager: { logger: { log: () => {} } },
+        _consumeFillQueue: async () => {},
+    };
+    parkFillsForTotalsRetry(bot, {}, [makeFill('1.7.400', 4000, '4.5')], { retryDelayMs: 0 });
+    assert.strictEqual(
+        bot._fillTotalsRetryDelayMs,
+        0,
+        'retryDelayMs: 0 must resolve to 0, not the derived backoff (caller must use ??, not ||)'
+    );
+    assert.ok(bot._fillTotalsRetryTimer, 'timer scheduled for a 0 delay too');
+    clearTimeout(bot._fillTotalsRetryTimer);
+    bot._fillTotalsRetryTimer = null;
+    console.log('✓ TOTALS-004 passed');
+}
+
 function stubSpreadBot(outOfSpread: number) {
     const logs: any[] = [];
     return {
@@ -328,6 +353,7 @@ async function runAllTests() {
     await testTOTALS001_DeferredFillsParkedNotDropped();
     await testTOTALS002_ParkedFillsRetryOnTimer();
     await testTOTALS003_SecondParkJoinsPendingTimer();
+    await testTOTALS004_ZeroRetryDelayIsHonored();
     await testSPREAD001_HealthyOrPlacedResets();
     await testSPREAD002_WarnOnceThenEscalateWithCooldown();
     await testSPREAD003_UncheckedTickDoesNotAccumulate();

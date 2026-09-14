@@ -42,6 +42,10 @@ async function testFullOrderLifecycle() {
     };
 
     const mgr = new OrderManager(cfg);
+    // Offline seam: targeted chain refetches resolve as "order gone"
+    // without opening a real connection.
+    mgr._readSingleOrderFn = async () => null;
+    mgr._batchReadOrdersFn = async () => new Map();
     mgr.logger = {
         log: (msg, level) => {
             if (level === 'debug') return;
