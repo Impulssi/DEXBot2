@@ -327,6 +327,38 @@ let TIMING = {
     BOUNDARY_HOLD_RESYNC_THRESHOLD: 4,
     BOUNDARY_HOLD_RESYNC_COOLDOWN_MS: 5 * 60 * 1000,  // 5 minutes
 
+    // GRID_PRICE_INVARIANT_RESYNC_THRESHOLD / COOLDOWN: consecutive COW batches
+    // that reject the SAME slot's emission as off-grid, after which the guard
+    // asks for a structural resync. Without this an in-process corrupted
+    // slot.price is rejected forever: every cycle re-plans from that same slot
+    // object (the spread-correction planner carries candidate.price straight
+    // from manager.orders), is rejected again, and warns. Nothing heals it
+    // short of a restart, so the slot is dead while the bot is alive and the
+    // repeated warns train operators to ignore them.
+    //
+    // The structural resync is the right healer because loadGrid now repairs
+    // slot prices from the genesis ladder on reload (both 'log' and 'enforce'
+    // modes), and the full-reset fallback rebuilds clean geometry. Auto-healing
+    // in place at rejection time is deliberately NOT done: silently overwriting
+    // slot.price would erase the diagnostic signal that distinguishes the four
+    // corruption sources (legacy persisted state, migration fallback,
+    // genesis-identity mismatch, unknown live writer). Count first, escalate on
+    // persistence.
+    GRID_PRICE_INVARIANT_RESYNC_THRESHOLD: 3,
+    GRID_PRICE_INVARIANT_RESYNC_COOLDOWN_MS: 15 * 60 * 1000,  // 15 minutes
+
+    // DEFERRED_HOLD_ESCALATE_MS: how long an unchanged deferred-hold signature
+    // (same chain order ids/prices/sizes/reasons) may persist before the hold
+    // is escalated to a structural resync. Out-of-rail orphans hold locked
+    // funds and are never auto-cancelled per cycle (by design -- cancelling on
+    // ambiguous evidence is irreversible), so "held indefinitely" had no exit.
+    // The resync is that exit: the full reset's reconcile is update-first
+    // (unmatched chain orders are price-updated onto rail slots, cancelling
+    // only true surplus), so funds are released without inventing a new
+    // cancellation policy.
+    DEFERRED_HOLD_ESCALATE_MS: 24 * 60 * 60 * 1000,  // 24 hours
+    DEFERRED_HOLD_RESYNC_COOLDOWN_MS: 6 * 60 * 60 * 1000,  // 6 hours
+
     // Blockchain settle delay before follow-up structural work after a scheduled maintenance action.
     // Gives maintenance-triggered cancels/rebalances time to acquire locks, broadcast, and settle
     // before a deferred grid resync attempts more on-chain changes.

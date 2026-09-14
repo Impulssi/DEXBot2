@@ -162,6 +162,14 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Test mapping**: Links each invariant to regression tests
 - **Review checklist**: Quick-use verification for COW/accounting changes
 
+### 📐 [Grid-Price Invariant](GRID_PRICE_INVARIANT.md)
+*Why a slot's emitted price must equal its genesis level — and how that failed.*
+- **The invariant**: `order.price === priceForSlot(idx, genesis)`, and why range guards cannot substitute for it
+- **Failure mechanism**: Chain price overwriting slot identity, pre-broadcast substitution, untrusted fill-guard pivot
+- **Enforcement**: The six emission sites, the blocking rejection of off-grid emissions, and the fail-open policy on unjudgeable inputs
+- **Out-of-bounds policy**: Hold and surface; refill in-grid slots at their genesis price
+- **Status**: What is landed, what remains open, and why the removed 5% sanity gate must not be naively re-landed
+
 ### 🧪 [Test Suite](../tests/README.md)
 *Test organization, categories, and key architectural patterns tested.*
 - **Test Layout**: Directory structure, helpers, and quick-start commands

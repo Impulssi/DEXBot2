@@ -18,6 +18,8 @@ const {
     assertSlotPriceInvariant, priceSlotEqual, hashPriceLevels, isSlotInRail, calculateGapSlots
 } = math;
 const { createOrderGrid, loadGrid } = gridMod;
+// Needed for the repaired-slot emittability assertion (step 8b).
+const { checkGridPriceInvariant } = require('../modules/order/utils/order');
 
 function makeGenesis() {
     // Use createOrderGrid to get a realistic genesis (dedupe consistent)
@@ -122,6 +124,12 @@ async function run() {
     }
 
     // 8. loadGrid log vs enforce mode for price mismatch — use actual genesis rail price
+    //
+    // A mismatched price is REPAIRED from the genesis ladder in BOTH modes.
+    // The slot id determines its price, so a divergent value is corruption:
+    // left in place it re-activates, the emission guard rejects it every cycle,
+    // and nothing heals the slot short of a full reset (permanent stall).
+    // Enforce mode additionally virtualizes (zeroes size/orderId).
     for (const mode of ['log', 'enforce'] as const) {
         const g = makeGenesis();
         // Pick a slot and corrupt its price to guarantee invariant failure
@@ -137,19 +145,48 @@ async function run() {
         await loadGrid(manager, persistedGrid, 0, g);
         const loaded = [...manager.orders.values()] as any[];
         const slot1 = loaded.find((s: any) => s.id === 'slot-1');
+        // Both modes: the price is repaired to the slot's own ladder level.
+        assert.strictEqual(slot1.price, g.priceLevels[1],
+            `${mode} mode must repair the mismatched price to the genesis level, got ${slot1.price}`);
+        assert.notStrictEqual(slot1.price, badPrice, `${mode} mode must not keep the corrupted price`);
+        assert.ok(manager.logs.some(l => l.includes('Repaired')),
+            `${mode} mode must log the repair so the corruption is visible`);
         if (mode === 'log') {
-            assert.strictEqual(slot1.price, badPrice, 'log mode keeps mismatched price');
             assert.strictEqual(slot1.state, ORDER_STATES.VIRTUAL, 'log mode keeps state');
-            assert.ok(manager.logs.some(l => l.includes('log-only')), 'log mode logs log-only');
+            assert.ok(manager.logs.some(l => l.includes('price repaired from genesis')),
+                'log mode logs the repair (not merely log-only)');
         } else {
             assert.strictEqual(slot1.state, ORDER_STATES.VIRTUAL, 'enforce mode keeps VIRTUAL');
             assert.strictEqual(slot1.size, 0, 'enforce mode zeroes size');
-            assert.strictEqual(slot1.price, badPrice, 'enforce keeps price but zeroes size/orderId');
             assert.ok(manager.logs.some(l => l.includes('virtualize')), 'enforce logs virtualize');
         }
         process.env.GRID_PRICE_SLOT_VALIDATION = origEnv;
         delete process.env.GRID_PRICE_SLOT_VALIDATION;
         if (origEnv !== undefined) process.env.GRID_PRICE_SLOT_VALIDATION = origEnv;
+    }
+
+    // 8b. A repaired slot must be emittable again (the stall is actually healed).
+    // This is the regression guard for the permanent-stall hole: before the
+    // repair, the guard rejected this slot on every cycle forever.
+    {
+        const g = makeGenesis();
+        const badPrice = g.priceLevels[1] * 1.05;
+        const persistedGrid = [
+            { id: 'slot-1', price: badPrice, type: ORDER_TYPES.BUY, state: ORDER_STATES.VIRTUAL, size: 0, orderId: '' },
+        ];
+        const origEnv = process.env.GRID_PRICE_SLOT_VALIDATION;
+        process.env.GRID_PRICE_SLOT_VALIDATION = 'log';
+        const manager = makeManagerForLoad({ _genesis: null });
+        await loadGrid(manager, persistedGrid, 0, g);
+        const loaded = [...manager.orders.values()] as any[];
+        const slot1 = loaded.find((s: any) => s.id === 'slot-1');
+        // The post-repair price must satisfy the emission guard's check, or the
+        // slot is still stuck (which is the whole point of repairing it).
+        const inv = checkGridPriceInvariant(slot1.id, slot1.price, manager._genesis || g);
+        assert.strictEqual(inv.ok, true,
+            `a repaired slot must pass the emission guard (else it stalls forever): ${inv.reason}`);
+        process.env.GRID_PRICE_SLOT_VALIDATION = origEnv;
+        if (origEnv === undefined) delete process.env.GRID_PRICE_SLOT_VALIDATION;
     }
 
     // 9. Hash mismatch warning (still uses persisted genesis)

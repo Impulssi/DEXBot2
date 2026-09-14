@@ -5,7 +5,7 @@
  * Cold (null pivot/type) => disabled.
  */
 const assert = require('assert');
-const { isLastFillGuardBlocked } = require('../modules/dexbot_cow_runtime');
+const { isLastFillGuardBlocked, resolveOnGridPivot } = require('../modules/dexbot_cow_runtime');
 const { ORDER_TYPES } = require('../modules/constants');
 
 const INC = 0.5; // default grid increment
@@ -141,6 +141,93 @@ async function testSpreadBypassNote() {
     console.log('✓ LFG-7 passed');
 }
 
+
+/**
+ * PIVOT-001..003 - the LAST-FILL pivot must be a real grid level.
+ *
+ * The pivot was an unvalidated raw price, so a bad one silently shifted every
+ * threshold and made off-market placements read as legitimate (the ratchet
+ * precondition). resolveOnGridPivot validates it against the ladder. The
+ * distinction that matters: an in-grid-but-slightly-off price is SNAPPED to its
+ * slot (fills execute near their slot price), while a wildly off-ladder price
+ * is NOT rewritten onto an edge slot - that would dress up a corrupt pivot as a
+ * legitimate edge fill.
+ */
+async function testPivotSnapsToGridLevel() {
+    console.log('\n[PIVOT-001] a near-ladder pivot snaps to its slot level...');
+    const levels = [100, 101, 102, 103, 104, 105];
+    const genesis = { priceLevels: levels };
+    const manager = { _genesis: genesis, config: { incrementPercent: 1 } };
+
+    // 101.2 is within half an increment (0.5%) of slot 1 (101).
+    const r = resolveOnGridPivot(manager, 101.2);
+    assert.strictEqual(r.idx, 1, `expected slot 1, got ${r.idx}`);
+    assert.strictEqual(r.price, 101, `expected the slot level 101, got ${r.price}`);
+    assert.strictEqual(r.snapped, true, 'a moved pivot must be reported as snapped');
+
+    // An exact level is a no-op snap.
+    const exact = resolveOnGridPivot(manager, 103);
+    assert.strictEqual(exact.idx, 3, 'an exact level must resolve to its own slot');
+    assert.strictEqual(exact.price, 103, 'an exact level must be unchanged');
+    assert.strictEqual(exact.snapped, false, 'an exact level is not a snap');
+    console.log('  \u2713 PIVOT-001 passed');
+}
+
+async function testOffGridPivotIsNotRewritten() {
+    console.log('\n[PIVOT-002] a far off-ladder pivot is NOT rewritten onto an edge slot...');
+    const genesis = { priceLevels: [100, 101, 102, 103, 104, 105] };
+    const manager = { _genesis: genesis, config: { incrementPercent: 1 } };
+
+    // 40 is nowhere near the ladder. slotIndexForPrice clamps it to slot 0, but
+    // adopting that would fabricate a legitimate-looking pivot at 100.
+    const r = resolveOnGridPivot(manager, 40);
+    assert.strictEqual(r.idx, null, 'an off-ladder pivot must not claim a slot');
+    assert.strictEqual(r.price, 40, 'an off-ladder pivot must keep its raw value');
+    assert.strictEqual(r.snapped, false, 'an off-ladder pivot is not a snap');
+    // nearestDrift must be reported even though the snap was refused, so a
+    // caller can tell a near-miss from a price nowhere near the ladder. Without
+    // it the refusal path carries no distance and both cases look identical.
+    assert.ok(r.nearestDrift != null && r.nearestDrift > 1,
+        `a refused snap must still report how far off it was, got ${r.nearestDrift}`);
+
+    // A near-ladder price within the snap tolerance is SNAPPED onto the
+    // nearest level, and still reports its pre-snap drift. (101.9 is 0.098%
+    // from level 102, well inside the 1% increment tolerance, so this is the
+    // snap path -- not the refusal path exercised above with 40.)
+    const nearMiss = resolveOnGridPivot(manager, 101.9);
+    assert.strictEqual(nearMiss.snapped, true,
+        'a near-ladder price inside tolerance must snap');
+    assert.strictEqual(nearMiss.price, 102,
+        'a snapped pivot must resolve to the nearest level');
+    assert.strictEqual(nearMiss.idx, 2,
+        'a snapped pivot must report the slot index it landed on');
+    assert.ok(nearMiss.nearestDrift != null && nearMiss.nearestDrift < 0.02,
+        `a near-miss must report its small pre-snap drift, got ${nearMiss.nearestDrift}`);
+    console.log('  \u2713 PIVOT-002 passed');
+}
+
+async function testPivotWithoutGenesisFallsBack() {
+    console.log('\n[PIVOT-003] no genesis falls back to the raw pivot; bad input is null...');
+    const manager = { config: { incrementPercent: 1 } };
+
+    const noGenesis = resolveOnGridPivot(manager, 101.2);
+    assert.strictEqual(noGenesis.price, 101.2, 'without genesis the raw pivot is used (guard degrades, not disabled)');
+    assert.strictEqual(noGenesis.idx, null, 'without genesis no slot can be claimed');
+
+    // Pre-genesis startup must not crash or invent a pivot.
+    const empty = resolveOnGridPivot({ _genesis: { priceLevels: [] }, config: {} }, 101.2);
+    assert.strictEqual(empty.idx, null, 'an empty ladder claims no slot');
+
+    // Assert the shape by field, not deep-equality: the result carries
+    // diagnostics (nearestDrift) that are not part of the contract under test.
+    for (const [label, input] of [['null', null], ['NaN', NaN], ['a non-positive value', -5]] as const) {
+        const r = resolveOnGridPivot(manager, input);
+        assert.strictEqual(r.price, null, `${label} pivot resolves to a null price`);
+        assert.strictEqual(r.idx, null, `${label} pivot claims no slot`);
+    }
+    console.log('  \u2713 PIVOT-003 passed');
+}
+
 async function main() {
     await testColdStartDisabled();
     await testBuyAfterBuyHalfIncrement();
@@ -149,6 +236,9 @@ async function main() {
     await testMostRecentWins();
     await testHalfIncrementParam();
     await testSpreadBypassNote();
+    await testPivotSnapsToGridLevel();
+    await testOffGridPivotIsNotRewritten();
+    await testPivotWithoutGenesisFallsBack();
     console.log('\nAll LAST-FILL-GUARD tests passed.');
 }
 

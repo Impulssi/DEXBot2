@@ -146,6 +146,7 @@ import {
     clamp,
     buildGenesisFromPriceLevels,
     assertSlotPriceInvariant,
+    priceForSlot,
     hashPriceLevels,
 } from './utils/math.js';
 import {
@@ -601,20 +602,54 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null,
             })();
             if (genesis && Array.isArray(genesis.priceLevels)) {
                 // Validate each slot's price against genesis; virtualize only in enforce mode (plan §13)
+                //
+                // REPAIR (both modes): a slot id determines its price from the
+                // genesis ladder, so a slot whose price disagrees is not a value
+                // to preserve -- it is corruption. Carrying it forward is what
+                // let an off-grid price become grid evidence and then be
+                // re-emitted. Left unrepaired the slot is also permanently
+                // stuck: it re-activates, the emission guard rejects it on
+                // every cycle, and nothing heals it without a full reset.
+                // Repairing here is safe because the id is authoritative; no
+                // legitimate slot can disagree with its own ladder level.
+                const repairedSlots: string[] = [];
                 const newGrid: any[] = [];
                 for (const slot of grid) {
                     try {
                         assertSlotPriceInvariant(slot, genesis);
                         newGrid.push(slot);
                     } catch (e: any) {
-                        const msg = `[GENESIS] Slot ${slot?.id} price mismatch vs genesis → ${validationMode === 'enforce' ? 'virtualize' : 'log-only'}: ${getErrorMessage(e)}`;
+                        const idx = parseSlotIndex(slot?.id);
+                        let repaired = slot;
+                        if (idx !== null) {
+                            try {
+                                const level = priceForSlot(idx, genesis);
+                                if (Number.isFinite(level) && level > 0) {
+                                    repaired = { ...slot, price: level };
+                                    repairedSlots.push(`${slot?.id} ${Number(slot?.price)}->${level}`);
+                                }
+                            } catch { /* keep original if the ladder cannot be read */ }
+                        }
+                        const msg = `[GENESIS] Slot ${slot?.id} price mismatch vs genesis → `
+                            + `${repaired === slot
+                                ? (validationMode === 'enforce' ? 'virtualize' : 'log-only')
+                                : 'price repaired from genesis'}`
+                            + `${validationMode === 'enforce' ? ' + virtualize' : ''}: ${getErrorMessage(e)}`;
                         manager.logger?.log?.(msg, 'warn');
                         if (validationMode === 'enforce') {
-                            newGrid.push({ ...slot, state: ORDER_STATES.VIRTUAL, size: 0, orderId: '' });
+                            newGrid.push({ ...repaired, state: ORDER_STATES.VIRTUAL, size: 0, orderId: '' });
                         } else {
-                            newGrid.push(slot);
+                            newGrid.push(repaired);
                         }
                     }
+                }
+                if (repairedSlots.length > 0) {
+                    manager.logger?.log?.(
+                        `[GENESIS] Repaired ${repairedSlots.length} slot price(s) from the genesis ladder `
+                        + `(an off-grid slot price cannot be emitted and would otherwise stall the slot): `
+                        + `${repairedSlots.join(', ')}`,
+                        'warn'
+                    );
                 }
                 grid = newGrid;
                 // Ensure canonical price-sorted order matches slot-N order

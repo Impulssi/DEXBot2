@@ -1283,6 +1283,123 @@ function isNonBlockingUnmatchedOrder(order: any): boolean {
 }
 
 /**
+ * Reasons a deferred hold is a candidate for STRUCTURAL RESYNC escalation.
+ *
+ * Deliberately narrower than `isNonBlockingUnmatchedOrder`. That predicate is
+ * a broad "do not treat this as a blocker" net (by design, so a new defer
+ * reason cannot silently freeze the grid). Escalation asks a stricter
+ * question: can a structural resync plausibly resolve this hold?
+ *
+ * The distinction matters because a resync cannot end a broadcast region or
+ * re-evaluate a boundary that has not committed. Escalating on those holds
+ * spends a full grid reload (and possibly a reset) on something the owning
+ * machinery already resolves on its own. Excluded deliberately:
+ *   - `broadcast-active-deferred`: transient; "rebalance retries after the
+ *     region ends". Self-resolving, and unaffected by a resync.
+ *   - `boundary-hold-trailing-market`: owned by boundary/trailing-market
+ *     machinery, which re-evaluates when the market moves.
+ *   - `held-plan-unchanged-deferred`: an identical replan was suppressed
+ *     because nothing changed; it clears on the next fill, not on a reload.
+ *   - `boundary-unknown-deferred`: gap geometry is unknown pre-boundary; the
+ *     comment at sync_engine.ts names the accepted cost as one sync cycle
+ *     after the boundary commits. Self-resolving, not stranded.
+ *
+ * Anything not listed is treated as NOT escalatable, so a future transient
+ * reason is excluded by default rather than silently becoming a resync
+ * trigger.
+ */
+const STRANDED_HOLD_REASONS = new Set<string>([
+    'out-of-rail-deferred',
+    'out-of-grid-deferred',
+]);
+
+/**
+ * @param {Object} order - Unmatched chain order entry.
+ * @returns {boolean} True when the hold is stranded and a structural resync is
+ *   a plausible remedy (see STRANDED_HOLD_REASONS).
+ */
+function isStrandedHoldOrder(order: any): boolean {
+    const reason = order?.reason;
+    return typeof reason === 'string' && STRANDED_HOLD_REASONS.has(reason);
+}
+
+/**
+ * GRID-PRICE-INVARIANT — the price emitted for a slot must be its genesis
+ * level. Range guards (isChainPriceOutOfGrid) only test the configured min/max
+ * bounds, so an off-grid price can sit inside the bounds while being far
+ * outside the active window; that band has no check unless this one runs.
+ *
+ * Unjudgeable inputs evaluate to ok:true (missing genesis, unparseable slot id,
+ * non-finite price) — the guard must never fire on bad metadata, only on a
+ * genuine mismatch. Never throws.
+ *
+ * See docs/GRID_PRICE_INVARIANT.md.
+ *
+ * @param {string} slotId - Grid slot id (slot-<idx>)
+ * @param {number} price - Price about to be emitted
+ * @param {any} genesis - manager._genesis (priceLevels table)
+ * @returns {{ok: boolean, reason: string, expected: number|null, idx: number|null, drift: number|null}}
+ */
+function checkGridPriceInvariant(slotId: any, price: any, genesis: any): { ok: boolean; reason: string; expected: number | null; idx: number | null; drift: number | null } {
+    const pass = { ok: true, expected: null as number | null, idx: null as number | null, drift: null as number | null };
+    try {
+        if (!genesis || !Array.isArray(genesis?.priceLevels) || genesis.priceLevels.length === 0) {
+            return { ...pass, reason: 'no-genesis' };
+        }
+        const idx = (typeof slotId === 'string') ? parseSlotIndex(slotId) : null;
+        if (idx === null || !Number.isFinite(idx) || idx < 0 || idx >= genesis.priceLevels.length) {
+            return { ...pass, reason: 'uncheckable-slot' };
+        }
+        const p = Number(price);
+        if (!Number.isFinite(p) || p <= 0) return { ...pass, reason: 'invalid-price', idx };
+        const expected = Number(MathUtils.priceForSlot(idx, genesis));
+        if (!Number.isFinite(expected) || expected <= 0) return { ...pass, reason: 'invalid-level', idx };
+        // Same equality as assertSlotPriceInvariant at grid build/load:
+        // relative 1e-9 with an absolute floor.
+        const diff = Math.abs(p - expected);
+        const rel = diff / Math.max(1e-12, Math.abs(expected));
+        const ok = !(rel > 1e-9 && diff > 1e-12);
+        return { ok, reason: ok ? 'ok' : 'off-grid-price', expected, idx, drift: rel };
+    } catch {
+        return { ...pass, reason: 'check-failed' };
+    }
+}
+
+/**
+ * Report one GRID-PRICE-INVARIANT check. Never throws: an unjudgeable check
+ * returns true so a bad check can never block a legitimate emission. Warns on a
+ * mismatch so the offending slot, site, expected level and drift are named at
+ * the point of emission. Silent when the check passes or the price is not
+ * checkable.
+ *
+ * Returns the check result so calling sites can choose their policy: the
+ * reconcile sites treat `false` as blocking (skip the emission and let the next
+ * cycle re-plan). See docs/GRID_PRICE_INVARIANT.md.
+ *
+ * @param {any} manager - OrderManager (reads _genesis, writes logger)
+ * @param {string} slotId - Destination slot id whose level the price must match
+ * @param {number} price - Price about to be emitted
+ * @param {string} site - Emitting site label (CREATE / UPDATE / RECONCILE-*)
+ * @returns {boolean} True when the price is acceptable (or unjudgeable). Callers
+ *   at the reconcile sites treat `false` as a blocking mismatch and skip the
+ *   emission, so this must return the check result rather than void.
+ */
+function reportGridPriceInvariant(manager: any, slotId: any, price: any, site: string): boolean {
+    try {
+        const inv = checkGridPriceInvariant(slotId, price, manager?._genesis);
+        if (inv.ok) return true;
+        manager?.logger?.log?.(
+            `[GRID-PRICE-INVARIANT] ${site} for ${slotId} at ${Format.formatPrice6(Number(price))} ` +
+            `is NOT the genesis level ${inv.expected != null ? Format.formatPrice6(inv.expected) : 'n/a'} ` +
+            `(slot idx ${inv.idx}, drift ${inv.drift != null ? (inv.drift * 100).toFixed(4) + '%' : 'n/a'}) ` +
+            `— off-grid price SKIPPED (emission blocked at this site)`,
+            'warn'
+        );
+        return false;
+    } catch { /* invariant check is best-effort: never block on a thrown check */ return true; }
+}
+
+/**
  * Check if order is on blockchain (ACTIVE or PARTIAL state).
  * 
  * @param {Object} order - Order to check
@@ -2750,6 +2867,6 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
     return { masterIds: [...masterIds], createIds: [...createIds], all: [...all] };
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isNonBlockingUnmatchedOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, deriveTargetBoundary, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds, reserveEdgeIdSet, liveWindowIdSet }
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isNonBlockingUnmatchedOrder, isStrandedHoldOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, deriveTargetBoundary, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds, reserveEdgeIdSet, liveWindowIdSet, checkGridPriceInvariant, reportGridPriceInvariant }
 export { resolveReserveEdgeAnchorPrice, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge, collectRefillSlotIds };
 

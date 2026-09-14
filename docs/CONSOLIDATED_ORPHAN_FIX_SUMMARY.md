@@ -5,7 +5,7 @@
 > All content below is merged in condensed form — incident data, fix lists, invariants, verification targets and rollback gates are preserved; some narrative rationale is compressed. Original files were added only on `test` (`git diff origin/dev...HEAD --diff-filter=A` shows only these 4 `*.md` adds).
 
 **Scope:** `modules/order/{grid,strategy,sync_engine,manager,grid_reconcile*}` · `modules/order/utils/{math,order,system}` · `modules/{dexbot_class,dexbot_cow_runtime,dexbot_maintenance_runtime,dexbot_fill_runtime,dexbot_state_recovery,chain_orders,config,constants,paths}` · `market_adapter` re-anchor triggers · `analysis/grid_correction_check.ts`
-**Statuses corrected against `test` HEAD `a54863ca` (2026-08-31):** the source docs' own wording (`proposed` / `analysis complete` / `investigation complete — fix plan pending` / `Phase 2 flag enabled`) predated later fix commits, so each plan item now carries a `LANDED` / `REVERTED` / `SUPERSEDED` annotation with the implementing commit hash. Key corrections: GAP P1–P5 landed `f94d6ec4` but the P2 sweep was reverted (`3713c496`) and the P1 writer + post-commit assert reverted (`e2898e51`); PRICE_FIRST Phase 2 projection was enabled (`1bbf1a23`) then removed (`3713c496`) — the anchor is shadow telemetry only.
+**Statuses corrected against `test` HEAD `a54863ca` (2026-08-31), refreshed against `1382f267` (2026-09-13):** the source docs' own wording (`proposed` / `analysis complete` / `investigation complete — fix plan pending` / `Phase 2 flag enabled`) predated later fix commits, so each plan item now carries a `LANDED` / `REVERTED` / `SUPERSEDED` annotation with the implementing commit hash. Key corrections: GAP P1–P5 landed `f94d6ec4` but the P2 sweep was reverted (`3713c496`) and the P1 writer + post-commit assert reverted (`e2898e51`); PRICE_FIRST Phase 2 projection was enabled (`1bbf1a23`) then removed (`3713c496`) — the anchor is shadow telemetry only.
 
 ---
 
@@ -185,7 +185,17 @@ Slot-90 loop is *proximate* form; rotation suppression is mechanism, cascade is 
 
 **P1 Duplicate-orphan cancellation reliable — OPEN (partially mitigated).** Verify `queueCorrection` cancelOnly (`sync_engine.ts:913`) executes, not blocked by in-flight; hard error if cannot cancel. `d808c052` mitigates the consequences (unknown-fill adoption-before-credit + empty-read guard) but the explicit verify/hard-error behavior is still open.
 
-**P2 Observability — PARTIAL.** `d808c052` added anchor price-outlier rejection with rate-limited warns; drift logging/alert >active window, re-stamp BUY above anchor metric, and refused-commit/orphan-fill counters remain open. (The `d808c052` price-sanity warn surface was removed `e2898e51`.)
+**P2 Observability — PARTIAL (counters landed 2026-09-13).** `d808c052` added anchor price-outlier rejection with rate-limited warns (that warn surface was later removed `e2898e51`). Since then the GRID-PRICE-INVARIANT guard added per-batch/per-site emitted-price counters and **blocks** an off-grid emission (`[GRID-PRICE-INVARIANT] site=<site> checked=N violated=M unchecked=K`, six emission sites) and a `pivotSlot=`/`pivotOffGrid=true` marker plus a numeric `pivotOffGrid=<n>` per-action count on the LAST-FILL-GUARD batch summary (the count says how many guarded probes used an unsnapped pivot) — see `docs/GRID_PRICE_INVARIANT.md`. Two self-healing escalations now sit on top of those counters: a slot rejected off-grid for
+`GRID_PRICE_INVARIANT_RESYNC_THRESHOLD` (3) **consecutive** batches escalates to the structural resync
+(`grid-price-invariant-violation`), because the recurring planner carries the slot's corrupt price straight
+from `manager.orders` and would otherwise re-plan-and-reject it forever; and a deferred hold unchanged for
+`DEFERRED_HOLD_ESCALATE_MS` (24h) escalates to the same resync (`deferred-hold-stale`), giving
+"held indefinitely" the exit the per-cycle hold policy lacks. Both reuse the existing debounced,
+batch-in-flight-aware resync path. The hold age is measured from the signature-stable clock
+(`_lastHeldChainOrderSignatureSince`), **not** `_lastUnmatchedChainOrdersAt` — the latter refreshes on every
+observing sync and would make an age gate unfirable.
+
+Still open: drift logging/alert >active window, re-stamp BUY above anchor metric, refused-commit and orphan-fill counters. Deferred-hold observability is no longer open — the `[HOLD]` summary now names side/price/size/reason/off-grid distance and slow-re-warns on an unchanged hold (`modules/dexbot_maintenance_runtime.ts`, `docs/GRID_PRICE_INVARIANT.md`).
 
 ### 3.4 Key code references (from source table)
 
@@ -295,4 +305,4 @@ Original doc regression excerpts preserved: GAP P6 A/B/C; LADDER §2.8 checks (1
 - [x] Stale `*.md` filename references in code comments/tests updated to this file (9 module files, 6 test files).
 - [ ] No code refs lost — all paths in §§1–4 remain anchored to this file.
 
-*Generated 2026-08-31 from the 4 test-only docs at their HEAD contents; statuses corrected against `test` HEAD `a54863ca` the same day (landed/reverted/superseded annotations with commit hashes; line references re-verified at that HEAD and subject to drift).*
+*Generated 2026-08-31 from the 4 test-only docs at their HEAD contents; statuses corrected against `test` HEAD `a54863ca` the same day, then refreshed against `1382f267` (2026-09-13). Landed/reverted/superseded annotations carry commit hashes where known; **line references in §§1-4 were re-verified at `a54863ca` and are subject to drift** — treat them as pointers, not assertions. The GRID-PRICE-INVARIANT guard is **BLOCKING** at all six emission sites (CREATE / UPDATE / CREATE-FALLBACK in `modules/dexbot_cow_runtime.ts`, RECONCILE-CREATE / RECONCILE-UPDATE / STARTUP-CREATE in `modules/order/grid_reconcile_internal.ts`): an off-grid emission is skipped, not merely counted, so a `violated>0` line means an emission was *prevented* rather than a writer merely *pinned*. Counters are still reported (`site=`, `checked=`, `violated=`, `unchecked=`) for observability — see `docs/GRID_PRICE_INVARIANT.md`.*
