@@ -643,9 +643,9 @@ class OrderManager {
         this.processedFillStore = null;
         // Manual-cancel holds (slotId -> {price, ts}): user-cancelled slots
         // stay empty until the market moves significantly past them.
-        // Persisted across crashes (holds survive); a graceful shutdown
-        // clears them so an operator restart refills normally. `dexbot
-        // clear-holds <bot>` clears them live via marker file.
+        // Persisted in the snapshot, so every restart (graceful or crash)
+        // keeps them. Restore only via price-move expiry, adoption of a
+        // new order on the slot, or `dexbot clear-holds <bot> [slot]`.
         this.manualHolds = new Map();
         // Fresh-placement timestamps (chainOrderId -> Date.now) for the
         // surplus-cancel grace window. See recordOrderPlacement.
