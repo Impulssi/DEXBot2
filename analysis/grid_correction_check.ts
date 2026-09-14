@@ -42,6 +42,7 @@ import { loadBotMeta, loadBotSettings, computeBotKey, persistBotAccountId } from
 const { kibanaSearch, DEFAULT_CONFIG: BASE_CONFIG } = KC;
 
 const OP_FILL_ORDER = 4;
+const OP_LIMIT_ORDER_UPDATE = 77;
 const BTS_ID = '1.3.0';
 
 interface AssetInfo { symbol: string; precision: number; }
@@ -112,6 +113,10 @@ interface FillRecord {
     fee: { amount: number; asset_id: string };
     isMaker: boolean;
     sort: any[];
+}
+interface OrderUpdate {
+    orderId: string;
+    sequence: number;
 }
 interface TradeFill {
     time: string;
@@ -485,6 +490,50 @@ function buildFillQuery(accountId: string, gte: string, lte: string, size: numbe
     };
 }
 
+async function fetchAllOrderUpdates(config: any, accountId: string, gte: string, lte: string): Promise<OrderUpdate[]> {
+    const pageSize = 10000;
+    const updates: OrderUpdate[] = [];
+    let searchAfter: any[] | null = null;
+    const cfg = { ...BASE_CONFIG, timeout: 60000, ...config };
+    while (true) {
+        const query: any = {
+            size: pageSize,
+            track_total_hits: false,
+            _source: [
+                'block_data.block_num', 'operation_id_num',
+                'operation_history.op_object.order',
+                'operation_history.op_object.seller',
+            ],
+            query: { bool: { filter: [
+                { term: { operation_type: OP_LIMIT_ORDER_UPDATE } },
+                { term: { 'operation_history.op_object.seller.keyword': accountId } },
+                { range: { 'block_data.block_time': { gte, lte } } },
+            ] } },
+            sort: [
+                { 'block_data.block_num': { order: 'asc' } },
+                { operation_id_num: { order: 'asc' } },
+            ],
+        };
+        if (searchAfter) query.search_after = searchAfter;
+        const result: any = await kibanaSearch(cfg, query);
+        const hits = result?.hits?.hits ?? [];
+        if (!hits.length) break;
+        for (const hit of hits) {
+            const source = hit?._source || {};
+            const op = source.operation_history?.op_object || {};
+            const orderId = op.order;
+            if (!orderId) continue;
+            const blockNum = Number(source.block_data?.block_num ?? 0);
+            const opNum = Number(source.operation_id_num ?? 0);
+            updates.push({ orderId, sequence: blockNum * 1e6 + opNum });
+        }
+        const last = hits[hits.length - 1];
+        searchAfter = last?.sort;
+        if (!searchAfter || hits.length < pageSize) break;
+    }
+    return updates;
+}
+
 async function fetchAllFills(config: any, accountId: string, gte: string, lte: string): Promise<FillRecord[]> {
     const pageSize = 10000;
     const fills: FillRecord[] = [];
@@ -578,11 +627,31 @@ function classifyFills(fills: FillRecord[]): { trades: TradeFill[]; skipped: num
     return { trades, skipped };
 }
 
-// ─── Per-order aggregation (collapses multi-fill orders to weighted avg price) ──
-function aggregateByOrder(trades: TradeFill[]): AggregatedOrder[] {
+// ─── Per-order/price-epoch aggregation ───────────────────────────────────────
+// Collapses partial fills at one order lifetime, but never mixes fills from
+// different native limit_order_update repricings of the same order ID.
+function aggregateByOrder(trades: TradeFill[], updates: OrderUpdate[] = []): AggregatedOrder[] {
+    const updatesByOrder = new Map<string, number[]>();
+    for (const update of updates) {
+        const list = updatesByOrder.get(update.orderId) || [];
+        list.push(update.sequence);
+        updatesByOrder.set(update.orderId, list);
+    }
+    for (const list of updatesByOrder.values()) list.sort((a, b) => a - b);
+
     const map = new Map<string, { trades: TradeFill[] }>();
     for (const t of trades) {
-        const k = t.orderId || `__fill_${t.sequence}`;
+        // An update is ordered before the fills it can affect. The epoch is
+        // therefore the latest update sequence at or before this fill.
+        const orderUpdates = updatesByOrder.get(t.orderId) || [];
+        let epoch = 0;
+        for (const sequence of orderUpdates) {
+            if (sequence <= t.sequence) epoch = sequence;
+            else break;
+        }
+        const k = t.orderId
+            ? `${t.orderId}:${t.direction}:${t.baseAsset}:${t.quoteAsset}:${epoch}`
+            : `__fill_${t.sequence}`;
         if (!map.has(k)) map.set(k, { trades: [] });
         map.get(k)!.trades.push(t);
     }
@@ -870,9 +939,13 @@ async function main() {
     const incrementPercent = resolveIncrementPercent(botMeta, opts.incrementPercent);
     console.log(`Increment: ${incrementPercent}% (halfInc ${incrementPercent/2}%)${opts.incrementPercent == null && botMeta?.incrementPercent != null ? ' — from bot config' : opts.incrementPercent != null ? ' — from --increment' : ' — default'}`);
 
-    console.log(`\nFetching fills from Kibana...`);
-    const fills = await fetchAllFills({}, accountId, gte, lte);
+    console.log(`\nFetching fills and order updates from Kibana...`);
+    const [fills, orderUpdates] = await Promise.all([
+        fetchAllFills({}, accountId, gte, lte),
+        fetchAllOrderUpdates({}, accountId, gte, lte),
+    ]);
     console.log(`  Fetched ${fills.length} fill_order operation(s)`);
+    console.log(`  Fetched ${orderUpdates.length} limit_order_update operation(s)`);
 
     if (fills.length === 0) {
         console.log('\nNo fills in range — nothing to check.');
@@ -905,8 +978,8 @@ async function main() {
     if (opts.perFill) {
         items = trades;
     } else {
-        const orders = aggregateByOrder(trades);
-        console.log(`  Aggregated into ${orders.length} order(s) (multi-fill orders collapsed by weighted avg price)`);
+        const orders = aggregateByOrder(trades, orderUpdates);
+        console.log(`  Aggregated into ${orders.length} order epoch(s) (partial fills collapsed; repriced orders kept separate)`);
         items = orders;
     }
 
