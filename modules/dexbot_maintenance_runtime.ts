@@ -2402,7 +2402,14 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                 .join(' | ');
             bot._warn(
                 `[MAINT] ${correctionResult.failed}/${pendingCorrections} price correction(s) failed` +
-                (failedDetails ? ` — ${failedDetails}` : '')
+                (failedDetails ? ` — ${failedDetails}` : '') +
+                (correctionResult.staleDropped > 0 ? ` (${correctionResult.staleDropped} stale dropped)` : '')
+            );
+        } else if (correctionResult.staleDropped > 0) {
+            bot._log(
+                `[MAINT] ${correctionResult.corrected}/${pendingCorrections} price correction(s) resolved, ` +
+                `${correctionResult.staleDropped} stale dropped (resync moved the slot; re-queued by next sync if still off-target)`,
+                'info'
             );
         }
     }

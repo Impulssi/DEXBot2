@@ -148,7 +148,8 @@ import {
     hasOnChainId,
     isOrderVirtual,
     resolveSpreadOrderSide,
-    duplicateOrphanLogInfo
+    duplicateOrphanLogInfo,
+    _stampCorrectionProvenance
 } from './utils/order.js';
 import { parseSlotIndex } from './utils/slot.js';
 import {
@@ -954,7 +955,16 @@ class SyncEngine {
         const skipAccounting = options?.skipAccounting ?? true;
 
         const queueCorrection = (entry: any) => {
-            ordersNeedingCorrection.push(entry);
+            // Provenance: classify the detector so a stale replay at drain
+            // time logs who queued it and when. Classification from entry
+            // flags: cancelOnly orphans vs surplus/type-mismatch cancels vs
+            // plain price updates.
+            const source = entry?.cancelOnly === true
+                ? 'sync-duplicate-orphan'
+                : entry?.isSurplus === true
+                    ? 'sync-type-mismatch'
+                    : 'sync-price-mismatch';
+            ordersNeedingCorrection.push(_stampCorrectionProvenance({ ...entry }, source));
             if (!Array.isArray(mgr.ordersNeedingPriceCorrection)) return;
 
             const existingIndex = mgr.ordersNeedingPriceCorrection.findIndex((queued: any) =>
@@ -962,12 +972,15 @@ class SyncEngine {
             );
 
             if (existingIndex >= 0) {
-                mgr.ordersNeedingPriceCorrection[existingIndex] = {
+                // Merge: fresh detection overwrites price/size intent, but
+                // first-seen provenance survives (entry without provenance
+                // keeps the original queuedAt/queuedBy).
+                mgr.ordersNeedingPriceCorrection[existingIndex] = _stampCorrectionProvenance({
                     ...mgr.ordersNeedingPriceCorrection[existingIndex],
                     ...entry
-                };
+                }, source);
             } else {
-                mgr.ordersNeedingPriceCorrection.push({ ...entry });
+                mgr.ordersNeedingPriceCorrection.push(_stampCorrectionProvenance({ ...entry }, source));
             }
         };
 

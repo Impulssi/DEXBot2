@@ -3417,8 +3417,15 @@ async function updateOrdersOnChainBatchCOWBody(
             );
             if (drainResult?.failed > 0) {
                 bot.manager.logger.log(
-                    `[COW] ${drainResult.failed} correction(s) failed pre-batch; remaining entries retry on next sync/maintenance tick`,
+                    `[COW] ${drainResult.failed} correction(s) failed pre-batch` +
+                    (drainResult.staleDropped > 0 ? `, ${drainResult.staleDropped} stale dropped` : '') +
+                    `; remaining entries retry on next sync/maintenance tick`,
                     'warn'
+                );
+            } else if (drainResult?.staleDropped > 0) {
+                bot.manager.logger.log(
+                    `[COW] Pre-batch drain resolved, ${drainResult.staleDropped} stale correction(s) dropped`,
+                    'info'
                 );
             }
         } catch (drainErr: any) {

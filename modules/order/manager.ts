@@ -2221,7 +2221,9 @@ class OrderManager {
                 type: slot.type,
                 isSurplus: true,
                 gapEvacuation: true,
-                boundaryIdx: boundary
+                boundaryIdx: boundary,
+                queuedAt: Date.now(),
+                queuedBy: 'gap-evacuation'
             });
             this._gapEvacCancelQueued.add(slotId);
             queued++;
