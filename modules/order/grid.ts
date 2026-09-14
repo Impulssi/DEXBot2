@@ -172,6 +172,7 @@ import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry } from '
 import * as MathUtils from './utils/math.js';
 import { derivePriceWithPoolRef } from './utils/withPoolRef.js';
 import { getWhitelistFlags } from '../market_adapter_whitelist.js';
+import { pruneManualHolds, isSlotHeld } from './manual_hold.js';
 
 import type { Order } from '../types.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -2870,6 +2871,8 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
 
         const ordersToPlace: any[] = [];
         const ordersToUpdate: any[] = [];
+        // Release holds the market moved past before selecting candidates.
+        try { pruneManualHolds(manager); } catch { /* never block correction */ }
         const railType = preferredSide;
         const sideName = railType === ORDER_TYPES.BUY ? 'buy' : 'sell';
         const configuredMissingSlots = Number(outOfSpread || 0);
@@ -3047,6 +3050,18 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
             ...typedSpreadCandidates.slice(0, remainingQuota),
             ...promotedCandidates
         ];
+        // Manual-cancel holds: never place into a user-emptied slot, no
+        // matter which pool produced the candidate above.
+        {
+            const beforeHold = spreadCandidates.length;
+            spreadCandidates = spreadCandidates.filter((c: any) => !isSlotHeld(manager, c?.id));
+            if (spreadCandidates.length < beforeHold) {
+                manager.logger?.log?.(
+                    `[SPREAD-CORRECTION] Skipped ${beforeHold - spreadCandidates.length} held slot(s) in correction candidates`,
+                    'info'
+                );
+            }
+        }
 
         // Dedupe by slot id: an empty in-rail slot typed SPREAD (normalized) now
         // qualifies for BOTH orphanedVirtualCandidates and typedSpreadCandidates

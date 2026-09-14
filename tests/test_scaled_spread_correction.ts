@@ -53,6 +53,17 @@ async function testScaledSpreadCorrection() {
     assert.strictEqual(resultC.ordersToPlace.length, 0, 'Should NOT place order because 50 < 100 (minHealthy)');
     console.log('  ✓ Skipped order because available (50) < double-dust threshold (100)');
 
+    // 5. Scenario D: manual-cancel hold suppresses placement on the slot.
+    console.log('  Scenario D: Held slot skipped by spread correction');
+    await mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
+    await mgr.recalculateFunds();
+    await mgr._updateOrder({ id: 'slot-1', price: 0.9, type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, size: 0 });
+    const { recordManualHold } = require('../modules/order/manual_hold');
+    recordManualHold(mgr, 'slot-1', 0.9);
+    const resultD = await Grid.prepareSpreadCorrectionOrders(mgr, ORDER_TYPES.BUY);
+    assert(!resultD.ordersToPlace.some((o: any) => o.id === 'slot-1'), 'Held slot must not be placed by spread correction');
+    console.log('  ✓ Held slot skipped');
+
     console.log('✓ Scaled Spread Correction test PASSED\n');
 }
 
