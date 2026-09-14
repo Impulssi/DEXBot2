@@ -75,6 +75,9 @@ async function testCOWDivergenceCorrection() {
                 orderId: `chain-${i}`
             });
         }
+        // Age placement stamps past the surplus-cancel grace window: these
+        // fixtures model long-live orders, not seconds-old placements.
+        for (const k of manager._placedAt.keys()) manager._placedAt.set(k, Date.now() - 20 * 60 * 1000);
 
         manager._gridSidesUpdated = new Set([ORDER_TYPES.BUY]);
         manager.outOfSpread = 1;
@@ -308,6 +311,9 @@ async function testCOWDivergenceCorrection() {
                 orderId: `chain-rot-${i}`
             });
         }
+        // Age placement stamps past the surplus-cancel grace window: these
+        // fixtures model long-live surplus, not seconds-old placements.
+        for (const k of manager._placedAt.keys()) manager._placedAt.set(k, Date.now() - 20 * 60 * 1000);
 
         manager._gridSidesUpdated = new Set([ORDER_TYPES.BUY]);
 
@@ -406,6 +412,8 @@ async function testCOWDivergenceCorrection() {
         }
 
         manager._gridSidesUpdated = new Set([ORDER_TYPES.SELL]);
+        // Age placement stamps: fixtures model long-live strays, not fresh placements.
+        for (const k of manager._placedAt.keys()) manager._placedAt.set(k, Date.now() - 20 * 60 * 1000);
 
         let capturedCowResult = null;
         const mockUpdateFn = async (cowResult) => {

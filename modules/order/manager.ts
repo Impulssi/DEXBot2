@@ -72,6 +72,7 @@ import {
 import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, getSideBudget, getActiveOrdersTotal, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge, collectRefillSlotIds } from './utils/order.js';
 import { getErrorMessage } from '../utils/errors.js';
 import { clearManualHold } from './manual_hold.js';
+import { recordOrderPlacement } from './utils/order.js';
 const { toFiniteNumber } = Format;
 
 // ===============================================================================
@@ -529,6 +530,7 @@ class OrderManager {
     processedFillTracker: Map<any, any>;
     processedFillStore: any;
     manualHolds: Map<any, any>;
+    _placedAt: Map<any, any>;
     _syncLock: any;
     _fillProcessingLock: any;
     _divergenceLock: any;
@@ -645,6 +647,9 @@ class OrderManager {
         // clears them so an operator restart refills normally. `dexbot
         // clear-holds <bot>` clears them live via marker file.
         this.manualHolds = new Map();
+        // Fresh-placement timestamps (chainOrderId -> Date.now) for the
+        // surplus-cancel grace window. See recordOrderPlacement.
+        this._placedAt = new Map();
 
         // LOCK HIERARCHY (convention — not enforced at runtime to avoid false
         // positives from async contention and multi-bot sharing a process).
@@ -1489,6 +1494,24 @@ class OrderManager {
         try {
             if (nextOrder?.id != null && nextOrder?.orderId) clearManualHold(this, nextOrder.id);
         } catch { /* hold bookkeeping must never break order updates */ }
+        // Fresh-placement timestamp for the surplus-cancel grace window: a
+        // slot gaining an orderId it did not have is a new placement (create,
+        // adopt, rotation target), and surplus sweeps must not cancel it
+        // before it has had time to prove itself. Same-id updates do not
+        // refresh the stamp, so grace cannot extend forever. Snapshot/grid
+        // load paths are excluded: reloaded orders are old by definition,
+        // and stamping them would neuter surplus sweeps for 15 minutes
+        // after every restart.
+        try {
+            const prevId = (oldOrder as any)?.orderId != null ? String((oldOrder as any).orderId) : '';
+            const nextId = nextOrder?.orderId != null ? String(nextOrder.orderId) : '';
+            const isLoadContext = context === 'grid-load' || context === 'grid-init';
+            if (nextId && nextId !== prevId && !isLoadContext) {
+                const placedAt: any = (this as any)._placedAt;
+                if (!(placedAt instanceof Map)) (this as any)._placedAt = new Map();
+                recordOrderPlacement(this, nextId);
+            }
+        } catch { /* bookkeeping must never break order updates */ }
 
         // Apply phantom order auto-correction to the normalized order
         const phantomError = validation.errors.find((e: any) => e.code === 'PHANTOM_ORDER');

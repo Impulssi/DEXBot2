@@ -383,6 +383,48 @@ function buildFillKey(fillOrParts: any) {
 }
 
 /**
+ * Record a fresh on-chain placement timestamp for surplus-cancel grace.
+ * Called when a slot gains a chain orderId it did not have before (create,
+ * adopt, rotation target). Powers isFreshlyPlacedOrder below.
+ */
+function recordOrderPlacement(manager: any, chainOrderId: string | null | undefined): void {
+    try {
+        if (!manager || chainOrderId == null || String(chainOrderId).length === 0) return;
+        if (!(manager._placedAt instanceof Map)) manager._placedAt = new Map();
+        manager._placedAt.set(String(chainOrderId), Date.now());
+        // Lazy GC: placement timestamps only matter inside the grace window.
+        if (manager._placedAt.size > 500) {
+            const cutoff = Date.now() - TIMING.SURPLUS_CANCEL_GRACE_MS * 2;
+            for (const [id, ts] of manager._placedAt) {
+                if (Number(ts) < cutoff) manager._placedAt.delete(id);
+            }
+        }
+    } catch { /* bookkeeping must never break placement */ }
+}
+
+/**
+ * True when the chain order was placed within the surplus-cancel grace
+ * window. Surplus sweeps must skip such orders: a fill landing between two
+ * controllers' count snapshots otherwise makes the second cancel what the
+ * first just placed (fee bleed + empty levels, no net change).
+ */
+function isFreshlyPlacedOrder(manager: any, chainOrderId: string | null | undefined, graceMs?: number): boolean {
+    try {
+        if (chainOrderId == null || String(chainOrderId).length === 0) return false;
+        const placedAt = manager?._placedAt instanceof Map
+            ? manager._placedAt.get(String(chainOrderId))
+            : null;
+        if (!Number.isFinite(Number(placedAt))) return false;
+        const grace = Number.isFinite(Number(graceMs)) && Number(graceMs) > 0
+            ? Number(graceMs)
+            : TIMING.SURPLUS_CANCEL_GRACE_MS;
+        return Date.now() - Number(placedAt) < grace;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Correct a single order's price on blockchain.
  * Cancels surplus orders; updates price for others.
  * Removes from correction queue after processing.
@@ -402,6 +444,14 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
     // Cancel-only entries (e.g., duplicate price level orphans) — cancel without
     // updating any grid slot. The orphan has no matching grid slot to convert.
     if (cancelOnly) {
+        // Surplus-cancel grace (see system.ts divergence fold): a fill
+        // landing between two controllers' count snapshots must not get a
+        // seconds-old placement cancelled. Skip quietly; the entry stays
+        // queued and re-evaluates next cycle.
+        if (isFreshlyPlacedOrder(manager, chainOrderId)) {
+            manager.logger?.log?.(`[CORRECTION] Skipping cancel-only for freshly placed ${chainOrderId} — inside grace window`, 'info');
+            return { success: true, skipped: true };
+        }
         let shouldRemove = false;
         try {
             const sideLabel = type === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
@@ -428,6 +478,10 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
 
     // Surplus/type-mismatch entries need cancellation, not a price update
     if (isSurplus) {
+        if (isFreshlyPlacedOrder(manager, chainOrderId)) {
+            manager.logger?.log?.(`[CORRECTION] Skipping surplus cancel for freshly placed ${chainOrderId} — inside grace window`, 'info');
+            return { success: true, skipped: true };
+        }
         let shouldRemove = false;
         try {
             const sideLabel = type === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
@@ -2943,5 +2997,5 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
 // ================================================================================
 // Union: upstream refactor (+ liveWindowIdSet) + fork deep-shelf exports.
             export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isNonBlockingUnmatchedOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isDeepShelfFillOrder, resolveDeepShelfFloor, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds, reserveEdgeIdSet, liveWindowIdSet }
-export { resolveReserveEdgeAnchorPrice, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge, collectRefillSlotIds };
+export { resolveReserveEdgeAnchorPrice, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge, collectRefillSlotIds, recordOrderPlacement, isFreshlyPlacedOrder };
 

@@ -1215,7 +1215,19 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                     removeActionsForOrder(actions, COW_ACTIONS.UPDATE, onChainOrder);
                     const hasQueuedCancel = hasActionForOrder(actions, COW_ACTIONS.CANCEL, onChainOrder);
 
-                    if (!hasQueuedCancel) {
+                    // Surplus-cancel grace: never cancel what was just placed.
+                    // Spread correction and surplus sweeps read counts at
+                    // different moments of one cycle; a fill landing between
+                    // them otherwise makes the second cancel the first's
+                    // fresh placements seconds later (fee bleed, empty levels).
+                    // Time-bounded: genuinely misplaced orders are only delayed.
+                    if (!hasQueuedCancel && OrderUtils.isFreshlyPlacedOrder(manager, onChainOrder.orderId)) {
+                        manager.logger?.log?.(
+                            `[DIVERGENCE-COW] Skipping surplus cancel for freshly placed ${onChainOrder.id} (chain id ${onChainOrder.orderId}) — inside grace window`,
+                            'info'
+                        );
+                        continue;
+                    } else if (!hasQueuedCancel) {
                         manager.logger.log(`[DIVERGENCE-COW] Queueing cancel for surplus ${onChainOrder.id} (chain id ${onChainOrder.orderId})`, 'info');
                         actions.push({
                             type: COW_ACTIONS.CANCEL,

@@ -142,4 +142,19 @@ check('null hold expires', isManualHoldExpired(null, 100, 0.075), true);
     }
 }
 
+// --- surplus-cancel grace (fresh placements immune briefly) ---
+{
+    const { recordOrderPlacement, isFreshlyPlacedOrder } = require('../modules/order/utils/order');
+    const mgr = fakeManager({});
+    check('unknown id not fresh', isFreshlyPlacedOrder(mgr, '1.7.1'), false);
+    check('null id not fresh', isFreshlyPlacedOrder(mgr, null), false);
+    recordOrderPlacement(mgr, '1.7.1');
+    check('just placed is fresh', isFreshlyPlacedOrder(mgr, '1.7.1'), true);
+    check('custom grace honored (1ms)', isFreshlyPlacedOrder(mgr, '1.7.1', 1), true);
+    mgr._placedAt.set('1.7.1', Date.now() - 20 * 60 * 1000);
+    check('aged out not fresh', isFreshlyPlacedOrder(mgr, '1.7.1'), false);
+    check('record ignores empty', recordOrderPlacement(mgr, ''), undefined);
+    check('record on missing manager safe', recordOrderPlacement(null, '1.7.1'), undefined);
+}
+
 console.log(`✓ Manual hold tests passed! (${passed} assertions)`);

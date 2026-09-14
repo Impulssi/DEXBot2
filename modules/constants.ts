@@ -263,9 +263,18 @@ let TIMING = {
     // open-order read. A trigger reset that wipes a live grid on a single
     // 0-order read is the phantom-reset failure mode; the resync demands one
     // confirming re-read (after this delay) before treating the account as
-    // genuinely empty. A contradicted re-read (non-empty) aborts acceptance
+    // genuinely empty. A contradicted re-read (non-empty) resets the counter
     // and feeds the fresh snapshot to the resync instead.
     SYNC_EMPTY_READ_CONFIRM_DELAY_MS: 2000,
+
+    // Surplus-cancel grace for freshly placed orders. Spread correction and
+    // surplus sweeps run on different count snapshots within one cycle, so a
+    // fill landing between them makes the second controller cancel what the
+    // first just placed (observed: 4 placed, 3 cancelled seconds later).
+    // Orders younger than this are skipped by surplus cancellation and
+    // re-evaluated next cycle. Time-bounded by design: genuine misplacements
+    // are only delayed, never protected forever.
+    SURPLUS_CANCEL_GRACE_MS: 15 * 60 * 1000,
 
     // Connection and initialization timeouts
     CONNECTION_TIMEOUT_MS: 30000,  // 30 seconds - BitShares client connection establishment timeout
