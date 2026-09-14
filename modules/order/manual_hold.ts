@@ -30,7 +30,7 @@ import { path } from '../path_api.js';
 // with grid density instead of hardcoding a percent.
 const MANUAL_HOLD_MOVE_MULT = 5;
 
-function getManualHoldMap(manager: any): Map<string, { price: number; ts: number }> {
+function getManualHoldMap(manager: any): Map<string, { price: number; ts: number; base?: number | null }> {
     if (!manager) return new Map();
     if (!(manager.manualHolds instanceof Map)) {
         manager.manualHolds = new Map();
@@ -59,11 +59,19 @@ function resolveHoldMarketPrice(manager: any): number | null {
     return null;
 }
 
-function isManualHoldExpired(hold: { price: number; ts: number } | null | undefined, marketPrice: number | null, movePct: number): boolean {
+function isManualHoldExpired(hold: { price: number; ts: number; base?: number | null } | null | undefined, marketPrice: number | null, movePct: number): boolean {
     if (!hold || !Number.isFinite(Number(hold.price)) || Number(hold.price) <= 0) return true;
     if (marketPrice == null || !Number.isFinite(marketPrice) || marketPrice <= 0) return false;
     if (!Number.isFinite(movePct) || movePct <= 0) return false;
-    return Math.abs(marketPrice - hold.price) / hold.price > movePct;
+    // Release when the MARKET moved significantly since the hold was
+    // recorded — not when the slot was already far away. A far-away cancel
+    // (market far below a high sell) must hold while the market stays put;
+    // comparing market-vs-slot would release it instantly at birth. Without
+    // a recorded baseline (old entries) fall back to slot comparison.
+    const base = Number.isFinite(Number(hold.base)) && Number(hold.base) > 0
+        ? Number(hold.base)
+        : Number(hold.price);
+    return Math.abs(marketPrice - base) / hold.price > movePct;
 }
 
 function recordManualHold(manager: any, slotId: string, price: number): boolean {
@@ -71,7 +79,12 @@ function recordManualHold(manager: any, slotId: string, price: number): boolean 
     const p = Number(price);
     if (!Number.isFinite(p) || p <= 0) return false;
     const holds = getManualHoldMap(manager);
-    holds.set(String(slotId), { price: p, ts: Date.now() });
+    const base = resolveHoldMarketPrice(manager);
+    holds.set(String(slotId), {
+        price: p,
+        ts: Date.now(),
+        base: Number.isFinite(base) && (base as number) > 0 ? base : null,
+    });
     manager?.logger?.log?.(
         `[HOLD] Manual cancel suspected on ${slotId} @${p} — refill suppressed until the market moves significantly past it`,
         'info'
@@ -213,14 +226,20 @@ function classifyDisappearance(manager: any, slot: any): 'fill' | 'own' | 'manua
     }
 }
 
-function serializeManualHolds(manager: any): Array<{ slotId: string; price: number; ts: number }> {
+function serializeManualHolds(manager: any): Array<{ slotId: string; price: number; ts: number; base?: number | null }> {
     const holds = getManualHoldMap(manager);
-    const out: Array<{ slotId: string; price: number; ts: number }> = [];
+    const out: Array<{ slotId: string; price: number; ts: number; base?: number | null }> = [];
     for (const [slotId, hold] of holds) {
         const price = Number(hold?.price);
         const ts = Number(hold?.ts);
         if (!slotId || !Number.isFinite(price) || price <= 0) continue;
-        out.push({ slotId: String(slotId), price, ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now() });
+        const base = Number(hold?.base);
+        out.push({
+            slotId: String(slotId),
+            price,
+            ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now(),
+            base: Number.isFinite(base) && base > 0 ? base : null,
+        });
     }
     return out.slice(-500);
 }
@@ -240,7 +259,12 @@ function restoreManualHolds(manager: any, persisted: any): number {
         try {
             if (manager.orders instanceof Map && !manager.orders.has(slotId)) continue;
         } catch { /* fall through without the existence check */ }
-        holds.set(slotId, { price, ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now() });
+        const base = Number(e?.base);
+        holds.set(slotId, {
+            price,
+            ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now(),
+            base: Number.isFinite(base) && base > 0 ? base : null,
+        });
         restored++;
     }
     return restored;

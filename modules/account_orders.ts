@@ -424,14 +424,20 @@ class AccountOrders {
       // slots stay empty across restarts until the market moves past them.
       // Same empty-clears semantics as pendingFillCrawls above.
       if (manualHolds !== undefined) {
-        const sanitized: { slotId: string; price: number; ts: number }[] = [];
+        const sanitized: { slotId: string; price: number; ts: number; base?: number | null }[] = [];
         if (Array.isArray(manualHolds)) {
           for (const e of manualHolds.slice(-500)) {
             const slotId = e?.slotId != null ? String(e.slotId) : '';
             const price = Number(e?.price);
             const ts = Number(e?.ts);
             if (slotId && Number.isFinite(price) && price > 0) {
-              sanitized.push({ slotId, price, ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now() });
+              const base = Number(e?.base);
+              sanitized.push({
+                slotId,
+                price,
+                ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now(),
+                base: Number.isFinite(base) && base > 0 ? base : null,
+              });
             }
           }
         }
@@ -534,7 +540,7 @@ class AccountOrders {
     if (forceReload) {
       this.data = this._loadData() || emptyData();
     }
-    const out: { slotId: string; price: number; ts: number }[] = [];
+    const out: { slotId: string; price: number; ts: number; base?: number | null }[] = [];
     const stored = this.data && (this.data as any).manualHolds;
     if (Array.isArray(stored)) {
       for (const e of stored) {
@@ -542,7 +548,13 @@ class AccountOrders {
         const price = Number(e?.price);
         const ts = Number(e?.ts);
         if (slotId && Number.isFinite(price) && price > 0) {
-          out.push({ slotId, price, ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now() });
+          const base = Number(e?.base);
+          out.push({
+            slotId,
+            price,
+            ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now(),
+            base: Number.isFinite(base) && base > 0 ? base : null,
+          });
         }
       }
     }

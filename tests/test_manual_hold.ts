@@ -78,6 +78,27 @@ check('null hold expires', isManualHoldExpired(null, 100, 0.075), true);
     check('far gone', isSlotHeld(mgr, 'far'), false);
 }
 
+// --- baseline semantics: a far-away cancel holds while the market sits ---
+{
+    // Slot far above a flat market: legacy slot-comparison would release
+    // instantly; baseline comparison must hold.
+    check(
+        'far slot held on flat market',
+        isManualHoldExpired({ price: 0.001569, ts: 1, base: 0.001384 }, 0.001384, 0.075),
+        false
+    );
+    check(
+        'releases when market rallies from baseline',
+        isManualHoldExpired({ price: 0.001569, ts: 1, base: 0.001384 }, 0.00151, 0.075),
+        true
+    );
+    check(
+        'legacy entry without base uses slot comparison',
+        isManualHoldExpired({ price: 100, ts: 1 }, 120, 0.075),
+        true
+    );
+}
+
 // --- serialize / restore roundtrip (crash survival; graceful stop clears instead) ---
 {
     const mgr = fakeManager({});
