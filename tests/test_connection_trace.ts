@@ -6,22 +6,20 @@
 const http = require('http');
 const crypto = require('crypto');
 const { getErrorMessage } = require('../modules/utils/errors');
+const { NODE_MANAGEMENT } = require('../modules/constants');
+
+// Single source of truth: node list comes from constants, never hardcoded here.
+// Optional override for single-node tracing: BITSHARES_TRACE_NODE=wss://...
+const NODES = process.env.BITSHARES_TRACE_NODE
+  ? [process.env.BITSHARES_TRACE_NODE]
+  : NODE_MANAGEMENT.DEFAULT_NODES;
 
 console.log('=== Connection Trace ===\n');
 
 // ── 1. Simulate NodeManager.connectWithTimeout in isolation ──
 async function testRawWebSocketNodes() {
   console.log('--- NodeManager-style health checks ---');
-  const nodes = [
-    'wss://btsws.roelandp.nl/ws',
-    'wss://cloud.xbts.io/ws',
-    'wss://node.xbts.io/ws',
-    'wss://public.xbts.io/ws',
-    'wss://dex.iobanker.com/ws',
-    'wss://api.dex.trading/',
-    'wss://api.bts.mobi/ws',
-    'wss://api.btslebin.com/ws',
-  ];
+  const nodes = NODES;
   const WS_TIMEOUT_MS = 10000;
   for (const url of nodes) {
     const start = Date.now();
@@ -158,7 +156,7 @@ let traceTimer;
 
   try {
     await testRawWebSocketNodes();
-    await testTransportConnectAndLogin('wss://btsws.roelandp.nl/ws');
+    await testTransportConnectAndLogin(NODES[0]);
     await testModuleConnection();
     clearTimeout(traceTimer);
     console.log('\n=== Trace complete ===');

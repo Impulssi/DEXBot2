@@ -930,16 +930,13 @@ let NODE_MANAGEMENT = {
 
     // Default node list (used if no config file)
     DEFAULT_NODES: [
-        'wss://btsws.roelandp.nl/ws',
         'wss://cloud.xbts.io/ws',
         'wss://node.xbts.io/ws',
         'wss://public.xbts.io/ws',
         'wss://dex.iobanker.com/ws',
         'wss://api.dex.trading/',
         'wss://api.bts.mobi/ws',
-        'wss://api.btslebin.com/ws',
-        'wss://api.bitshares.dev/ws',
-        'wss://bitsharesapi.loclx.io'
+        'wss://api.bitshares.dev/ws'
     ],
 
     // Health check defaults
