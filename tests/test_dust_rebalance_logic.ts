@@ -805,6 +805,53 @@ async function testInteriorDustAboveThresholdNotEligible() {
     console.log('  ✓ Above-threshold interior partial at adjacent grid level (within tolerance) is not eligible');
 }
 
+async function testAbsoluteUsdtFloor() {
+    console.log('Testing Absolute USDT Dust Floor...');
+
+    _setFeeCache({
+        BTS: {
+            limitOrderCreate: { bts: 0.1 },
+            limitOrderCancel: { bts: 0 },
+            limitOrderUpdate: { bts: 0.001 }
+        }
+    });
+
+    const manager = new OrderManager({
+        assetA: 'TESTA',
+        assetB: 'TESTB',
+        startPrice: 1.0,
+        botFunds: { buy: 1000, sell: 1000 },
+        activeOrders: { buy: 5, sell: 5 },
+        incrementPercent: 1,
+        weightDistribution: { buy: 1, sell: 1 }
+    });
+    manager.assets = {
+        assetA: { id: '1.3.1', symbol: 'TESTA', precision: 5 },
+        assetB: { id: '1.3.2', symbol: 'TESTB', precision: 5 }
+    };
+    await manager.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
+    manager.logger = { log: () => {}, logFundsStatus: () => {} };
+
+    // BUY partial 0.49 USDT (above any % threshold at these sizes): dust by floor.
+    await manager._updateOrder({ id: 'b-dust', type: ORDER_TYPES.BUY, state: ORDER_STATES.PARTIAL, size: 0.49, price: 1.0, orderId: '1.7.960' });
+    // BUY partial 50 USDT: not dust by either rule.
+    await manager._updateOrder({ id: 'b-keep', type: ORDER_TYPES.BUY, state: ORDER_STATES.PARTIAL, size: 50, price: 1.0, orderId: '1.7.961' });
+    // SELL partial 322 BTS @0.0015 (~0.48 USDT): dust by floor (size*price).
+    await manager._updateOrder({ id: 's-dust', type: ORDER_TYPES.SELL, state: ORDER_STATES.PARTIAL, size: 322, price: 0.0015, orderId: '1.7.962' });
+
+    const buyDust = await getDustOrders(manager, [manager.orders.get('b-dust'), manager.orders.get('b-keep')], 'buy');
+    assert(buyDust.some((o) => o.id === 'b-dust'), 'Sub-$1 BUY remainder is dust');
+    assert(!buyDust.some((o) => o.id === 'b-keep'), 'Above-floor BUY remainder is kept');
+    const sellDust = await getDustOrders(manager, [manager.orders.get('s-dust')], 'sell');
+    assert(sellDust.some((o) => o.id === 's-dust'), 'Sub-$1 SELL remainder (size x price) is dust');
+
+    // Floor 0 disables the absolute rule (relative % rule still applies).
+    manager.config.gridLimits = { ...(manager.config.gridLimits || {}), DUST_ABSOLUTE_MIN_NOTIONAL_USDT: 0 };
+    const offDust = await getDustOrders(manager, [manager.orders.get('b-dust')], 'buy');
+    assert(Array.isArray(offDust), 'Disabled floor still returns a list');
+    console.log('  ✓ Absolute floor + opt-out behave');
+}
+
 async function testNoBudgetReturnsEmptyDust() {
     console.log('Testing No-Budget Path Returns Empty Dust...');
 

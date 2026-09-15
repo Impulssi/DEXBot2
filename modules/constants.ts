@@ -568,6 +568,12 @@ let GRID_LIMITS = {
     //   - This order would be rotated to free the slot
     PARTIAL_DUST_THRESHOLD_PERCENTAGE: 5,
 
+    // Absolute dust floor: a PARTIAL remainder worth less than this in USDT
+    // notional is uneconomical to keep on the book regardless of its ratio
+    // to ideal size (chain/cancel fees aside, it only clutters the grid).
+    // Applies to partials only — full-size placements are always intentional.
+    DUST_ABSOLUTE_MIN_NOTIONAL_USDT: 1.0,
+
     // Allowed drift fraction before triggering fund-invariant recovery (0.1% = 0.001).
     FUND_INVARIANT_PERCENT_TOLERANCE: 0.1,
 

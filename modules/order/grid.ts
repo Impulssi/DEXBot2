@@ -2544,9 +2544,30 @@ export async function checkWindowDust(manager: any): Promise<any> {
         ]);
 
         // A partial is below its per-slot dust threshold (economically negligible).
+        // ...or below the absolute USDT floor: a sub-$1 remainder is clutter
+        // at any ratio (buy size is already USDT notional; sell size converts
+        // via price). Partials only — full placements stay intentional.
+        const absFloor = Number(manager.config?.gridLimits?.DUST_ABSOLUTE_MIN_NOTIONAL_USDT
+            ?? GRID_LIMITS.DUST_ABSOLUTE_MIN_NOTIONAL_USDT);
+        const floorUsdt = Number.isFinite(absFloor) && absFloor > 0 ? absFloor : 0;
+        const notionalUsdt = (o: any): number => {
+            const size = Number(o?.size);
+            if (!Number.isFinite(size) || size <= 0) return 0;
+            if (o?.type === ORDER_TYPES.SELL) {
+                const price = Number(o?.price);
+                if (!Number.isFinite(price) || price <= 0) return 0;
+                return size * price;
+            }
+            return size;
+        };
         const isDustSized = (o: any, thresholds: Map<string, number>): boolean => {
             const threshold = thresholds.get(o.id);
-            return !!threshold && threshold > 0 && o.size < threshold;
+            if (!!threshold && threshold > 0 && o.size < threshold) return true;
+            // Absolute floor, gated like _getDustOrders: no live budget
+            // context (all thresholds 0) means no dust at all.
+            if (!(thresholds instanceof Map)
+                || ![...thresholds.values()].some((t) => t > 0)) return false;
+            return floorUsdt > 0 && notionalUsdt(o) < floorUsdt;
         };
 
         // Safety filter: top-of-window partials always qualify; interior partials
@@ -2631,10 +2652,29 @@ async function _getDustOrders(manager: any, partials: any, type: any, thresholdM
         const thresholds = thresholdMap || await _computeDustThresholdMap(manager, type);
         if (thresholds.size === 0) return [];
 
+        // Absolute floor shared with the eligibility check above: sub-$1
+        // remainders are dust at any ratio to ideal size. Gated on live
+        // thresholds: with no budget context every threshold collapses to
+        // 0 and the pinned behavior is "no dust" (see no-budget test).
+        const absRaw = Number(manager?.config?.gridLimits?.DUST_ABSOLUTE_MIN_NOTIONAL_USDT
+            ?? GRID_LIMITS.DUST_ABSOLUTE_MIN_NOTIONAL_USDT);
+        const hasLiveThreshold = [...thresholds.values()].some((t) => t > 0);
+        const absFloor = hasLiveThreshold && Number.isFinite(absRaw) && absRaw > 0 ? absRaw : 0;
+        const notionalUsdt = (o: any): number => {
+            const size = Number(o?.size);
+            if (!Number.isFinite(size) || size <= 0) return 0;
+            if (o?.type === ORDER_TYPES.SELL) {
+                const price = Number(o?.price);
+                if (!Number.isFinite(price) || price <= 0) return 0;
+                return size * price;
+            }
+            return size;
+        };
+
         return partials.filter((p: any) => {
             const threshold = thresholds.get(p.id);
-            if (!threshold || threshold <= 0) return false;
-            return p.size < threshold;
+            if (!!threshold && threshold > 0 && p.size < threshold) return true;
+            return absFloor > 0 && notionalUsdt(p) < absFloor;
         });
     }
 
