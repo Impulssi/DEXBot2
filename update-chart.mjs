@@ -7,7 +7,7 @@
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
-import { fetchLpCandles, fetchLpCandlesIncremental, writeLpFile, findEarliestTradeMs, outputPath } from './hae-lp-data.mjs';
+import { fetchLpCandles, fetchLpCandlesIncremental, writeLpFile, findEarliestTradeMs, findFirstTradeMsInRange, outputPath } from './hae-lp-data.mjs';
 
 const ROOT = process.cwd();
 const CHART_FILE = resolve(ROOT, 'analysis/charts/BTS-XBTSX.USDT_tradingview.html');
@@ -74,6 +74,7 @@ const forceFull = process.argv.includes('--full');
 // Tiedostoon leimattu kattavuus (offline, ei verkkoriippuvuutta): mista
 // alkaen sarja on taydellinen. Puuttuu vanhoista tiedostoista.
 let storedCoverageFromMs = null;
+let firstOldMs = NaN;
 if (!forceFull) {
     // Inkrementaalinen: tallennettu sarja kattaa pyydetyn ikkunan alun?
     let covered = false;
@@ -86,6 +87,7 @@ if (!forceFull) {
             if (Number.isFinite(scf) && scf > 0) storedCoverageFromMs = scf;
             if (oc.length > 0) {
                 const firstOld = Number(oc[0][0]);
+                firstOldMs = firstOld;
                 // FULL_HISTORY (kaikki) kattaa aina; muuten vaaditaan alku + 1h toleranssi.
                 // Jos ei tayty, tarkista viela onko pyydetty alku ENNEN poolin
                 // ensimmaista kauppaa — sita vanhempaa dataa ei ole olemassa,
@@ -100,13 +102,24 @@ if (!forceFull) {
                 } else if (Number.isFinite(firstOld) && firstOld <= startMs + 3600000) {
                     covered = true;
                 } else {
+                    let gapTrade = null;
+                    try {
+                        gapTrade = await findFirstTradeMsInRange(startMs, firstOld);
+                    } catch (e) {
+                        console.log('  valitarkistus epaonnistui: ' + (e && e.message ? e.message : String(e)));
+                    }
                     let earliest = null;
+                    if (gapTrade != null) {
                     try {
                         earliest = await findEarliestTradeMs();
                     } catch (e) {
                         console.log('  earliest-kysely epaonnistui: ' + (e && e.message ? e.message : String(e)));
                     }
                     console.log('  earliest-tulos: ' + (earliest != null ? new Date(earliest).toISOString() : 'null'));
+                    } else {
+                        console.log('  Valilla ei kauppoja -> inkrementaalinen.');
+                        covered = true;
+                    }
                     if (earliest != null && startMs <= earliest + 3600000) {
                         console.log('  Pyydetty alku on ennen poolin ensimmaista kauppaa (' + new Date(earliest).toISOString() + ') — sarja kattaa kaiken olemassaolevan.');
                         covered = true;
@@ -163,7 +176,13 @@ if (prevUpdate) {
     prevUpdate.newBars = newBars;
 }
 if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-    payload.coverageFromMs = storedCoverageFromMs != null ? storedCoverageFromMs : startMs;
+    // Kattavuusleima: havaittu tiedoston alku (firstOldMs) on todistettu
+    // kattavuus (append-only, ei trimmausta). Tayshaku todistaa pyynnosta.
+    // Leimaa ei koskaan kavenneta (se myrkytti aiemmin 2025-09-06:een).
+    let nextStamp = storedCoverageFromMs;
+    if (Number.isFinite(firstOldMs) && firstOldMs > 0 && (nextStamp == null || firstOldMs < nextStamp)) nextStamp = firstOldMs;
+    if (nextStamp == null && !covered) nextStamp = startMs;
+    if (nextStamp != null) payload.coverageFromMs = nextStamp;
 }
 writeLpFile(payload, dataFile);
 console.log('  Tallennettu: ' + dataFile);

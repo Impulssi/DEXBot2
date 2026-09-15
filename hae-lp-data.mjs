@@ -127,11 +127,13 @@ function hitToTrade(hit) {
     };
 }
 
-// Hakee poolin varhaisimman LP-kaupan aikaleiman (koko historian nollakohta)
+// Hakee poolin varhaisimman LP-kaupan aikaleiman (koko historian nollakohta).
+// Verifioi poolin kuten hitToTrade: match_phrase voi osua alimerkkijonona
+// vieraaseen pooliin (palautti aiemmin 2021-kaupan poolille 1.19.48).
 export async function findEarliestTradeMs() {
     const result = await kibanaSearch({
-        size: 1,
-        _source: ['block_data.block_time'],
+        size: 50,
+        _source: ['block_data.block_time', 'operation_history.op', 'operation_history.operation_result'],
         query: {
             bool: {
                 filter: [
@@ -142,10 +144,43 @@ export async function findEarliestTradeMs() {
         },
         sort: [{ 'block_data.block_time': { order: 'asc' } }],
     });
-    const t = result?.hits?.hits?.[0]?._source?.block_data?.block_time;
-    if (!t) return null;
-    const ms = Date.parse(String(t).endsWith('Z') ? String(t) : String(t) + 'Z');
-    return Number.isFinite(ms) ? ms : null;
+    const hits = result?.hits?.hits || [];
+    // Sama verifiointi kuin kaupoilla: poolin objekti voi olla luotu
+    // paljon ennen ensimmaista kauppaa (tehdas/update-operaatiot), joten
+    // pelkka pool-kentta ei riita — vaaditaan kelvollinen kauppasisalto.
+    for (const h of hits) {
+        const trade = hitToTrade(h);
+        if (trade) return trade.tsMs;
+    }
+    return null;
+}
+
+// Onko välillä [fromMs, toMs] yhtään kelvollista kauppaa? Kaytetaan
+// kattavuustarkistuksessa earliest-kyselyn sijaan: poolin objekti voi
+// olla luotu paljon ennen ensimmaista kauppaa (tehdas/update-operaatiot),
+// jolloin pelkka earliest valehtelee. Palauttaa loydetyn kaupan ajan tai null.
+export async function findFirstTradeMsInRange(fromMs, toMs) {
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || !(toMs > fromMs)) return null;
+    const result = await kibanaSearch({
+        size: 20,
+        _source: ['block_data.block_time', 'operation_history.op', 'operation_history.operation_result'],
+        query: {
+            bool: {
+                filter: [
+                    { term: { operation_type: 63 } },
+                    { match_phrase: { 'operation_history.op': POOL_PHRASE } },
+                    { range: { 'block_data.block_time': { gte: new Date(fromMs).toISOString(), lte: new Date(toMs).toISOString() } } },
+                ],
+            },
+        },
+        sort: [{ 'block_data.block_time': { order: 'asc' } }],
+    });
+    const rangeHits = result?.hits?.hits || [];
+    for (const h of rangeHits) {
+        const trade = hitToTrade(h);
+        if (trade) return trade.tsMs;
+    }
+    return null;
 }
 
 async function fetchWindowTrades(winStartMs, winEndMs) {

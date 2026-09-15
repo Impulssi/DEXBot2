@@ -668,6 +668,29 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         // Base gridlines only on bare charts (no overlay data): with embedded
         // orders/bounds the overlay levels are the grid (M1).
         const showGridlines = !(hasOrders || hasBounds);
+        // Horizontal rays (local drawing tool): [{ id, price, time }] with
+        // price stored in NORMAL-mode quote units so rays survive pair flips
+        // (inverse view shows the reciprocal). Persisted per chart.
+        let rays = [];
+        let raysLoaded = false;
+        const rayKeyPart = (s) => String(s || '').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'x';
+        const raysStorageKey = () => 'dexbot2-rays:' + rayKeyPart(payload.poolLabel) + ':' + rayKeyPart(payload.pairLabelNormal);
+        const loadRays = () => {
+            if (raysLoaded) return;
+            raysLoaded = true;
+            try {
+                const raw = localStorage.getItem(raysStorageKey());
+                const arr = raw ? JSON.parse(raw) : [];
+                if (Array.isArray(arr)) {
+                    rays = arr.filter((r) => r && Number.isFinite(Number(r.price)) && Number(r.price) > 0 && Number.isFinite(Number(r.time)))
+                        .slice(0, 24)
+                        .map((r) => ({ id: String(r.id || (Date.now() + Math.random())), price: Number(r.price), time: Number(r.time) }));
+                }
+            } catch (e) { rays = []; }
+        };
+        const saveRays = () => {
+            try { localStorage.setItem(raysStorageKey(), JSON.stringify(rays)); } catch (e) {}
+        };
         let currentAmaInitOffsetEnabled = false;
         let currentAmaInitOffset = Number.isFinite(state.amaInitOffset) ? state.amaInitOffset : 0;
         let currentPriceScale = state.priceScale || payload.priceScale || 'log';
@@ -2079,7 +2102,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     },
                 ],
                 hooks: {
-                    draw: [(u) => { positionPriceMarker(u); positionReserveLine(u); positionOrderLines(u); positionUpdateMarker(u, true); }],
+                    draw: [(u) => { positionPriceMarker(u); positionReserveLine(u); positionOrderLines(u); positionUpdateMarker(u, true); positionRays(u); }],
                     // Keep the bottom-right stat badges glued to the visible
                     // window while zooming/panning (rAF-throttled text swap).
                     // Refit Y to the visible window on timeframe (x) moves —
@@ -2477,6 +2500,281 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             orderPriceTags = [];
             lastOverlayKey = '';
         }
+        // ── Horizontal rays (Alt+click to place) ──
+        let rayLineDivs = [];
+        let rayTagDivs = [];
+        const RAY_COLOR = '#ffffff';
+        const rayDisplayPrice = (stored) => {
+            const p = Number(stored);
+            if (!Number.isFinite(p) || p <= 0) return null;
+            if (normalizePairMode(currentPairMode) === 'inverse') return 1 / p;
+            return p;
+        };
+        const ensureRayPanel = () => {
+            if (!priceChart) return null;
+            let panel = document.getElementById('ray-panel');
+            if (panel && panel.parentNode === priceChart.root) return panel;
+            if (panel && panel.parentNode) panel.parentNode.removeChild(panel);
+            panel = document.createElement('div');
+            panel.id = 'ray-panel';
+            panel.style.cssText = 'position:absolute;z-index:26;left:8px;bottom:10px;pointer-events:auto;font:600 11px Segoe UI, sans-serif;padding:6px 8px;border-radius:8px;background:rgba(13,17,23,0.88);border:1px solid #263241;white-space:nowrap;';
+            panel.innerHTML = '<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">'
+                + '<span style="color:#e8eef5;">RAY</span>'
+                + '<input id="ray-input" type="text" inputmode="decimal" placeholder="0.001599" title="Exact price, current view units (Alt+click chart to place at mouse)" style="width:88px;border:1px solid #263241;background:rgba(6,8,12,0.95);color:#d7e0ea;border-radius:6px;padding:3px 6px;font-size:11px;outline:none;">'
+                + '<button id="ray-add" title="Add ray at input price" style="border:1px solid #263241;background:rgba(24,30,39,0.9);color:#d7e0ea;border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer;">Add</button>'
+                + '<button id="ray-clear" title="Remove all rays" style="border:1px solid #263241;background:rgba(24,30,39,0.9);color:#8290a2;border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer;">Clear</button>'
+                + '</div><div id="ray-list"></div>'
+                + '<div style="color:#5b6b7d;font-size:10px;margin-top:2px;">Alt+click: place &middot; drag: move &middot; Ctrl: snap to candle</div>';
+            priceChart.root.appendChild(panel);
+            const input = panel.querySelector('#ray-input');
+            const addFromInput = () => {
+                const raw = String(input.value || '').trim().replace(',', '.');
+                const v = Number(raw);
+                if (!Number.isFinite(v) || v <= 0) return;
+                const stored = normalizePairMode(currentPairMode) === 'inverse' ? 1 / v : v;
+                if (!Number.isFinite(stored) || stored <= 0) return;
+                const lastT = currentCandles.length ? currentCandles[currentCandles.length - 1].time : 0;
+                rays.push({ id: String(Date.now()), price: stored, time: lastT });
+                if (rays.length > 24) rays = rays.slice(rays.length - 24);
+                input.value = '';
+                saveRays();
+            };
+            panel.querySelector('#ray-add').addEventListener('click', addFromInput);
+            input.addEventListener('keydown', (e) => { if (e.key === 'Enter') addFromInput(); });
+            panel.querySelector('#ray-clear').addEventListener('click', () => { rays = []; saveRays(); });
+            return panel;
+        };
+        const refreshRayList = () => {
+            const list = document.getElementById('ray-list');
+            if (!list) return;
+            while (list.firstChild) list.removeChild(list.firstChild);
+            rays.forEach((r) => {
+                const row = document.createElement('div');
+                row.style.cssText = 'display:flex;gap:6px;align-items:center;margin-top:2px;';
+                const lab = document.createElement('span');
+                lab.style.cssText = 'color:#e8eef5;font-family:ui-monospace,Menlo,monospace;';
+                lab.textContent = fmtPriceLabel(rayDisplayPrice(r.price));
+                const del = document.createElement('button');
+                del.textContent = 'x';
+                del.title = 'Remove ray';
+                del.style.cssText = 'border:1px solid #263241;background:rgba(24,30,39,0.9);color:#8290a2;border-radius:6px;padding:0 7px;font-size:11px;cursor:pointer;line-height:16px;';
+                del.addEventListener('click', () => {
+                    rays = rays.filter((q) => q.id !== r.id);
+                    saveRays();
+                });
+                row.appendChild(lab);
+                row.appendChild(del);
+                list.appendChild(row);
+            });
+        };
+        function positionRays(u) {
+            loadRays();
+            if (!u || !u.over || !currentCandles.length) return;
+            try { if (getComputedStyle(u.root).position === 'static') u.root.style.position = 'relative'; } catch (e) {}
+            while (rayLineDivs.length < rays.length) {
+                const d = document.createElement('div');
+                d.style.cssText = 'position:absolute;z-index:2;pointer-events:none;height:0;left:0;right:0;display:none;border-top:3px solid ' + RAY_COLOR + ';opacity:0.9;';
+                u.root.appendChild(d);
+                rayLineDivs.push(d);
+                const t = document.createElement('div');
+                t.style.cssText = 'position:absolute;z-index:25;pointer-events:none;font:600 10px Segoe UI, sans-serif;height:15px;padding:0 5px;border-radius:3px;color:#0b0f14;background:' + RAY_COLOR + ';white-space:nowrap;display:none;';
+                u.root.appendChild(t);
+                rayTagDivs.push(t);
+            }
+            const ys = u.scales.y || {};
+            const xs = u.scales.x || {};
+            const rootRect = u.root.getBoundingClientRect();
+            const overRect = u.over.getBoundingClientRect();
+            const plotL = overRect.left - rootRect.left;
+            const plotR = plotL + overRect.width;
+            const axisW = Math.max(0, rootRect.width - (plotL + overRect.width));
+            const xMinV = Number.isFinite(xs.min) ? xs.min : null;
+            const xMaxV = Number.isFinite(xs.max) && Number.isFinite(xMinV) && xs.max > xMinV ? xs.max : null;
+            const panel = ensureRayPanel();
+            if (panel) refreshRayList();
+            rays.forEach((r, i) => {
+                const d = rayLineDivs[i];
+                const t = rayTagDivs[i];
+                if (!d || !t) return;
+                const dp = rayDisplayPrice(r.price);
+                const y = (dp != null && yForPriceCached) ? yForPriceCached(ys, overRect, rootRect, dp) : null;
+                let x0 = null;
+                if (xMinV != null && xMaxV != null && Number.isFinite(r.time)) {
+                    const frac = (r.time - xMinV) / (xMaxV - xMinV);
+                    if (Number.isFinite(frac) && frac <= 1) x0 = plotL + Math.max(0, frac) * overRect.width;
+                }
+                if (y == null || x0 == null) { d.style.display = 'none'; t.style.display = 'none'; return; }
+                d.style.display = 'block';
+                d.style.top = y + 'px';
+                d.style.left = x0 + 'px';
+                const label = fmtPriceLabel(dp);
+                t.style.display = 'block';
+                t.textContent = label;
+                t.style.top = (y - 16) + 'px';
+                t.style.right = (axisW + 6) + 'px';
+            });
+            for (let i = rays.length; i < rayLineDivs.length; i++) {
+                rayLineDivs[i].style.display = 'none';
+                rayTagDivs[i].style.display = 'none';
+            }
+        }
+        function bindRayDrag(chart) {
+            if (chart !== priceChart) return;
+            let dragRay = null;
+            const rayGeom = () => {
+                const rect = chart.root.getBoundingClientRect();
+                const over = chart.over.getBoundingClientRect();
+                const pxr = (chart.pxRatio && Number.isFinite(chart.pxRatio) && chart.pxRatio > 0) ? chart.pxRatio : 1;
+                return {
+                    rect, over, pxr,
+                    bTop: (chart.bbox && Number.isFinite(chart.bbox.top)) ? chart.bbox.top / pxr : 0,
+                    bLeft: (chart.bbox && Number.isFinite(chart.bbox.left)) ? chart.bbox.left / pxr : 0,
+                };
+            };
+            // Nearest ray within 8px vertically under the cursor and below
+            // its start point horizontally (rays span start -> right edge).
+            const rayAt = (e) => {
+                loadRays();
+                if (!rays.length || !currentCandles.length || !chart.over) return null;
+                const g = rayGeom();
+                const xs = chart.scales.x || {};
+                if (!Number.isFinite(xs.min) || !Number.isFinite(xs.max) || xs.max <= xs.min) return null;
+                const plotL = g.over.left - g.rect.left;
+                const plotW = g.over.width;
+                let best = null;
+                let bestDy = 8;
+                for (const r of rays) {
+                    const dp = rayDisplayPrice(r.price);
+                    if (dp == null) continue;
+                    const y = yForPriceCached(chart.scales.y || {}, g.over, g.rect, dp);
+                    if (y == null) continue;
+                    let x0 = plotL;
+                    if (Number.isFinite(r.time)) {
+                        const frac = (r.time - xs.min) / (xs.max - xs.min);
+                        if (!Number.isFinite(frac) || frac > 1) continue;
+                        x0 = plotL + Math.max(0, frac) * plotW;
+                    }
+                    const cx = e.clientX - g.rect.left;
+                    if (cx < x0 - 4 || cx > plotL + plotW + 4) continue;
+                    const dy = Math.abs(e.clientY - (g.rect.top + y));
+                    if (dy < bestDy) { bestDy = dy; best = r; }
+                }
+                return best;
+            };
+            // Magnet: snap to the body (open..close) of the visually nearest
+            // candle. Returns display-unit { price, time } with price on the
+            // nearer body edge and time locked to that candle.
+            // Magnet: lock onto the CLOSE of the time-nearest visible candle
+            // (price and time together). Traders anchor on closes; edge
+            // proximity would flip between open/close mid-body.
+            const magnetToCandle = (e) => {
+                if (!currentCandles.length || !chart.over) return null;
+                const g = rayGeom();
+                const xs = chart.scales.x || {};
+                if (!Number.isFinite(xs.min) || !Number.isFinite(xs.max) || xs.max <= xs.min) return null;
+                const cx = e.clientX - g.rect.left;
+                const tCur = chart.posToVal(cx - g.bLeft, 'x');
+                if (!Number.isFinite(tCur)) return null;
+                const times = currentCandles.map((c) => c.time);
+                const start = Math.max(0, lowerBound(times, xs.min) - 1);
+                const end = Math.min(times.length, lowerBound(times, xs.max) + 2);
+                let best = null;
+                let bestDt = Infinity;
+                for (let i = start; i < end; i++) {
+                    const c = currentCandles[i];
+                    if (!c) continue;
+                    const cl = Number(c.close);
+                    if (!Number.isFinite(cl) || cl <= 0) continue;
+                    if (!Number.isFinite(c.time)) continue;
+                    const dt = Math.abs(c.time - tCur);
+                    if (dt < bestDt) { bestDt = dt; best = c; }
+                }
+                if (!best) return null;
+                return { price: Number(best.close), time: best.time };
+            };
+            // Window capture: runs before the root handlers, so grabbing a
+            // ray pre-empts pan (bindPan skips Alt anyway; plain grabs here
+            // stop before reaching it). Alt+click still places via bindRayClick.
+            window.addEventListener('mousedown', (e) => {
+                // Ctrl may be held already at grab (magnet from the start);
+                // only Alt (place-new) and Meta are excluded here.
+                if (!e || e.button !== 0 || e.altKey || e.metaKey) return;
+                if (!priceChart || !priceChart.root) return;
+                const root = priceChart.root;
+                if (e.target !== root && !(root.contains(e.target))) return;
+                if (e.target.closest && e.target.closest('#ray-panel')) return;
+                const hit = rayAt(e);
+                if (!hit) return;
+                e.preventDefault();
+                e.stopPropagation();
+                dragRay = hit;
+                document.body.style.cursor = 'ns-resize';
+                const move = (ev) => {
+                    if (!dragRay) return;
+                    const g = rayGeom();
+                    let v = chart.posToVal(ev.clientY - g.rect.top - g.bTop, 'y');
+                    let t = chart.posToVal(ev.clientX - g.rect.left - g.bLeft, 'x');
+                    // Ctrl held: magnetize onto the nearest candle body
+                    // (price snaps to the nearer open/close, time to that
+                    // candle). Works mid-drag too — just press Ctrl.
+                    if (ev.ctrlKey || ev.metaKey) {
+                        const snap = magnetToCandle(ev);
+                        if (snap) { v = snap.price; t = snap.time; }
+                    }
+                    if (!Number.isFinite(v) || v <= 0) return;
+                    const stored = normalizePairMode(currentPairMode) === 'inverse' ? 1 / v : v;
+                    if (!Number.isFinite(stored) || stored <= 0) return;
+                    dragRay.price = stored;
+                    if (Number.isFinite(t) && currentCandles.length) {
+                        const firstT = currentCandles[0].time;
+                        const lastT = currentCandles[currentCandles.length - 1].time;
+                        if (Number.isFinite(firstT) && Number.isFinite(lastT) && lastT >= firstT) {
+                            t = Math.min(Math.max(t, firstT), lastT);
+                        }
+                        dragRay.time = Math.round(t);
+                    }
+                    positionRays(priceChart);
+                };
+                const up = () => {
+                    window.removeEventListener('mousemove', move);
+                    window.removeEventListener('mouseup', up);
+                    dragRay = null;
+                    document.body.style.cursor = '';
+                    saveRays();
+                };
+                window.addEventListener('mousemove', move);
+                window.addEventListener('mouseup', up);
+            }, true);
+            // Hover affordance only (never clears: the y-zone handler owns '').
+            window.addEventListener('mousemove', (e) => {
+                if (e.buttons !== 0 || dragRay) return;
+                if (!priceChart || !priceChart.root) return;
+                if (e.target !== priceChart.root && !(priceChart.root.contains(e.target))) return;
+                if (e.target.closest && e.target.closest('#ray-panel')) return;
+                if (rayAt(e)) priceChart.root.style.cursor = 'ns-resize';
+            });
+        }
+        function bindRayClick(chart) {
+            if (chart !== priceChart) return;
+            chart.root.addEventListener('mousedown', (e) => {
+                if (!e || e.button !== 0 || !e.altKey) return;
+                if (e.ctrlKey || e.metaKey) return;
+                const rect = chart.root.getBoundingClientRect();
+                if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
+                e.preventDefault();
+                const pxr = (chart.pxRatio && Number.isFinite(chart.pxRatio) && chart.pxRatio > 0) ? chart.pxRatio : 1;
+                const bTop = (chart.bbox && Number.isFinite(chart.bbox.top)) ? chart.bbox.top / pxr : 0;
+                const bLeft = (chart.bbox && Number.isFinite(chart.bbox.left)) ? chart.bbox.left / pxr : 0;
+                const clicked = chart.posToVal(e.clientY - rect.top - bTop, 'y');
+                const clickedX = chart.posToVal(e.clientX - rect.left - bLeft, 'x');
+                if (!Number.isFinite(clicked) || clicked <= 0 || !Number.isFinite(clickedX)) return;
+                const stored = normalizePairMode(currentPairMode) === 'inverse' ? 1 / clicked : clicked;
+                if (!Number.isFinite(stored) || stored <= 0) return;
+                rays.push({ id: String(Date.now()), price: stored, time: Math.round(clickedX) });
+                if (rays.length > 24) rays = rays.slice(rays.length - 24);
+                saveRays();
+            });
+        }
         // ── Volume hover tooltip ──
         let volumeHoverTip = null;
         // ── Update marker ("updated from here"): vertical line where the
@@ -2803,6 +3101,8 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 charts.forEach((chart) => {
                     bindWheelZoom(chart);
                     bindPan(chart);
+                    bindRayClick(chart);
+                    bindRayDrag(chart);
                     bindXAxisDrag(chart);
                     if (chart === priceChart) {
                         bindYAxisDrag(chart);
