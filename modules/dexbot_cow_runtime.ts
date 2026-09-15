@@ -345,9 +345,15 @@ function formatUnmatchedChainOrderForLog(order: any) {
  * Record a pending CREATE broadcast on the manager.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} entry
+ * @returns {string|null} The fingerprint the entry was stored under (null
+ *   when recording was skipped). Callers that must later remap the entry's
+ *   stored opIndex/ctxIndex (the final pivot gate's compaction) collect
+ *   these to identify exactly which pending entries belong to THIS batch —
+ *   entry.batchId is unreliable because _currentBatchId is never populated
+ *   in production (always null), so batchId scoping cannot discriminate.
  */
-function recordPendingBroadcast(bot: any, entry: any) {
-    if (!bot.manager || !entry || !entry.order) return;
+function recordPendingBroadcast(bot: any, entry: any): string | null {
+    if (!bot.manager || !entry || !entry.order) return null;
     if (!bot.manager._pendingBroadcasts || !(bot.manager._pendingBroadcasts instanceof Map)) {
         bot.manager._pendingBroadcasts = new Map();
     }
@@ -357,7 +363,7 @@ function recordPendingBroadcast(bot: any, entry: any) {
             `[COW] Skipped pending-broadcast record: could not build fingerprint for ${entry.order?.id || 'unknown'}`,
             'warn'
         );
-        return;
+        return null;
     }
     bot.manager._pendingBroadcasts.set(fingerprint, {
         fingerprint,
@@ -371,6 +377,7 @@ function recordPendingBroadcast(bot: any, entry: any) {
         batchId: bot._currentBatchId || null,
         recordedAt: Date.now()
     });
+    return fingerprint;
 }
 
 /**
@@ -3456,6 +3463,12 @@ async function updateOrdersOnChainBatchCOWBody(
     // would spam big batches, so the guard emits one batch summary instead
     // (see the summary after the action loop below).
     const lastFillGuardStats = { checked: 0, passed: 0, skipped: 0, bypassed: 0, pivotOffGrid: 0 };
+    // Fingerprints of the pending-broadcast entries recorded by THIS batch's
+    // op-building (both CREATE paths). The final pivot gate's compaction
+    // remaps these entries' stored opIndex/ctxIndex to their post-drop
+    // positions; entry.batchId cannot discriminate batches (always null in
+    // production), so the fingerprint set is the ownership marker.
+    const batchPendingFps = new Set<string>();
     // Per-batch GRID-PRICE-INVARIANT counters (BLOCKING). Tracks emitted prices
     // that are not the genesis level for their slot — such emissions are
     // rejected, not placed. One batch summary.
@@ -3510,8 +3523,26 @@ async function updateOrdersOnChainBatchCOWBody(
         // mutated the pivot mid-batch (02:03 pivots drifted 0.001523→0.001529
         // across 20 checks), so early actions were judged against a different
         // pivot than later ones. The batch summary still reports whether this
-        // freeze moved the pivot under the plan.
+        // freeze moved the pivot under the plan. The frozen value feeds the
+        // final pre-broadcast gate below (runFinalPivotGate), which re-checks
+        // built ops when a fill queued AFTER the freeze moved the pivot.
+        // freezeQueueDepth is the Step-2 observability half: queue depth at
+        // freeze time, paired with the gate's own queue readout.
+        let freezeQueueDepth: number | null = null;
+        try {
+            freezeQueueDepth = Array.isArray((bot as any)?._incomingFillQueue)
+                ? (bot as any)._incomingFillQueue.length
+                : null;
+        } catch { freezeQueueDepth = null; }
         try { if (refreshLastFillPivotFromQueue(bot)) lastFillGuardPivotRefreshed = true; } catch { /* best-effort */ }
+        // Captured AFTER the freeze refresh, not before: the refresh is part
+        // of the freeze, so the baseline must be the pivot the ops are about
+        // to be judged against. Capturing pre-refresh would make every batch
+        // whose freeze picked up a pre-freeze queued fill look "moved" at the
+        // gate — a spurious warn plus a redundant full re-check against the
+        // identical pivot.
+        const frozenPivotAtBatchStart = (bot.manager as any)?._lastFilledPrice;
+        const frozenTypeAtBatchStart = (bot.manager as any)?._lastFilledType;
         for (const action of actions) {
             if (action.type === COW_ACTIONS.CANCEL) {
                 try {
@@ -3683,12 +3714,13 @@ async function updateOrdersOnChainBatchCOWBody(
                     operations.push(buildResult.op);
                     opContexts.push({ kind: 'create', id: order.id, order: effectiveOrder, args, finalInts: buildResult.finalInts });
                     intraBatchCandidates.push(effectiveOrder);
-                    recordPendingBroadcast(bot, {
+                    const recordedFp = recordPendingBroadcast(bot, {
                         opIndex: operations.length - 1,
                         ctxIndex: opContexts.length - 1,
                         order: effectiveOrder,
                         finalInts: buildResult.finalInts
                     });
+                    if (recordedFp) batchPendingFps.add(recordedFp);
                 } catch (err: any) {
                     bot.manager.logger.log(`Failed to prepare create op for ${action.id}: ${getErrorMessage(err)}`, 'error');
                 }
@@ -4161,12 +4193,13 @@ async function updateOrdersOnChainBatchCOWBody(
                                         args: { amountToSell: fbArgs.amountToSell, minToReceive: fbArgs.minToReceive },
                                         finalInts: fbResult.finalInts
                                     });
-                                    recordPendingBroadcast(bot, {
+                                    const fbRecordedFp = recordPendingBroadcast(bot, {
                                         opIndex: operations.length - 1,
                                         ctxIndex: opContexts.length - 1,
                                         order: { id: targetSlotId, type: fbType, price: fbPrice, size: fbSize },
                                         finalInts: fbResult.finalInts
                                     });
+                                    if (fbRecordedFp) batchPendingFps.add(fbRecordedFp);
                                     bot.manager.logger.log(
                                         `[COW] Recovered "not found" for ${action.id}: converted UPDATE to CREATE for slot ${targetSlotId}`,
                                         'warn'
@@ -4186,6 +4219,72 @@ async function updateOrdersOnChainBatchCOWBody(
             }
         }
 
+        // FINAL PRE-BROADCAST PIVOT GATE (2026-09-13 incident on a live
+        // market-pair bot): a
+        // fill queued AFTER the batch-start freeze but BEFORE broadcast
+        // passes every per-action check on a stale pivot (freeze .745, fill
+        // queued .765, broadcast .910). Re-check the BUILT ops against a
+        // re-refreshed pivot here — after op-building, before the batch
+        // summary (drops count as skipped, not passed), fund validation
+        // (snapshot reflects filtered ops) and single-flight claim.
+        // op indexes recorded during op-building are rebuilt from kept
+        // contexts below, so any future reader sees live indexes.
+        // The gate runs on its OWN stats object: its re-checks would
+        // otherwise double-count the build loop's checked/passed/skipped
+        // totals in the batch summary below. Gate contributions are
+        // reported separately (gateChecked=... fields).
+        const skippedUpdateCountRef = { count: 0 };
+        const finalGateStats = { checked: 0, passed: 0, skipped: 0, bypassed: 0, pivotOffGrid: 0 };
+        let finalGate: { dropped: Array<any>; pivotChanged: boolean; refreshed: boolean } | null = null;
+        try {
+            finalGate = runFinalPivotGate(bot, operations, opContexts, {
+                actions,
+                cowResult,
+                frozenPivot: frozenPivotAtBatchStart,
+                frozenType: frozenTypeAtBatchStart,
+                lastFillGuardStats: finalGateStats,
+                skippedUpdateSlotIds,
+                skippedCreateSlotIds,
+                skippedUpdateCountRef,
+                freezeQueueDepth,
+                batchPendingFps,
+            });
+            if (finalGate.refreshed) lastFillGuardPivotRefreshed = true;
+            if (finalGate.pivotChanged) {
+                try {
+                    const fmtP = (v: any) => (v == null || !Number.isFinite(Number(v)) ? 'none' : Format.formatPrice6(Number(v)));
+                    bot.manager?.logger?.log?.(
+                        `[LAST-FILL-GUARD] Final gate: pivot moved under batch ` +
+                        `${fmtP(frozenPivotAtBatchStart)}(${frozenTypeAtBatchStart ?? 'cold'})` +
+                        `->${fmtP((bot.manager as any)?._lastFilledPrice)}(${(bot.manager as any)?._lastFilledType ?? 'cold'}) ` +
+                        `(freezeQueue=${freezeQueueDepth ?? '?'}) ` +
+                        `dropped=${finalGate.dropped.length}`,
+                        'warn'
+                    );
+                } catch { /* logging is best-effort */ }
+            }
+            // Rebuild cancelOpIndexByOrderId from the KEPT contexts: the
+            // gate compacted operations/opContexts in lockstep, so indexes
+            // recorded during op-building are stale for every op after the
+            // first drop. cancelOpIndexByOrderId has NO readers past this
+            // point (verified: the op-building loop is its last use —
+            // pair-mode/chunk grouping is computed lazily at broadcast from
+            // opContexts with no stored indexes), so this rebuild is
+            // defence-in-depth for future readers, not a live fix.
+            cancelOpIndexByOrderId.clear();
+            for (let ci = 0; ci < opContexts.length; ci++) {
+                const cctx: any = opContexts[ci];
+                const cord: any = (cctx as any)?.order;
+                const cOrderId = (cctx as any)?.kind === 'cancel'
+                    ? (cctx as any)?.order?.orderId || (cctx as any)?.orderId
+                    : cord?.orderId;
+                if (cOrderId) cancelOpIndexByOrderId.set(cOrderId, ci);
+            }
+            // skippedUpdateCount is threaded via countRef so the restore
+            // below covers gate-dropped rotations too.
+            if (skippedUpdateCountRef.count > 0) skippedUpdateCount += skippedUpdateCountRef.count;
+        } catch (_gateErr: any) { /* gate is fail-open: keep the built ops */ }
+
         // Batch-level LAST-FILL-GUARD summary: per-action pass lines would spam
         // big batches, so one line per batch records the mode, pivot, resolved
         // increment, and pass/skip/bypass counts — the guard's pass decisions
@@ -4197,7 +4296,16 @@ async function updateOrdersOnChainBatchCOWBody(
         // for the whole batch, so every action was checked against the same
         // pivot printed here.
         try {
-            const totalGuarded = lastFillGuardStats.checked + lastFillGuardStats.bypassed;
+            // The final gate reports on its OWN counters (finalGateStats), so
+            // checked/passed/skipped/bypassed here are the build loop's
+            // verdicts only — the gate's re-checks never inflate them. The
+            // gate's contributions ride along as gate* fields, omitted when
+            // the gate did not re-check anything (same convention as
+            // pivotOffGrid above). totalGuarded includes the gate so a
+            // batch that was ONLY gate-checked (e.g. cold freeze armed
+            // mid-batch) still prints.
+            const gateGuarded = finalGateStats.checked + finalGateStats.bypassed;
+            const totalGuarded = lastFillGuardStats.checked + lastFillGuardStats.bypassed + gateGuarded;
             if (totalGuarded > 0) {
                 const sumPivotRaw = (bot.manager as any)?._lastFilledPrice;
                 const sumType = (bot.manager as any)?._lastFilledType;
@@ -4236,6 +4344,10 @@ async function updateOrdersOnChainBatchCOWBody(
                     // "counter unavailable".
                     (Number(lastFillGuardStats.pivotOffGrid) > 0
                         ? ` pivotOffGrid=${lastFillGuardStats.pivotOffGrid}`
+                        : '') +
+                    (gateGuarded > 0
+                        ? ` gateChecked=${finalGateStats.checked} gatePassed=${finalGateStats.passed} ` +
+                          `gateSkipped=${finalGateStats.skipped} gateBypassed=${finalGateStats.bypassed}`
                         : ''),
                     cold || (batchPivot && batchPivot.idx == null) ? 'warn' : 'info'
                 );
@@ -5061,6 +5173,13 @@ function resolveOnGridPivot(manager: any, rawPrice: any): { price: number|null; 
  * skip logging stay at the call sites, which differ per action kind).
  * Batch callers pass skipRefresh=true: the batch-start freeze owns refreshes
  * so every action in a batch is judged against the same pivot.
+ *
+ * FINAL-GATE CONTRACT (see runFinalPivotGate): the gate re-checks BUILT ops
+ * against a re-refreshed pivot AFTER the op-building loop. It must run BEFORE
+ * any later mutation of operations/opContexts (fund validation snapshot,
+ * pair-mode/chunk grouping) — those stages index op positions and read stale
+ * indexes after a filter. Call sites after the gate must treat
+ * operations/opContexts as the filtered arrays.
  * @param {Object} bot
  * @param {number} price - Target order price
  * @param {number} size - Order size
@@ -5116,6 +5235,319 @@ function runLastFillGuardCheck(bot: any, price: number, size: number, type: stri
     const check = isLastFillGuardBlocked(price, size, type, onGrid.price, lastType, inc);
     stats.checked++;
     return { check, refreshed };
+}
+
+/**
+ * Final pre-broadcast pivot gate: re-check BUILT ops against a re-refreshed
+ * pivot RIGHT BEFORE broadcast.
+ *
+ * Why this exists (2026-09-13 incident on a live market-pair bot): the batch-start freeze
+ * refreshes the pivot once, then every CREATE / rotation-UPDATE /
+ * fallback-CREATE is judged against that frozen value (skipRefresh=true).
+ * A fill that is queued AFTER the freeze but BEFORE broadcast (in the
+ * incident: freeze at .745, fill queued at .765, broadcast at .910) passes
+ * every per-action check on a stale pivot and ships. The batch summary
+ * prints pivotRefreshed=false — the freeze honestly found nothing — and
+ * the violating ops broadcast anyway.
+ *
+ * Placement (see FINAL-GATE CONTRACT on runLastFillGuardCheck):
+ *   1. Called after the op-building action loop, BEFORE the LAST-FILL-GUARD
+ *      batch summary line (so dropped ops are visible as skipped, not
+ *      passed) and BEFORE fund validation (so the VALIDATION snapshot
+ *      reflects the filtered ops).
+ *   2. Must run before pair-mode/chunk grouping, which indexes op positions.
+ *      executeOperationsWithStrategy groups lazily at broadcast time from
+ *      the (filtered) opContexts it receives, so filtering here is safe —
+ *      but any future grouping computed between op-building and broadcast
+ *      must be rebuilt after the gate (same rule as the contract).
+ *
+ * Semantics:
+ *   - Peek-only refresh (never drains the fill queue — same as the freeze).
+ *   - Pivot UNCHANGED since the freeze => pure no-op: returns the input
+ *     arrays untouched, no extra log lines beyond queue-depth debug.
+ *   - Pivot CHANGED => re-run isLastFillGuardBlocked against each built op's
+ *     final price with the SAME bypass rules as the build loop
+ *     (spread-correction CREATEs, stamped gap-evacuation UPDATEs). Violating
+ *     ops + their contexts are dropped; their slots feed the existing
+ *     skippedUpdateSlotIds/skippedCreateSlotIds restore paths so the working
+ *     grid stays consistent (dropped rotations restore from master, dropped
+ *     creates count toward the boundary-hold intersect).
+ *   - fail-open on everything unjudgeable: unresolvable price/type, cold
+ *     pivot (null), or a refresh/inference throw => the op is KEPT. A gate
+ *     that cannot prove a violation must not invent one — dropping a healthy
+ *     op strands its slot, while a missed violation is still caught by the
+ *     next cycle's guard + commit chain adoption.
+ *   - size-update ops are NEVER gated (same-price, no repricing).
+ *   - cancel ops are NEVER gated or dropped.
+ *
+ * Stale-index hygiene: recordPendingBroadcast stores opIndex/ctxIndex
+ * against the build-time arrays. Dropped CREATEs must have their pending
+ * entries removed (else the reconcile path adopts a broadcast that never
+ * shipped), and KEPT entries must have their stored indexes REMAPPED: a
+ * lockstep compaction keeps operations/opContexts aligned with each other,
+ * but the absolute indexes stored inside the pending entries are not
+ * rewritten by it — after the first drop, an unremapped ctxIndex resolves
+ * to a shifted position (undefined at best, a DIFFERENT create's context at
+ * worst, which would let adoptMatchedEntries synchronize the wrong slot
+ * with a matched chain order). The gate therefore builds an old→new index
+ * map during compaction and remaps/removes entries identified by
+ * opts.batchPendingFps (the fingerprints THIS batch recorded — entry.batchId
+ * is always null in production, so it cannot discriminate). Sibling
+ * batches' entries are never touched (their indexes refer to their own
+ * build-time arrays).
+ *
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {Array} operations - Built chain ops (mutated in place on drop)
+ * @param {Array} opContexts - Built op contexts (mutated in place on drop)
+ * @param {Object} opts - { actions, cowResult, frozenPivot, frozenType,
+ *   lastFillGuardStats, skippedUpdateSlotIds, skippedCreateSlotIds,
+ *   skippedUpdateCountRef: { count }, freezeQueueDepth, batchPendingFps }
+ * @returns {{ dropped: Array, pivotChanged: boolean, refreshed: boolean }}
+ */
+function runFinalPivotGate(bot: any, operations: any[], opContexts: any[], opts: any = {}): { dropped: Array<any>; pivotChanged: boolean; refreshed: boolean } {
+    const empty = { dropped: [], pivotChanged: false, refreshed: false };
+    try {
+        if (!Array.isArray(operations) || !Array.isArray(opContexts) || operations.length === 0) return empty;
+        const stats = opts?.lastFillGuardStats;
+        const frozenPivot = Number(opts?.frozenPivot);
+        const frozenType = opts?.frozenType;
+        const frozenCold = !Number.isFinite(frozenPivot) || frozenType == null;
+        const queueDepthBefore = Array.isArray((bot as any)?._incomingFillQueue)
+            ? (bot as any)._incomingFillQueue.length
+            : null;
+        // Peek-only re-refresh: never drains the queue (same as the freeze).
+        let refreshed = false;
+        try { refreshed = !!refreshLastFillPivotFromQueue(bot); } catch { refreshed = false; }
+        const queueDepthAfter = Array.isArray((bot as any)?._incomingFillQueue)
+            ? (bot as any)._incomingFillQueue.length
+            : null;
+        const livePivot = Number((bot.manager as any)?._lastFilledPrice);
+        const liveType = (bot.manager as any)?._lastFilledType;
+        const liveCold = !Number.isFinite(livePivot) || liveType == null;
+        // No-op fast path: pivot unchanged (or uncomparable) since the freeze.
+        // frozenCold + liveCold: guard stayed disabled — nothing to re-check.
+        // frozenCold + liveArmed: the freeze ran cold but a fill arrived
+        // mid-batch. The built ops were NEVER guarded; treat as changed so
+        // they are checked below (fail-open keeps whatever is unjudgeable).
+        let pivotChanged = refreshed;
+        if (frozenCold && liveCold) pivotChanged = false;
+        else if (!frozenCold && !liveCold) pivotChanged = livePivot !== frozenPivot || liveType !== frozenType;
+        else pivotChanged = true;
+        try {
+            bot.manager?.logger?.log?.(
+                `[LAST-FILL-GUARD] Final gate: queue ${queueDepthBefore ?? '?'}->${queueDepthAfter ?? '?'} ` +
+                `pivot ${Number.isFinite(frozenPivot) ? Format.formatPrice6(frozenPivot) : 'none'}(${frozenType ?? 'cold'})` +
+                `->${Number.isFinite(livePivot) ? Format.formatPrice6(livePivot) : 'none'}(${liveType ?? 'cold'}) ` +
+                `changed=${pivotChanged} refreshed=${refreshed}`,
+                'debug'
+            );
+        } catch { /* logging is best-effort */ }
+        if (!pivotChanged) return { ...empty, refreshed };
+        // Pivot moved (or armed mid-batch): re-check every built op's FINAL
+        // price. Same bypass rules as the build loop; unjudgeable => KEEP.
+        const actions = Array.isArray(opts?.actions) ? opts.actions : [];
+        const batchOrigin = (opts?.cowResult as any)?.origin;
+        const actionBySlot = new Map<string, any>();
+        for (const a of actions) {
+            if (!a) continue;
+            // Rotation UPDATEs are keyed by DESTINATION slot (the emitted
+            // price is the destination's level); plain CREATEs by slot id.
+            const rotDest = (a as any)?.newGridId;
+            const key = (a?.type === COW_ACTIONS.UPDATE && rotDest && rotDest !== a?.id) ? rotDest : a?.id;
+            if (key && !actionBySlot.has(key)) actionBySlot.set(key, a);
+        }
+        const dropIdx = new Set<number>();
+        const dropped: Array<any> = [];
+        const inc = resolveLastFillGuardIncrement(bot);
+        const onGrid = resolveOnGridPivot(bot.manager, (bot.manager as any)?._lastFilledPrice);
+        for (let i = 0; i < opContexts.length; i++) {
+            const ctx: any = opContexts[i];
+            if (!ctx || ctx.kind === 'cancel' || ctx.kind === 'size-update') continue;
+            let price: number | null = null;
+            let type: string | null = null;
+            let size: number | null = null;
+            let slotId: string | null = null;
+            let action: any = null;
+            if (ctx.kind === 'create') {
+                slotId = ctx.id || ctx.order?.id || null;
+                price = Number(ctx.order?.price);
+                type = ctx.order?.type || null;
+                size = Number(ctx.order?.size);
+                action = (slotId && actionBySlot.get(slotId)) || null;
+                // Spread-correction CREATE bypass (mirrors the build loop:
+                // per-action origin, batch origin as back-compat fallback).
+                const actionOrigin = (action as any)?.origin;
+                if (actionOrigin === 'spread-correction'
+                    || (actionOrigin == null && batchOrigin === 'spread-correction')) {
+                    if (stats) stats.bypassed = (Number(stats.bypassed) || 0) + 1;
+                    continue;
+                }
+            } else if (ctx.kind === 'rotation') {
+                const rot = ctx.rotation || {};
+                slotId = rot.newGridId || rot.oldOrder?.id || null;
+                price = Number(rot.newPrice);
+                type = rot.type || null;
+                size = Number(rot.newSize);
+                // Rotation UPDATEs are keyed by DESTINATION slot (the
+                // emitted price is the destination's level) — EXCEPT the
+                // same-slot size-only form (no newGridId, or newGridId ===
+                // source id), which buildActionsFromPlan emits for
+                // ordersToUpdate and which must resolve to the source
+                // action. A same-slot UPDATE carries no repricing, so a
+                // dest-keyed lookup that misses it would ALSO miss its
+                // origin stamp — fall back to the source id before
+                // judging the bypass.
+                action = (slotId && actionBySlot.get(slotId)) || null;
+                if (!action) {
+                    const srcId = (rot.oldOrder as any)?.id || null;
+                    if (srcId) action = actionBySlot.get(srcId) || null;
+                }
+                // Gap-evacuation UPDATE bypass mirrors the build loop's
+                // stamped path ONLY — with one deliberate asymmetry (see
+                // below): the build loop re-proves UNSTAMPED evacuations
+                // live from the master grid; the gate guards them normally.
+                // An unstamped rotation reaching the final gate was either
+                // (a) probed-and-allowed at build time — in which case its
+                // price already survived an evacuation proof and the guard
+                // re-check here is harmless duplication, or (b) probe-
+                // rejected/failed-closed — in which case it was SKIPPED at
+                // build time and never reached op-building, so the gate
+                // cannot see it either. Either way there is no live
+                // unstamped evacuation in the built ops that needs
+                // re-proving: re-proving here would need the master-grid
+                // source read the build loop does, and the source may have
+                // been pre-applied since. Stamped rotations carry origin +
+                // evacBoundary/evacGapSlots.
+                //
+                // ASYMMETRY (fail-open, not fail-closed): the build loop's
+                // unstamped path FAILS CLOSED (unresolvable source => skip
+                // the op). The gate FAILS OPEN (unjudgeable => keep). A
+                // dropped op strands its slot until the next cycle; a kept
+                // op is still subject to the commit guard + chain adoption.
+                // The gate must not invent a block it cannot prove —
+                // especially not on an op the build loop already allowed.
+                const rotOrigin = (action as any)?.origin;
+                if (rotOrigin === 'gap-evacuation'
+                    && Number.isFinite(Number((action as any)?.evacBoundary))
+                    && Number.isFinite(Number((action as any)?.evacGapSlots))) {
+                    if (stats) stats.bypassed = (Number(stats.bypassed) || 0) + 1;
+                    continue;
+                }
+            } else {
+                continue;
+            }
+            // Fail-open: unresolvable price/type => KEEP (never invent a
+            // violation the gate cannot prove).
+            if (!Number.isFinite(price as number) || (price as number) <= 0) continue;
+            if (type !== ORDER_TYPES.BUY && type !== ORDER_TYPES.SELL) continue;
+            const check = isLastFillGuardBlocked(price, size, type, onGrid.price, liveType, inc);
+            if (stats) stats.checked = (Number(stats.checked) || 0) + 1;
+            if (!check.blocked) {
+                if (stats) stats.passed = (Number(stats.passed) || 0) + 1;
+                continue;
+            }
+            // Blocked: drop the op + context, restore the slot below.
+            dropIdx.add(i);
+            if (stats) stats.skipped = (Number(stats.skipped) || 0) + 1;
+            const dir = type === ORDER_TYPES.BUY ? 'above' : 'below';
+            dropped.push({ index: i, kind: ctx.kind, slotId, price, type });
+            try {
+                bot.manager?.logger?.log?.(
+                    `[LAST-FILL-GUARD] Final gate dropping ${type} ${ctx.kind} for ${slotId ?? 'unknown'} at ` +
+                    `${Format.formatPrice6(price as number)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} ` +
+                    `(halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)}); re-planned after market moves`,
+                    'warn'
+                );
+            } catch { /* logging is best-effort */ }
+        }
+        if (dropIdx.size === 0) return { dropped, pivotChanged, refreshed };
+        // Compact operations/opContexts in lockstep so every surviving index
+        // still lines up. The caller rebuilds cancelOpIndexByOrderId from the
+        // kept contexts (it was built during op-building and goes stale for
+        // every op after the first drop), and the remap pass below re-points
+        // THIS batch's kept pending-broadcast entries at their new positions
+        // — lockstep keeps the two arrays aligned with each other, but the
+        // absolute indexes stored INSIDE pending entries are not rewritten
+        // by a compaction, so they must be remapped explicitly.
+        const keptOps: any[] = [];
+        const keptCtxs: any[] = [];
+        const oldToNew = new Map<number, number>();
+        for (let i = 0, ni = 0; i < opContexts.length; i++) {
+            if (dropIdx.has(i)) continue;
+            oldToNew.set(i, ni);
+            ni++;
+            keptOps.push(operations[i]);
+            keptCtxs.push(opContexts[i]);
+        }
+        operations.length = 0;
+        operations.push(...keptOps);
+        opContexts.length = 0;
+        opContexts.push(...keptCtxs);
+        // Slot restore: dropped rotations restore source+dest from master
+        // (same sets the build loop feeds to restoreSkippedUpdateSlots...);
+        // dropped creates count toward the refill-hold intersect. Pending
+        // entries for dropped CREATEs are removed (never shipped); kept
+        // CREATEs get their stored opIndex/ctxIndex remapped to the
+        // compacted positions (see the remap pass below — an unremapped
+        // absolute index would resolve to a SHIFTED context after the first
+        // drop: undefined at best, a DIFFERENT create's context at worst,
+        // which would let the uncertain-broadcast reconcile adopt a matched
+        // chain order into the wrong slot).
+        const skippedUpdateSlotIds = opts?.skippedUpdateSlotIds;
+        const skippedCreateSlotIds = opts?.skippedCreateSlotIds;
+        const countRef = opts?.skippedUpdateCountRef;
+        try {
+            const pending = (bot.manager as any)?._pendingBroadcasts;
+            for (const d of dropped) {
+                if (d.kind === 'rotation') {
+                    const act = (d.slotId && actionBySlot.get(d.slotId)) || null;
+                    const srcId = (act as any)?.id || null;
+                    if (srcId && skippedUpdateSlotIds instanceof Set) skippedUpdateSlotIds.add(srcId);
+                    if (d.slotId && skippedUpdateSlotIds instanceof Set) skippedUpdateSlotIds.add(d.slotId);
+                    if (countRef && typeof countRef === 'object') countRef.count = (Number(countRef.count) || 0) + 1;
+                } else if (d.kind === 'create') {
+                    if (d.slotId && skippedCreateSlotIds instanceof Set) skippedCreateSlotIds.add(d.slotId);
+                    if (pending instanceof Map) {
+                        for (const [fp, entry] of pending) {
+                            // Match by slot only: the fingerprint embeds
+                            // side/amounts/slot (no op indexes), but entry.slotId
+                            // is the narrowest predicate that cannot touch a
+                            // sibling batch's entry for a different slot.
+                            if ((entry as any)?.slotId && (entry as any).slotId === d.slotId) {
+                                pending.delete(fp);
+                            }
+                        }
+                    }
+                }
+            }
+            // Remap THIS batch's kept pending entries (identified by the
+            // fingerprint set the build loop collected — entry.batchId is
+            // always null in production and cannot discriminate). A stored
+            // ctxIndex whose old position was dropped means the entry was
+            // not slot-matched above; it could never resolve post-compaction,
+            // so it is removed. Everything else is re-pointed at the same
+            // context object it was recorded with. Sibling batches' entries
+            // are never touched: their indexes refer to their own long-gone
+            // build-time arrays.
+            if (pending instanceof Map && opts?.batchPendingFps instanceof Set) {
+                for (const fp of opts.batchPendingFps) {
+                    const entry: any = pending.get(fp);
+                    if (!entry) continue; // dropped create: already removed by slot
+                    const newCtx = oldToNew.get(Number(entry.ctxIndex));
+                    if (newCtx == null) {
+                        // Referenced op was dropped (or the entry predates
+                        // lockstep indexing) — the index cannot be healed.
+                        pending.delete(fp);
+                        continue;
+                    }
+                    entry.ctxIndex = newCtx;
+                    const newOp = oldToNew.get(Number(entry.opIndex));
+                    entry.opIndex = newOp == null ? entry.opIndex : newOp;
+                }
+            }
+        } catch { /* restore bookkeeping is best-effort */ }
+        return { dropped, pivotChanged, refreshed };
+    } catch { return empty; }
 }
 
 /**
@@ -5400,7 +5832,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
         updateOperationCount
     };
 }
-export { isLastFillGuardBlocked, resolveOnGridPivot, checkGridPriceInvariant, deriveRotationPrice, refreshLastFillPivotFromQueue, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain, resolveRefillBoundaryHold, toRefillSlotIdSet, trackBoundaryHold };
+export { isLastFillGuardBlocked, resolveOnGridPivot, checkGridPriceInvariant, deriveRotationPrice, refreshLastFillPivotFromQueue, runFinalPivotGate, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain, resolveRefillBoundaryHold, toRefillSlotIdSet, trackBoundaryHold };
 // Exported for regression tests (issue #23 sibling): the uncertain-broadcast
 // discard path must never drop a placement silently when master lost the slot.
 export { restoreDiscardedCreates };
@@ -5441,4 +5873,5 @@ export default {
     pollChainForConfirmation,
     updateOrdersOnChainBatchCOW,
     processBatchResults,
+    runFinalPivotGate,
 };
