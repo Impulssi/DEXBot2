@@ -110,18 +110,13 @@ See [developer_guide.md#order-state-helper-functions](developer_guide.md#order-s
 
 ### 1.5 Fill Batch Processing & Timeline
 
-#### Fixed-Cap Batch Fill Processing
+#### Gap-Slot Batch Fill Processing
 
 **Mechanism**: Fill events arrive via `modules/dexbot_fill_runtime.ts` (the fill-runtime module), which pushes them into `bot._incomingFillQueue` (declared in `modules/dexbot_class.ts`). The drain loop in `dexbot_fill_runtime.ts` then chunks the queue into capped batches and calls `modules/order/manager.ts::processFilledOrders` (line 1438) once per chunk to run the full rebalance pipeline.
 
-**Batch Sizing Algorithm**: A single cap-based batch size (`FILL_PROCESSING.MAX_FILL_BATCH_SIZE`): a queue depth of 4 or fewer is processed as one unified batch; deeper queues are chunked into repeated batches of 4 (the last chunk may be smaller).
+**Batch Sizing Algorithm**: Batch size is derived from the grid gap-slot count (`DEXBot._getGapSlotBatchSize`): a queue depth at or below gapSlots is processed as one unified batch; deeper queues are chunked into repeated batches of gapSlots (the last chunk may be smaller). The same gap-slot size caps order operations per broadcast transaction (oversized op batches are split into sequential broadcasts).
 
-**Configuration** (`modules/constants.ts`):
-```javascript
-FILL_PROCESSING: {
-  MAX_FILL_BATCH_SIZE: 4            // Hard cap on batch size
-}
-```
+**Configuration**: no fixed constant — both `FILL_PROCESSING.MAX_FILL_BATCH_SIZE` and `COW_PERFORMANCE.MAX_OPS_PER_BROADCAST` were removed; batch sizing follows the grid gap-slot count.
 
 #### Fill Batch Processing Timeline
 
@@ -806,4 +801,4 @@ To prevent "Time-of-Check to Time-of-Use" errors:
 **TOCTOU protection in `processFillAccounting`.** `_buildBtsDeferredRefundAdjustment` reads `btsFeeState` from `mgr.orders` while the order lock is held — the lock is acquired before accounting runs, and the POST-RESET and BOOTSTRAP tracked-fill accounting paths follow the same locking pattern.
 
 ---
-*Technical Reference for DEXBot2 v1.6.0 release*
+*Technical Reference for DEXBot2 v1.6.3 release*

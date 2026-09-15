@@ -77,25 +77,25 @@ dexbot white
 This writes `profiles/market_adapter_whitelist.json`, where each bot's AMA,
 dynamic-weight, and range-scaling flags can be inspected or adjusted.
 
-By default, newly generated entries whitelist AMA pricing and asymmetric bounds,
-but keep dynamic weights disabled. To opt newly generated entries into dynamic
-weights:
+By default, newly generated entries whitelist AMA pricing only, keeping both
+dynamic weights and range scaling (asymmetric bounds) disabled. To opt newly
+generated entries into dynamic weights:
 
 ```bash
 dexbot white --dynamic-weight
 ```
 
-To keep asymmetric bounds disabled:
+To opt newly generated entries into range scaling:
 
 ```bash
-dexbot white --no-asymmetric-bounds
+dexbot white --asymmetric-bounds
 ```
 
 To overwrite an existing entry (existing entries are otherwise preserved):
 
 ```bash
 dexbot white --dynamic-weight --bot <botKey>
-dexbot white --no-asymmetric-bounds --bot <botKey>
+dexbot white --asymmetric-bounds --bot <botKey>
 ```
 
 `--bot` implies overwrite for that key only; without it, `dexbot white` only adds missing bots.
@@ -156,7 +156,10 @@ whitelist gate:
 
 This is separate from dynamic buy/sell weighting. Both grid-range effects are
 enabled only when `asymmetricBounds: true` is set in
-`profiles/market_adapter_whitelist.json`.
+`profiles/market_adapter_whitelist.json`. Range scaling is opt-in: `dexbot white`
+generates AMA-only entries by default, so enable it with
+`dexbot white --asymmetric-bounds` (new bots) or
+`dexbot white --asymmetric-bounds --bot <botKey>` (existing entry).
 
 Technical formula and tuning details are in
 [Grid Range Scaling Model](#grid-range-scaling-model).
@@ -333,8 +336,8 @@ Dry-run log lines include `[DRY RUN]` or `[suppressed, dry-run]`.
 |------|---------|
 | Generate whitelist | `dexbot white` |
 | Opt new whitelist entries into dynamic weights | `dexbot white --dynamic-weight` |
-| Generate AMA-only entries without range scaling | `dexbot white --no-asymmetric-bounds` |
-| Overwrite existing entry for a specific bot | `dexbot white --dynamic-weight --bot <botKey>` |
+| Opt new whitelist entries into range scaling | `dexbot white --asymmetric-bounds` |
+| Overwrite existing entry for a specific bot | `dexbot white --dynamic-weight --bot <botKey>` \| `dexbot white --asymmetric-bounds --bot <botKey>` |
 | Prune stale whitelist entries (bots removed from bots.json) | `dexbot white --prune` |
 | Probe public CEX availability | `node dist/market_adapter/inputs/fetch_cex_synthetic_data.js --exchange auto --check-only` |
 | Seed synthetic cross candles | `node dist/market_adapter/inputs/fetch_cex_synthetic_data.js --exchange auto --bot-key <bot-key>` |
@@ -637,7 +640,7 @@ market_adapter/
     "<botKey>": {
       "ama": true,
       "dynamicWeight": false,
-      "asymmetricBounds": true
+      "asymmetricBounds": false
     }
   }
 }
@@ -851,7 +854,7 @@ closed 1h candles.
 
 #### Shared Chunk Cache and Fetch Robustness
 
-Pool, book, and feed candle fetches share one cache entry point (`runCachedWindows` in `market_adapter/inputs/window_cache.ts`): sibling chunk files load once, only missing buckets plus a bounded 48h tail refresh are queried, and chunk metas record the ranges actually queried (`meta.queriedRanges`). A missing range is pruned only when recorded query coverage genuinely covers it — the absence of local buckets alone never certifies history as empty. Partial windows merge into the run output but are never persisted, and orphan chunks are deleted after complete runs only. Every range fetch runs through `fetchRangeWithRetry` (per-range attempts + linear backoff + abort-signal timeout; the LP path keeps a 4-attempt budget), one-shot Kibana queries retry transient errors (3 attempts), paged fetchers cap at `kibanaMaxPages` (500), and bidirectional fetches tolerate a one-direction failure.
+Pool, book, and feed candle fetches share one cache entry point (`runCachedWindows` in `market_adapter/inputs/window_cache.ts`): candles live in fixed calendar-month shards (`<base>.shard_YYYY-MM.json`, UTC) whose names never shift, so a run loads only the shards overlapping its requested range, queries only genuinely missing buckets plus a bounded 48h tail refresh, and rewrites only shards that gained buckets or query coverage — pure-reuse runs perform zero writes and zero deletes. Shard metas record the ranges actually queried (`meta.queriedRanges`, monotonically unioned). A missing range is pruned only when recorded query coverage genuinely covers it — the absence of local buckets alone never certifies history as empty. Partial windows merge into the run output but are never persisted. Legacy run-relative `*.chunk_*` files are still read: overlapping ones are absorbed into the shards (buckets + coverage) and retired once every bucket provably lives in a shard, while disjoint ones are never loaded and never deleted — narrow runs cannot wipe older history by construction. Every range fetch runs through `fetchRangeWithRetry` (per-range attempts + linear backoff + abort-signal timeout; the LP path keeps a 4-attempt budget), one-shot Kibana queries retry transient errors (3 attempts), paged fetchers cap at `kibanaMaxPages` (500), and bidirectional fetches tolerate a one-direction failure.
 
 #### AMA Warmup Window — Why Candle Length Matters
 

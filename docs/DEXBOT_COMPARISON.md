@@ -1,7 +1,7 @@
 # DEXBot vs DEXBot2 — Detailed Comparison Report
 
 > **Date:** 2026-09-02 *(metrics refreshed against local source trees)*
-> **Scope:** Full architectural, functional, and operational comparison between the original [DEXBot](https://github.com/Codaone/DEXBot) (Python, v1.0.0) and DEXBot2 (TypeScript, v1.6.0).
+> **Scope:** Full architectural, functional, and operational comparison between the original [DEXBot](https://github.com/Codaone/DEXBot) (Python, v1.0.0) and DEXBot2 (TypeScript, v1.6.3).
 > **Audience:** Developers, contributors, and operators evaluating or migrating between the two projects.
 
 ---
@@ -36,7 +36,7 @@
 
 | Attribute | DEXBot (original) | DEXBot2 |
 |---|---|---|
-| **Release Track** | 1.0.0 | v1.6.0 |
+| **Release Track** | 1.0.0 | v1.6.3 |
 | **Language** | Python 3.6+ | TypeScript 5.x |
 | **Status** | Released 1.0.0, unmaintained | Active development |
 | **Last Repo Activity** | May 23, 2020 | 2026-09-02 |
@@ -674,14 +674,10 @@ Where:
 | `docs/COW_INVARIANTS.md` | Non-negotiable COW behavioral invariants |
 | `docs/CREDENTIAL_SECURITY.md` | Credential daemon, key policy, and security model |
 | `docs/MPA_CREDIT_USAGE.md` | Credit runtime and MPA usage guidance |
-| `docs/BROWSER_COMPAT_PLAN.md` | Browser-safe surface plan and Node/browser split |
-| `docs/PLAN_MIN_BTS_VALUE.md` | Minimum BTS value / dust handling planning |
 | `claw/docs/AI_BOT_LIBRARY_API.md` | Claw API boundary and responsibility split |
 | `claw/docs/DEXBOT2_TUNING_CHEAT_SHEET.md` | Grid tuning reference |
 | `claw/docs/POSITION_HEALTH.md` | Position health monitoring guide |
 | `claw/docs/RUNTIME_COMPARISON.md` | Claw runtime comparison |
-| ~~`docs/TYPESCRIPT_MIGRATION_ANALYSIS.md`~~ | ~~Removed — migration complete~~ |
-| `docs/crash_report_jan_mar_2026.md` | Production incident analysis |
 | `docs/docker.md` | Docker deployment guide |
 | `docs/README.md` | Docs index |
 | `AGENTS.md` | AI development context |
@@ -780,7 +776,7 @@ Where:
 
 | Metric | DEXBot | DEXBot2 |
 |---|---|---|
-| **Release Track** | 1.0.0 | v1.6.0 |
+| **Release Track** | 1.0.0 | v1.6.3 |
 | **Active Since** | ~2018 | December 2025 |
 | **Last Commit** | May 23, 2020 | 2026-09-02 |
 | **Total Commits** | 2281 | 2,125 (v1.4.25) |

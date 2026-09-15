@@ -100,6 +100,26 @@ import * as Format from './format.js';
 import { lookupAsset, sleep, resolveAccountRef } from './utils/system.js';
 import * as chainOrders from '../chain_orders.js';
 import * as client from '../bitshares_client.js';
+/**
+ * Test seam for targeted single-order refetches (drift refetch + sub-dust
+ * residual verification). When manager._readSingleOrderFn is a function it
+ * is used instead of the chain read. The chain path starts with
+ * waitForConnected (30s timeout against live nodes); tests that drive fill
+ * paths with a drift signal or a sub-dust residual would otherwise hang on
+ * that connect for a read whose result they do not even assert on.
+ * Production never sets this; default is the chain.
+ */
+function readSingleOrderSeam(mgr: any, orderId: any, timeoutMs: any): Promise<any> {
+    const seam = (mgr as any)?._readSingleOrderFn;
+    if (typeof seam === 'function') return seam(orderId, timeoutMs);
+    return (chainOrders as any).readSingleOrder(orderId, timeoutMs);
+}
+/** Same seam for the batched drift refetch (batch path). */
+function batchReadOrdersSeam(mgr: any, orderIds: any, timeoutMs: any): Promise<any> {
+    const seam = (mgr as any)?._batchReadOrdersFn;
+    if (typeof seam === 'function') return seam(orderIds, timeoutMs);
+    return (chainOrders as any).batchReadOrders(orderIds, timeoutMs);
+}
 const { BitShares } = client;
 import { NATIVE_CLIENT } from '../constants.js';
 const { toFiniteNumber } = Format;
@@ -114,6 +134,7 @@ import {
     isChainPriceOutOfGrid,
     isSlotInRail,
     isSlotIndexInGapBand,
+    priceForSlot,
     priceSlotEqual,
     isDeepShelfId,
     resolveBuyDeepCount,
@@ -132,7 +153,8 @@ import {
     resolveSpreadOrderSide,
     resolveDeepShelfFloor,
     ensureDeepShelfEntries,
-    duplicateOrphanLogInfo
+    duplicateOrphanLogInfo,
+    _stampCorrectionProvenance
 } from './utils/order.js';
 import { parseSlotIndex } from './utils/slot.js';
 import {
@@ -152,6 +174,9 @@ import { classifyDisappearance, recordManualHold, pruneManualHolds } from './man
  * Test seam: when manager._confirmEmptyReadFn is a function it is used
  * instead of the chain read (must resolve to a raw order array, or null
  * when the re-read itself is ambiguous). A throwing seam is 'ambiguous'.
+ * When manager._skipEmptyReadConfirmDelay is truthy the production
+ * SYNC_EMPTY_READ_CONFIRM_DELAY_MS pacing is skipped (tests); the confirm
+ * semantics (confirmed / contradicted / ambiguous / unavailable) are unchanged.
  *
  * @param {Object} mgr - OrderManager instance (accountId, config, logger).
  * @returns {Promise<string>} 'confirmed' (still empty — accept),
@@ -164,7 +189,9 @@ async function confirmSuspectEmptyRead(mgr: any): Promise<string> {
     try {
         if (mgr?.config?.dryRun) return 'unavailable';
         const seam = (mgr as any)?._confirmEmptyReadFn;
-        const delay = Math.max(0, Number(TIMING.SYNC_EMPTY_READ_CONFIRM_DELAY_MS) || 0);
+        const delay = (mgr as any)?._skipEmptyReadConfirmDelay
+            ? 0
+            : Math.max(0, Number(TIMING.SYNC_EMPTY_READ_CONFIRM_DELAY_MS) || 0);
         if (typeof seam === 'function') {
             if (delay > 0) await sleep(delay);
             let fresh: any = null;
@@ -285,7 +312,74 @@ function describeNearestAdoptionCandidates(mgr: any, chainOrder: any, precision:
  * @param {Function} calcToleranceFn - calculatePriceTolerance function
  * @returns {{candidateSlotId: string, candidateSlotPrice: number, priceDiff: number, tolerance: number}|null}
  */
+/**
+ * Assert (non-fatally) that an adopted slot still carries its own genesis
+ * level, not a price inherited from the chain order.
+ *
+ * Both adoption paths keep the slot's price by NOT assigning it — an absence of
+ * a write. That is correct but invisible: nothing would notice if a later edit
+ * added `price: chainOrder.price` back, and nothing would notice a slot whose
+ * price had already been corrupted before it reached adoption. This makes the
+ * rule explicit and warns when it is broken.
+ *
+ * Deliberately non-throwing: adoption already has handled rejection paths, and
+ * turning a warning into a crash here would strand a live chain order. The
+ * caller's existing rejection handling stays the enforcement; this is the
+ * signal that surfaces the corruption in the log.
+ *
+ * @returns {boolean} true when the slot's price is its genesis level (or cannot
+ *   be judged), false when it demonstrably is not.
+ */
+function adoptedSlotKeepsItsOwnPrice(mgr: any, adopted: any, chainOrderId: string, path: string): boolean {
+    try {
+        const genesis = (mgr as any)?._genesis;
+        const levels = genesis?.priceLevels;
+        if (!Array.isArray(levels) || levels.length === 0) return true; // no ladder: unjudgeable, fail open
+        const idx = parseSlotIndex(adopted?.id);
+        if (idx === null || !Number.isFinite(idx) || idx < 0 || idx >= levels.length) return true;
+        const expected = Number(priceForSlot(idx, genesis));
+        const got = Number(adopted?.price);
+        if (!Number.isFinite(expected) || expected <= 0) return true;
+        if (!Number.isFinite(got)) return true;
+        const diff = Math.abs(got - expected);
+        const rel = diff / Math.max(1e-12, Math.abs(expected));
+        if (rel > 1e-9 && diff > 1e-12) {
+            mgr.logger?.log?.(
+                `[SYNC] Adoption (${path}) for ${chainOrderId} into slot ${adopted.id}: slot price ${got} is NOT the slot's ` +
+                `genesis level ${expected} (drift ${(rel * 100).toFixed(3)}%). Adoption must not write the chain order's price ` +
+                `into slot.price — the slot keeps its own level. Adopting anyway (the chain order is real); investigate what ` +
+                `corrupted this slot's price.`,
+                'warn'
+            );
+            return false;
+        }
+        return true;
+    } catch {
+        return true; // never let an observability check break adoption
+    }
+}
+
 async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, chainOrderId: string, rawChainOrders: Map<string, any>, matchedGridOrderIds: Set<string>, chainOrderIdsOnGrid: Set<string>, filledOrders: any[], updatedOrders: any[], skipAccounting: boolean): Promise<boolean> {
+    // ADOPTION NEVER TAKES THE CHAIN ORDER'S PRICE.
+    //
+    // Two different prices are conflated on this path, and only one of them is
+    // a grid position:
+    //
+    //   slot.price   what this slot's LEVEL is        -> must equal priceForSlot(idx, genesis)
+    //   chainOrder.price  where the order RESTS on chain -> may differ legitimately
+    //
+    // They legitimately differ after a grid regeneration: the grid is
+    // recentered, old chain orders keep resting at the OLD grid's levels, and
+    // adoption adopts the order into the nearest slot (slotIndexForPrice). That
+    // is normal and is why this function accepts a differing chainOrder.price.
+    //
+    // It must not WRITE it. The resting price is chain metadata about where the
+    // order was placed; it disappears on the next rotation/cancel. Writing it
+    // into slot.price is the S1 corruption this whole invariant exists to
+    // prevent, so `price` is deliberately absent from the assignments below and
+    // the slot keeps its own level in `bestMatch` (spread from `slot`).
+    //
+    // Size is the opposite: size IS real state, so the chain value is adopted.
     let bestMatch: any = { ...slot };
     const wasVirtual = slot.state === ORDER_STATES.VIRTUAL;
     const wasPartial = slot.state === ORDER_STATES.PARTIAL;
@@ -342,6 +436,7 @@ async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, cha
     } else if (wasPartial) {
         bestMatch.state = ORDER_STATES.PARTIAL;
     }
+    adoptedSlotKeepsItsOwnPrice(mgr, bestMatch, chainOrderId, 'genesis');
     const applied = await mgr._applyOrderUpdate(bestMatch, 'sync-pass2-orphan', { skipAccounting: skipAccounting, fee: 0 });
     if (applied === false) {
         // Same un-poisoning as the filled path above: the slot counts as
@@ -872,7 +967,16 @@ class SyncEngine {
         const skipAccounting = options?.skipAccounting ?? true;
 
         const queueCorrection = (entry: any) => {
-            ordersNeedingCorrection.push(entry);
+            // Provenance: classify the detector so a stale replay at drain
+            // time logs who queued it and when. Classification from entry
+            // flags: cancelOnly orphans vs surplus/type-mismatch cancels vs
+            // plain price updates.
+            const source = entry?.cancelOnly === true
+                ? 'sync-duplicate-orphan'
+                : entry?.isSurplus === true
+                    ? 'sync-type-mismatch'
+                    : 'sync-price-mismatch';
+            ordersNeedingCorrection.push(_stampCorrectionProvenance({ ...entry }, source));
             if (!Array.isArray(mgr.ordersNeedingPriceCorrection)) return;
 
             const existingIndex = mgr.ordersNeedingPriceCorrection.findIndex((queued: any) =>
@@ -880,12 +984,15 @@ class SyncEngine {
             );
 
             if (existingIndex >= 0) {
-                mgr.ordersNeedingPriceCorrection[existingIndex] = {
+                // Merge: fresh detection overwrites price/size intent, but
+                // first-seen provenance survives (entry without provenance
+                // keeps the original queuedAt/queuedBy).
+                mgr.ordersNeedingPriceCorrection[existingIndex] = _stampCorrectionProvenance({
                     ...mgr.ordersNeedingPriceCorrection[existingIndex],
                     ...entry
-                };
+                }, source);
             } else {
-                mgr.ordersNeedingPriceCorrection.push({ ...entry });
+                mgr.ordersNeedingPriceCorrection.push(_stampCorrectionProvenance({ ...entry }, source));
             }
         };
 
@@ -1384,6 +1491,25 @@ class SyncEngine {
                 );
                 if (adoptedSlot && !matchedGridOrderIds.has(adoptedSlot.id) && !adoptedSlot.orderId) {
                     const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
+                    // Legacy path parity with the genesis adoption path: the
+                    // slot's price is its GENESIS level and is never overwritten
+                    // with the chain order's price. Adopting chainOrder.price
+                    // here made the slot's price whichever price happened to be
+                    // on the book, which is how an off-grid order could become a
+                    // grid level and then be re-emitted as a plan price. The
+                    // size below is still the chain value: size is real state,
+                    // price is a ladder position.
+                    const legacyRail = isSlotInRail(
+                        (mgr as any).boundaryIdx,
+                        (mgr as any)._gapSlots ?? 0,
+                        chainOrder.type,
+                        adoptedSlot
+                    );
+                    if (!legacyRail) {
+                        unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'out-of-rail-deferred', candidateSlotId: adoptedSlot.id });
+                        mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted into slot ${adoptedSlot.id}: slot is outside the active rail for a ${chainOrder.type}; deferred`, 'warn');
+                        continue;
+                    }
                     const chainInt = floatToBlockchainInt(chainOrder.size, precision);
                     const adoptedRaw = rawChainOrders.get(chainOrderId);
                     const adoptedState = chainInt > 0 ? ORDER_STATES.PARTIAL : ORDER_STATES.VIRTUAL;
@@ -1391,16 +1517,32 @@ class SyncEngine {
                         const rawFee = toFiniteNumber(adoptedRaw.deferred_fee, null);
                         return rawFee !== null && rawFee > 0 ? { deferredFee: blockchainToFloat(rawFee, BTS_PRECISION) } : undefined;
                     })() : undefined;
+                    // ADOPTION NEVER TAKES THE CHAIN ORDER'S PRICE (legacy parity).
+                    //
+                    // Same rule as adoptChainOrderIntoSlot, stated here because
+                    // this path is the one that used to get it wrong: it set
+                    // `price: chainOrder.price`, so a slot's id and its price
+                    // could disagree — an off-grid order became a grid level and
+                    // was then re-emitted as a plan price (S1).
+                    //
+                    // `...adoptedSlot` below carries the slot's own level and
+                    // `price` is deliberately NOT reassigned. A differing
+                    // chainOrder.price is expected (a regeneration leaves old
+                    // orders resting at old levels) and is not corruption; it
+                    // simply is not this slot's price.
+                    //
+                    // Size differs: size is real state, so the chain value is
+                    // adopted. Price is a ladder position; it is not.
                     const adoptedOrder = {
                         ...adoptedSlot,
                         orderId: chainOrderId,
                         type: chainOrder.type,
                         state: adoptedState,
                         size: chainOrder.size,
-                        price: chainOrder.price,
                         rawOnChain: adoptedRaw ? { ...adoptedRaw, fetchedAt: Date.now() } : adoptedRaw,
                         ...(adoptedBtsFeeState ? { btsFeeState: adoptedBtsFeeState } : {}),
                     };
+                    adoptedSlotKeepsItsOwnPrice(mgr, adoptedOrder, chainOrderId, 'legacy-fallback');
                     const applied = await mgr._applyOrderUpdate(adoptedOrder, 'sync-pass2-adopt-orphan', { skipAccounting: skipAccounting, fee: 0 });
                     if (applied === false) {
                         // Fatal rejection: parity with the genesis adoption path —
@@ -1560,7 +1702,7 @@ class SyncEngine {
                     residualForSale = Math.round(effectiveRawForSale);
                 } else {
                     try {
-                        const residualOrder = await chainOrders.readSingleOrder(matchedGridOrder.orderId, 3000);
+                        const residualOrder = await readSingleOrderSeam(mgr, matchedGridOrder.orderId, 3000);
                         residualForSale = residualOrder ? toFiniteNumber(residualOrder.for_sale, null) : null;
                     } catch (residualErr: any) {
                         // The read is best-effort: if it fails, fall back to the old
@@ -1733,7 +1875,7 @@ class SyncEngine {
 
                     if (ctx.driftSignal) {
                         try {
-                            const fresh = await chainOrders.readSingleOrder(orderId, 3000);
+                            const fresh = await readSingleOrderSeam(mgr, orderId, 3000);
                             if (fresh) {
                                 const freshForSale = toFiniteNumber(fresh.for_sale, null);
                                 if (freshForSale !== null && Number.isFinite(freshForSale)) {
@@ -1971,7 +2113,7 @@ class SyncEngine {
 
                     if (driftOrderIds.size > 0) {
                         try {
-                            const batchResults = await chainOrders.batchReadOrders([...driftOrderIds], 3000);
+                            const batchResults = await batchReadOrdersSeam(mgr, [...driftOrderIds], 3000);
                             for (const [orderId, freshOrder] of batchResults) {
                                 if (freshOrder) {
                                     const freshForSale = toFiniteNumber(freshOrder.for_sale, null);
@@ -2317,8 +2459,30 @@ class SyncEngine {
                                     ? rawType
                                     : null;
                                 const descriptorPrice = toFiniteNumber(placedDescriptor?.price, NaN);
+
+                                // Resolve the slot's authority: the GENESIS LEVEL,
+                                // not the descriptor. Used for BOTH price and type.
+                                // Deriving the type from descriptorPrice (as this
+                                // once did) let a corrupt descriptor pick the side
+                                // while the price was corrected to the ladder, so a
+                                // slot whose level is on the BUY side could
+                                // materialize as SELL @ <buy-level> — price and type
+                                // disagreeing in one order object.
+                                const materializeIdx = parseSlotIndex(gridOrderId);
+                                let ladderLevel: number | null = null;
+                                try {
+                                    const genesis = (mgr as any)._genesis;
+                                    if (materializeIdx !== null && Array.isArray(genesis?.priceLevels) && genesis.priceLevels.length > 0) {
+                                        const onLadder = Number(priceForSlot(materializeIdx, genesis));
+                                        if (Number.isFinite(onLadder) && onLadder > 0) ladderLevel = onLadder;
+                                    }
+                                } catch { /* fall back to the descriptor below */ }
+
+                                // Only fall back to the descriptor when the ladder
+                                // cannot speak (migration / unparseable id).
                                 if (!materializeType && Number.isFinite(descriptorPrice)) {
-                                    materializeType = resolveSpreadOrderSide(descriptorPrice, mgr.config.startPrice);
+                                    const sidePrice = ladderLevel ?? descriptorPrice;
+                                    materializeType = resolveSpreadOrderSide(sidePrice, mgr.config.startPrice);
                                 }
                                 const descriptorSize = toFiniteNumber(placedDescriptor?.size, NaN);
                                 const hasDescriptor = !!materializeType
@@ -2335,14 +2499,42 @@ class SyncEngine {
                                     // slot-scheme metadata are absent. The next
                                     // readOpenOrders pass repopulates rawOnChain
                                     // from the live order (slot-scheme ids only).
+                                    //
+                                    // PRICE comes from the GENESIS LADDER, not
+                                    // from the descriptor. The descriptor is
+                                    // whatever order object the caller carried
+                                    // in, and writing it here made a slot's price
+                                    // whichever price that object happened to
+                                    // hold — the same carried-price-into-
+                                    // slot.price class as the adoption writer,
+                                    // and for a slot being materialized at a new
+                                    // index it can be a price from a different
+                                    // grid entirely. The descriptor price is kept
+                                    // only when genesis is unavailable
+                                    // (migration), where there is no ladder to
+                                    // derive from.
+                                    let materializePrice = descriptorPrice;
+                                    let priceSource = 'descriptor';
+                                    if (ladderLevel !== null && materializeIdx !== null) {
+                                        materializePrice = ladderLevel;
+                                        priceSource = 'genesis';
+                                    }
                                     const materializedOrder: any = {
                                         id: gridOrderId,
                                         type: materializeType,
-                                        price: descriptorPrice,
+                                        price: materializePrice,
                                         size: descriptorSize,
                                         state: isPartialPlacement ? ORDER_STATES.PARTIAL : ORDER_STATES.ACTIVE,
                                         orderId: chainOrderId,
                                     };
+                                    if (priceSource === 'descriptor' && materializeIdx !== null) {
+                                        mgr.logger?.log?.(
+                                            `[SYNC] createOrder for ${gridOrderId}: materialized with the DESCRIPTOR price ` +
+                                            `${descriptorPrice} because no genesis ladder was available to derive ` +
+                                            `the slot level — verify this slot's price on the next sync`,
+                                            'warn'
+                                        );
+                                    }
                                     if (chainData.deferredFee !== undefined && chainData.deferredFee !== null) {
                                         materializedOrder.btsFeeState = { deferredFee: Math.max(0, chainData.deferredFee) };
                                     }
@@ -2352,12 +2544,12 @@ class SyncEngine {
                                     });
                                     if (materialized === false) {
                                         mgr.logger?.log?.(
-                                            `[SYNC] createOrder linkage FAILED: grid order ${gridOrderId} not in master and materializing chain order ${chainOrderId} (${materializeType} @${descriptorPrice} x${descriptorSize}) was rejected — chain order left untracked`,
+                                            `[SYNC] createOrder linkage FAILED: grid order ${gridOrderId} not in master and materializing chain order ${chainOrderId} (${materializeType} @${materializePrice} x${descriptorSize}) was rejected — chain order left untracked`,
                                             'error'
                                         );
                                     } else {
                                         mgr.logger?.log?.(
-                                            `[SYNC] createOrder for unknown grid order ${gridOrderId}: materialized ${materializeType} @${descriptorPrice} x${descriptorSize} -> ${chainOrderId} (master lost the slot mid-broadcast)`,
+                                            `[SYNC] createOrder for unknown grid order ${gridOrderId}: materialized ${materializeType} @${materializePrice} x${descriptorSize} (price source: ${priceSource}) -> ${chainOrderId} (master lost the slot mid-broadcast)`,
                                             'warn'
                                         );
                                     }

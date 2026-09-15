@@ -296,10 +296,17 @@ See the "Recommended Bot Setup" section of the
 
 ### Editing a running bot
 
-You can re-run `dexbot bot` and save while the bot runs. Order counts,
-reserves, funds and weights apply live (~1min, no restart); grid geometry
-needs `dexbot reset <bot>`, market/account changes need a restart. The
-editor prints exactly what applies live every time it saves.
+You can re-run `dexbot bot` and save while the bot runs:
+
+- **Live automatically (~1 min, no reload needed)** — order counts,
+  reserves, funds, and weights. The bot picks these up on its own.
+- **Grid geometry** — run `dexbot reset <bot>` (or `dexbot reload` to
+  reload everything at once).
+- **Market/account changes** — run `dexbot reload` (reloads the runtime
+  without logging you out; a full `restart` also works).
+
+The editor prints exactly which group your save falls into every time it
+saves, so you always know whether anything else is needed.
 
 ### Activate the market adapter
 
@@ -310,8 +317,9 @@ dexbot white
 ```
 
 This writes `profiles/market_adapter_whitelist.json` for your AMA bot so it
-writes live grid files and recalc triggers. DEXBot2 starts/stops the adapter
-automatically when active AMA bots exist.
+writes live grid files and recalc triggers. New entries enable AMA pricing only;
+range scaling stays disabled unless you opt in with `dexbot white --asymmetric-bounds`.
+DEXBot2 starts/stops the adapter automatically when active AMA bots exist.
 
 ---
 

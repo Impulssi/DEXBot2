@@ -14,15 +14,24 @@ const OP_FILL_ORDER = OPERATIONS.FILL_ORDER;
 
 const subscriptionsLogger = new Logger('Subscriptions');
 
-function createSubscriptionManager(chainClient: any): any {
+function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
     const subscriptions = new Map();
     let unsubscribeNotice: any = null;
     const reconnectRetryDelayMs = Number.isFinite(SUBSCRIPTIONS.RECONNECT_RETRY_DELAY_MS)
         ? Math.max(1000, SUBSCRIPTIONS.RECONNECT_RETRY_DELAY_MS)
         : SUBSCRIPTIONS.RECONNECT_RETRY_DELAY_MS;
-    const noticeCoalesceMs = Number.isFinite(SUBSCRIPTIONS.NOTICE_COALESCE_MS)
-        ? Math.max(0, SUBSCRIPTIONS.NOTICE_COALESCE_MS)
-        : 0;
+    // Test seam: overrides.noticeCoalesceMs collapses the production 250ms
+    // coalesce window so offline tests assert on scan results without
+    // sleeping on wall-clock time. Production never passes overrides, so the
+    // default path is byte-for-byte the old behavior. With 0 (or any
+    // non-positive value) scans run inline in notice order: the coalesce
+    // timers exist to batch RAPID notices, and tests issue notices strictly
+    // sequentially — no batching to preserve, so inline is equivalent.
+    const noticeCoalesceMs = Number.isFinite(overrides?.noticeCoalesceMs)
+        ? Math.max(0, overrides.noticeCoalesceMs)
+        : (Number.isFinite(SUBSCRIPTIONS.NOTICE_COALESCE_MS)
+            ? Math.max(0, SUBSCRIPTIONS.NOTICE_COALESCE_MS)
+            : 0);
     // Per-subscription pending scan state for coalescing. Keyed by sub object
     // (Map iteration order is stable so we can reuse a single timer per entry).
     const pendingScans = new Map<any, { timer: any; lastNoticeAt: number }>();
@@ -212,6 +221,10 @@ function createSubscriptionManager(chainClient: any): any {
                     pageTimer = setTimeout(() => {
                         reject(new Error(`fetchFillHistoryEntries: page ${pagesFetched + 1} timed out after ${FETCH_PAGE_TIMEOUT_MS}ms`));
                     }, FETCH_PAGE_TIMEOUT_MS);
+                    // Never hold the process open on a watchdog: the race settles
+                    // via the fetch branch in the common case; the timer only
+                    // matters while the loop is alive for other reasons.
+                    if (typeof (pageTimer as any)?.unref === 'function') (pageTimer as any).unref();
                 })
             ]).finally(() => {
                 if (pageTimer) clearTimeout(pageTimer);

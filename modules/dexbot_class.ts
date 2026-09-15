@@ -88,8 +88,6 @@ import {
 } from './order/processed_fill_store.js';
 import {
     TIMING,
-    FILL_PROCESSING,
-    COW_PERFORMANCE,
     DAEMON_CODES,
 } from './constants.js';
 import { normalizeBotEntry } from './bot_settings.js';
@@ -158,6 +156,7 @@ class DEXBot {
     // (orphan-equivalent) for that drain cycle only.
     _deferredFillsPending: boolean;
     _postRecoveryRebalanceTimer: any;
+    _deferredFillRetryTimer: any;
     _lastTargetedDriftSyncAt: number;
     _lightweightSyncCheckAt: number;
     _targetedDriftSyncCooldownMs: number;
@@ -282,6 +281,7 @@ class DEXBot {
         this._recoverySyncInFlight = 0;
         this._deferredFillsPending = false;
         this._postRecoveryRebalanceTimer = null;
+        this._deferredFillRetryTimer = null;
         this._lastTargetedDriftSyncAt = 0;
         this._lightweightSyncCheckAt = 0;
         this._targetedDriftSyncCooldownMs = this.config.timing.TARGETED_DRIFT_SYNC_COOLDOWN_MS;
@@ -841,25 +841,62 @@ class DEXBot {
     }
 
     /**
-     * Resolve the centralized fill batch cap.
-     * @returns {number} Positive maximum number of fill-driven rotations per broadcast cycle
+     * Resolve the fill/broadcast batch size from the grid gap-slot count.
+     *
+     * Single source of truth for how many fills are processed per
+     * rebalance/broadcast cycle AND how many order operations ride in one
+     * on-chain broadcast transaction:
+     * - 1..gapSlots fills -> single unified batch
+     * - >gapSlots fills   -> fixed-size chunking at gapSlots
+     * Oversized op batches are split into sequential broadcasts of at most
+     * gapSlots ops each (see executeChunkedWithRetryOnUncertain).
+     *
+     * Resolution order: live `manager._gapSlots` (set at grid creation and
+     * preserved across restarts) first; otherwise derived from the active
+     * config via calculateGapSlots(incrementPercent, targetSpreadPercent,
+     * gridLimits). Delegates to resolveGapSlots (modules/order/utils/math)
+     * so the `_gapSlots ?? calculateGapSlots(config)` pattern lives in one
+     * place; only the >= 1 floor (chunking loops must never see 0) is
+     * applied here. A non-positive `_gapSlots` (e.g. the pre-grid `0`
+     * default) counts as unset so the config derivation still applies.
+     * @returns {number} Positive batch size derived from gap slots
      */
-    _getMaxFillBatchSize() {
-        return Math.max(1, this.config.fillProcessing?.MAX_FILL_BATCH_SIZE ?? FILL_PROCESSING.MAX_FILL_BATCH_SIZE);
+    _getGapSlotBatchSize() {
+        try {
+            const { resolveGapSlots } = require('./order/utils/math');
+            const cfg = this.manager?.config ?? this.config ?? {};
+            const raw = this.manager?._gapSlots;
+            const n = Number(raw);
+            const resolved = resolveGapSlots({
+                _gapSlots: (Number.isFinite(n) && n >= 1 ? Math.floor(n) : undefined),
+                config: { ...cfg, gridLimits: cfg.gridLimits ?? this.config?.gridLimits },
+            });
+            const m = Number(resolved);
+            if (Number.isFinite(m) && m >= 1) return Math.floor(m);
+        } catch {}
+        return 1;
     }
 
     /**
-     * Resolve the centralized per-broadcast operation cap.
+     * Resolve the centralized fill batch cap (gap-slot derived).
+     * Kept under the legacy name for call-site compatibility.
+     * @returns {number} Positive maximum number of fill-driven rotations per broadcast cycle
+     */
+    _getMaxFillBatchSize() {
+        return this._getGapSlotBatchSize();
+    }
+
+    /**
+     * Resolve the centralized per-broadcast operation cap (gap-slot derived).
      * A single COW rebalance can produce more operations than fills (e.g. 4
-     * fills -> 12 creates + 4 updates = 16 ops), so MAX_FILL_BATCH_SIZE alone
-     * does not bound transaction size. This cap splits the broadcast into
-     * sequential transactions of at most MAX_OPS_PER_BROADCAST operations each.
+     * fills -> 12 creates + 4 updates = 16 ops), so the fill-level batch
+     * size alone does not bound transaction size. This cap splits the
+     * broadcast into sequential transactions of at most gapSlots operations
+     * each. Kept under the legacy name for call-site compatibility.
      * @returns {number} Positive maximum number of order operations per broadcast
      */
     _getMaxOpsPerBroadcast() {
-        const raw = this.config.cowPerformance?.MAX_OPS_PER_BROADCAST ?? COW_PERFORMANCE.MAX_OPS_PER_BROADCAST;
-        const numeric = Number(raw);
-        return Number.isFinite(numeric) && numeric >= 1 ? Math.floor(numeric) : 1;
+        return this._getGapSlotBatchSize();
     }
 
     /**
@@ -1103,7 +1140,7 @@ class DEXBot {
     }
 
     /**
-     * Process filled orders in capped batches per FILL_PROCESSING.MAX_FILL_BATCH_SIZE.
+     * Process filled orders in gap-slot-sized batches per _getGapSlotBatchSize.
      * Each chunk triggers its own processFilledOrders → COW plan → broadcast cycle.
      *
      * @param {Array} fills - Filled order objects to process
@@ -1184,10 +1221,16 @@ class DEXBot {
                 );
                 // Deferred (broadcast region active): accounting is already
                 // applied and crawls recorded. Do NOT broadcast; continue the
-                // remaining chunks so every fill is credited, then let the
-                // region-end hook run a single no-fill rebalance to apply the
-                // owed boundary shift. This replaces the old in-lock 30s wait
-                // that cascaded into "Lock acquisition timeout".
+                // remaining chunks so every fill is credited. The owed
+                // boundary shift is repaid by the no-fill rebalance scheduled
+                // below (level-triggered) and, when a future region actually
+                // ends, by the region-end hook (edge-triggered) — the
+                // scheduler is idempotent, so the first trigger wins. Relying
+                // on the hook alone loses the retry whenever the region
+                // already ended before these fills were processed (live
+                // incident 2026-09-12: 6 fills deferred after the commit, no
+                // future region end, grid frozen). This replaces the old
+                // in-lock 30s wait that cascaded into "Lock acquisition timeout".
                 if ((rebalanceResult as any)?.deferred) {
                     anyDeferred = true;
                     managerLog(
@@ -1222,6 +1265,29 @@ class DEXBot {
             // 0.3293 instead of 0.0001 across restarts).
             if (typeof this.manager?.flushGridDirty === 'function') {
                 await this.manager.flushGridDirty('end-of-tick fill processing');
+            }
+        }
+
+        if (anyDeferred) {
+            // Level-triggered repayment of the owed boundary shift: schedule
+            // the no-fill rebalance directly instead of depending solely on a
+            // future broadcast-region end (which may never come when the
+            // region ended before these fills were processed). The scheduler
+            // re-defers until the pipeline is clear and ignores duplicate
+            // requests, so this is safe alongside the region-end hook.
+            try {
+                DexbotStateRecovery.schedulePostRecoveryRebalance(
+                    this,
+                    'fill rebalance deferred by an active broadcast region'
+                );
+            } catch (err: any) {
+                // Never swallow the owed boundary-shift retry silently: a
+                // scheduling failure here re-creates the frozen-grid hang
+                // this level-triggered retry was added to fix.
+                managerLog(
+                    `[COW] Failed to schedule post-deferral rebalance; owed boundary shift still pending: ${getErrorMessage(err)}`,
+                    'warn'
+                );
             }
         }
 
@@ -1787,11 +1853,14 @@ class DEXBot {
      * long region (e.g. the structural resync's Phase-2 placement) would
      * starve indefinitely — which also keeps the maintenance idle gate shut
      * forever (the queue-length check returns the full settle delay).
+     * Registered via addBroadcastRegionEndListener (fan-out) rather than the
+     * legacy single slot, so a second wirer can never silently displace the
+     * drain. Re-entry safe: the marker keeps repeated wiring idempotent.
      */
     _wireBroadcastRegionEndDrain() {
         const manager: any = this.manager;
-        if (!manager || manager._onBroadcastRegionEnd) return;
-        manager._onBroadcastRegionEnd = () => {
+        if (!manager || typeof manager.addBroadcastRegionEndListener !== 'function') return;
+        const regionEndHandler = () => {
             if (this._shuttingDown) return;
             // A fill-driven rebalance deferred because this region was active:
             // schedule a single no-fill rebalance to apply the boundary crawls
@@ -1817,6 +1886,13 @@ class DEXBot {
             this._deferredFillsPending = true;
             this._scheduleFillConsumerRestart(chainOrders);
         };
+        (regionEndHandler as any)._isRegionEndDrain = true;
+        const existing = Array.isArray(manager._onBroadcastRegionEndListeners)
+            ? manager._onBroadcastRegionEndListeners
+            : [];
+        if (!existing.some((fn: any) => fn && (fn as any)._isRegionEndDrain)) {
+            manager.addBroadcastRegionEndListener(regionEndHandler);
+        }
     }
 
     /**
@@ -1993,6 +2069,11 @@ class DEXBot {
         if (this._postRecoveryRebalanceTimer) {
             clearTimeout(this._postRecoveryRebalanceTimer);
             this._postRecoveryRebalanceTimer = null;
+        }
+
+        if (this._deferredFillRetryTimer) {
+            clearTimeout(this._deferredFillRetryTimer);
+            this._deferredFillRetryTimer = null;
         }
 
         this._stopCreditWatchdogInterval();

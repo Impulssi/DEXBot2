@@ -166,6 +166,9 @@ async function testFinishStartupSequenceUsesLiveWeightsForStartupFillRebalance()
         bot.shutdown = async () => {};
         bot._gridModule = gridModule;
         bot._gridReconcileModule = reconcileModule;
+        // Skip the production SYNC_EMPTY_READ_CONFIRM_DELAY_MS pacing: this
+        // file covers the dynamic-weight wiring, not the confirm delay.
+        bot._skipEmptyReadConfirmDelay = true;
         // Compiled ESM exports cannot be patched; the hooks keep the startup
         // sequence offline (clean, non-truncated read; no fill subscription).
         bot._listenForFillsHook = async () => async () => {};

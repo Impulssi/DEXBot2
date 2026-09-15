@@ -134,8 +134,23 @@ function makeBot() {
     return { bot, manager, logEntries };
 }
 
+/**
+ * Pre-broadcast price drift must be REPORTED, never adopted.
+ *
+ * This test previously asserted the opposite: that a drifted live slot price
+ * overrode the planned action price. That behaviour was the second link in the
+ * off-grid-price chain — it re-broadcast whatever the slot happened to hold, so
+ * a slot whose price had been mutated away from its genesis level propagated
+ * that value to the chain. slot.price is derived from the genesis ladder, not
+ * authoritative, so a divergence is a signal.
+ *
+ * The corrected contract, asserted here:
+ *   - the op is built from the PLANNED price (not the drifted live one),
+ *   - the drift is still surfaced, at warn (it was debug, and therefore
+ *     invisible in production).
+ */
 async function testPreBroadcastPriceFreshnessRebuildsOp() {
-    console.log(' - Pre-broadcast price freshness: drifted slot price overrides the action order price...');
+    console.log(' - Pre-broadcast price drift is reported, not adopted...');
     const { bot, manager, logEntries } = makeBot();
     const plannedOrder = {
         id: 'sell-7',
@@ -155,8 +170,8 @@ async function testPreBroadcastPriceFreshnessRebuildsOp() {
     });
 
     const originalBuildCreate = chainOrders.buildCreateOrderOp;
-    let capturedArgs = null;
-    chainOrders.buildCreateOrderOp = async (account, amountToSell, sellAssetId, minToReceive, receiveAssetId) => {
+    let capturedArgs: any = null;
+    chainOrders.buildCreateOrderOp = async (account: any, amountToSell: any, sellAssetId: any, minToReceive: any, receiveAssetId: any) => {
         capturedArgs = { amountToSell, sellAssetId, minToReceive, receiveAssetId };
         return {
             op: { op_name: 'limit_order_create', op_data: { amount_to_sell: { amount: amountToSell, asset_id: sellAssetId }, min_to_receive: { amount: minToReceive, asset_id: receiveAssetId } } },
@@ -178,17 +193,29 @@ async function testPreBroadcastPriceFreshnessRebuildsOp() {
             actions: [{ type: COW_ACTIONS.CREATE, id: 'sell-7', order: plannedOrder }]
         });
         assert.strictEqual(result.executed, true, 'Drifted create should still execute');
+
+        // The emitted amounts must reflect the PLANNED price. At a sell price
+        // of 100 with size 10, min_to_receive is 1000; adopting the drifted
+        // live=103.25 would inflate it by 3.25% (to 1032.5).
         assert.ok(capturedArgs, 'buildCreateOrderOp must have been called');
-        assert.notStrictEqual(capturedArgs.amountToSell, plannedOrder.size * 1e8, 'Build should NOT have used the stale planned order verbatim');
-        const driftLog = logEntries.find(l => l.msg.includes('Pre-broadcast price freshness'));
+        const plannedMin = 10 * plannedOrder.price;
+        assert.strictEqual(capturedArgs.minToReceive, plannedMin,
+            `op must be built from the planned price (expected min_to_receive ${plannedMin}, got ${capturedArgs.minToReceive})`);
+        assert.notStrictEqual(capturedArgs.minToReceive, 10 * 103.25,
+            'op must NOT be built from the drifted live price');
+
+        // The drift must still be surfaced, and at warn (it was debug before,
+        // which is why this substitution went unnoticed in production).
+        const driftLog = logEntries.find(l => l.msg.includes('Pre-broadcast price drift'));
         assert.ok(driftLog, 'Drift log line must be present');
-        assert.ok(driftLog.msg.includes('drifted from planned=100'), 'Drift log should show planned=100');
-        assert.ok(driftLog.msg.includes('to live=103.25'), 'Drift log should show live=103.25');
+        assert.ok(driftLog.msg.includes('planned=100'), 'Drift log should show planned=100');
+        assert.ok(driftLog.msg.includes('live=103.25'), 'Drift log should show live=103.25');
+        assert.strictEqual(driftLog.level, 'warn', 'drift must be reported at warn, not debug');
+        assert.ok(driftLog.msg.includes('emitting planned price'), 'log must state that the planned price is emitted');
     } finally {
         chainOrders.buildCreateOrderOp = originalBuildCreate;
         chainOrders.executeBatch = originalExecuteBatch;
     }
-    console.log('\u2713 COW-FRESH-001 passed');
 }
 
 async function testPreBroadcastNoDriftNoRebuild() {

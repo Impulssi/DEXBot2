@@ -43,6 +43,12 @@ async function runTests() {
         const mgr = new OrderManager({
             market: 'TEST/BTS', assetA: 'TEST', assetB: 'BTS'
         });
+        // Offline seam: targeted chain refetches (drift refetch, sub-dust
+        // residual verification) resolve as "order gone" without opening a
+        // real connection. None of this file's scenarios assert on refetch
+        // results — they cover sync state transitions on in-memory data.
+        mgr._readSingleOrderFn = async () => null;
+        mgr._batchReadOrdersFn = async () => new Map();
         mgr.logger = createSilentLogger();
         mgr.assets = { assetA: { id: '1.3.0', precision: 8 }, assetB: { id: '1.3.1', precision: 5 } };
         await mgr.setAccountTotals({ buy: 10000, sell: 100, buyFree: 10000, sellFree: 100 });

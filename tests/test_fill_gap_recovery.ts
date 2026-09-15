@@ -86,7 +86,7 @@ const mockChain: any = {
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
-    const mgr = createSubscriptionManager(mockChain);
+    const mgr = createSubscriptionManager(mockChain, { noticeCoalesceMs: 0 });
     const delivered: string[] = [];
     const seen = new Set<string>();
 
@@ -115,7 +115,7 @@ async function main() {
     handler([1, [makeOp('1.11.6002', true)]]);
 
     // Wait for the eager gap-recovery coalesce (NOTICE_COALESCE_MS 250ms) + async dispatch.
-    await delay(1000);
+    await delay(50);
 
     const gotGap = ['1.11.5095', '1.11.5096', '1.11.5097', '1.11.5098', '1.11.5099']
         .every((id) => delivered.includes(id));

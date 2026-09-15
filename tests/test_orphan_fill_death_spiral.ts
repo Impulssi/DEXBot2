@@ -137,8 +137,8 @@ mathUtils._setFeeCache({
 const DEXBot = require('../modules/dexbot_class').default;
 const { OrderManager } = require('../modules/order/manager');
 const {
-  ORDER_TYPES, ORDER_STATES, TIMING,
-  FILL_PROCESSING, GRID_LIMITS,
+  ORDER_TYPES, ORDER_STATES,
+  GRID_LIMITS,
 } = require('../modules/constants');
 const { buildFillKey } = require('../modules/order/utils/order');
 const {
@@ -726,7 +726,7 @@ async function runTests() {
 
     bot.manager._gapSlots = 2;
     bot.manager.boundaryIdx = 5;
-    // Add enough orders so we can have > MAX_FILL_BATCH_SIZE fills (use slot-N in-rail)
+    // Add enough orders so we can have more fills than gap slots (use slot-N in-rail)
     const chunkSlots = ['slot-0','slot-1','slot-2','slot-3','slot-8','slot-9','slot-10','slot-11'];
     for (let i = 0; i < 8; i++) {
       await bot.manager._updateOrder(makeGridOrder(
@@ -738,8 +738,8 @@ async function runTests() {
       ));
     }
 
-    // Generate enough fills to require chunking (MAX_FILL_BATCH_SIZE=4)
-    const fillCount = FILL_PROCESSING.MAX_FILL_BATCH_SIZE + 2;
+    // Generate enough fills to require chunking (gapSlots + 2)
+    const fillCount = bot._getGapSlotBatchSize() + 2;
     const fills = [];
     for (let i = 0; i < fillCount; i++) {
       fills.push(buildFill(
@@ -762,10 +762,9 @@ async function runTests() {
 
     await bot._consumeFillQueue(makeChainOrdersStub());
 
-    // With MAX_FILL_BATCH_SIZE=4 and fillCount=6:
-    // - Call 1: unified because 6 ≤ 4? No, 6 > 4 → chunked
-    // - Call 1: 4 fills with exclusion set containing 2 remaining fills
-    // - Call 2: 2 fills with exclusion set containing 4 processed fills
+    // With gapSlots=2 and fillCount=4:
+    // - Call 1: 2 fills with exclusion set containing 2 remaining fills
+    // - Call 2: 2 fills with exclusion set containing 2 processed fills
     assert.strictEqual(exclusionSizes.length, 2,
       'Chunked processing should call processFilledOrders twice');
     assert.ok(exclusionSizes[1] > 0,

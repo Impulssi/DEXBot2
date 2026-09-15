@@ -85,6 +85,7 @@ const NAMES = {
         'getSingleDustThreshold', 'hasValidAccountTotals',
         'isExplicitZeroAllocation', 'isPercentageString', 'isPositiveInt',
         'isPositiveNumber', 'isPositiveNumberOrPercent', 'isSlotInRail',
+        'isSlotIndexInGapBand', 'isTransientInBandRejection',
         'normalizeInt', 'parsePercentageString', 'resolveConfigValue',
         'resolveConfigValueWithRegistry', 'resolveGapBand',
         'resolveGapSlots', 'resolveRelativePrice', 'roundTo',

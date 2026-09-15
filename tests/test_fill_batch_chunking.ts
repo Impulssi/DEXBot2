@@ -1,16 +1,19 @@
 /**
  * tests/test_fill_batch_chunking.ts
  *
- * Tests for _processFillsWithBatching — verifies MAX_FILL_BATCH_SIZE
- * enforcement across the unified fill-chunking + rebalance + broadcast pipeline.
+ * Tests for _processFillsWithBatching — verifies gap-slot-derived batch
+ * sizing enforcement across the unified fill-chunking + rebalance +
+ * broadcast pipeline (batch size = manager._gapSlots).
  */
 
 const assert = require('assert');
 const DEXBot = require('../modules/dexbot_class').default;
 require('../modules/order/grid'); // ensure loaded
-const { FILL_PROCESSING, ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
+const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 
-const MAX_BATCH = FILL_PROCESSING.MAX_FILL_BATCH_SIZE;
+// Gap-slot-derived batch size used by these tests (mirrors manager._gapSlots
+// assigned in makeBot below).
+const MAX_BATCH = 4;
 
 function makeFill(id: string, orderId: string | null = null, type: string = 'SELL') {
     return { id, orderId: orderId || `1.7.${id.replace(/\D/g, '')}`, type, price: 0.02, size: 100, isPartial: false, blockNum: 1000 + parseInt(id.replace(/\D/g, ''), 10) || 1 };
@@ -31,6 +34,7 @@ function makeBot() {
     });
 
     bot.manager = {
+        _gapSlots: MAX_BATCH,
         logger: {
             log: (msg: string, lvl: string) => { /* silent */ },
             logFundsStatus: () => {},
@@ -132,6 +136,7 @@ function makeBootstrapBot() {
     bot.manager = {
         orders,
         config: bot.config,
+        _gapSlots: MAX_BATCH,
         logger: {
             log: () => {},
         },

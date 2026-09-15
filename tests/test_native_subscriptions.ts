@@ -49,25 +49,19 @@ function makeAccountRecord(account) {
                     historyCalls.push([accountId, opType, start, stop, limit]);
                     if (accountId !== '1.2.100') return [];
                     if (limit === 1) {
-                        return [{ id: '1.11.499', block_num: 10, trx_in_block: 1, op: [4, { order_id: '1.7.1' }] }];
-                    }
-                    if (stop === '1.11.498') {
-                        // Initial bounded catch-up includes the primed latest fill
-                        // and a fill that arrived during subscription activation.
-                        return [
-                            { id: '1.11.499', block_num: 10, trx_in_block: 1, op: [4, { order_id: '1.7.1' }] },
-                            { id: '1.11.500', block_num: 11, trx_in_block: 2, op: [4, { order_id: '1.7.2' }] },
-                        ];
-                    }
-                    if (stop === '1.11.500') {
-                        return [{ id: '1.11.501', block_num: 12, trx_in_block: 3, op: [4, { order_id: '1.7.3' }] }];
+                        // Prime reports the same head the direct-fill notice below
+                        // carries (501), so the decremented cursor is 500 and the
+                        // notice advance 500 -> 501 is contiguous (gap 1): no eager
+                        // gap-recovery lookback is armed. A gap > 1 WOULD arm one
+                        // by design — see test_fill_gap_recovery for that path.
+                        return [{ id: '1.11.501', block_num: 10, trx_in_block: 1, op: [4, { order_id: '1.7.1' }] }];
                     }
                     return [];
                 },
             },
         };
 
-        const manager = createSubscriptionManager(chainClient);
+        const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
         await manager.subscribe('alice', (fills) => {
             delivered.push(['alice', fills]);
         });
@@ -77,7 +71,12 @@ function makeAccountRecord(account) {
 
         assert.strictEqual(typeof noticeHandler, 'function', 'notice handler should be registered');
 
-        // Notice with direct fill object should be dispatched immediately to matching account
+        // Notice with direct fill object should be dispatched immediately to matching account.
+        // Gap is contiguous here (cursor 500 -> fill 501): no eager lookback scan
+        // is armed, so no extra alice history call lands after the assertion point.
+        // (A gap > 1 WOULD arm a lookback scan by design — see test_fill_gap_recovery
+        // for that path. With coalesce=0 in this test the eager scan would run
+        // detached; asserting zero extra scans here pins the contiguous-fill fast path.)
         await noticeHandler([1, [{ id: '1.11.501', block_num: 12, trx_in_block: 3, op: [4, { order_id: '1.7.3', account_id: '1.2.100' }] }]]);
 
         assert.strictEqual(delivered.length, 1, 'matching account should receive direct notice delivery');
@@ -144,11 +143,13 @@ function makeAccountRecord(account) {
             },
         };
 
-        manager = createSubscriptionManager(chainClient);
+        manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
         await manager.subscribe('alice', (fills) => {
             delivered.push(fills);
         });
-        await new Promise(resolve => setTimeout(resolve, 300));
+        // With noticeCoalesceMs: 0 the activation-window scan runs
+        // synchronously inside subscribe(); a microtask drain suffices.
+        await new Promise(resolve => setTimeout(resolve, 10));
 
         assert.strictEqual(callbackCountDuringRegister, 1, 'initial subscribe should attach the local callback before remote activation');
         assert.strictEqual(noticeHandlerPresentDuringRegister, true, 'initial subscribe should install the local notice handler before remote activation');
@@ -202,7 +203,7 @@ function makeAccountRecord(account) {
             },
         };
 
-        const manager = createSubscriptionManager(chainClient);
+        const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
         await manager.subscribe('alice', (fills) => {
             delivered.push(fills);
         });
@@ -220,7 +221,7 @@ function makeAccountRecord(account) {
         assert.strictEqual(delivered[0][0].id, '1.11.900');
 
         await handlers[0]([1, [{ id: '2.5.4000', owner: '1.2.100' }]]);
-        await new Promise(resolve => setTimeout(resolve, 300));
+        await new Promise(resolve => setTimeout(resolve, 10));
         assert.strictEqual(delivered.length, 2, 'reattached object-change notice should scan and deliver newer fills');
         assert.strictEqual(delivered[1][0].id, '1.11.901');
         assert.ok(
@@ -262,7 +263,7 @@ function makeAccountRecord(account) {
             },
         };
 
-        const manager = createSubscriptionManager(accountNoticeClient);
+        const manager = createSubscriptionManager(accountNoticeClient, { noticeCoalesceMs: 0 });
         await manager.subscribe('alice', (fills) => {
             accountNoticeDelivered.push(fills);
         });
@@ -275,7 +276,7 @@ function makeAccountRecord(account) {
         // may notify impacted accounts with changed object IDs rather than full 1.11.x fill objects.
         // The scan finds the fill at 1.11.700 from the mock.
         await noticeHandler([1, [{ id: '2.6.100' }]]);
-        await new Promise(resolve => setTimeout(resolve, 300));
+        await new Promise(resolve => setTimeout(resolve, 10));
         assert.strictEqual(accountNoticeDelivered.length, 1, 'object-change notice should trigger history scan and deliver fill');
         assert.strictEqual(accountNoticeDelivered[0][0].id, '1.11.700', 'history scan should deliver fill 1.11.700');
 
@@ -317,7 +318,7 @@ function makeAccountRecord(account) {
             },
         };
 
-        const manager = createSubscriptionManager(chainClient);
+        const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
         await manager.subscribe('alice', (fills) => {
             delivered.push(fills);
         });
@@ -366,7 +367,7 @@ function makeAccountRecord(account) {
                 },
             };
 
-            const manager = createSubscriptionManager(chainClient);
+            const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
             await manager.subscribe('alice', (fills) => {
                 delivered.push(fills);
             });
@@ -408,7 +409,7 @@ function makeAccountRecord(account) {
             },
         };
 
-        const manager = createSubscriptionManager(retryChainClient);
+        const manager = createSubscriptionManager(retryChainClient, { noticeCoalesceMs: 0 });
         await manager.subscribe('alice', () => {
             retryDeliveries += 1;
             if (!failedOnce) {
@@ -462,7 +463,7 @@ function makeAccountRecord(account) {
             },
         };
 
-        const manager = createSubscriptionManager(chainClient);
+        const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
         await manager.subscribe('alice', (fills) => {
             delivered.push(fills);
         });
@@ -510,7 +511,7 @@ function makeAccountRecord(account) {
             },
         };
 
-        const manager = createSubscriptionManager(chainClient);
+        const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
         await manager.subscribe('alice', async () => {
             deliveries += 1;
             if (failOnce) {
@@ -588,7 +589,7 @@ function makeAccountRecord(account) {
                 },
             };
 
-            const manager = createSubscriptionManager(chainClient);
+            const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
             await manager.subscribe('alice', () => {
                 deliveredCount += 1;
                 if (failReconnectDelivery) {
@@ -644,7 +645,7 @@ function makeAccountRecord(account) {
             },
         };
 
-        const manager = createSubscriptionManager(chainClient);
+        const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
         await manager.subscribe('alice', async (fills) => {
             deliveries += fills.length;
             if (failOnce) {
@@ -719,7 +720,7 @@ function makeAccountRecord(account) {
                 },
             };
 
-            const manager = createSubscriptionManager(chainClient);
+            const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
             await manager.subscribe('alice', (fills) => {
                 delivered.push(fills);
             });
@@ -874,6 +875,10 @@ function makeAccountRecord(account) {
         }) as any;
 
         try {
+            // Production coalesce path (no override): with NOTICE_COALESCE_MS
+            // at 250ms the no-fill notice schedules a real timer. This test
+            // pins that behavior, so it must NOT pass noticeCoalesceMs: 0
+            // (that seam collapses the window and scans synchronously).
             const manager = createSubscriptionManager(chainClient);
             await manager.subscribe('alice', () => {});
             capturedTimer = null;
@@ -922,7 +927,7 @@ function makeAccountRecord(account) {
             },
         };
 
-        const manager = createSubscriptionManager(chainClient);
+        const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
         const unsub = await manager.subscribe('alice', () => {});
 
         const subs = manager.getSubscriptions();
@@ -998,7 +1003,7 @@ function makeAccountRecord(account) {
             }) as any;
             global.clearInterval = ((_handle: any) => {}) as any;
 
-            const manager = createSubscriptionManager(chainClient);
+            const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
             const unsub = await manager.subscribe('alice', () => {});
 
             assert.ok(pollTimerHandle, 'fill poll timer should be created on first subscribe');

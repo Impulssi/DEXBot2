@@ -39,7 +39,7 @@ Follow this path through the codebase:
 ```
 
 **Additional Resources**:
-- `modules/constants.ts::FILL_PROCESSING` - Batch configuration (`MAX_FILL_BATCH_SIZE`)
+- `modules/constants.ts::FILL_PROCESSING` - Fill-event handling configuration (batch sizing is gap-slot derived, see `DEXBot._getGapSlotBatchSize`)
 - `modules/constants.ts::PIPELINE_TIMING` - Recovery configuration (RECOVERY_RETRY_INTERVAL_MS, MAX_RECOVERY_ATTEMPTS)
 - `modules/constants.ts::MARKET_ADAPTER` - AMA, dynamic weight, and regime detection defaults
 - `modules/constants.ts::REGIME_TABLE` - Hurst/PE regime signal-strength table
@@ -79,7 +79,7 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 
 | Term | Meaning |
 |------|---------|
-| **Fixed-Cap Batch Fill Processing** | Groups fills with a hard cap using `MAX_FILL_BATCH_SIZE` (default 4): `<= cap` uses one unified batch; `> cap` chunks at cap size. In the documented 29-fill Feb 7 crash scenario, this reduces the estimated divergence window from ~90s to ~24s; see [`FUND_MOVEMENT_AND_ACCOUNTING.md`](FUND_MOVEMENT_AND_ACCOUNTING.md#15-fill-batch-processing--timeline). |
+| **Gap-Slot Batch Fill Processing** | Groups fills using the grid gap-slot count as batch size (`DEXBot._getGapSlotBatchSize`): `<= gapSlots` uses one unified batch; `> gapSlots` chunks at gapSlots. In the documented 29-fill Feb 7 crash scenario, this reduces the estimated divergence window from ~90s to ~24s; see [`FUND_MOVEMENT_AND_ACCOUNTING.md`](FUND_MOVEMENT_AND_ACCOUNTING.md#15-fill-batch-processing--timeline). |
 | **Recovery Retry System** | Count+time-based retry mechanism with periodic reset. Replaces one-shot `_recoveryAttempted` flag. Max 5 attempts per episode with 60s minimum interval between retries. |
 | **Orphan-Fill Deduplication** | Map+TTL-based tracking of stale-cleaned order IDs to prevent double-crediting. Delayed orphan fill events are still blocked by checking `_staleCleanedOrderIds`. |
 
@@ -171,8 +171,8 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 | **Atomic Check-and-Deduct** | Verify funds + deduct in single operation |
 | **Divergence Detection** | Comparing ideal grid vs. persisted grid |
 | **Invariant Verification** | Checking fund accounting consistency |
-| **Batch Processing** | Grouping multiple fills into a single rebalance cycle instead of one-at-a-time. Fixed-cap sizing: `<= MAX_FILL_BATCH_SIZE` unified, otherwise chunked at cap size (default max 4). |
-| **Fixed-Cap Batch Sizing** | Deterministic chunking model with hard upper bound per broadcast. Keeps throughput high while avoiding tier-lookup complexity. |
+| **Batch Processing** | Grouping multiple fills into a single rebalance cycle instead of one-at-a-time. Gap-slot sizing: `<= gapSlots` unified, otherwise chunked at gapSlots. |
+| **Gap-Slot Batch Sizing** | Deterministic chunking model with the grid gap-slot count as the per-broadcast bound. Keeps throughput high while avoiding tier-lookup complexity. |
 | **Stale-Order Recovery** | Fast-path recovery for single-operation batches that encounter stale orders on-chain. Executes cleanup without full state sync. |
 | **Orphan-Fill Prevention** | Deduplication mechanism that prevents double-crediting fills from stale-cleaned orders using timestamp-based ID tracking (TTL pruning). |
 

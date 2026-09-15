@@ -225,7 +225,7 @@ node dist/analysis/trade_profitability.js 1.2.123456 \
 
 Validates grid discipline from the same Kibana fill pipeline as `trade_profitability.ts`: two consecutive same-direction fills on a pair must be monotonic — sell prices rising, buy prices falling (equal is OK). An inversion means the bot placed an order below its own previous sell (or above its own previous buy), e.g. an orphaned order filling outside grid accounting. Used as the external regression gate for the orphan-fix plans in `docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md`.
 
-**Pipeline:** Kibana `fill_order` query (paginated `search_after`) → on-chain asset precision resolution → buy/sell classification → chronological sort → per-order aggregation (multi-fill orders collapsed to weighted-avg price by default) → consecutive same-direction pair comparison → violation report with daily histogram.
+**Pipeline:** Kibana `fill_order` query (paginated `search_after`) → on-chain asset precision resolution → buy/sell classification → chronological sort → per-order/price-epoch aggregation (partial fills at one price collapsed to weighted-average; repriced order lifetimes kept separate) → consecutive same-direction pair comparison → violation report with daily histogram.
 
 ```bash
 # Per-order aggregated check (default), last 7 days
@@ -263,7 +263,7 @@ Exit code `0` = pass, `2` = violations found, `1` = fatal error. Bot keys resolv
 
 </details>
 
-**Notes:** strict sat-level comparison is the ground truth (`--tolerance` only forgives small inversions); multi-fill orders are collapsed to a weighted-average price for the default per-order mode, so a single order's partial fills at identical prices never count as inversions.
+**Notes:** strict sat-level comparison is the ground truth (`--tolerance` only forgives small inversions); partial fills at one price are collapsed to a weighted-average price in the default mode, but fills after a native order repricing are kept in separate price epochs so updated orders are not mixed together.
 
 ## Charts & Visualization
 

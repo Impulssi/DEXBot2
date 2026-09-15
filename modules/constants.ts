@@ -64,8 +64,10 @@
  *
  * FILL PROCESSING:
  *   9. FILL_PROCESSING - Fill event handling configuration
- *      MODE, OPERATION_TYPE, MAX_FILL_BATCH_SIZE
+ *      MODE, OPERATION_TYPE,
  *      MAX_CONSECUTIVE_CONSUMER_FAILURES, CONSUMER_BACKOFF_INITIAL_MS, CONSUMER_BACKOFF_MAX_MS
+ *      (Fill/broadcast batch sizing is derived from the grid gap-slot count;
+ *       see DEXBot._getGapSlotBatchSize.)
  *
  * MARKET ADAPTER CONFIGURATION:
  *   10. MARKET_ADAPTER - Price tracking and grid recalculation trigger settings
@@ -306,6 +308,30 @@ let TIMING = {
     // proceeds — a leaked flag can delay fills, never starve them.
     FILL_BROADCAST_DEFER_MAX_MS: 60 * 1000,  // 60 seconds
 
+    // FILL_TOTALS_RETRY_BASE_MS / MAX_MS: Backoff for re-processing fills
+    // parked when the accountTotals refresh failed (stale snapshot). The
+    // deferred fills are held OUTSIDE the live queue and re-queued on a
+    // timer — never dropped, never hot-spun. Delay doubles per consecutive
+    // parked cycle (10s, 20s, 40s) capped at 60s; the attempt counter resets
+    // on the first cycle with no deferrals.
+    FILL_TOTALS_RETRY_BASE_MS: 10 * 1000,  // 10 seconds
+    FILL_TOTALS_RETRY_MAX_MS: 60 * 1000,  // 60 seconds
+
+    // SPREAD_STALE_WARN_MS / ESCALATE_MS: Out-of-spread persistence watchdog.
+    // The spread check retries every pipeline-empty tick (level-triggered),
+    // but a correction can keep producing zero candidates (no funds side, no
+    // correctable slots) while the grid sits stale. Past the warn threshold
+    // each tick is surfaced; past the escalate threshold maintenance requests
+    // a structural resync that re-centers the grid (existing resync guards
+    // dedupe concurrent requests; re-center clears any held-plan signature
+    // by moving the boundary). Time-based so it holds for any tick cadence.
+    SPREAD_STALE_WARN_MS: 10 * 60 * 1000,  // 10 minutes
+    SPREAD_STALE_ESCALATE_MS: 30 * 60 * 1000,  // 30 minutes
+    // Dedicated escalation cooldown for the spread-stale watchdog. Deliberately
+    // separate from BOUNDARY_HOLD_RESYNC_COOLDOWN_MS so tuning boundary-hold
+    // behavior never silently changes the spread watchdog cadence.
+    SPREAD_STALE_RESYNC_COOLDOWN_MS: 5 * 60 * 1000,  // 5 minutes
+
     // BOUNDARY_HOLD_RESYNC_THRESHOLD / COOLDOWN: consecutive boundary-hold
     // batches (each carrying fresh fills) after which the COW executor asks
     // for a guard-aware structural re-center. A hold is correct maker
@@ -316,6 +342,38 @@ let TIMING = {
     // the cooldown prevents resync storms.
     BOUNDARY_HOLD_RESYNC_THRESHOLD: 4,
     BOUNDARY_HOLD_RESYNC_COOLDOWN_MS: 5 * 60 * 1000,  // 5 minutes
+
+    // GRID_PRICE_INVARIANT_RESYNC_THRESHOLD / COOLDOWN: consecutive COW batches
+    // that reject the SAME slot's emission as off-grid, after which the guard
+    // asks for a structural resync. Without this an in-process corrupted
+    // slot.price is rejected forever: every cycle re-plans from that same slot
+    // object (the spread-correction planner carries candidate.price straight
+    // from manager.orders), is rejected again, and warns. Nothing heals it
+    // short of a restart, so the slot is dead while the bot is alive and the
+    // repeated warns train operators to ignore them.
+    //
+    // The structural resync is the right healer because loadGrid now repairs
+    // slot prices from the genesis ladder on reload (both 'log' and 'enforce'
+    // modes), and the full-reset fallback rebuilds clean geometry. Auto-healing
+    // in place at rejection time is deliberately NOT done: silently overwriting
+    // slot.price would erase the diagnostic signal that distinguishes the four
+    // corruption sources (legacy persisted state, migration fallback,
+    // genesis-identity mismatch, unknown live writer). Count first, escalate on
+    // persistence.
+    GRID_PRICE_INVARIANT_RESYNC_THRESHOLD: 3,
+    GRID_PRICE_INVARIANT_RESYNC_COOLDOWN_MS: 15 * 60 * 1000,  // 15 minutes
+
+    // DEFERRED_HOLD_ESCALATE_MS: how long an unchanged deferred-hold signature
+    // (same chain order ids/prices/sizes/reasons) may persist before the hold
+    // is escalated to a structural resync. Out-of-rail orphans hold locked
+    // funds and are never auto-cancelled per cycle (by design -- cancelling on
+    // ambiguous evidence is irreversible), so "held indefinitely" had no exit.
+    // The resync is that exit: the full reset's reconcile is update-first
+    // (unmatched chain orders are price-updated onto rail slots, cancelling
+    // only true surplus), so funds are released without inventing a new
+    // cancellation policy.
+    DEFERRED_HOLD_ESCALATE_MS: 24 * 60 * 60 * 1000,  // 24 hours
+    DEFERRED_HOLD_RESYNC_COOLDOWN_MS: 6 * 60 * 60 * 1000,  // 6 hours
 
     // Blockchain settle delay before follow-up structural work after a scheduled maintenance action.
     // Gives maintenance-triggered cancels/rebalances time to acquire locks, broadcast, and settle
@@ -842,12 +900,9 @@ let FILL_PROCESSING = {
     // Operation type for fill_order blockchain operations
     OPERATION_TYPE: 4,
 
-    // Maximum fills processed per rebalance/broadcast cycle.
-    // Behavior:
-    // - 1..MAX_FILL_BATCH_SIZE fills -> single unified batch
-    // - >MAX_FILL_BATCH_SIZE fills   -> fixed-size chunking at MAX_FILL_BATCH_SIZE
-    // Set to 1 for current sequential behavior.
-    MAX_FILL_BATCH_SIZE: 4,
+    // NOTE: fill/broadcast batch sizing is derived from the grid gap-slot
+    // count (DEXBot._getGapSlotBatchSize). There is deliberately no fixed
+    // fill-batch or ops-per-broadcast constant here.
 
     // MAX_CONSECUTIVE_CONSUMER_FAILURES: Threshold for the _consumeFillQueue
     // watchdog. Below this count, the consumer re-schedules on every failure
@@ -897,16 +952,13 @@ let NODE_MANAGEMENT = {
 
     // Default node list (used if no config file)
     DEFAULT_NODES: [
-        'wss://btsws.roelandp.nl/ws',
         'wss://cloud.xbts.io/ws',
         'wss://node.xbts.io/ws',
         'wss://public.xbts.io/ws',
         'wss://dex.iobanker.com/ws',
         'wss://api.dex.trading/',
         'wss://api.bts.mobi/ws',
-        'wss://api.btslebin.com/ws',
-        'wss://api.bitshares.dev/ws',
-        'wss://bitsharesapi.loclx.io'
+        'wss://api.bitshares.dev/ws'
     ],
 
     // Health check defaults
@@ -1543,20 +1595,18 @@ let COW_PERFORMANCE = {
     // Default: 500 bytes (includes order object, metadata, and overhead).
     WORKING_GRID_BYTES_PER_ORDER: 500,
 
-    // MAX_OPS_PER_BROADCAST: Maximum number of order operations (creates,
-    // updates, cancels) carried by a single on-chain broadcast transaction.
-    // FILL_PROCESSING.MAX_FILL_BATCH_SIZE caps the number of FILLS per
-    // rebalance cycle, but one fill batch can expand into many more order
-    // operations (e.g. 4 fills -> 12 creates + 4 updates = 16 ops), so the
-    // fill cap is a weak proxy for broadcast size. Batches larger than this
-    // cap are split into sequential broadcasts of at most this many ops each,
+    // NOTE: the per-broadcast operation cap is derived from the grid
+    // gap-slot count (DEXBot._getGapSlotBatchSize, surfaced via
+    // _getMaxOpsPerBroadcast for backward compatibility). One fill batch can
+    // expand into many more order operations (e.g. 4 fills -> 12 creates +
+    // 4 updates = 16 ops), so batches larger than the gap-slot count are
+    // split into sequential broadcasts of at most gapSlots ops each,
     // bounding per-transaction stress on the chain.
-    MAX_OPS_PER_BROADCAST: 4,
 
     // MAX_CANCELS_PER_BROADCAST: Maximum number of limit_order_cancel ops in a
     // single batched orphan/surplus cancellation transaction
     // (correctAllPriceMismatches). Cancels are zero-fee and carry no balance
-    // state, so they can be far denser than MAX_OPS_PER_BROADCAST creates.
+    // state, so they can be far denser than gap-slot-sized create broadcasts.
     // This replaces the old serial path (one cancel tx + sleep per orphan,
     // ~1 order per 3s block) that let a 50-orphan duplicate backlog starve
     // CREATES for minutes.

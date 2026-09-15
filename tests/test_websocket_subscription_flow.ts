@@ -101,7 +101,7 @@ function makeChainClientMock({ historyImpl, setupNoticeHandler }: any) {
         });
 
         (async () => {
-            const manager = createSubscriptionManager(chainClient);
+            const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
             await manager.subscribe('alice', (fills) => {
                 delivered.push(fills);
             });
@@ -113,7 +113,7 @@ function makeChainClientMock({ historyImpl, setupNoticeHandler }: any) {
             await noticeHandler([1, [
                 { id: '1.11.101', block_num: 11, trx_in_block: 2 },
             ]]);
-            await new Promise(resolve => setTimeout(resolve, 300));
+            await new Promise(resolve => setTimeout(resolve, 10));
 
             test('thin 1.11.x notice without fill op triggers history scan when cursor is behind', () => {
                 assert.strictEqual(delivered.length, 1, 'history scan should deliver fills');
@@ -159,16 +159,18 @@ function makeChainClientMock({ historyImpl, setupNoticeHandler }: any) {
             setupNoticeHandler: (h) => { noticeHandler = h; return () => { noticeHandler = null; }; },
             historyImpl: async (accountId, opType, start, stop, limit) => {
                 historyPages.push({ accountId, opType, start, stop, limit });
-                if (limit === 1) return [{ id: '1.11.200', block_num: 20, trx_in_block: 1, op: [OP_FILL_ORDER, { order_id: '1.7.10' }] }];
-                if (stop === '1.11.199') return [{ id: '1.11.200', block_num: 20, trx_in_block: 1, op: [OP_FILL_ORDER, { order_id: '1.7.10' }] }];
-                if (stop === '1.11.200') return [{ id: '1.11.201', block_num: 21, trx_in_block: 2, op: [OP_FILL_ORDER, { order_id: '1.7.11' }] }];
-                if (stop === '1.11.201') return [{ id: '1.11.202', block_num: 22, trx_in_block: 3, op: [OP_FILL_ORDER, { order_id: '1.7.12' }] }];
+                // Prime reports the head (201) the direct-fill notice below
+                // carries, so the decremented cursor is 200 and the notice
+                // advance 200 -> 201 is contiguous (gap 1): no eager
+                // gap-recovery lookback is armed. A gap > 1 WOULD arm one by
+                // design — see test_fill_gap_recovery for that path.
+                if (limit === 1) return [{ id: '1.11.201', block_num: 20, trx_in_block: 1, op: [OP_FILL_ORDER, { order_id: '1.7.10' }] }];
                 return [];
             },
         });
 
         (async () => {
-            const manager = createSubscriptionManager(chainClient);
+            const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
             await manager.subscribe('alice', (fills) => {
                 delivered.push(fills);
             });
@@ -212,7 +214,7 @@ function makeChainClientMock({ historyImpl, setupNoticeHandler }: any) {
         });
 
         (async () => {
-            const manager = createSubscriptionManager(chainClient);
+            const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
             await manager.subscribe('alice', (fills) => { deliveredAlice.push(fills); });
             await manager.subscribe('bob', (fills) => { deliveredBob.push(fills); });
             deliveredAlice.length = 0;
@@ -221,7 +223,7 @@ function makeChainClientMock({ historyImpl, setupNoticeHandler }: any) {
 
             // Bob's statistics object - triggers scan for all subscriptions
             await noticeHandler([1, [{ id: '2.6.200' }]]);
-            await new Promise(resolve => setTimeout(resolve, 300));
+            await new Promise(resolve => setTimeout(resolve, 10));
 
             test('other account statistics notice triggers scan for all subscriptions', () => {
                 assert.ok(historyAccounts.includes(BOB_ID), 'bob history should be scanned');
@@ -261,7 +263,7 @@ function makeChainClientMock({ historyImpl, setupNoticeHandler }: any) {
         });
 
         (async () => {
-            const manager = createSubscriptionManager(chainClient);
+            const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
             await manager.subscribe('alice', (fills) => {
                 delivered.push(fills);
             });
@@ -282,7 +284,7 @@ function makeChainClientMock({ historyImpl, setupNoticeHandler }: any) {
                 { id: '1.11.501', block_num: 51, trx_in_block: 2 },
                 { id: '1.11.502', block_num: 52, trx_in_block: 3 },
             ]]);
-            await new Promise(resolve => setTimeout(resolve, 300));
+            await new Promise(resolve => setTimeout(resolve, 10));
 
             // After bootstrap, cursor = 499 (decremented from 500).
             // Thin notices with IDs ahead of the cursor trigger a scan.
@@ -326,7 +328,7 @@ function makeChainClientMock({ historyImpl, setupNoticeHandler }: any) {
         });
 
         (async () => {
-            const manager = createSubscriptionManager(chainClient);
+            const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
             await manager.subscribe('alice', (fills) => {
                 delivered.push(fills);
             });
@@ -373,7 +375,7 @@ function makeChainClientMock({ historyImpl, setupNoticeHandler }: any) {
         });
 
         (async () => {
-            const manager = createSubscriptionManager(chainClient);
+            const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
             await manager.subscribe('alice', (fills) => {
                 delivered.push(fills);
             });
@@ -416,7 +418,7 @@ function makeChainClientMock({ historyImpl, setupNoticeHandler }: any) {
         });
 
         (async () => {
-            const manager = createSubscriptionManager(chainClient);
+            const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
             await manager.subscribe('alice', () => { noticeProcessedCount++; });
             historyScanCount = 0;
             noticeProcessedCount = 0;
@@ -453,11 +455,12 @@ function makeChainClientMock({ historyImpl, setupNoticeHandler }: any) {
     // -----------------------------------------------------------------------
     // Summarize
     // -----------------------------------------------------------------------
-    setTimeout(() => {
-        console.log(`\n=== Results: ${passedTests}/${totalTests} passed ===\n`);
-        if (passedTests !== totalTests) {
-            process.exitCode = 1;
-        }
-    }, 1000);
+    // NOTE: no trailing setTimeout gate. The old 1000ms end-of-file timer held
+    // the process open a full second after the last assertion; the async IIFEs
+    // above already settle via their awaits, so print synchronously.
+    console.log(`\n=== Results: ${passedTests}/${totalTests} passed ===\n`);
+    if (passedTests !== totalTests) {
+        process.exitCode = 1;
+    }
 
 })();

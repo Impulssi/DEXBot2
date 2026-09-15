@@ -81,7 +81,7 @@ import * as FormatModule from './order/format.js';
 const Format = FormatModule as any;
 import * as workingGridModule from './order/working_grid.js';
 const { WorkingGrid } = workingGridModule as any;
-import { getErrorMessage } from './utils/errors.js';
+import { getErrorMessage, resolveSeamMs, resolveSeamMsOrNull } from './utils/errors.js';
 
 // Maximum number of times the pre-broadcast staleness guard may re-plan the
 // batch from a fresh master before proceeding anyway. Bounded so a master
@@ -345,9 +345,15 @@ function formatUnmatchedChainOrderForLog(order: any) {
  * Record a pending CREATE broadcast on the manager.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} entry
+ * @returns {string|null} The fingerprint the entry was stored under (null
+ *   when recording was skipped). Callers that must later remap the entry's
+ *   stored opIndex/ctxIndex (the final pivot gate's compaction) collect
+ *   these to identify exactly which pending entries belong to THIS batch —
+ *   entry.batchId is unreliable because _currentBatchId is never populated
+ *   in production (always null), so batchId scoping cannot discriminate.
  */
-function recordPendingBroadcast(bot: any, entry: any) {
-    if (!bot.manager || !entry || !entry.order) return;
+function recordPendingBroadcast(bot: any, entry: any): string | null {
+    if (!bot.manager || !entry || !entry.order) return null;
     if (!bot.manager._pendingBroadcasts || !(bot.manager._pendingBroadcasts instanceof Map)) {
         bot.manager._pendingBroadcasts = new Map();
     }
@@ -357,7 +363,7 @@ function recordPendingBroadcast(bot: any, entry: any) {
             `[COW] Skipped pending-broadcast record: could not build fingerprint for ${entry.order?.id || 'unknown'}`,
             'warn'
         );
-        return;
+        return null;
     }
     bot.manager._pendingBroadcasts.set(fingerprint, {
         fingerprint,
@@ -371,6 +377,7 @@ function recordPendingBroadcast(bot: any, entry: any) {
         batchId: bot._currentBatchId || null,
         recordedAt: Date.now()
     });
+    return fingerprint;
 }
 
 /**
@@ -1413,11 +1420,11 @@ function formatPartialBroadcastSummary(err: any) {
 }
 
 /**
- * Execute a batch with retry-on-uncertain semantics, enforcing a per-broadcast
- * operation cap (MAX_OPS_PER_BROADCAST). When the batch carries more
- * operations than the cap, it is split into sequential broadcast chunks of at
- * most `maxOps` operations each, so a single on-chain transaction never holds
- * more than the configured number of order operations (the original "N fills
+ * Execute a batch with retry-on-uncertain semantics, enforcing a gap-slot
+ * per-broadcast operation cap (_getGapSlotBatchSize). When the batch carries
+ * more operations than the cap, it is split into sequential broadcast chunks
+ * of at most `maxOps` operations each, so a single on-chain transaction never
+ * holds more than gapSlots order operations (the original "N fills
  * per broadcast" intent, applied at the op level rather than the fill level).
  *
  * Failure isolation — no swallowed orders: if one chunk's broadcast is
@@ -1443,12 +1450,11 @@ function formatPartialBroadcastSummary(err: any) {
  * @returns {Promise<{result: Object, opContexts: Array}>}
  */
 async function executeChunkedWithRetryOnUncertain(bot: any, operations: any, opContexts: any) {
-    const configuredMax = typeof bot._getMaxOpsPerBroadcast === 'function'
+    const fromAccessor = typeof bot._getMaxOpsPerBroadcast === 'function'
         ? bot._getMaxOpsPerBroadcast()
-        : COW_PERFORMANCE?.MAX_OPS_PER_BROADCAST;
-    const maxOps = Number.isFinite(configuredMax) && configuredMax >= 1
-        ? Math.floor(configuredMax)
-        : 1;
+        : (typeof bot._getGapSlotBatchSize === 'function' ? bot._getGapSlotBatchSize() : undefined);
+    const requested = Number(fromAccessor);
+    const maxOps = Number.isFinite(requested) && requested >= 1 ? Math.floor(requested) : 1;
     if (!Array.isArray(operations) || operations.length <= maxOps) {
         return await executeWithRetryOnUncertain(bot, operations, opContexts);
     }
@@ -1462,7 +1468,7 @@ async function executeChunkedWithRetryOnUncertain(bot: any, operations: any, opC
     }
 
     bot.manager.logger.log(
-        `[COW] Splitting ${operations.length} operations into ${chunks.length} broadcast chunk(s) of at most ${maxOps} ops each (MAX_OPS_PER_BROADCAST).`,
+        `[COW] Splitting ${operations.length} operations into ${chunks.length} broadcast chunk(s) of at most ${maxOps} ops each (gap-slot batch size).`,
         'info'
     );
 
@@ -1800,6 +1806,216 @@ function validateOrderSizeForExecution(bot: any, size: any, type: any, orderLike
 }
 
 /**
+ * GRID-PRICE-INVARIANT (blocking) — thin COW-side wrappers over the shared
+ * implementation in order/utils/order.ts. The emitted price for a slot must be
+ * that slot's genesis level; range guards only test configured min/max bounds,
+ * so an off-grid price inside the bounds had no check on the broadcast path.
+ * See docs/GRID_PRICE_INVARIANT.md.
+ */
+type GridPriceInvariantStats = { checked: number; violated: number; unchecked: number };
+
+function checkGridPriceInvariant(slotId: any, price: any, genesis: any): { ok: boolean; reason: string; expected: number | null; idx: number | null; drift: number | null } {
+    return (orderUtils as any).checkGridPriceInvariant(slotId, price, genesis);
+}
+
+/**
+ * Derive the authoritative price for a rotation destination slot.
+ *
+ * A rotation re-prices to the destination slot, so the destination's genesis
+ * level is the authoritative price — not `action.newPrice`, which the planner
+ * copies from the destination hole's `order.price` and which is therefore only
+ * as sound as whatever last wrote that object. Deriving the emitted price here
+ * means a planner bug cannot produce a mis-priced UPDATE on its own; the
+ * invariant check remains as the backstop for the no-genesis case.
+ *
+ * @returns {number} the destination's genesis level, or NaN when there is no
+ *   genesis ladder / no parseable destination index (caller falls back to the
+ *   planned price, which is the migration case the checker fails open on).
+ */
+function deriveRotationPrice(bot: any, newGridId: any): number {
+    try {
+        const idx = parseSlotIndex(newGridId);
+        if (idx === null || idx === undefined || !Number.isFinite(idx)) return NaN;
+        const genesis = (bot?.manager as any)?._genesis;
+        if (!Array.isArray(genesis?.priceLevels) || genesis.priceLevels.length === 0) return NaN;
+        const lvl = Number(math.priceForSlot(idx, genesis));
+        return (Number.isFinite(lvl) && lvl > 0) ? lvl : NaN;
+    } catch {
+        return NaN;
+    }
+}
+
+/**
+ * Record one GRID-PRICE-INVARIANT check for an emitted order price.
+ *
+ * BLOCKING: returns false when the price is a genuine off-grid mismatch, so the
+ * caller must SKIP the emission. A price that is not a slot's genesis level is
+ * not a valid grid price, so placing it is the failure this guard exists to
+ * prevent — rejecting is the point, not a side effect.
+ *
+ * Fails OPEN on anything unjudgeable (no genesis, unparseable id, non-finite
+ * price, checker error): those are metadata problems, not off-grid prices, and
+ * blocking on them would halt legitimate trading. Only 'off-grid-price' blocks.
+ *
+ * A missing slotId is counted as unchecked rather than falling back to another
+ * id: for a rotation UPDATE the id must be the DESTINATION slot (newPrice is
+ * that slot's price), so substituting the source would flag every legitimate
+ * relocation. Callers pass the id they actually mean, or nothing.
+ *
+ * @returns {boolean} true when the caller MAY emit; false when it must skip
+ */
+function recordGridPriceInvariantCheck(bot: any, slotId: any, price: any, stats: GridPriceInvariantStats, site: string): boolean {
+    try {
+        if (slotId == null || slotId === '') {
+            stats.unchecked++;
+            return true;
+        }
+        const inv = checkGridPriceInvariant(slotId, price, (bot?.manager as any)?._genesis);
+        if (inv.reason !== 'ok' && inv.reason !== 'off-grid-price') {
+            stats.unchecked++;
+            return true;
+        }
+        stats.checked++;
+        if (inv.ok) {
+            // A CLEAN check clears the run for this slot: escalation must mean
+            // "rejected N consecutive batches", not "rejected N times ever".
+            // Without this reset a slot rejected once an hour would accumulate
+            // to the threshold over a day and fire a resync it never earned.
+            const streakMap = getInvariantRejectStreak(bot);
+            if (streakMap.has(String(slotId))) streakMap.delete(String(slotId));
+            return true;
+        }
+        stats.violated++;
+        (orderUtils as any).reportGridPriceInvariant(bot?.manager, slotId, price, site);
+        considerGridPriceInvariantEscalation(bot, slotId, price, inv, site);
+        return false;
+    } catch {
+        // A checker failure must never block a broadcast.
+        return true;
+    }
+}
+
+/**
+ * Per-slot count of CONSECUTIVE batches that rejected this slot's emission as
+ * off-grid, scoped to the BOT rather than the module.
+ *
+ * Scope matters because the monolithic runtime (`dexbot.ts`, the `dexbot` bin)
+ * constructs EVERY active bot in one process, so a module-level map would pool
+ * unrelated bots' rejections: one bot rejecting a slot twice would leave the
+ * next bot at the threshold on its FIRST rejection and fire a spurious
+ * structural resync (reload, possibly a full grid reset) on a healthy bot.
+ * Keeping it on the bot also keeps the count from outliving the resync that
+ * repairs the slot, and lets tests start from a clean slate.
+ *
+ * @param {any} bot
+ * @returns {Map<string, number>}
+ */
+function getInvariantRejectStreak(bot: any): Map<string, number> {
+    if (!(bot?._gridPriceInvariantRejectStreak instanceof Map)) {
+        bot._gridPriceInvariantRejectStreak = new Map<string, number>();
+    }
+    return bot._gridPriceInvariantRejectStreak;
+}
+
+/**
+ * Escalate a PERSISTENT off-grid rejection to a structural resync.
+ *
+ * A single rejection is handled correctly by skipping the emission and warning;
+ * the next cycle re-plans. But if the corruption lives in-process (the planner
+ * carries `candidate.price` straight from `manager.orders`), the next cycle
+ * re-plans from the SAME bad `slot.price`, is rejected identically, and warns
+ * again -- forever. The slot is dead while the bot looks healthy.
+ *
+ * After `GRID_PRICE_INVARIANT_RESYNC_THRESHOLD` consecutive rejecting batches
+ * for one slot, ask for the structural resync that repairs it (loadGrid derives
+ * slot prices from the genesis ladder). Fire-and-forget: the resync is already
+ * debounced (`_structuralGridResyncRunning`/`Timer`) and batch-in-flight aware,
+ * so repeats inside the cooldown are cheap and safe.
+ *
+ * @returns {number} the slot's current consecutive-rejection streak
+ */
+function considerGridPriceInvariantEscalation(bot: any, slotId: any, price: any, inv: any, site: string): number {
+    const key = String(slotId);
+    const streakMap = getInvariantRejectStreak(bot);
+    const streak = (streakMap.get(key) || 0) + 1;
+    streakMap.set(key, streak);
+
+    const threshold = Number((constantsModule.TIMING as any)?.GRID_PRICE_INVARIANT_RESYNC_THRESHOLD) > 0
+        ? Number((constantsModule.TIMING as any).GRID_PRICE_INVARIANT_RESYNC_THRESHOLD)
+        : 3;
+    if (streak < threshold) return streak;
+
+    if (typeof bot?.manager?.requestStructuralGridResync !== 'function') {
+        bot?.manager?.logger?.log?.(
+            `[GRID-PRICE-INVARIANT] ${slotId} rejected ${streak}x consecutively but ` +
+            `requestStructuralGridResync is unavailable; slot stays unhealed until restart`,
+            'error'
+        );
+        return streak;
+    }
+
+    // Dedicated cooldown key (NOT BOUNDARY_HOLD_RESYNC_COOLDOWN_MS: the watchdogs
+    // must tune independently). Once per cooldown window is enough -- the streak
+    // keeps counting so a later window escalates again if still unhealed.
+    const cooldownMs = Number((constantsModule.TIMING as any)?.GRID_PRICE_INVARIANT_RESYNC_COOLDOWN_MS) > 0
+        ? Number((constantsModule.TIMING as any).GRID_PRICE_INVARIANT_RESYNC_COOLDOWN_MS)
+        : 15 * 60 * 1000;
+    const now = Date.now();
+    const lastAt = Number(bot?._lastGridPriceInvariantResyncAt) || 0;
+    if (now - lastAt < cooldownMs) return streak;
+    bot._lastGridPriceInvariantResyncAt = now;
+
+    const expected = inv?.expected != null ? Number(inv.expected) : NaN;
+    const actual = Number(price);
+    bot?.manager?.logger?.log?.(
+        `[GRID-PRICE-INVARIANT] ${slotId} (${site}) rejected ${streak} consecutive batch(es) at ` +
+        `${Number.isFinite(actual) ? Format.formatPrice6(actual) : 'n/a'} ` +
+        `(genesis ${Number.isFinite(expected) ? Format.formatPrice6(expected) : 'n/a'}); ` +
+        `requesting structural resync to repair the slot`,
+        'error'
+    );
+    try {
+        const res = bot.manager.requestStructuralGridResync('grid-price-invariant-violation', {
+            slotId: String(slotId),
+            expected: Number.isFinite(expected) ? expected : null,
+            actual: Number.isFinite(actual) ? actual : null,
+            site,
+            streak,
+        });
+        (res as any)?.catch?.((err: any) => {
+            bot.manager?.logger?.log?.(
+                `[GRID-PRICE-INVARIANT] Structural resync request failed: ${getErrorMessage(err)}`,
+                'error'
+            );
+        });
+    } catch (err: any) {
+        bot.manager?.logger?.log?.(
+            `[GRID-PRICE-INVARIANT] Structural resync request failed: ${getErrorMessage(err)}`,
+            'error'
+        );
+    }
+    return streak;
+}
+
+/**
+ * Emit the per-batch GRID-PRICE-INVARIANT summary. Quiet when the batch had no
+ * checkable emission; warn when any off-grid emission was REJECTED, else info.
+ * A rejected emission is logged per-site by reportGridPriceInvariant; this is
+ * the aggregate so a batch that silently placed fewer orders than planned is
+ * explained without reading every line.
+ */
+function logGridPriceInvariantSummary(bot: any, stats: GridPriceInvariantStats, site: string): void {
+    try {
+        if (!stats || stats.checked === 0) return;
+        bot?.manager?.logger?.log?.(
+            `[GRID-PRICE-INVARIANT] site=${site} checked=${stats.checked} ` +
+            `violated=${stats.violated} unchecked=${stats.unchecked}`,
+            stats.violated > 0 ? 'warn' : 'info'
+        );
+    } catch { /* summary is best-effort */ }
+}
+
+/**
  * LAST-FILL-GUARD helper — pivot ± halfIncrement (replaces price-tolerance).
  *  last fill @x with increment i: BUY < x*(1 - i/2/100), SELL > x*(1 + i/2/100)
  *  e.g. x=1000, i=0.5% => BUY < 997.5, SELL > 1002.5
@@ -1932,6 +2148,14 @@ function refreshLastFillPivotFromQueue(bot: any): boolean {
  * Resolve the grid increment percent for the LAST-FILL guard in one place so
  * every check site and the batch summary use (and print) the same value.
  * Falls back to the default 0.5 when unset/invalid.
+ *
+ * CALL CONTRACT: this takes the BOT (`{ manager }`), not the increment or the
+ * manager. The lookup order below is `bot.manager.config` first, which works
+ * only because `OrderManager` exposes its own `config`. Callers that pass a
+ * bare manager instead of a bot get the `bot.config` / DEFAULT_CONFIG
+ * fallbacks and silently lose the manager's tuning, so pass the bot.
+ * (The manager-first order is deliberate: the guard must use the same
+ * increment the grid was built with, not whatever the bot-level config holds.)
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {number} Positive increment percent
  */
@@ -2278,6 +2502,10 @@ function applyRotationTransitionsToWorkingGrid(bot: any, workingGrid: any, execu
  * CANCELs modify existing orders and cannot be reliably distinguished from
  * "not yet visible" state by simple polling.
  *
+ * @param {Object} [options]
+ * @param {number} [options.maxPollRetries] - Poll attempts before reconciliation fallback
+ * @param {number} [options.pollIntervalMs] - Delay between polls; tests pass 0
+ *   to skip the production 1.5s pacing without changing the poll semantics
  * @returns {{ allConfirmed: boolean, confirmed: Array, unconfirmed: Array }}
  */
 async function pollChainForConfirmation(bot: any, opContexts: any, options: any = {}): Promise<{
@@ -2287,7 +2515,15 @@ async function pollChainForConfirmation(bot: any, opContexts: any, options: any 
     confirmedChainIds: string[];
 }> {
     const maxPollRetries = options.maxPollRetries || 4;
-    const pollIntervalMs = options.pollIntervalMs || 1500;
+    // Test seam (see updateOrdersOnChainBatchCOW): bot._testPollIntervalMs
+    // overrides the production pacing when set by the tests. An explicit 0 is
+    // honored; null/undefined falls through to the production 1.5s default.
+    const explicitPollMs = options.pollIntervalMs;
+    const seamMs = (bot as any)?._testPollIntervalMs;
+    const pollIntervalMs = resolveSeamMs(
+        explicitPollMs,
+        resolveSeamMs(seamMs, 1500)
+    );
 
     // Only CREATE operations can be confirmed by polling (they appear as new orders on chain)
     const createContexts = opContexts.filter((ctx: any) => ctx && ctx.kind === 'create' && ctx.finalInts && ctx.order);
@@ -2541,7 +2777,7 @@ function restoreSkippedUpdateSlotsInWorkingGrid(bot: any, workingGrid: any, skip
  *   skipped as already-consistent); handled=false when the caller must proceed
  *   with the original plan.
  */
-async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, preBroadcastGuard: any): Promise<{ handled: boolean; result?: any }> {
+async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, preBroadcastGuard: any, seamPollIntervalMs?: number): Promise<{ handled: boolean; result?: any }> {
     const canReplan = replanDepth < STALE_PLAN_REPLAN_LIMIT
         && Array.isArray(cowResult.fills) && cowResult.fills.length > 0;
     if (!canReplan) {
@@ -2617,7 +2853,11 @@ async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, p
             return {
                 handled: true,
                 result: await updateOrdersOnChainBatchCOW(bot, replanned, {
-                    replanDepth: replanDepth + 1
+                    replanDepth: replanDepth + 1,
+                    // Carry the seam through the recursion explicitly: the inner
+                    // frame re-sets and re-restores it, so it must not depend on
+                    // the outer frame's side-channel value surviving.
+                    ...(seamPollIntervalMs != null ? { pollIntervalMs: seamPollIntervalMs } : {})
                 }),
             };
         }
@@ -3057,8 +3297,67 @@ async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
     return { proceed: true, crossingCandidates, intraBatchCandidates };
 }
 
+function restoreTestPollIntervalSeam(bot: any, prev: any) {
+    try {
+        if (prev === undefined) delete (bot as any)._testPollIntervalMs;
+        else (bot as any)._testPollIntervalMs = prev;
+    } catch { /* seam restore must never break the batch */ }
+}
+
 async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: any = {}) {
     const replanDepth = Number.isFinite(Number(options?.replanDepth)) ? Number(options.replanDepth) : 0;
+    // Test seam: options.pollIntervalMs overrides the production 1.5s pacing
+    // in pollChainForConfirmation (missing-create path below) so tests do
+    // not sleep on wall-clock time. Held on the bot only for the duration of
+    // this call (see the wrapper's finally) so the inner missing-create
+    // branch and any re-plan recursion pick it up without changing the
+    // production call signature used by the runtime.
+    const seamPollIntervalMs = resolveSeamMsOrNull((options as any)?.pollIntervalMs);
+    const prevSeamPollIntervalMs = (bot as any)?._testPollIntervalMs;
+    if (seamPollIntervalMs != null) {
+        (bot as any)._testPollIntervalMs = seamPollIntervalMs;
+    }
+    // Expose the resolved interval using the same precedence the missing-create
+    // poll path applies (explicit option > bot seam > production 1500ms).
+    // Recorded in the wrapper rather than in pollChainForConfirmation so it is
+    // observable on every batch exit, including the pre-broadcast guard
+    // refusals that never reach the poll (a `||`-vs-`??` regression here is
+    // otherwise invisible: the only effect is a slower poll).
+    (bot as any)._lastResolvedPollIntervalMs = resolveSeamMs(
+        seamPollIntervalMs,
+        resolveSeamMs((bot as any)?._testPollIntervalMs, 1500)
+    );
+    // The seam override must not survive this call: every exit path (dry run,
+    // entry/pre-broadcast single-flight aborts, guard refusals, re-plan
+    // recursion, throws) funnels through the body() finally below, so no exit
+    // can leak bot._testPollIntervalMs onto the bot.
+    try {
+        return await updateOrdersOnChainBatchCOWBody(
+            bot, cowResult, replanDepth,
+            seamPollIntervalMs ?? undefined
+        );
+    } finally {
+        // Restore only when this frame actually wrote a seam. The entry
+        // single-flight await (inside body()) lets a second, seam-less batch
+        // run concurrently: an unguarded restore would delete the seam owned
+        // by an in-flight sibling call (captured prev === undefined), and that
+        // sibling's pollChainForConfirmation — which reads the bot field only,
+        // since it takes no pollIntervalMs option at its call sites — would
+        // silently fall back to the production 1500ms pacing. Guarding keeps
+        // the write-ownership scoped to this call; the saved prev still makes
+        // the nested re-plan recursion LIFO-correct.
+        if (seamPollIntervalMs != null) {
+            restoreTestPollIntervalSeam(bot, prevSeamPollIntervalMs);
+        }
+    }
+}
+
+async function updateOrdersOnChainBatchCOWBody(
+    bot: any,
+    cowResult: any,
+    replanDepth: number,
+    seamPollIntervalMs: number | undefined
+) {
     bot._currentCycleId = (Number.isFinite(Number(bot._currentCycleId)) ? Number(bot._currentCycleId) : 0) + 1;
     const { workingGrid, workingIndexes, workingBoundary, actions } = cowResult;
     // Boundary-hold value: computed pre-broadcast after the skip-restore and
@@ -3125,8 +3424,15 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
             );
             if (drainResult?.failed > 0) {
                 bot.manager.logger.log(
-                    `[COW] ${drainResult.failed} correction(s) failed pre-batch; remaining entries retry on next sync/maintenance tick`,
+                    `[COW] ${drainResult.failed} correction(s) failed pre-batch` +
+                    (drainResult.staleDropped > 0 ? `, ${drainResult.staleDropped} stale dropped` : '') +
+                    `; remaining entries retry on next sync/maintenance tick`,
                     'warn'
+                );
+            } else if (drainResult?.staleDropped > 0) {
+                bot.manager.logger.log(
+                    `[COW] Pre-batch drain resolved, ${drainResult.staleDropped} stale correction(s) dropped`,
+                    'info'
                 );
             }
         } catch (drainErr: any) {
@@ -3156,7 +3462,17 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     // Per-batch LAST-FILL-GUARD disposition counters. Per-action pass lines
     // would spam big batches, so the guard emits one batch summary instead
     // (see the summary after the action loop below).
-    const lastFillGuardStats = { checked: 0, passed: 0, skipped: 0, bypassed: 0 };
+    const lastFillGuardStats = { checked: 0, passed: 0, skipped: 0, bypassed: 0, pivotOffGrid: 0 };
+    // Fingerprints of the pending-broadcast entries recorded by THIS batch's
+    // op-building (both CREATE paths). The final pivot gate's compaction
+    // remaps these entries' stored opIndex/ctxIndex to their post-drop
+    // positions; entry.batchId cannot discriminate batches (always null in
+    // production), so the fingerprint set is the ownership marker.
+    const batchPendingFps = new Set<string>();
+    // Per-batch GRID-PRICE-INVARIANT counters (BLOCKING). Tracks emitted prices
+    // that are not the genesis level for their slot — such emissions are
+    // rejected, not placed. One batch summary.
+    const gridPriceInvariantStats: GridPriceInvariantStats = { checked: 0, violated: 0, unchecked: 0 };
     // Whether any guard check in this batch refreshed the pivot from
     // still-queued fills — reported in the batch summary so a pivot change
     // that altered a guard decision is visible at info, not just debug.
@@ -3168,7 +3484,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     const clampedUpdateSlotIds = new Set();
     // orderId -> operations index of its cancel op. A crossing re-pricing
     // update is only safe when the crossed order's cancel was already queued
-    // at an earlier position: ops broadcast in MAX_OPS_PER_BROADCAST chunks,
+    // at an earlier position: ops broadcast in gap-slot-sized chunks,
     // so an earlier index means the cancel confirms on chain (same or earlier
     // chunk, applied sequentially) before the crossing order lands.
     const cancelOpIndexByOrderId = new Map<string, number>();
@@ -3207,8 +3523,26 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         // mutated the pivot mid-batch (02:03 pivots drifted 0.001523→0.001529
         // across 20 checks), so early actions were judged against a different
         // pivot than later ones. The batch summary still reports whether this
-        // freeze moved the pivot under the plan.
+        // freeze moved the pivot under the plan. The frozen value feeds the
+        // final pre-broadcast gate below (runFinalPivotGate), which re-checks
+        // built ops when a fill queued AFTER the freeze moved the pivot.
+        // freezeQueueDepth is the Step-2 observability half: queue depth at
+        // freeze time, paired with the gate's own queue readout.
+        let freezeQueueDepth: number | null = null;
+        try {
+            freezeQueueDepth = Array.isArray((bot as any)?._incomingFillQueue)
+                ? (bot as any)._incomingFillQueue.length
+                : null;
+        } catch { freezeQueueDepth = null; }
         try { if (refreshLastFillPivotFromQueue(bot)) lastFillGuardPivotRefreshed = true; } catch { /* best-effort */ }
+        // Captured AFTER the freeze refresh, not before: the refresh is part
+        // of the freeze, so the baseline must be the pivot the ops are about
+        // to be judged against. Capturing pre-refresh would make every batch
+        // whose freeze picked up a pre-freeze queued fill look "moved" at the
+        // gate — a spurious warn plus a redundant full re-check against the
+        // identical pivot.
+        const frozenPivotAtBatchStart = (bot.manager as any)?._lastFilledPrice;
+        const frozenTypeAtBatchStart = (bot.manager as any)?._lastFilledType;
         for (const action of actions) {
             if (action.type === COW_ACTIONS.CANCEL) {
                 try {
@@ -3252,15 +3586,23 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     const priceDrift = Number.isFinite(plannedPrice) && Number.isFinite(livePrice)
                         ? Math.abs(livePrice - plannedPrice)
                         : 0;
-                    const effectiveOrder = (priceDrift > 0)
-                        ? { ...order, price: livePrice, size: order.size, type: order.type }
-                        : order;
+                    // The planned price is emitted as-is. A pre-broadcast
+                    // substitution with liveSlot.price used to rewrite it here
+                    // at `debug` level, which meant a slot whose price had been
+                    // mutated off its genesis level got re-broadcast under a
+                    // different number than the plan validated (crossing,
+                    // collision and last-fill guards all ran on `createPrice`).
+                    // slot.price is derived from the genesis ladder, not
+                    // authoritative, so a divergence is a signal to report —
+                    // never a value to adopt. Reported at `warn`: a divergence
+                    // here is a writer bug, not routine freshness.
+                    const effectiveOrder = order;
                     if (priceDrift > 0) {
                         bot.manager.logger.log(
-                            `[COW] Pre-broadcast price freshness: slot ${order.id} ` +
-                            `drifted from planned=${plannedPrice} to live=${livePrice} ` +
-                            `(diff=${priceDrift}); rebuilding CREATE op with live price.`,
-                            'debug'
+                            `[COW] Pre-broadcast price drift on slot ${order.id}: ` +
+                            `planned=${plannedPrice} live=${livePrice} (diff=${priceDrift}); ` +
+                            `emitting planned price (live slot price is derived from genesis and is not authoritative).`,
+                            'warn'
                         );
                     }
 
@@ -3282,13 +3624,14 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
 
                     // CROSSING-PLACEMENT GUARD (create variant): the batch-level
                     // validators (validateCreateTargetSlots, detectCrossedBookPlan)
-                    // simulated the PLANNED price, but the pre-broadcast price
-                    // freshness rebuild above can move the op's price. Re-check
-                    // crossing on the FINAL price against live and chain-side
-                    // orders not already cancelled at an earlier op position —
-                    // an opposite-side order cancelled in a later chunk would
-                    // otherwise coexist with this create mid-broadcast and
-                    // self-trade (production incident class).
+                    // simulated the PLANNED price. That is now the price emitted
+                    // (the pre-broadcast substitution was removed), but the guard
+                    // is retained as defence-in-depth: it re-checks on the FINAL
+                    // price against live and chain-side orders not already
+                    // cancelled at an earlier op position — an opposite-side
+                    // order cancelled in a later chunk would otherwise coexist
+                    // with this create mid-broadcast and self-trade (production
+                    // incident class).
                     const createCrossed = findCrossedOrder(
                         crossingCandidates,
                         createPrice,
@@ -3343,6 +3686,15 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     } catch (_e: any) { /* guard is best-effort */ }
 
                     const args = buildCreateOrderArgs(effectiveOrder, assetA, assetB);
+                    // GRID-PRICE-INVARIANT (blocking): the CREATE price must be
+                    // the genesis level for this slot. A mismatch means state
+                    // corruption upstream, so the emission is skipped rather
+                    // than placed — the next reconcile cycle re-plans. See
+                    // docs/GRID_PRICE_INVARIANT.md.
+                    if (!recordGridPriceInvariantCheck(bot, order.id, createPrice, gridPriceInvariantStats, 'CREATE')) {
+                        if (order.id) skippedCreateSlotIds.add(order.id);
+                        continue;
+                    }
                     const buildResult = await chainOrders.buildCreateOrderOp(
                         bot.account,
                         args.amountToSell,
@@ -3362,12 +3714,13 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     operations.push(buildResult.op);
                     opContexts.push({ kind: 'create', id: order.id, order: effectiveOrder, args, finalInts: buildResult.finalInts });
                     intraBatchCandidates.push(effectiveOrder);
-                    recordPendingBroadcast(bot, {
+                    const recordedFp = recordPendingBroadcast(bot, {
                         opIndex: operations.length - 1,
                         ctxIndex: opContexts.length - 1,
                         order: effectiveOrder,
                         finalInts: buildResult.finalInts
                     });
+                    if (recordedFp) batchPendingFps.add(recordedFp);
                 } catch (err: any) {
                     bot.manager.logger.log(`Failed to prepare create op for ${action.id}: ${getErrorMessage(err)}`, 'error');
                 }
@@ -3376,9 +3729,32 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                     if (action.newGridId && action.newGridId !== action.id) {
                         const masterOrder = bot.manager.orders.get(action.id);
                         const orderType = action.order?.type || masterOrder?.type;
-                        const newPrice = Number.isFinite(Number(action.newPrice))
+                        // ROTATION PRICE IS THE DESTINATION'S GENESIS LEVEL.
+                        //
+                        // A rotation re-prices to the destination slot, so the
+                        // destination's level is the authoritative price — not
+                        // action.newPrice, which the planner copies from
+                        // hole.order.price and which is therefore only as sound
+                        // as whatever wrote that object. Deriving it here means a
+                        // planner bug cannot produce a mis-priced UPDATE even if
+                        // the invariant check below were bypassed; the check
+                        // stays as the backstop that catches a missing genesis
+                        // ladder (where it fails open) rather than the only
+                        // thing standing between a bad plan and a live order.
+                        const derivedNewPrice = deriveRotationPrice(bot, action.newGridId);
+                        const plannedNewPrice = Number.isFinite(Number(action.newPrice))
                             ? Number(action.newPrice)
                             : Number(action.order?.price);
+                        let newPrice = Number.isFinite(derivedNewPrice) ? derivedNewPrice : plannedNewPrice;
+                        if (Number.isFinite(derivedNewPrice) && Number.isFinite(plannedNewPrice)
+                            && Math.abs(derivedNewPrice - plannedNewPrice) > Math.max(1e-12, Math.abs(derivedNewPrice) * 1e-9)) {
+                            bot.manager.logger.log(
+                                `[GRID-PRICE-INVARIANT] Rotation ${action.id} -> ${action.newGridId}: planned price ${Format.formatPrice6(plannedNewPrice)} ` +
+                                `differs from the destination's genesis level ${Format.formatPrice6(derivedNewPrice)} — ` +
+                                `emitting the genesis level`,
+                                'warn'
+                            );
+                        }
                         const newSize = plannedUpdateSize(action);
 
                         if (!masterOrder || !action.orderId || !orderType || !Number.isFinite(newPrice) || newSize <= 0) {
@@ -3615,6 +3991,18 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             assetA,
                             assetB
                         );
+                        // GRID-PRICE-INVARIANT (blocking): the emitted price
+                        // is action.newPrice, which every planner derives from the
+                        // object named by action.newGridId (verified: grid.ts:1867,
+                        // utils/system.ts:1195, validate.ts:600/746). Pass the
+                        // destination id only — no source fallback, so a missing id
+                        // counts as unchecked instead of checking the wrong slot.
+                        if (!recordGridPriceInvariantCheck(bot, action.newGridId, newPrice, gridPriceInvariantStats, 'UPDATE')) {
+                            skippedUpdateCount++;
+                            if (action.id) skippedUpdateSlotIds.add(action.id);
+                            if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
+                            continue;
+                        }
 
                         const buildResult = await chainOrders.buildUpdateOrderOp(
                             bot.account,
@@ -3696,12 +4084,16 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             const priceDrift = Number.isFinite(plannedPrice) && Number.isFinite(livePrice)
                                 ? Math.abs(livePrice - plannedPrice)
                                 : 0;
-                            const fbPrice = (priceDrift > 0) ? livePrice : plannedPrice;
+                            const fbPrice = plannedPrice;
                             if (priceDrift > 0) {
+                                // Same rationale as the primary CREATE path: emit
+                                // the planned price and report the divergence
+                                // rather than adopting a derived live price.
                                 bot.manager.logger.log(
                                     `[COW] CREATE fallback price drift for ${action.id} -> ${targetSlotId}: ` +
-                                    `planned=${plannedPrice} live=${livePrice} (diff=${priceDrift})`,
-                                    'debug'
+                                    `planned=${plannedPrice} live=${livePrice} (diff=${priceDrift}); ` +
+                                    `emitting planned price.`,
+                                    'warn'
                                 );
                             }
                             const sizeCheck = validateOrderSizeForExecution(bot, fbSize, fbType, fbOrder, fbSize);
@@ -3780,6 +4172,10 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                     { type: fbType, size: fbSize, price: fbPrice },
                                     assetA, assetB
                                 );
+                                // GRID-PRICE-INVARIANT (blocking): fallback CREATE.
+                                if (!recordGridPriceInvariantCheck(bot, targetSlotId, fbPrice, gridPriceInvariantStats, 'CREATE-FALLBACK')) {
+                                    continue;
+                                }
                                 const fbResult = await chainOrders.buildCreateOrderOp(
                                     bot.account,
                                     fbArgs.amountToSell,
@@ -3797,12 +4193,13 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                                         args: { amountToSell: fbArgs.amountToSell, minToReceive: fbArgs.minToReceive },
                                         finalInts: fbResult.finalInts
                                     });
-                                    recordPendingBroadcast(bot, {
+                                    const fbRecordedFp = recordPendingBroadcast(bot, {
                                         opIndex: operations.length - 1,
                                         ctxIndex: opContexts.length - 1,
                                         order: { id: targetSlotId, type: fbType, price: fbPrice, size: fbSize },
                                         finalInts: fbResult.finalInts
                                     });
+                                    if (fbRecordedFp) batchPendingFps.add(fbRecordedFp);
                                     bot.manager.logger.log(
                                         `[COW] Recovered "not found" for ${action.id}: converted UPDATE to CREATE for slot ${targetSlotId}`,
                                         'warn'
@@ -3822,6 +4219,72 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
             }
         }
 
+        // FINAL PRE-BROADCAST PIVOT GATE (2026-09-13 incident on a live
+        // market-pair bot): a
+        // fill queued AFTER the batch-start freeze but BEFORE broadcast
+        // passes every per-action check on a stale pivot (freeze .745, fill
+        // queued .765, broadcast .910). Re-check the BUILT ops against a
+        // re-refreshed pivot here — after op-building, before the batch
+        // summary (drops count as skipped, not passed), fund validation
+        // (snapshot reflects filtered ops) and single-flight claim.
+        // op indexes recorded during op-building are rebuilt from kept
+        // contexts below, so any future reader sees live indexes.
+        // The gate runs on its OWN stats object: its re-checks would
+        // otherwise double-count the build loop's checked/passed/skipped
+        // totals in the batch summary below. Gate contributions are
+        // reported separately (gateChecked=... fields).
+        const skippedUpdateCountRef = { count: 0 };
+        const finalGateStats = { checked: 0, passed: 0, skipped: 0, bypassed: 0, pivotOffGrid: 0 };
+        let finalGate: { dropped: Array<any>; pivotChanged: boolean; refreshed: boolean } | null = null;
+        try {
+            finalGate = runFinalPivotGate(bot, operations, opContexts, {
+                actions,
+                cowResult,
+                frozenPivot: frozenPivotAtBatchStart,
+                frozenType: frozenTypeAtBatchStart,
+                lastFillGuardStats: finalGateStats,
+                skippedUpdateSlotIds,
+                skippedCreateSlotIds,
+                skippedUpdateCountRef,
+                freezeQueueDepth,
+                batchPendingFps,
+            });
+            if (finalGate.refreshed) lastFillGuardPivotRefreshed = true;
+            if (finalGate.pivotChanged) {
+                try {
+                    const fmtP = (v: any) => (v == null || !Number.isFinite(Number(v)) ? 'none' : Format.formatPrice6(Number(v)));
+                    bot.manager?.logger?.log?.(
+                        `[LAST-FILL-GUARD] Final gate: pivot moved under batch ` +
+                        `${fmtP(frozenPivotAtBatchStart)}(${frozenTypeAtBatchStart ?? 'cold'})` +
+                        `->${fmtP((bot.manager as any)?._lastFilledPrice)}(${(bot.manager as any)?._lastFilledType ?? 'cold'}) ` +
+                        `(freezeQueue=${freezeQueueDepth ?? '?'}) ` +
+                        `dropped=${finalGate.dropped.length}`,
+                        'warn'
+                    );
+                } catch { /* logging is best-effort */ }
+            }
+            // Rebuild cancelOpIndexByOrderId from the KEPT contexts: the
+            // gate compacted operations/opContexts in lockstep, so indexes
+            // recorded during op-building are stale for every op after the
+            // first drop. cancelOpIndexByOrderId has NO readers past this
+            // point (verified: the op-building loop is its last use —
+            // pair-mode/chunk grouping is computed lazily at broadcast from
+            // opContexts with no stored indexes), so this rebuild is
+            // defence-in-depth for future readers, not a live fix.
+            cancelOpIndexByOrderId.clear();
+            for (let ci = 0; ci < opContexts.length; ci++) {
+                const cctx: any = opContexts[ci];
+                const cord: any = (cctx as any)?.order;
+                const cOrderId = (cctx as any)?.kind === 'cancel'
+                    ? (cctx as any)?.order?.orderId || (cctx as any)?.orderId
+                    : cord?.orderId;
+                if (cOrderId) cancelOpIndexByOrderId.set(cOrderId, ci);
+            }
+            // skippedUpdateCount is threaded via countRef so the restore
+            // below covers gate-dropped rotations too.
+            if (skippedUpdateCountRef.count > 0) skippedUpdateCount += skippedUpdateCountRef.count;
+        } catch (_gateErr: any) { /* gate is fail-open: keep the built ops */ }
+
         // Batch-level LAST-FILL-GUARD summary: per-action pass lines would spam
         // big batches, so one line per batch records the mode, pivot, resolved
         // increment, and pass/skip/bypass counts — the guard's pass decisions
@@ -3833,7 +4296,16 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         // for the whole batch, so every action was checked against the same
         // pivot printed here.
         try {
-            const totalGuarded = lastFillGuardStats.checked + lastFillGuardStats.bypassed;
+            // The final gate reports on its OWN counters (finalGateStats), so
+            // checked/passed/skipped/bypassed here are the build loop's
+            // verdicts only — the gate's re-checks never inflate them. The
+            // gate's contributions ride along as gate* fields, omitted when
+            // the gate did not re-check anything (same convention as
+            // pivotOffGrid above). totalGuarded includes the gate so a
+            // batch that was ONLY gate-checked (e.g. cold freeze armed
+            // mid-batch) still prints.
+            const gateGuarded = finalGateStats.checked + finalGateStats.bypassed;
+            const totalGuarded = lastFillGuardStats.checked + lastFillGuardStats.bypassed + gateGuarded;
             if (totalGuarded > 0) {
                 const sumPivotRaw = (bot.manager as any)?._lastFilledPrice;
                 const sumType = (bot.manager as any)?._lastFilledType;
@@ -3848,15 +4320,42 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
                             ? `active+bypassed(${batchOrigin || 'unknown'})`
                             : 'active');
                 const pivotStr = cold ? 'none' : `${Format.formatPrice6(Number(sumPivotRaw))}(${sumType})`;
+                // Report when the pivot used for this batch was NOT a ladder
+                // level: that is the precondition for a pivoted ratchet, and
+                // the value alone does not reveal it.
+                const batchPivot = cold ? null : resolveOnGridPivot(bot.manager, sumPivotRaw);
+                const pivotGridStr = cold
+                    ? ''
+                    : (batchPivot && batchPivot.idx != null
+                        ? ` pivotSlot=${batchPivot.idx}${batchPivot.snapped ? '(snapped)' : ''}`
+                        : ' pivotOffGrid=true');
                 bot.manager.logger.log(
-                    `[LAST-FILL-GUARD] mode=${mode} pivot=${pivotStr} inc=${sumInc}% ` +
+                    `[LAST-FILL-GUARD] mode=${mode} pivot=${pivotStr}${pivotGridStr} inc=${sumInc}% ` +
                     `pivotRefreshed=${lastFillGuardPivotRefreshed} ` +
                     `checked=${lastFillGuardStats.checked} passed=${lastFillGuardStats.passed} ` +
-                    `skipped=${lastFillGuardStats.skipped} bypassed=${lastFillGuardStats.bypassed}`,
-                    cold ? 'warn' : 'info'
+                    `skipped=${lastFillGuardStats.skipped} bypassed=${lastFillGuardStats.bypassed}` +
+                    // Per-action off-ladder count. The batch-level
+                    // `pivotOffGrid=true` flag above only says the pivot was
+                    // off-grid; this says HOW MANY guarded probes judged a
+                    // placement against an unsnapped pivot, which is the
+                    // quantity that grows during the ratchet this guard
+                    // exists to catch. Omitted (not `0`) when never set, so
+                    // "no off-grid probes" stays distinguishable from
+                    // "counter unavailable".
+                    (Number(lastFillGuardStats.pivotOffGrid) > 0
+                        ? ` pivotOffGrid=${lastFillGuardStats.pivotOffGrid}`
+                        : '') +
+                    (gateGuarded > 0
+                        ? ` gateChecked=${finalGateStats.checked} gatePassed=${finalGateStats.passed} ` +
+                          `gateSkipped=${finalGateStats.skipped} gateBypassed=${finalGateStats.bypassed}`
+                        : ''),
+                    cold || (batchPivot && batchPivot.idx == null) ? 'warn' : 'info'
                 );
             }
         } catch { /* summary is best-effort */ }
+
+        // Batch-level GRID-PRICE-INVARIANT summary (rejected emissions).
+        logGridPriceInvariantSummary(bot, gridPriceInvariantStats, 'COW');
 
         if (skippedUpdateCount > 0) {
             restoreSkippedUpdateSlotsInWorkingGrid(bot, workingGrid, skippedUpdateSlotIds, skippedUpdateCount);
@@ -3977,7 +4476,7 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
         });
         if (!preBroadcastGuard.canCommit) {
             // Bounded re-plan + proceed — policy documented on replanStaleBatch.
-            const replan = await replanStaleBatch(bot, cowResult, replanDepth, preBroadcastGuard);
+            const replan = await replanStaleBatch(bot, cowResult, replanDepth, preBroadcastGuard, seamPollIntervalMs);
             if (replan.handled) {
                 return replan.result;
             }
@@ -4612,6 +5111,61 @@ async function recoverRefusedCommit(bot: any, chainOrders: any, logPrefix: strin
 }
 
 /**
+ * Resolve the LAST-FILL guard pivot to an ON-GRID price.
+ *
+ * The pivot was a raw fill price, and nothing validated it. That made it a
+ * ratchet input: any bad pivot (a corrupt fill price, an adopted off-grid
+ * order) shifted every subsequent threshold, so an off-market buy could read
+ * as legitimate. A price is only meaningful relative to the ladder it trades
+ * on, so the pivot is converted to its nearest slot index and back to that
+ * slot's genesis price: the result is by construction a real grid level and
+ * cannot drift off the ladder.
+ *
+ * Falls back to the raw price when genesis is unavailable (pre-genesis
+ * startup), so the guard degrades to its previous behaviour rather than
+ * silently disabling. Never throws.
+ *
+ * @param {any} manager
+ * @param {number|null|undefined} rawPrice
+ * @returns {{price: number|null, snapped: boolean, idx: number|null, nearestDrift: number|null}}
+ */
+function resolveOnGridPivot(manager: any, rawPrice: any): { price: number|null; snapped: boolean; idx: number|null; nearestDrift: number|null } {
+    const price = Number(rawPrice);
+    if (!Number.isFinite(price) || price <= 0) return { price: null, snapped: false, idx: null, nearestDrift: null };
+    try {
+        const genesis = manager?._genesis;
+        const levels = genesis?.priceLevels;
+        if (!Array.isArray(levels) || levels.length === 0) return { price, snapped: false, idx: null, nearestDrift: null };
+        const idx = math.slotIndexForPrice(price, genesis);
+        if (!Number.isFinite(idx)) return { price, snapped: false, idx: null, nearestDrift: null };
+        // Only accept a genuine ladder level and only a nearest match. A price
+        // that is wildly off-ladder (an adopted orphan far outside the grid)
+        // must NOT be silently rewritten onto an edge slot -- that would make a
+        // bad pivot look like a legitimate grid fill. Leave it snapped=false and
+        // let the caller decide.
+        const candidate = Number(math.priceForSlot(idx, genesis));
+        if (!Number.isFinite(candidate) || candidate <= 0) return { price, snapped: false, idx: null, nearestDrift: null };
+        // Reject a snap that moves the pivot by more than one increment: any
+        // in-grid fill is within half an increment of its slot price, so a
+        // larger move means the pivot itself is not a real fill price.
+        const drift = Math.abs(candidate - price) / price;
+        // resolveLastFillGuardIncrement takes a BOT-shaped argument and reads
+        // `bot.manager.config` first. resolveOnGridPivot only ever has the
+        // manager (no bot in scope), so wrap it to satisfy that contract.
+        // Passing the manager directly would silently skip its own tuning and
+        // fall through to DEFAULT_CONFIG, making the snap tolerance wrong for
+        // any grid not built on the default increment.
+        const increment = resolveLastFillGuardIncrement({ manager }) / 100;
+        const maxDrift = Number.isFinite(increment) && increment > 0 ? increment : 0.005;
+        // nearestDrift is reported even when the snap is refused, so a caller
+        // can tell a near-miss (rounding, one increment out) from a price that
+        // is nowhere near the ladder (a genuinely corrupt pivot).
+        if (drift > maxDrift) return { price, snapped: false, idx: null, nearestDrift: drift };
+        return { price: candidate, snapped: drift > 0, idx, nearestDrift: drift };
+    } catch { return { price, snapped: false, idx: null, nearestDrift: null }; }
+}
+
+/**
  * Run the last-fill guard probe: optionally refresh the pivot from
  * still-queued fills, read the durable pivot, and evaluate
  * isLastFillGuardBlocked. Consolidates the identical probe pattern in the
@@ -4619,6 +5173,13 @@ async function recoverRefusedCommit(bot: any, chainOrders: any, logPrefix: strin
  * skip logging stay at the call sites, which differ per action kind).
  * Batch callers pass skipRefresh=true: the batch-start freeze owns refreshes
  * so every action in a batch is judged against the same pivot.
+ *
+ * FINAL-GATE CONTRACT (see runFinalPivotGate): the gate re-checks BUILT ops
+ * against a re-refreshed pivot AFTER the op-building loop. It must run BEFORE
+ * any later mutation of operations/opContexts (fund validation snapshot,
+ * pair-mode/chunk grouping) — those stages index op positions and read stale
+ * indexes after a filter. Call sites after the gate must treat
+ * operations/opContexts as the filtered arrays.
  * @param {Object} bot
  * @param {number} price - Target order price
  * @param {number} size - Order size
@@ -4638,9 +5199,355 @@ function runLastFillGuardCheck(bot: any, price: number, size: number, type: stri
     const lastPrice = (bot.manager as any)?._lastFilledPrice;
     const lastType = (bot.manager as any)?._lastFilledType;
     const inc = resolveLastFillGuardIncrement(bot);
-    const check = isLastFillGuardBlocked(price, size, type, lastPrice, lastType, inc);
+    // Validate the pivot onto the ladder before use (see resolveOnGridPivot).
+    // Reported once per probe at warn when the raw pivot was NOT a grid level:
+    // that is the ratchet precondition, and it is otherwise invisible because
+    // the pivot is only ever logged by value.
+    const onGrid = resolveOnGridPivot(bot.manager, lastPrice);
+    if (lastPrice != null && onGrid.idx == null && Number.isFinite(Number(lastPrice))) {
+        try {
+            // A persistently off-ladder pivot is exactly the corruption case, so
+            // this branch would otherwise warn once per guarded action per batch
+            // on top of the batch summary (which already reports pivotOffGrid).
+            // Warn once per distinct pivot value per batch: repeated identical
+            // pivots are the same condition, and a CHANGED pivot still warns.
+            const warnedKey = `lastFillPivotWarned:${bot?._currentCycleId ?? 'na'}`;
+            const alreadyWarned = (bot as any)[warnedKey];
+            if (alreadyWarned !== Number(lastPrice)) {
+                (bot as any)[warnedKey] = Number(lastPrice);
+                // Distinguish "close to a level but too far to snap" from "nowhere
+                // near the ladder". The former is a rounding/drift artifact; the
+                // latter means the pivot itself is not a real fill price.
+                const far = onGrid.nearestDrift == null || onGrid.nearestDrift > 0.02;
+                const kind = far ? 'off-ladder' : 'near-ladder'
+                    + (onGrid.nearestDrift != null ? ` (${(onGrid.nearestDrift * 100).toFixed(4)}% from the nearest level)` : '');
+                bot.manager?.logger?.log?.(
+                    `[LAST-FILL-GUARD] Pivot ${Format.formatPrice6(Number(lastPrice))} is not a grid level ` +
+                    `(${kind}); using raw value. A non-grid pivot can ` +
+                    `misjudge which placements are off-market. ` +
+                    `(reported once per batch per pivot value)`,
+                    'warn'
+                );
+            }
+        } catch { /* logging is best-effort */ }
+        stats.pivotOffGrid = (stats.pivotOffGrid || 0) + 1;
+    }
+    const check = isLastFillGuardBlocked(price, size, type, onGrid.price, lastType, inc);
     stats.checked++;
     return { check, refreshed };
+}
+
+/**
+ * Final pre-broadcast pivot gate: re-check BUILT ops against a re-refreshed
+ * pivot RIGHT BEFORE broadcast.
+ *
+ * Why this exists (2026-09-13 incident on a live market-pair bot): the batch-start freeze
+ * refreshes the pivot once, then every CREATE / rotation-UPDATE /
+ * fallback-CREATE is judged against that frozen value (skipRefresh=true).
+ * A fill that is queued AFTER the freeze but BEFORE broadcast (in the
+ * incident: freeze at .745, fill queued at .765, broadcast at .910) passes
+ * every per-action check on a stale pivot and ships. The batch summary
+ * prints pivotRefreshed=false — the freeze honestly found nothing — and
+ * the violating ops broadcast anyway.
+ *
+ * Placement (see FINAL-GATE CONTRACT on runLastFillGuardCheck):
+ *   1. Called after the op-building action loop, BEFORE the LAST-FILL-GUARD
+ *      batch summary line (so dropped ops are visible as skipped, not
+ *      passed) and BEFORE fund validation (so the VALIDATION snapshot
+ *      reflects the filtered ops).
+ *   2. Must run before pair-mode/chunk grouping, which indexes op positions.
+ *      executeOperationsWithStrategy groups lazily at broadcast time from
+ *      the (filtered) opContexts it receives, so filtering here is safe —
+ *      but any future grouping computed between op-building and broadcast
+ *      must be rebuilt after the gate (same rule as the contract).
+ *
+ * Semantics:
+ *   - Peek-only refresh (never drains the fill queue — same as the freeze).
+ *   - Pivot UNCHANGED since the freeze => pure no-op: returns the input
+ *     arrays untouched, no extra log lines beyond queue-depth debug.
+ *   - Pivot CHANGED => re-run isLastFillGuardBlocked against each built op's
+ *     final price with the SAME bypass rules as the build loop
+ *     (spread-correction CREATEs, stamped gap-evacuation UPDATEs). Violating
+ *     ops + their contexts are dropped; their slots feed the existing
+ *     skippedUpdateSlotIds/skippedCreateSlotIds restore paths so the working
+ *     grid stays consistent (dropped rotations restore from master, dropped
+ *     creates count toward the boundary-hold intersect).
+ *   - fail-open on everything unjudgeable: unresolvable price/type, cold
+ *     pivot (null), or a refresh/inference throw => the op is KEPT. A gate
+ *     that cannot prove a violation must not invent one — dropping a healthy
+ *     op strands its slot, while a missed violation is still caught by the
+ *     next cycle's guard + commit chain adoption.
+ *   - size-update ops are NEVER gated (same-price, no repricing).
+ *   - cancel ops are NEVER gated or dropped.
+ *
+ * Stale-index hygiene: recordPendingBroadcast stores opIndex/ctxIndex
+ * against the build-time arrays. Dropped CREATEs must have their pending
+ * entries removed (else the reconcile path adopts a broadcast that never
+ * shipped), and KEPT entries must have their stored indexes REMAPPED: a
+ * lockstep compaction keeps operations/opContexts aligned with each other,
+ * but the absolute indexes stored inside the pending entries are not
+ * rewritten by it — after the first drop, an unremapped ctxIndex resolves
+ * to a shifted position (undefined at best, a DIFFERENT create's context at
+ * worst, which would let adoptMatchedEntries synchronize the wrong slot
+ * with a matched chain order). The gate therefore builds an old→new index
+ * map during compaction and remaps/removes entries identified by
+ * opts.batchPendingFps (the fingerprints THIS batch recorded — entry.batchId
+ * is always null in production, so it cannot discriminate). Sibling
+ * batches' entries are never touched (their indexes refer to their own
+ * build-time arrays).
+ *
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {Array} operations - Built chain ops (mutated in place on drop)
+ * @param {Array} opContexts - Built op contexts (mutated in place on drop)
+ * @param {Object} opts - { actions, cowResult, frozenPivot, frozenType,
+ *   lastFillGuardStats, skippedUpdateSlotIds, skippedCreateSlotIds,
+ *   skippedUpdateCountRef: { count }, freezeQueueDepth, batchPendingFps }
+ * @returns {{ dropped: Array, pivotChanged: boolean, refreshed: boolean }}
+ */
+function runFinalPivotGate(bot: any, operations: any[], opContexts: any[], opts: any = {}): { dropped: Array<any>; pivotChanged: boolean; refreshed: boolean } {
+    const empty = { dropped: [], pivotChanged: false, refreshed: false };
+    try {
+        if (!Array.isArray(operations) || !Array.isArray(opContexts) || operations.length === 0) return empty;
+        const stats = opts?.lastFillGuardStats;
+        const frozenPivot = Number(opts?.frozenPivot);
+        const frozenType = opts?.frozenType;
+        const frozenCold = !Number.isFinite(frozenPivot) || frozenType == null;
+        const queueDepthBefore = Array.isArray((bot as any)?._incomingFillQueue)
+            ? (bot as any)._incomingFillQueue.length
+            : null;
+        // Peek-only re-refresh: never drains the queue (same as the freeze).
+        let refreshed = false;
+        try { refreshed = !!refreshLastFillPivotFromQueue(bot); } catch { refreshed = false; }
+        const queueDepthAfter = Array.isArray((bot as any)?._incomingFillQueue)
+            ? (bot as any)._incomingFillQueue.length
+            : null;
+        const livePivot = Number((bot.manager as any)?._lastFilledPrice);
+        const liveType = (bot.manager as any)?._lastFilledType;
+        const liveCold = !Number.isFinite(livePivot) || liveType == null;
+        // No-op fast path: pivot unchanged (or uncomparable) since the freeze.
+        // frozenCold + liveCold: guard stayed disabled — nothing to re-check.
+        // frozenCold + liveArmed: the freeze ran cold but a fill arrived
+        // mid-batch. The built ops were NEVER guarded; treat as changed so
+        // they are checked below (fail-open keeps whatever is unjudgeable).
+        let pivotChanged = refreshed;
+        if (frozenCold && liveCold) pivotChanged = false;
+        else if (!frozenCold && !liveCold) pivotChanged = livePivot !== frozenPivot || liveType !== frozenType;
+        else pivotChanged = true;
+        try {
+            bot.manager?.logger?.log?.(
+                `[LAST-FILL-GUARD] Final gate: queue ${queueDepthBefore ?? '?'}->${queueDepthAfter ?? '?'} ` +
+                `pivot ${Number.isFinite(frozenPivot) ? Format.formatPrice6(frozenPivot) : 'none'}(${frozenType ?? 'cold'})` +
+                `->${Number.isFinite(livePivot) ? Format.formatPrice6(livePivot) : 'none'}(${liveType ?? 'cold'}) ` +
+                `changed=${pivotChanged} refreshed=${refreshed}`,
+                'debug'
+            );
+        } catch { /* logging is best-effort */ }
+        if (!pivotChanged) return { ...empty, refreshed };
+        // Pivot moved (or armed mid-batch): re-check every built op's FINAL
+        // price. Same bypass rules as the build loop; unjudgeable => KEEP.
+        const actions = Array.isArray(opts?.actions) ? opts.actions : [];
+        const batchOrigin = (opts?.cowResult as any)?.origin;
+        const actionBySlot = new Map<string, any>();
+        for (const a of actions) {
+            if (!a) continue;
+            // Rotation UPDATEs are keyed by DESTINATION slot (the emitted
+            // price is the destination's level); plain CREATEs by slot id.
+            const rotDest = (a as any)?.newGridId;
+            const key = (a?.type === COW_ACTIONS.UPDATE && rotDest && rotDest !== a?.id) ? rotDest : a?.id;
+            if (key && !actionBySlot.has(key)) actionBySlot.set(key, a);
+        }
+        const dropIdx = new Set<number>();
+        const dropped: Array<any> = [];
+        const inc = resolveLastFillGuardIncrement(bot);
+        const onGrid = resolveOnGridPivot(bot.manager, (bot.manager as any)?._lastFilledPrice);
+        for (let i = 0; i < opContexts.length; i++) {
+            const ctx: any = opContexts[i];
+            if (!ctx || ctx.kind === 'cancel' || ctx.kind === 'size-update') continue;
+            let price: number | null = null;
+            let type: string | null = null;
+            let size: number | null = null;
+            let slotId: string | null = null;
+            let action: any = null;
+            if (ctx.kind === 'create') {
+                slotId = ctx.id || ctx.order?.id || null;
+                price = Number(ctx.order?.price);
+                type = ctx.order?.type || null;
+                size = Number(ctx.order?.size);
+                action = (slotId && actionBySlot.get(slotId)) || null;
+                // Spread-correction CREATE bypass (mirrors the build loop:
+                // per-action origin, batch origin as back-compat fallback).
+                const actionOrigin = (action as any)?.origin;
+                if (actionOrigin === 'spread-correction'
+                    || (actionOrigin == null && batchOrigin === 'spread-correction')) {
+                    if (stats) stats.bypassed = (Number(stats.bypassed) || 0) + 1;
+                    continue;
+                }
+            } else if (ctx.kind === 'rotation') {
+                const rot = ctx.rotation || {};
+                slotId = rot.newGridId || rot.oldOrder?.id || null;
+                price = Number(rot.newPrice);
+                type = rot.type || null;
+                size = Number(rot.newSize);
+                // Rotation UPDATEs are keyed by DESTINATION slot (the
+                // emitted price is the destination's level) — EXCEPT the
+                // same-slot size-only form (no newGridId, or newGridId ===
+                // source id), which buildActionsFromPlan emits for
+                // ordersToUpdate and which must resolve to the source
+                // action. A same-slot UPDATE carries no repricing, so a
+                // dest-keyed lookup that misses it would ALSO miss its
+                // origin stamp — fall back to the source id before
+                // judging the bypass.
+                action = (slotId && actionBySlot.get(slotId)) || null;
+                if (!action) {
+                    const srcId = (rot.oldOrder as any)?.id || null;
+                    if (srcId) action = actionBySlot.get(srcId) || null;
+                }
+                // Gap-evacuation UPDATE bypass mirrors the build loop's
+                // stamped path ONLY — with one deliberate asymmetry (see
+                // below): the build loop re-proves UNSTAMPED evacuations
+                // live from the master grid; the gate guards them normally.
+                // An unstamped rotation reaching the final gate was either
+                // (a) probed-and-allowed at build time — in which case its
+                // price already survived an evacuation proof and the guard
+                // re-check here is harmless duplication, or (b) probe-
+                // rejected/failed-closed — in which case it was SKIPPED at
+                // build time and never reached op-building, so the gate
+                // cannot see it either. Either way there is no live
+                // unstamped evacuation in the built ops that needs
+                // re-proving: re-proving here would need the master-grid
+                // source read the build loop does, and the source may have
+                // been pre-applied since. Stamped rotations carry origin +
+                // evacBoundary/evacGapSlots.
+                //
+                // ASYMMETRY (fail-open, not fail-closed): the build loop's
+                // unstamped path FAILS CLOSED (unresolvable source => skip
+                // the op). The gate FAILS OPEN (unjudgeable => keep). A
+                // dropped op strands its slot until the next cycle; a kept
+                // op is still subject to the commit guard + chain adoption.
+                // The gate must not invent a block it cannot prove —
+                // especially not on an op the build loop already allowed.
+                const rotOrigin = (action as any)?.origin;
+                if (rotOrigin === 'gap-evacuation'
+                    && Number.isFinite(Number((action as any)?.evacBoundary))
+                    && Number.isFinite(Number((action as any)?.evacGapSlots))) {
+                    if (stats) stats.bypassed = (Number(stats.bypassed) || 0) + 1;
+                    continue;
+                }
+            } else {
+                continue;
+            }
+            // Fail-open: unresolvable price/type => KEEP (never invent a
+            // violation the gate cannot prove).
+            if (!Number.isFinite(price as number) || (price as number) <= 0) continue;
+            if (type !== ORDER_TYPES.BUY && type !== ORDER_TYPES.SELL) continue;
+            const check = isLastFillGuardBlocked(price, size, type, onGrid.price, liveType, inc);
+            if (stats) stats.checked = (Number(stats.checked) || 0) + 1;
+            if (!check.blocked) {
+                if (stats) stats.passed = (Number(stats.passed) || 0) + 1;
+                continue;
+            }
+            // Blocked: drop the op + context, restore the slot below.
+            dropIdx.add(i);
+            if (stats) stats.skipped = (Number(stats.skipped) || 0) + 1;
+            const dir = type === ORDER_TYPES.BUY ? 'above' : 'below';
+            dropped.push({ index: i, kind: ctx.kind, slotId, price, type });
+            try {
+                bot.manager?.logger?.log?.(
+                    `[LAST-FILL-GUARD] Final gate dropping ${type} ${ctx.kind} for ${slotId ?? 'unknown'} at ` +
+                    `${Format.formatPrice6(price as number)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} ` +
+                    `(halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)}); re-planned after market moves`,
+                    'warn'
+                );
+            } catch { /* logging is best-effort */ }
+        }
+        if (dropIdx.size === 0) return { dropped, pivotChanged, refreshed };
+        // Compact operations/opContexts in lockstep so every surviving index
+        // still lines up. The caller rebuilds cancelOpIndexByOrderId from the
+        // kept contexts (it was built during op-building and goes stale for
+        // every op after the first drop), and the remap pass below re-points
+        // THIS batch's kept pending-broadcast entries at their new positions
+        // — lockstep keeps the two arrays aligned with each other, but the
+        // absolute indexes stored INSIDE pending entries are not rewritten
+        // by a compaction, so they must be remapped explicitly.
+        const keptOps: any[] = [];
+        const keptCtxs: any[] = [];
+        const oldToNew = new Map<number, number>();
+        for (let i = 0, ni = 0; i < opContexts.length; i++) {
+            if (dropIdx.has(i)) continue;
+            oldToNew.set(i, ni);
+            ni++;
+            keptOps.push(operations[i]);
+            keptCtxs.push(opContexts[i]);
+        }
+        operations.length = 0;
+        operations.push(...keptOps);
+        opContexts.length = 0;
+        opContexts.push(...keptCtxs);
+        // Slot restore: dropped rotations restore source+dest from master
+        // (same sets the build loop feeds to restoreSkippedUpdateSlots...);
+        // dropped creates count toward the refill-hold intersect. Pending
+        // entries for dropped CREATEs are removed (never shipped); kept
+        // CREATEs get their stored opIndex/ctxIndex remapped to the
+        // compacted positions (see the remap pass below — an unremapped
+        // absolute index would resolve to a SHIFTED context after the first
+        // drop: undefined at best, a DIFFERENT create's context at worst,
+        // which would let the uncertain-broadcast reconcile adopt a matched
+        // chain order into the wrong slot).
+        const skippedUpdateSlotIds = opts?.skippedUpdateSlotIds;
+        const skippedCreateSlotIds = opts?.skippedCreateSlotIds;
+        const countRef = opts?.skippedUpdateCountRef;
+        try {
+            const pending = (bot.manager as any)?._pendingBroadcasts;
+            for (const d of dropped) {
+                if (d.kind === 'rotation') {
+                    const act = (d.slotId && actionBySlot.get(d.slotId)) || null;
+                    const srcId = (act as any)?.id || null;
+                    if (srcId && skippedUpdateSlotIds instanceof Set) skippedUpdateSlotIds.add(srcId);
+                    if (d.slotId && skippedUpdateSlotIds instanceof Set) skippedUpdateSlotIds.add(d.slotId);
+                    if (countRef && typeof countRef === 'object') countRef.count = (Number(countRef.count) || 0) + 1;
+                } else if (d.kind === 'create') {
+                    if (d.slotId && skippedCreateSlotIds instanceof Set) skippedCreateSlotIds.add(d.slotId);
+                    if (pending instanceof Map) {
+                        for (const [fp, entry] of pending) {
+                            // Match by slot only: the fingerprint embeds
+                            // side/amounts/slot (no op indexes), but entry.slotId
+                            // is the narrowest predicate that cannot touch a
+                            // sibling batch's entry for a different slot.
+                            if ((entry as any)?.slotId && (entry as any).slotId === d.slotId) {
+                                pending.delete(fp);
+                            }
+                        }
+                    }
+                }
+            }
+            // Remap THIS batch's kept pending entries (identified by the
+            // fingerprint set the build loop collected — entry.batchId is
+            // always null in production and cannot discriminate). A stored
+            // ctxIndex whose old position was dropped means the entry was
+            // not slot-matched above; it could never resolve post-compaction,
+            // so it is removed. Everything else is re-pointed at the same
+            // context object it was recorded with. Sibling batches' entries
+            // are never touched: their indexes refer to their own long-gone
+            // build-time arrays.
+            if (pending instanceof Map && opts?.batchPendingFps instanceof Set) {
+                for (const fp of opts.batchPendingFps) {
+                    const entry: any = pending.get(fp);
+                    if (!entry) continue; // dropped create: already removed by slot
+                    const newCtx = oldToNew.get(Number(entry.ctxIndex));
+                    if (newCtx == null) {
+                        // Referenced op was dropped (or the entry predates
+                        // lockstep indexing) — the index cannot be healed.
+                        pending.delete(fp);
+                        continue;
+                    }
+                    entry.ctxIndex = newCtx;
+                    const newOp = oldToNew.get(Number(entry.opIndex));
+                    entry.opIndex = newOp == null ? entry.opIndex : newOp;
+                }
+            }
+        } catch { /* restore bookkeeping is best-effort */ }
+        return { dropped, pivotChanged, refreshed };
+    } catch { return empty; }
 }
 
 /**
@@ -4925,7 +5832,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
         updateOperationCount
     };
 }
-export { isLastFillGuardBlocked, refreshLastFillPivotFromQueue, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain, resolveRefillBoundaryHold, toRefillSlotIdSet, trackBoundaryHold };
+export { isLastFillGuardBlocked, resolveOnGridPivot, checkGridPriceInvariant, deriveRotationPrice, refreshLastFillPivotFromQueue, runFinalPivotGate, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain, resolveRefillBoundaryHold, toRefillSlotIdSet, trackBoundaryHold };
 // Exported for regression tests (issue #23 sibling): the uncertain-broadcast
 // discard path must never drop a placement silently when master lost the slot.
 export { restoreDiscardedCreates };
@@ -4966,4 +5873,5 @@ export default {
     pollChainForConfirmation,
     updateOrdersOnChainBatchCOW,
     processBatchResults,
+    runFinalPivotGate,
 };

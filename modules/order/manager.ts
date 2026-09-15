@@ -569,6 +569,8 @@ class OrderManager {
     _lastFilledAt: number;
     _deferredRebalanceAt: number;
     _lastHeldPlanSignature: any;
+    _heldPlanSuppressionCount: number;
+    _onBroadcastRegionEndListeners: Array<() => void>;
     _lastBoundaryHoldResyncAt: number;
     _gapEvacStreaks: Map<string, number>;
     _gapEvacCancelQueued: Set<string>;
@@ -707,6 +709,8 @@ class OrderManager {
         this._lastFilledAt = 0;
         this._deferredRebalanceAt = 0;
         this._lastHeldPlanSignature = null;
+        this._heldPlanSuppressionCount = 0;
+        this._onBroadcastRegionEndListeners = [];
         this._lastBoundaryHoldResyncAt = 0;
         this._gapEvacStreaks = new Map();
         this._gapEvacCancelQueued = new Set();
@@ -970,7 +974,10 @@ class OrderManager {
      * without rescheduling, so this is the only wake-up for fills enqueued
      * during a region; the watchdog path must fire it too or a hung broadcast's
      * queued fills wait for the next fill event.
-     * Guarded so a listener error never escapes into a finally/watchdog frame.
+     * Fans out to the legacy single listener plus every registered listener
+     * (see addBroadcastRegionEndListener): a second wirer must never silently
+     * displace the fill-queue drain. Guarded so a listener error never escapes
+     * into a finally/watchdog frame.
      * @returns {void}
      */
     _fireBroadcastRegionEnd() {
@@ -979,6 +986,32 @@ class OrderManager {
         } catch (err: any) {
             this.logger?.log?.(`[BROADCAST] Region-end hook failed: ${err?.message || err}`, 'warn');
         }
+        const listeners = (this as any)._onBroadcastRegionEndListeners;
+        if (Array.isArray(listeners)) {
+            for (const listener of listeners) {
+                try {
+                    (listener as any)?.();
+                } catch (err: any) {
+                    this.logger?.log?.(`[BROADCAST] Region-end listener failed: ${err?.message || err}`, 'warn');
+                }
+            }
+        }
+    }
+
+    /**
+     * Register an additional broadcast-region-end listener without displacing
+     * the legacy single listener or previously registered ones. Duplicate
+     * registrations of the same function reference are ignored.
+     * @param {() => void} listener
+     * @returns {void}
+     */
+    addBroadcastRegionEndListener(listener: () => void) {
+        if (typeof listener !== 'function') return;
+        if (!Array.isArray((this as any)._onBroadcastRegionEndListeners)) {
+            (this as any)._onBroadcastRegionEndListeners = [];
+        }
+        const listeners = (this as any)._onBroadcastRegionEndListeners;
+        if (!listeners.includes(listener)) listeners.push(listener);
     }
 
     /**
@@ -1787,6 +1820,7 @@ class OrderManager {
         // don't consume activation budget (mirrors _pickVirtualSlotsToActivate).
         const sellsClosestFirst = this.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.VIRTUAL)
             .filter((o: any) => inRailFor(ORDER_TYPES.SELL, o))
+            .filter((o: any) => parseSlotIndex(o?.id) !== null)
             .sort((a: any, b: any) => a.price - b.price);
         const validSells: any[] = [];
         for (const o of sellsClosestFirst) {
@@ -2320,7 +2354,9 @@ class OrderManager {
                 type: slot.type,
                 isSurplus: true,
                 gapEvacuation: true,
-                boundaryIdx: boundary
+                boundaryIdx: boundary,
+                queuedAt: Date.now(),
+                queuedBy: 'gap-evacuation'
             });
             this._gapEvacCancelQueued.add(slotId);
             queued++;
@@ -2396,6 +2432,13 @@ class OrderManager {
      */
     async performSafeRebalance(fills: any = [], excludeIds: any = new Set(), options: any = {}) {
         this.logger.log("[SAFE-REBALANCE] Starting with COW...", "info");
+        // A fresh fill set re-enables planning and ends any held-plan
+        // suppression run counted below; the next fill-less streak counts
+        // from zero. Reset on entry (even for broadcast-deferred calls):
+        // the fills arrived, so the identical-plan assumption is void.
+        if (fills.length > 0 && (this._heldPlanSuppressionCount || 0) > 0) {
+            this._heldPlanSuppressionCount = 0;
+        }
         if (!options?.skipBroadcastWait) {
             // Shutdown guard applies to every path here (including the
             // deferIfBroadcasting defer path, which never reaches
@@ -2428,9 +2471,17 @@ class OrderManager {
                 && Number(this.boundaryIdx) === Number(heldSig.boundaryIdx)
                 && Number(this._lastFilledPrice) === Number(heldSig.pivot)
                 && Number(this._lastFilledAt) === Number(heldSig.fillsAt)) {
+                // Counted visibility: a fill-less replan is suppressed until a
+                // fresh fill arrives, so a stale grid that produces no fills
+                // can sit in this branch forever. The spread-correction path
+                // (independent of this suppression) and the out-of-spread
+                // persistence watchdog are the heal paths — surface the run
+                // instead of hiding it at debug.
+                this._heldPlanSuppressionCount = (Number(this._heldPlanSuppressionCount) || 0) + 1;
+                const n = this._heldPlanSuppressionCount;
                 this.logger.log(
-                    '[SAFE-REBALANCE] Deferred: identical held plan (no new fills since last hold); a fill-driven plan will re-derive',
-                    'debug'
+                    `[SAFE-REBALANCE] Deferred: identical held plan (no new fills since last hold; suppression #${n}); a fill-driven plan will re-derive`,
+                    (n === 1 || n % 10 === 0) ? 'warn' : 'debug'
                 );
                 return { ...buildAbortedResult('held-plan-unchanged-deferred'), deferred: true };
             }

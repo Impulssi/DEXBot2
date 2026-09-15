@@ -66,11 +66,13 @@ function liveWindowIdSet(...args: any) { return require('./order/utils/order').l
 function resolveLiveReserveEdgeAnchorPrice(...args: any) { return require('./order/utils/order').resolveLiveReserveEdgeAnchorPrice(...args); }
 function formatUnmatchedChainOrder(...args: any) { return require('./order/utils/order').formatUnmatchedChainOrder(...args); }
 function isNonBlockingUnmatchedOrder(...args: any) { return require('./order/utils/order').isNonBlockingUnmatchedOrder(...args); }
+function isStrandedHoldOrder(...args: any) { return require('./order/utils/order').isStrandedHoldOrder(...args); }
 function getSideBudget(...args: any) { return require('./order/utils/order').getSideBudget(...args); }
 function getActiveOrdersTotal(config: any) { return require('./order/utils/order').getActiveOrdersTotal(config); }
 function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
 function isOrderOnChain(...args: any) { return require('./order/utils/order').isOrderOnChain(...args); }
 function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
+function parseSlotIndex(...args: any) { return require('./order/utils/order').parseSlotIndex(...args); }
 
 const CODE_ROOT = path.join(__dirname, '..');
 const PROFILES_DIR = PATHS.PROFILES_DIR;
@@ -552,7 +554,13 @@ function countLiveGridOrders(manager: any, type: any) {
     if (!manager) return 0;
     const active = manager.getOrdersByTypeAndState?.(type, ORDER_STATES.ACTIVE) || [];
     const partial = manager.getOrdersByTypeAndState?.(type, ORDER_STATES.PARTIAL) || [];
-    return active.concat(partial).filter((o: any) => o?.orderId).length;
+    // Slot-N gated: fork-kept shelf/manual orders (non-slot-N ids, e.g.
+    // deep-*) sit outside window accounting — same gate as reserve
+    // classification and startup cancel candidates (issue #27 follow-up).
+    // Without this, a live shelf inflates the live window+reserves count and
+    // masks a real window/reserve shortfall, so targeted sync never fires.
+    // No-op on grids that only mint slot-N ids.
+    return active.concat(partial).filter((o: any) => o?.orderId && parseSlotIndex(o?.id) !== null).length;
 }
 
 function getTargetActiveOrders(config: any, side: any) {
@@ -1568,20 +1576,222 @@ async function performPeriodicGridChecks(bot: any) {
  * total (funds stay locked until an operator clears them) without re-logging
  * the same count every tick.
  *
+ * The detail line names WHY each hold is held and how far it sits from the
+ * grid, because "held" alone is ambiguous between deliberate deferral and a
+ * stuck bot. A slow re-warn (rate-limited) additionally distinguishes a hold
+ * that is still being actioned from one that has been static for a long time.
+ *
  * @param {import('./dexbot_class.js').DEXBot} bot
  */
 function logDeferredHoldSummary(bot: any) {
     const unmatched = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
         ? bot.manager._lastUnmatchedChainOrders
         : [];
-    const held = unmatched.filter((u: any) => isNonBlockingUnmatchedOrder(u)).length;
+    const heldOrders = unmatched.filter((u: any) => isNonBlockingUnmatchedOrder(u));
+    const held = heldOrders.length;
     if (held === 0) {
-        bot._lastHeldChainOrderCount = 0;
+        bot._lastHeldChainOrderSignature = '';
+        bot._lastHeldChainOrderWarnAt = 0;
+        bot._lastHeldChainOrderSignatureSince = 0;
+        bot._strandedHoldSince = new Map();
         return;
     }
-    if (held === bot._lastHeldChainOrderCount) return;
-    bot._lastHeldChainOrderCount = held;
-    bot._log?.(`[HOLD] ${held} deferred chain order(s) held outside the active pipeline (funds stay locked until cleared)`, 'warn');
+
+    // Per-order age tracking for the stranded subset.
+    //
+    // The whole-set signature below includes every entry's reason, so an
+    // UNRELATED hold flapping in and out (e.g. a per-sync
+    // `broadcast-active-deferred`) changes the signature and restarts the age
+    // clock every cycle. A genuinely stranded order then never reaches the
+    // escalation age -- it is starved forever by churn it has nothing to do
+    // with. Verified by simulation: with the whole-set clock, a stranded
+    // order plus a 6-hourly flap reported `CLOCK RESET` on every single tick
+    // and never accumulated age.
+    //
+    // So age is tracked per stranded order identity (id@price/size), keyed off
+    // when THAT order was first seen stranded. Unrelated churn cannot touch it.
+    if (!(bot._strandedHoldSince instanceof Map)) bot._strandedHoldSince = new Map();
+    const strandedHoldSince: Map<string, number> = bot._strandedHoldSince;
+    const stranded = heldOrders.filter((u: any) => isStrandedHoldOrder(u));
+    const seenKeys = new Set<string>();
+    const now = Date.now();
+    let oldestStrandedMs = 0;
+    for (const u of stranded) {
+        const key = `${u?.chainOrderId ?? '?'}@${u?.price ?? '?'}/${u?.size ?? '?'}:${u?.reason ?? '?'}`;
+        seenKeys.add(key);
+        if (!strandedHoldSince.has(key)) strandedHoldSince.set(key, now);
+        oldestStrandedMs = Math.max(oldestStrandedMs, now - Number(strandedHoldSince.get(key)));
+    }
+    // Drop entries that are no longer stranded, so a slot that clears and is
+    // later re-held starts a fresh age rather than inheriting the old one.
+    for (const key of Array.from(strandedHoldSince.keys())) {
+        if (!seenKeys.has(key)) strandedHoldSince.delete(key);
+    }
+
+    const signature = heldOrders
+        .map((u: any) => `${u?.chainOrderId ?? '?'}@${u?.price ?? '?'}/${u?.size ?? '?'}:${u?.reason ?? '?'}`)
+        .sort()
+        .join(',');
+
+    // A count-only change gate hid same-count churn (one hold clearing while
+    // another appeared looked like "no change" and was never logged). The
+    // signature covers membership and terms, so any real change re-logs once.
+    if (signature !== bot._lastHeldChainOrderSignature) {
+        bot._lastHeldChainOrderSignature = signature;
+        bot._lastHeldChainOrderWarnAt = Date.now();
+        // Restart the whole-set logging clock: the signature changed, so this
+        // is a new hold situation and the running total is worth re-logging.
+        // NOTE: this clock drives LOGGING ONLY. Escalation below uses the
+        // per-order stranded ages, because a signature change caused by
+        // unrelated churn must not suppress escalation -- returning early here
+        // (as an earlier revision did) meant any flapping hold skipped the
+        // escalation call entirely, so a genuinely stranded order never
+        // escalated at all.
+        bot._lastHeldChainOrderSignatureSince = Date.now();
+        bot._log?.(
+            `[HOLD] ${held} deferred chain order(s) held outside the active pipeline ` +
+            `(funds stay locked until cleared): ${describeDeferredHolds(bot, heldOrders)}`,
+            'warn'
+        );
+        // Escalation is NOT gated on an unchanged signature: a stranded order
+        // whose age has crossed the threshold must escalate even if an
+        // unrelated transient hold is flapping in and out alongside it.
+        considerDeferredHoldEscalation(bot, stranded, oldestStrandedMs);
+        return;
+    }
+
+    // The signature is unchanged.
+    if (!(Number(bot._lastHeldChainOrderSignatureSince) > 0)) {
+        bot._lastHeldChainOrderSignatureSince = Date.now();
+    }
+    // Escalate on the STRANDED subset's own age, not the whole held set's.
+    considerDeferredHoldEscalation(bot, stranded, oldestStrandedMs);
+
+    // Unchanged set: re-warn slowly so an indefinitely-held order is visibly
+    // still held rather than silently indistinguishable from a stalled loop.
+    const warnEvery = Number(TIMING.STALE_TOTALS_WARN_RATE_LIMIT_MS) || 60000;
+    const sinceWarn = Date.now() - (Number(bot._lastHeldChainOrderWarnAt) || 0);
+    if (sinceWarn >= warnEvery) {
+        bot._lastHeldChainOrderWarnAt = Date.now();
+        // Age from the SIGNATURE-STABLE clock, not `_lastUnmatchedChainOrdersAt`
+        // (which refresh on every observing sync and would report "~0m" for a
+        // hold that has really been stuck for hours).
+        const heldSince = Number(bot._lastHeldChainOrderSignatureSince) || 0;
+        const ageMin = heldSince > 0 ? Math.round((Date.now() - heldSince) / 60000) : 0;
+        bot._log?.(
+            `[HOLD] still holding ${held} deferred chain order(s) for ~${ageMin}m ` +
+            `with no change (funds stay locked until cleared): ${describeDeferredHolds(bot, heldOrders)}`,
+            'warn'
+        );
+    }
+}
+
+/**
+ * Escalate an INDEFINITELY-HELD deferred hold to a structural resync.
+ *
+ * Out-of-rail orphans hold locked funds and are never auto-cancelled per cycle.
+ * That default is correct -- cancelling on ambiguous evidence is irreversible --
+ * but it left "held indefinitely" with no exit. A hold that survives unchanged
+ * for `DEFERRED_HOLD_ESCALATE_MS` is no longer ambiguous evidence: the grid has
+ * had ample opportunity to resolve it and has not.
+ *
+ * The structural resync is the appropriate exit because the full reset's
+ * reconcile is update-first: unmatched chain orders are price-updated onto rail
+ * slots (emitting the rail's genesis level, so the reconcile-update guard does
+ * not block it) and only true surplus is cancelled. Funds are released without
+ * introducing any new cancellation policy.
+ *
+ * Fire-and-forget; the resync is itself debounced and batch-in-flight aware.
+ */
+function considerDeferredHoldEscalation(bot: any, strandedOrders: any[], strandedMs: number) {
+    const escalateMs = Number((TIMING as any)?.DEFERRED_HOLD_ESCALATE_MS) > 0
+        ? Number((TIMING as any).DEFERRED_HOLD_ESCALATE_MS)
+        : 24 * 60 * 60 * 1000;
+    const held = strandedOrders.length;
+    if (held === 0) return;
+    // Age is supplied by the caller: the oldest STRANDED order's age, measured
+    // from when that order was first seen stranded (per-order clock). It is
+    // deliberately NOT the whole held-set signature age, which unrelated
+    // flapping holds reset every cycle and which would starve escalation.
+    const heldMs = Number(strandedMs) || 0;
+    if (heldMs < escalateMs) return;
+
+    if (typeof bot?.manager?.requestStructuralGridResync !== 'function') {
+        bot?._log?.(
+            `[HOLD] ${held} deferred chain order(s) held unchanged for ${Math.round(heldMs / 3600000)}h ` +
+            `but requestStructuralGridResync is unavailable; funds stay locked`,
+            'error'
+        );
+        return;
+    }
+
+    const cooldownMs = Number((TIMING as any)?.DEFERRED_HOLD_RESYNC_COOLDOWN_MS) > 0
+        ? Number((TIMING as any).DEFERRED_HOLD_RESYNC_COOLDOWN_MS)
+        : 6 * 60 * 60 * 1000;
+    const now = Date.now();
+    const lastAt = Number(bot._lastDeferredHoldResyncAt) || 0;
+    if (now - lastAt < cooldownMs) return;
+    bot._lastDeferredHoldResyncAt = now;
+
+    const heldHours = Math.round(heldMs / 3600000);
+    bot?._log?.(
+        `[HOLD] ${held} deferred chain order(s) held unchanged for ~${heldHours}h; ` +
+        `requesting structural resync to resolve the hold (reconcile is update-first, ` +
+        `so funds are released by price-updating onto rail slots) — ` +
+        `${describeDeferredHolds(bot, strandedOrders)}`,
+        'error'
+    );
+    try {
+        const res = bot.manager.requestStructuralGridResync('deferred-hold-stale', {
+            reason: `${held} deferred chain order(s) held unchanged for ~${heldHours}h`,
+            heldCount: held,
+            heldMs,
+        });
+        (res as any)?.catch?.((err: any) => {
+            bot.manager?.logger?.log?.(
+                `[HOLD] Structural resync for stale hold failed: ${getErrorMessage(err)}`,
+                'error'
+            );
+        });
+    } catch (err: any) {
+        bot.manager?.logger?.log?.(
+            `[HOLD] Structural resync for stale hold failed: ${getErrorMessage(err)}`,
+            'error'
+        );
+    }
+}
+
+/**
+ * Render the per-order detail for a deferred-hold summary: side, price, size,
+ * why it is held, and distance from the nearest grid bound when known.
+ *
+ * Distance is expressed as a percentage of the bound so the operator can tell
+ * a near-miss (a few bps outside, likely a rounding/drift artifact) from a
+ * deliberately-placed far order (dip protection after a grid reset).
+ */
+function describeDeferredHolds(bot: any, heldOrders: any[]): string {
+    const genesis = (bot.manager as any)?._genesis;
+    const levels: any[] = Array.isArray(genesis?.priceLevels) ? genesis.priceLevels : [];
+    const lower = levels.length > 0 ? Number(levels[0]) : NaN;
+    const upper = levels.length > 0 ? Number(levels[levels.length - 1]) : NaN;
+
+    return heldOrders
+        .map((u: any) => {
+            const side = u?.type === ORDER_TYPES.SELL ? 'sell' : u?.type === ORDER_TYPES.BUY ? 'buy' : 'unknown';
+            const price = Number(u?.price);
+            const size = u?.size != null ? u.size : '?';
+            const reason = u?.reason || 'unspecified';
+            const parts = [`${u?.chainOrderId ?? '?'} ${side} price=${Number.isFinite(price) ? price : '?'} size=${size} reason=${reason}`];
+            if (Number.isFinite(price)) {
+                if (Number.isFinite(lower) && price < lower) {
+                    parts.push(`below-grid by ${(((lower - price) / lower) * 100).toFixed(4)}% (bound ${lower})`);
+                } else if (Number.isFinite(upper) && price > upper) {
+                    parts.push(`above-grid by ${(((price - upper) / upper) * 100).toFixed(4)}% (bound ${upper})`);
+                }
+            }
+            return parts.join(' ');
+        })
+        .join(' | ');
 }
 
 /**
@@ -2202,7 +2412,14 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                 .join(' | ');
             bot._warn(
                 `[MAINT] ${correctionResult.failed}/${pendingCorrections} price correction(s) failed` +
-                (failedDetails ? ` — ${failedDetails}` : '')
+                (failedDetails ? ` — ${failedDetails}` : '') +
+                (correctionResult.staleDropped > 0 ? ` (${correctionResult.staleDropped} stale dropped)` : '')
+            );
+        } else if (correctionResult.staleDropped > 0) {
+            bot._log(
+                `[MAINT] ${correctionResult.corrected}/${pendingCorrections} price correction(s) resolved, ` +
+                `${correctionResult.staleDropped} stale dropped (resync moved the slot; re-queued by next sync if still off-target)`,
+                'info'
             );
         }
     }
@@ -2340,10 +2557,14 @@ async function executeMaintenanceLogic(bot: any, context: any) {
             } else {
                 const spreadResult = await bot.manager.checkSpreadCondition(BitShares, bot.updateOrdersOnChainPlan.bind(bot));
                 if (await bot._abortFlowIfIllegalState(`${context} spread check`)) return;
-                if (spreadResult && spreadResult.ordersPlaced > 0) {
+                const spreadPlaced = Number(spreadResult?.ordersPlaced) || 0;
+                if (spreadPlaced > 0) {
                     bot._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
                     await bot._persistAndRecoverIfNeeded();
                 }
+                // Persistence watchdog: a correction that keeps placing nothing
+                // while the spread stays wide is a stale grid, not patience.
+                trackOutOfSpreadStaleness(bot, true, spreadPlaced);
             }
         } catch (err: any) {
             bot._warn(`Error running divergence check during ${context}: ${getErrorMessage(err)}`);
@@ -2355,6 +2576,93 @@ async function executeMaintenanceLogic(bot: any, context: any) {
             bot._lastDeferredDustCount = totalDust;
         }
     }
+}
+
+/**
+ * Out-of-spread persistence watchdog: the never-run-stale backstop.
+ *
+ * The spread check retries every pipeline-empty tick (level-triggered), but a
+ * correction can keep producing zero candidates indefinitely (no funded side,
+ * no correctable slots) while the grid sits stale — and the identical-held-
+ * plan suppression blocks fill-less replans until a fresh fill that a stale
+ * grid cannot produce. Time-based (not tick-counted) so it holds for any
+ * maintenance cadence: warn once past SPREAD_STALE_WARN_MS, then request a
+ * structural re-center past SPREAD_STALE_ESCALATE_MS (existing resync guards
+ * dedupe concurrent requests; the re-center moves the boundary, which clears
+ * any held-plan signature). Resets whenever the spread heals or a correction
+ * places orders.
+ * @param {any} bot
+ * @param {boolean} spreadChecked - Whether the spread check ran this tick
+ * @param {number} ordersPlaced - Correction orders placed this tick
+ * @returns {{staleMs: number, escalated: boolean}}
+ */
+export function trackOutOfSpreadStaleness(bot: any, spreadChecked: boolean, ordersPlaced: number) {
+    const outOfSpread = Number(bot?.manager?.outOfSpread) || 0;
+    if (ordersPlaced > 0 || outOfSpread === 0) {
+        bot._outOfSpreadSince = 0;
+        bot._outOfSpreadStaleWarned = false;
+        return { staleMs: 0, escalated: false };
+    }
+    if (!spreadChecked) {
+        const since = Number(bot._outOfSpreadSince) || 0;
+        return { staleMs: since > 0 ? Date.now() - since : 0, escalated: false };
+    }
+    const now = Date.now();
+    if (!Number(bot._outOfSpreadSince)) bot._outOfSpreadSince = now;
+    const staleMs = now - Number(bot._outOfSpreadSince);
+    const staleMin = Math.round(staleMs / 60000);
+    const warnMs = Number((TIMING as any)?.SPREAD_STALE_WARN_MS) > 0
+        ? Number((TIMING as any).SPREAD_STALE_WARN_MS)
+        : 10 * 60 * 1000;
+    const escalateMs = Number((TIMING as any)?.SPREAD_STALE_ESCALATE_MS) > 0
+        ? Number((TIMING as any).SPREAD_STALE_ESCALATE_MS)
+        : 30 * 60 * 1000;
+    if (staleMs >= warnMs && !bot._outOfSpreadStaleWarned) {
+        bot._outOfSpreadStaleWarned = true;
+        bot._log(
+            `[SPREAD-STALE] Spread out of tolerance for ${staleMin}min with no correction placed ` +
+            `(outOfSpread=${outOfSpread}); structural re-center follows if unhealed`,
+            'warn'
+        );
+    }
+    if (staleMs >= escalateMs && typeof bot.manager?.requestStructuralGridResync === 'function') {
+        // Dedicated spread-stale cooldown (NOT BOUNDARY_HOLD_RESYNC_COOLDOWN_MS:
+        // the two watchdogs must tune independently). Falls back to the legacy
+        // boundary-hold key only for operators who overrode it before the split,
+        // then to the 5min default.
+        const cooldownMs = Number((TIMING as any)?.SPREAD_STALE_RESYNC_COOLDOWN_MS) > 0
+            ? Number((TIMING as any).SPREAD_STALE_RESYNC_COOLDOWN_MS)
+            : Number((TIMING as any)?.BOUNDARY_HOLD_RESYNC_COOLDOWN_MS) > 0
+                ? Number((TIMING as any).BOUNDARY_HOLD_RESYNC_COOLDOWN_MS)
+                : 5 * 60 * 1000;
+        const lastAt = Number(bot._lastSpreadStaleResyncAt) || 0;
+        if (now - lastAt >= cooldownMs) {
+            bot._lastSpreadStaleResyncAt = now;
+            bot._log(
+                `[SPREAD-STALE] Spread out of tolerance for ${staleMin}min despite corrections; ` +
+                `requesting structural re-center`,
+                'warn'
+            );
+            try {
+                const res = bot.manager.requestStructuralGridResync('spread-stale-persistent', {
+                    reason: `Spread out of tolerance for ${staleMin}min with no effective correction (outOfSpread=${outOfSpread})`
+                });
+                (res as any)?.catch?.((err: any) => {
+                    bot.manager?.logger?.log?.(
+                        `[SPREAD-STALE] Structural re-center request failed: ${getErrorMessage(err)}`,
+                        'error'
+                    );
+                });
+            } catch (err: any) {
+                bot.manager?.logger?.log?.(
+                    `[SPREAD-STALE] Structural re-center request failed: ${getErrorMessage(err)}`,
+                    'error'
+                );
+            }
+            return { staleMs, escalated: true };
+        }
+    }
+    return { staleMs, escalated: false };
 }
 
 /**
@@ -3084,6 +3392,7 @@ export default {
     cancelDustOrders,
     isOrderDoesNotExistError,
     runGridMaintenance,
+    trackOutOfSpreadStaleness,
     stopMarketAdapterPm2,
     releaseMarketAdapterRuntime,
     syncMarketAdapterOnPeriodicConfigCheck,
@@ -3100,4 +3409,5 @@ export default {
     markGridActivity,
     getMetrics,
     syncOpenOrdersAndProcessFills,
+    _internalDeferredHold: { logDeferredHoldSummary, describeDeferredHolds, considerDeferredHoldEscalation },
 };

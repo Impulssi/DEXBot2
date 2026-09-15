@@ -586,7 +586,7 @@ async function testNoPostBatchCacheDeductionForCreates() {
             workingIndexes: workingGrid.getIndexes(),
             workingBoundary: 0,
             actions
-        });
+        }, { pollIntervalMs: 0 });
     } finally {
         chainOrders.buildCreateOrderOp = originalBuildCreate;
         chainOrders.buildCancelOrderOp = originalBuildCancel;
@@ -719,7 +719,7 @@ async function testNoPostBatchCacheDeductionForMixedCreates() {
             workingIndexes: workingGrid.getIndexes(),
             workingBoundary: 0,
             actions
-        });
+        }, { pollIntervalMs: 0 });
     } finally {
         chainOrders.buildCreateOrderOp = originalBuildCreate;
         chainOrders.buildCancelOrderOp = originalBuildCancel;
@@ -830,7 +830,7 @@ async function testNoPostBatchCacheDeductionForSizeUpdates() {
             workingIndexes: workingGrid.getIndexes(),
             workingBoundary: 0,
             actions
-        });
+        }, { pollIntervalMs: 0 });
     } finally {
         chainOrders.buildCreateOrderOp = originalBuildCreate;
         chainOrders.buildCancelOrderOp = originalBuildCancel;
@@ -987,6 +987,109 @@ async function testToleranceViolationFiltersCreatesOnly() {
     console.log('✓ COW-COMMIT-011 passed');
 }
 
+async function testSeamPollIntervalDoesNotLeakOnGuardRefusal() {
+    console.log('\n[COW-COMMIT-012] pollIntervalMs seam is restored on the pre-broadcast guard-refusal path...');
+
+    const { manager } = createManagerFixture();
+    manager.assets = {
+        assetA: { id: '1.3.0', precision: 8, symbol: 'BTS' },
+        assetB: { id: '1.3.1', precision: 5, symbol: 'USD' }
+    };
+
+    const bot = new DEXBot({
+        botKey: 'test_cow_commit_guard_seam_leak',
+        dryRun: false,
+        startPrice: 1,
+        assetA: 'BTS',
+        assetB: 'USD',
+        incrementPercent: 0.5
+    });
+    bot.manager = manager;
+    bot.account = { id: '1.2.999' };
+    bot.privateKey = 'TEST_PRIVATE_KEY';
+
+    const workingGrid = new WorkingGrid(manager.orders, { baseVersion: manager._gridVersion });
+    // Occupied slot -> runPreBroadcastGuards refuses pre-broadcast (the exit
+    // path that used to skip restoreTestPollIntervalSeam).
+    const cowResult = {
+        workingGrid,
+        workingIndexes: workingGrid.getIndexes(),
+        workingBoundary: manager.boundaryIdx,
+        actions: [{
+            type: COW_ACTIONS.CREATE,
+            id: 'slot-1',
+            order: {
+                id: 'slot-1',
+                type: ORDER_TYPES.SELL,
+                price: 1.1,
+                size: 10,
+                state: ORDER_STATES.VIRTUAL,
+                orderId: null
+            }
+        }]
+    };
+
+    const originalExecuteBatch = chainOrders.executeBatch;
+    let executeBatchCalls = 0;
+    chainOrders.executeBatch = async () => {
+        executeBatchCalls += 1;
+        return { success: true, operation_results: [] };
+    };
+
+    try {
+        assert.strictEqual(bot._testPollIntervalMs, undefined, 'precondition: no seam set before the call');
+
+        const result = await bot._updateOrdersOnChainBatchCOW(cowResult, { pollIntervalMs: 0 });
+        assert.strictEqual(result.aborted, true, 'guard refusal must abort');
+        assert.strictEqual(
+            bot._testPollIntervalMs,
+            undefined,
+            'guard-refusal return must not leak the pollIntervalMs seam onto the bot'
+        );
+
+        // Pre-existing seam values must be restored, not just deleted.
+        bot._testPollIntervalMs = 777;
+        const result2 = await bot._updateOrdersOnChainBatchCOW(cowResult, { pollIntervalMs: 0 });
+        assert.strictEqual(result2.aborted, true, 'second guard refusal must also abort');
+        assert.strictEqual(bot._testPollIntervalMs, 777, 'unrelated pre-existing seam value must survive the call');
+
+        assert.strictEqual(executeBatchCalls, 0, 'guard refusals must never reach blockchain executeBatch');
+
+        // Pin the seam *precedence* resolution: explicit option beats the bot
+        // seam beats the production 1.5s default, and an explicit 0 must not
+        // be treated as absent. Asserting the resolved value keeps this
+        // independent of whether the missing-create poll path is walked.
+        await bot._updateOrdersOnChainBatchCOW(cowResult, { pollIntervalMs: 0 });
+        assert.strictEqual(
+            bot._lastResolvedPollIntervalMs,
+            0,
+            'explicit pollIntervalMs: 0 must resolve to 0, not the 1500ms default'
+        );
+
+        delete bot._testPollIntervalMs;
+        await bot._updateOrdersOnChainBatchCOW(cowResult, {});
+        assert.strictEqual(
+            bot._lastResolvedPollIntervalMs,
+            1500,
+            'no seam at all must resolve to the production 1500ms default'
+        );
+
+        bot._testPollIntervalMs = 0;
+        await bot._updateOrdersOnChainBatchCOW(cowResult, {});
+        assert.strictEqual(
+            bot._lastResolvedPollIntervalMs,
+            0,
+            'bot seam 0 must resolve to 0, not the 1500ms default'
+        );
+    } finally {
+        chainOrders.executeBatch = originalExecuteBatch;
+        delete bot._testPollIntervalMs;
+        delete bot._lastResolvedPollIntervalMs;
+    }
+
+    console.log('✓ COW-COMMIT-012 passed');
+}
+
 async function run() {
     console.log('Running COW commit guard regression tests...');
     await testRejectsVersionMismatchWithoutCommit();
@@ -1000,6 +1103,7 @@ async function run() {
     await testNoPostBatchCacheDeductionForSizeUpdates();
     await testCredentialDaemonPreflightBlocksBroadcast();
     await testToleranceViolationFiltersCreatesOnly();
+    await testSeamPollIntervalDoesNotLeakOnGuardRefusal();
     console.log('\n✓ All COW commit guard regression tests passed');
 }
 

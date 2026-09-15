@@ -141,10 +141,12 @@ import {
     resolveGapBand,
     countGapBandSpread,
     validatePersistedBoundary,
+    isTransientInBandRejection,
     adjustBudgetForBtsFees,
     clamp,
     buildGenesisFromPriceLevels,
     assertSlotPriceInvariant,
+    priceForSlot,
     hashPriceLevels,
 } from './utils/math.js';
 import {
@@ -575,7 +577,7 @@ function _clearOrderCachesLogic(manager: any): void {
      * @param {number|null} [boundaryIdx=null] - The master boundary index.
      * @returns {Promise<void>}
      */
-export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null, genesisInput: any = null): Promise<any> {
+export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null, genesisInput: any = null, options: { tolerateTransientStranding?: boolean } = {}): Promise<any> {
         if (!Array.isArray(grid)) return;
         return await manager._gridLock.acquire(async () => {
             // Genesis determinism: if snapshot provided genesis, validate slots
@@ -601,20 +603,54 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null,
             })();
             if (genesis && Array.isArray(genesis.priceLevels)) {
                 // Validate each slot's price against genesis; virtualize only in enforce mode (plan §13)
+                //
+                // REPAIR (both modes): a slot id determines its price from the
+                // genesis ladder, so a slot whose price disagrees is not a value
+                // to preserve -- it is corruption. Carrying it forward is what
+                // let an off-grid price become grid evidence and then be
+                // re-emitted. Left unrepaired the slot is also permanently
+                // stuck: it re-activates, the emission guard rejects it on
+                // every cycle, and nothing heals it without a full reset.
+                // Repairing here is safe because the id is authoritative; no
+                // legitimate slot can disagree with its own ladder level.
+                const repairedSlots: string[] = [];
                 const newGrid: any[] = [];
                 for (const slot of grid) {
                     try {
                         assertSlotPriceInvariant(slot, genesis);
                         newGrid.push(slot);
                     } catch (e: any) {
-                        const msg = `[GENESIS] Slot ${slot?.id} price mismatch vs genesis → ${validationMode === 'enforce' ? 'virtualize' : 'log-only'}: ${getErrorMessage(e)}`;
+                        const idx = parseSlotIndex(slot?.id);
+                        let repaired = slot;
+                        if (idx !== null) {
+                            try {
+                                const level = priceForSlot(idx, genesis);
+                                if (Number.isFinite(level) && level > 0) {
+                                    repaired = { ...slot, price: level };
+                                    repairedSlots.push(`${slot?.id} ${Number(slot?.price)}->${level}`);
+                                }
+                            } catch { /* keep original if the ladder cannot be read */ }
+                        }
+                        const msg = `[GENESIS] Slot ${slot?.id} price mismatch vs genesis → `
+                            + `${repaired === slot
+                                ? (validationMode === 'enforce' ? 'virtualize' : 'log-only')
+                                : 'price repaired from genesis'}`
+                            + `${validationMode === 'enforce' ? ' + virtualize' : ''}: ${getErrorMessage(e)}`;
                         manager.logger?.log?.(msg, 'warn');
                         if (validationMode === 'enforce') {
-                            newGrid.push({ ...slot, state: ORDER_STATES.VIRTUAL, size: 0, orderId: '' });
+                            newGrid.push({ ...repaired, state: ORDER_STATES.VIRTUAL, size: 0, orderId: '' });
                         } else {
-                            newGrid.push(slot);
+                            newGrid.push(repaired);
                         }
                     }
+                }
+                if (repairedSlots.length > 0) {
+                    manager.logger?.log?.(
+                        `[GENESIS] Repaired ${repairedSlots.length} slot price(s) from the genesis ladder `
+                        + `(an off-grid slot price cannot be emitted and would otherwise stall the slot): `
+                        + `${repairedSlots.join(', ')}`,
+                        'warn'
+                    );
                 }
                 grid = newGrid;
                 // Ensure canonical price-sorted order matches slot-N order
@@ -744,7 +780,18 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null,
             let restoredBoundary = typeof boundaryIdx === 'number' ? boundaryIdx : null;
             if (restoredBoundary !== null) {
                 const check = validatePersistedBoundary(restoredBoundary, grid, loadGapSlots);
-                if (!check.ok) {
+                if (!check.ok && options?.tolerateTransientStranding && isTransientInBandRejection(check)) {
+                    // Transient SPREAD-GUARD strand (live order crawled into the
+                    // band, GAP-EVAC already tracking it): keep the boundary so
+                    // the heal path (rotation/teeth/sweeps) can run.  Nuking it
+                    // here would discard the evacuation state for exactly the
+                    // condition evacuation exists to fix (H-BTS 2026-09-13).
+                    manager.logger?.log?.(
+                        `[GRID-LOAD] Persisted snapshot has transient in-band placement (${check.reason}): ${check.detail}. ` +
+                        `Keeping boundary ${restoredBoundary}; GAP-EVAC/sync sweeps own cleanup.`,
+                        'warn'
+                    );
+                } else if (!check.ok) {
                     manager.logger?.log?.(
                         `[GRID-LOAD] Persisted boundary rejected (${check.reason}): ${check.detail}. ` +
                         `Attempting re-derivation from slot prices.`,
@@ -2172,15 +2219,22 @@ export async function monitorDivergence(manager: any, calculatedGrid: any, persi
      * @returns {{onChainBuys: Array<import('./types').Order>, onChainSells: Array<import('./types').Order>}}
      */
 function _getOnChainOrders(manager: any): any {
+        // Slot-N gated: fork-kept shelf/manual orders (non-slot-N ids, e.g.
+        // deep-*) sit outside window accounting — same gate as reserve
+        // classification and startup cancel candidates (issue #27 follow-up).
+        // Without this, a live shelf masks an empty window side (oneSideEmpty
+        // stays false) and skews the spread inputs. No-op on grids that only
+        // mint slot-N ids.
+        const isGridSlot = (o: any) => o?.orderId && Number(o?.size || 0) > 0 && parseSlotIndex(o?.id) !== null;
         const onChainBuys = [
             ...manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE),
             ...manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.PARTIAL)
-        ].filter((o: any) => o?.orderId && Number(o?.size || 0) > 0);
+        ].filter(isGridSlot);
 
         const onChainSells = [
             ...manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE),
             ...manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.PARTIAL)
-        ].filter((o: any) => o?.orderId && Number(o?.size || 0) > 0);
+        ].filter(isGridSlot);
 
         return { onChainBuys, onChainSells };
     }
@@ -2263,11 +2317,11 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
 
             const buyCount = manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE)
                 .concat(manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.PARTIAL))
-                .filter((o: any) => o?.orderId && Number(o?.size || 0) > 0)
+                .filter((o: any) => o?.orderId && Number(o?.size || 0) > 0 && parseSlotIndex(o?.id) !== null)
                 .length;
             const sellCount = manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE)
                 .concat(manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.PARTIAL))
-                .filter((o: any) => o?.orderId && Number(o?.size || 0) > 0)
+                .filter((o: any) => o?.orderId && Number(o?.size || 0) > 0 && parseSlotIndex(o?.id) !== null)
                 .length;
 
             manager.outOfSpread = shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, manager.config.incrementPercent);
@@ -2318,7 +2372,12 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
 
             // Limit spread = nominal + half increment tolerance (0.5 steps).
             const limitSpread = nominalSpread + (manager.config.incrementPercent * toleranceSteps);
-            manager.logger?.log?.(`Spread too wide (${Format.formatPercent(currentSpread)} > ${Format.formatPercent(limitSpread)}), correcting with ${manager.outOfSpread} extra slot(s)...`, 'warn');
+            // One-sided book: currentSpread is Infinity (no opposing quote), so
+            // log the empty side instead of a bogus "0% > limit" comparison.
+            const spreadDesc = oneSideEmpty
+                ? `one-sided (${onChainBuys.length === 0 ? 'no buys' : 'no sells'})`
+                : `${Format.formatPercent(currentSpread)} > ${Format.formatPercent(limitSpread)}`;
+            manager.logger?.log?.(`Spread too wide (${spreadDesc}), correcting with ${manager.outOfSpread} extra slot(s)...`, 'warn');
 
             // Refresh funds before the side decision below: the top-of-tick recalc may
             // predate fills processed since, and determineOrderSideByFunds reads
@@ -2920,11 +2979,16 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
             ? Math.floor(configuredMissingSlots)
             : 1;
 
-        // STRATEGY: Edge-Based Correction (Safe Bridging)
+        // STRATEGY: Window-Contiguous Correction (Safe Bridging)
         // Instead of calculating a "mid-price" (which can be dangerous in wide gaps),
-        // we strictly target the orders closest to the spread gap.
+        // we extend the live window contiguously so a fund-constrained correction
+        // never leaves an interior hole.
         // 1. Priority: Update existing PARTIAL orders at the edge (Highest Buy / Lowest Sell).
-        // 2. Fallback: Activate SPREAD slots at the edge (Lowest Spread for Buy / Highest Spread for Sell).
+        // 2. Fallback: Activate empty slots window-contiguous-first (Lowest Buy-rail /
+        //    Highest Sell-rail, adjacent to the live window top).  A rail with no
+        //    live orders has no window to extend, so it falls back to
+        //    spread-edge-first (Highest Buy / Lowest Sell) to close the spread
+        //    near market first.
 
         const allOrders = Array.from(manager.orders.values()) as Order[];
 
@@ -2981,13 +3045,34 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         // boundary-correct type so a SPREAD slot that, after a boundary shift, now sits
         // in the BUY or SELL zone is excluded — it would otherwise be placed on the
         // correction side at a price the grid already considers the opposite side.
+        // Candidate ordering: window-contiguous-first when the rail has live
+        // orders to extend (BUY lowest first, SELL highest first, both adjacent
+        // to the live window top).  A fully-empty rail has no window anchor —
+        // "lowest buy" would be the rail bottom, placing deep orders while the
+        // near-market gap stays open — so it falls back to spread-edge-first
+        // (BUY highest, SELL lowest) to close the spread near market first.
+        // The gap-band promotion path below stays edge-first by necessity
+        // (boundary derivation requires contiguity), so under fund shortage
+        // in-rail holes heal before band slots.
+        const railHasLiveOrders = allOrders.some((o: any) =>
+            getSlotCorrectType(o) === railType && isOrderPlaced(o)
+        );
+        const sortCandidates = (a: any, b: any): number => {
+            const edgeFirst = railType === ORDER_TYPES.BUY
+                ? b.price - a.price
+                : a.price - b.price;
+            const windowFirst = railType === ORDER_TYPES.BUY
+                ? a.price - b.price
+                : b.price - a.price;
+            return railHasLiveOrders ? windowFirst : edgeFirst;
+        };
         const typedSpreadCandidates = allOrders
             .filter((o: any) =>
                 o.type === ORDER_TYPES.SPREAD
                 && isSlotAvailable(o)
                 && getSlotCorrectType(o) === railType
             )
-            .sort((a: any, b: any) => railType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price)
+            .sort(sortCandidates)
             .slice(0, missingSlots);
 
         // Secondary candidates: orphaned virtual slots that have lost their
@@ -3022,7 +3107,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
                 && !o.orderId
                 && getSlotCorrectType(o) === railType
             )
-            .sort((a: any, b: any) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price)
+            .sort(sortCandidates)
             .slice(0, missingSlots);
 
         // If the funded rail is full, the spread itself may be stale: the

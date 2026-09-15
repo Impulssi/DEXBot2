@@ -10,7 +10,7 @@
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
 import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findCrossedOrder, resolveGapBand, isSlotInRail, priceSlotEqual, resolveBuyFloorUsdt, resolveBuyWindowMode, isDeepShelfId } from './utils/math.js';
-import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, reserveEdgeIdSet, compareReserveEdge, parseSlotIndex } from './utils/order.js';
+import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, reserveEdgeIdSet, compareReserveEdge, parseSlotIndex, reportGridPriceInvariant } from './utils/order.js';
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -67,8 +67,15 @@ function computePlacementCrossing(manager: any, gridOrder: any, excludeChainOrde
  * @private
  */
 function _countActiveOnGrid(manager: any, type: any): number {
-    const active = manager.getOrdersByTypeAndState(type, ORDER_STATES.ACTIVE).filter((o: any) => o && o.orderId);
-    const partial = manager.getOrdersByTypeAndState(type, ORDER_STATES.PARTIAL).filter((o: any) => o && o.orderId);
+    // Slot-N gated: fork-kept shelf/manual orders (non-slot-N ids, e.g.
+    // deep-*) sit outside window accounting — same gate as reserve
+    // classification and matched-excess candidates (issue #27 follow-up).
+    // Without this, a live shelf inflates matchedOnGrid, suppresses
+    // neededSlots/creates, and its chain-count surplus cancels real window
+    // orders. No-op on grids that only mint slot-N ids.
+    const isGridSlot = (o: any) => o && o.orderId && parseSlotIndex(o?.id) !== null;
+    const active = manager.getOrdersByTypeAndState(type, ORDER_STATES.ACTIVE).filter(isGridSlot);
+    const partial = manager.getOrdersByTypeAndState(type, ORDER_STATES.PARTIAL).filter(isGridSlot);
     return active.length + partial.length;
 }
 
@@ -209,11 +216,18 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
     const slotsOfType = (Array.from(manager.orders.values()) as any[])
         .filter(typeFilter)
         .filter(inRail)
-        .filter((s: any) => !isDeepShelfId(s?.id))
+        // Slot-N gated (upstream #27 gate, covers our deep-* ids which never
+        // parse as slot-N): fork-kept shelf/manual slots must never activate
+        // as window orders.
+        .filter((slot: any) => parseSlotIndex(slot?.id) !== null)
         .filter((s: any) => !isSlotHeld(manager, s?.id))
         .sort((a: any, b: any) => (type === ORDER_TYPES.BUY && windowLow) || type !== ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
+    // Window slice applies to ACTIVATABLE slots only: live (placed) slots at
+    // the rail bottom must not consume window budget, or a partially-live
+    // bottom permanently under-fills the window (startup creates shortfall).
+    // Floor/min gates below still skip in place (no walk-up past the floor).
     const candidates = type === ORDER_TYPES.BUY && windowLow
-        ? slotsOfType.slice(0, count)
+        ? slotsOfType.filter((s: any) => !s?.orderId && s?.state === ORDER_STATES.VIRTUAL).slice(0, count)
         : slotsOfType;
 
     let effectiveMin = 0;
@@ -637,6 +651,12 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
         manager.assets.assetA,
         manager.assets.assetB
     );
+    // GRID-PRICE-INVARIANT (blocking): an off-grid price is not a valid grid
+    // price, so the rebalance is skipped and the next cycle re-plans. See
+    // docs/GRID_PRICE_INVARIANT.md.
+    if (!reportGridPriceInvariant(manager, gridOrder?.id, gridOrder?.price, 'RECONCILE-CREATE')) {
+        return null;
+    }
 
     const result = await chainOrders.createOrder(
         account,
@@ -911,6 +931,10 @@ function _prepareStartupUpdatePlan(plan: any, manager: any, logger: any): any {
         manager.assets.assetA,
         manager.assets.assetB
     );
+    // GRID-PRICE-INVARIANT (blocking): see docs/GRID_PRICE_INVARIANT.md.
+    if (!reportGridPriceInvariant(manager, gridOrder?.id, gridOrder?.price, 'RECONCILE-UPDATE')) {
+        return null;
+    }
 
     // CROSSING-PLACEMENT GUARD: a relocation re-prices the chain order onto
     // the target slot's rail price. It must not cross an opposite-side live
@@ -1054,6 +1078,7 @@ async function _executeStartupUpdateBatch({
 
 async function _executeStartupSingleUpdate({
     plan,
+    preparedPlan,
     chainOrders,
     account,
     privateKey,
@@ -1061,6 +1086,7 @@ async function _executeStartupSingleUpdate({
     dryRun,
 }: {
     plan: any;
+    preparedPlan?: any;
     chainOrders: any;
     account: any;
     privateKey: any;
@@ -1073,7 +1099,19 @@ async function _executeStartupSingleUpdate({
     }
 
     const logger = manager?.logger;
-    const prepared = _prepareStartupUpdatePlan(plan, manager, logger);
+    // Reuse an already-prepared plan when the caller has one, to avoid a
+    // redundant re-preparation of the same plan within one fallback pass.
+    //
+    // NOTE: the two calls do NOT produce a duplicate GRID-PRICE-INVARIANT
+    // warning. Preparation is evaluated for every plan by the caller's
+    // pre-filter BEFORE the loop body runs, and the pre-filter DISCARDS any
+    // plan it rejects -- so a rejected plan never reaches this function, and a
+    // plan that reaches it passed preparation and warns on neither call.
+    // (Verified by instrumenting _prepareStartupUpdatePlan: a rejected plan is
+    // prepared exactly once, in the filter, under both the old and new code.)
+    const prepared = preparedPlan !== undefined
+        ? preparedPlan
+        : _prepareStartupUpdatePlan(plan, manager, logger);
     if (!prepared) return { executed: false, skipped: true };
 
     const result = await chainOrders.updateOrder(
@@ -1116,9 +1154,16 @@ async function _executeStartupSequentialUpdateFallback({
     // Pre-filter: skip plans whose slots were already resolved by the recovery
     // sync that ran after the last failed batch attempt. This avoids flooding
     // the log with "slot already mapped" warnings for every plan.
+    //
+    // A rejected plan is DISCARDED here and never reaches the loop below, so
+    // preparation happens exactly once for it. The prepared plan is kept only
+    // to save the loop a redundant re-preparation of plans that pass.
+    const preparedPlans = new Map<any, any>();
     const plans = updatePlans.filter((plan: any) => {
         const prepared = _prepareStartupUpdatePlan(plan, manager, logger);
-        return prepared !== null;
+        if (prepared === null) return false;
+        preparedPlans.set(plan, prepared);
+        return true;
     });
     if (plans.length === 0) {
         logger?.log?.('Startup: All pending updates already resolved by recovery sync; skipping sequential fallback.', 'warn');
@@ -1139,6 +1184,7 @@ async function _executeStartupSequentialUpdateFallback({
         try {
             const result = await _executeStartupSingleUpdate({
                 plan,
+                preparedPlan: preparedPlans.get(plan),
                 chainOrders,
                 account,
                 privateKey,
@@ -1458,6 +1504,10 @@ async function _executeStartupCreateGroupBatch({
             manager.assets.assetA,
             manager.assets.assetB
         );
+        // GRID-PRICE-INVARIANT (blocking): see docs/GRID_PRICE_INVARIANT.md.
+        if (!reportGridPriceInvariant(manager, gridOrder?.id, gridOrder?.price, 'STARTUP-CREATE')) {
+            continue;
+        }
 
         const buildResult = await chainOrders.buildCreateOrderOp(
             account,
@@ -2020,18 +2070,22 @@ async function _reconcileStartupSide({
     }
 
     const processedUnmatched = sortedUnmatched.slice(updateCount);
-    // Deep shelf orders live on-chain under their own target (buyDeepCount),
-    // not the rail window target: exclude chain orders adopted by deep slots
-    // from the rail excess math. Without this, every startup over-cancels by
-    // the shelf size (12 chain vs 6 target with a live 3-deep shelf = 6
-    // cancels instead of 3), and the now-executing matched leg would eat
-    // the rail window to pay for shelf orders that were never surplus.
-    const deepAdoptedChainIds = new Set(
-        (Array.from((manager as any)?.orders?.values?.() || []) as any[])
-            .filter((s: any) => isDeepShelfId(s?.id) && s?.orderId)
-            .map((s: any) => String(s.orderId))
-    );
-    const chainCount = chainSideOrders.filter((co: any) => !deepAdoptedChainIds.has(String(co?.id))).length;
+    // Slot-N gated chain count: fork-kept shelf/manual orders (non-slot-N
+    // grid ids, e.g. deep-*) sit outside window accounting — same gate as
+    // _countActiveOnGrid and matched-excess candidates (issue #27 follow-up).
+    // Without this, a live shelf inflates chainCount, suppresses creates
+    // (target - chain) and fabricates a surplus (chain - target) that cancels
+    // real window orders. No-op on grids that only mint slot-N ids.
+    let chainCount = chainSideOrders.length;
+    try {
+        const shelfOrderIds = new Set<string>();
+        for (const s of (manager?.orders?.values?.() ?? []) as any) {
+            if (s?.orderId && parseSlotIndex(s?.id) === null) shelfOrderIds.add(String(s.orderId));
+        }
+        if (shelfOrderIds.size > 0 && Array.isArray(chainSideOrders)) {
+            chainCount = chainSideOrders.filter((co: any) => co && !shelfOrderIds.has(String(co?.id))).length;
+        }
+    } catch { /* fail-open: keep unfiltered count */ }
     const createCount = Math.max(0, targetCount - chainCount);
     const remainingSlots = desiredSlots.slice(updateCount);
 
