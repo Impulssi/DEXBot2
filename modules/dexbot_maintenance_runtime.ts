@@ -481,6 +481,16 @@ async function checkAndApplyBotConfigChanges(bot: any, context: any = 'bots-conf
             return { applied: raceApplied.length > 0, reason: 'baseline', fingerprint, liveChanges: raceApplied };
         }
         if (fingerprint === bot._appliedBotConfigFingerprint) {
+            // Operator "restore" signal: `dexbot clear-holds <bot>` drops a
+            // marker file; EVERY poll tick checks it (not just changed-config
+            // ticks — the early return below would otherwise starve the
+            // signal whenever bots.json sits still). No restart, no resync —
+            // plain file unilateral signaling, consumed once.
+            try {
+                const { consumeClearMarker: consumeHoldsTick } = require('./order/manual_hold.js');
+                const clearKeyTick = bot?.config?.botKey || bot?.manager?.config?.botKey || null;
+                if (clearKeyTick) consumeHoldsTick(bot?.manager, PROFILES_DIR, clearKeyTick);
+            } catch { /* never break the poll tick */ }
             return { applied: false, reason: 'unchanged', fingerprint };
         }
         const { liveChanges: rawLiveChanges, otherKeys: rawOtherKeys } = diffBotConfigEntries(bot._appliedBotConfigEntry, normalized);
@@ -506,16 +516,6 @@ async function checkAndApplyBotConfigChanges(bot: any, context: any = 'bots-conf
         }
         bot._appliedBotConfigFingerprint = fingerprint;
         bot._appliedBotConfigEntry = normalized;
-        // Operator "restore" signal: `dexbot clear-holds <bot>` drops a
-        // marker file; the next poll tick clears in-memory holds (no
-        // restart, no resync — plain file unilateral signaling, consumed
-        // once). Distinct from recalculate.*.trigger files, which the resync
-        // watcher owns.
-        try {
-            const { consumeClearMarker: consumeHolds } = require('./order/manual_hold.js');
-            const clearKey = bot?.config?.botKey || bot?.manager?.config?.botKey || null;
-            if (clearKey) consumeHolds(bot?.manager, PROFILES_DIR, clearKey);
-        } catch { /* never break the poll tick */ }
         if (liveChanges.length > 0) {
             const summary = liveChanges
                 .map((c: any) => `${c.key} ${stableStringifyForBotConfig(c.oldValue)}->${stableStringifyForBotConfig(c.newValue)}`)
