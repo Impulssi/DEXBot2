@@ -9,7 +9,10 @@
  * a hold must never pin a slot forever if the operator forgets it.
  *
  * Detection lives in sync_engine (a disappearance with no fill record and
- * no recent own-cancel). Suppression lives in the placement pickers
+ * no recent own-cancel). Before a hold is recorded, a would-be-manual
+ * verdict is re-checked against on-chain account history
+ * (classifyDisappearanceAsync): a missed fill event must never freeze a
+ * slot — only a history-clean vanishing holds. Suppression lives in the placement pickers
  * (strategy windows, startup activation, reserve edges). Holds persist
  * across crashes (snapshot) so an auto-restart never refills what the
  * operator removed; a graceful shutdown clears them (operator stop =
@@ -30,7 +33,7 @@ import { path } from '../path_api.js';
 // with grid density instead of hardcoding a percent.
 const MANUAL_HOLD_MOVE_MULT = 5;
 
-function getManualHoldMap(manager: any): Map<string, { price: number; ts: number; base?: number | null }> {
+function getManualHoldMap(manager: any): Map<string, { price: number; ts: number; base?: number | null; orderId?: string | null }> {
     if (!manager) return new Map();
     if (!(manager.manualHolds instanceof Map)) {
         manager.manualHolds = new Map();
@@ -74,19 +77,21 @@ function isManualHoldExpired(hold: { price: number; ts: number; base?: number | 
     return Math.abs(marketPrice - base) / hold.price > movePct;
 }
 
-function recordManualHold(manager: any, slotId: string, price: number): boolean {
+function recordManualHold(manager: any, slotId: string, price: number, orderId?: string | null): boolean {
     if (!manager || slotId == null || String(slotId).length === 0) return false;
     const p = Number(price);
     if (!Number.isFinite(p) || p <= 0) return false;
     const holds = getManualHoldMap(manager);
     const base = resolveHoldMarketPrice(manager);
+    const oid = orderId != null ? String(orderId) : null;
     holds.set(String(slotId), {
         price: p,
         ts: Date.now(),
         base: Number.isFinite(base) && (base as number) > 0 ? base : null,
+        orderId: oid && oid.length > 0 ? oid : null,
     });
     manager?.logger?.log?.(
-        `[HOLD] Manual cancel suspected on ${slotId} @${p} — refill suppressed until the market moves significantly past it`,
+        `[HOLD] Manual cancel suspected on ${slotId} @${p}${oid ? ` (vanished order ${oid})` : ''} — refill suppressed until the market moves significantly past it`,
         'info'
     );
     return true;
@@ -216,6 +221,19 @@ function classifyDisappearance(manager: any, slot: any): 'fill' | 'own' | 'manua
                 if (typeof key === 'string' && key.startsWith(prefix)) return 'fill';
             }
         }
+        // Crash-durable fill memory: recently queued fills persisted to the
+        // snapshot survive restarts that wipe the in-memory tracker above
+        // (a startup scan must not re-trap fills the previous process saw).
+        // Same orderId: prefix convention as buildFillKey.
+        try {
+            const snap = (manager as any)?._recentFillKeysSnapshot;
+            if (snap && typeof snap === 'object') {
+                const prefix = orderId + ':';
+                for (const key of Object.keys(snap)) {
+                    if (typeof key === 'string' && key.startsWith(prefix)) return 'fill';
+                }
+            }
+        } catch { /* fall through to own/manual below */ }
         // The bot's own recent cancel (rotation/replace counterpart in flight)?
         try {
             if (wasRecentlyOwnCancelled(orderId)) return 'own';
@@ -226,19 +244,69 @@ function classifyDisappearance(manager: any, slot: any): 'fill' | 'own' | 'manua
     }
 }
 
-function serializeManualHolds(manager: any): Array<{ slotId: string; price: number; ts: number; base?: number | null }> {
+/**
+ * Async disappearance classification with chain-history verification.
+ *
+ * The sync classifyDisappearance above can only consult local records. When
+ * a fill event was missed entirely (reconnect gap, lossy subscription,
+ * disabled sync loop) NO local record exists and the verdict is 'manual' —
+ * a real fill then freezes its slot for hours. This wrapper re-checks a
+ * would-be-'manual' verdict against on-chain account history via verifyFill
+ * before the caller records a hold:
+ * - verifyFill resolves a match -> 'fill' (caller books it normally, so
+ *   boundary crawl / post-fill shrink run as if the event arrived live).
+ * - verifyFill resolves null (clean "no such fill") -> 'manual'.
+ * - verifyFill throws (history unreachable) -> 'fill' (fail-open, same
+ *   philosophy as the sync path: an unreachable history must not freeze a
+ *   slot; matches pre-hold legacy behavior).
+ *
+ * The verifier runs ONLY on the would-be-manual path (vanishings with no
+ * local record are rare), so sync passes never pay for the RPC.
+ *
+ * @param {Object} manager - OrderManager
+ * @param {Object} slot - Grid slot whose orderId vanished from chain
+ * @param {Function|null} verifyFill - async (orderId) -> match|null; throws on lookup failure
+ * @returns {Promise<'fill'|'own'|'manual'>}
+ */
+async function classifyDisappearanceAsync(
+    manager: any,
+    slot: any,
+    verifyFill?: ((orderId: string) => Promise<any | null>) | null
+): Promise<'fill' | 'own' | 'manual'> {
+    const fast = classifyDisappearance(manager, slot);
+    if (fast !== 'manual' || typeof verifyFill !== 'function') return fast;
+    const orderId = slot?.orderId != null ? String(slot.orderId) : '';
+    if (!orderId) return fast;
+    try {
+        const found = await verifyFill(orderId);
+        if (found) {
+            manager?.logger?.log?.(
+                `[HOLD] Chain history confirms fill for vanished ${orderId} (slot ${slot?.id}) — not a manual cancel`,
+                'info'
+            );
+            return 'fill';
+        }
+        return 'manual';
+    } catch {
+        return 'fill';
+    }
+}
+
+function serializeManualHolds(manager: any): Array<{ slotId: string; price: number; ts: number; base?: number | null; orderId?: string | null }> {
     const holds = getManualHoldMap(manager);
-    const out: Array<{ slotId: string; price: number; ts: number; base?: number | null }> = [];
+    const out: Array<{ slotId: string; price: number; ts: number; base?: number | null; orderId?: string | null }> = [];
     for (const [slotId, hold] of holds) {
         const price = Number(hold?.price);
         const ts = Number(hold?.ts);
         if (!slotId || !Number.isFinite(price) || price <= 0) continue;
         const base = Number(hold?.base);
+        const orderId = hold?.orderId != null ? String(hold.orderId) : null;
         out.push({
             slotId: String(slotId),
             price,
             ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now(),
             base: Number.isFinite(base) && base > 0 ? base : null,
+            orderId: orderId && orderId.length > 0 ? orderId : null,
         });
     }
     return out.slice(-500);
@@ -260,10 +328,12 @@ function restoreManualHolds(manager: any, persisted: any): number {
             if (manager.orders instanceof Map && !manager.orders.has(slotId)) continue;
         } catch { /* fall through without the existence check */ }
         const base = Number(e?.base);
+        const orderId = e?.orderId != null ? String(e.orderId) : null;
         holds.set(slotId, {
             price,
             ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now(),
             base: Number.isFinite(base) && base > 0 ? base : null,
+            orderId: orderId && orderId.length > 0 ? orderId : null,
         });
         restored++;
     }
@@ -281,6 +351,7 @@ export {
     pruneManualHolds,
     isSlotHeld,
     classifyDisappearance,
+    classifyDisappearanceAsync,
     serializeManualHolds,
     restoreManualHolds,
     clearMarkerPath,

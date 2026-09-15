@@ -161,7 +161,7 @@ import {
     resolveProcessedFillPersistenceMode
 } from './processed_fill_store.js';
 import { getErrorMessage } from '../utils/errors.js';
-import { classifyDisappearance, recordManualHold, pruneManualHolds } from './manual_hold.js';
+import { classifyDisappearanceAsync, recordManualHold, pruneManualHolds } from './manual_hold.js';
 
 /**
  * Confirming re-read for the suspect-empty-read guard: after
@@ -1255,9 +1255,26 @@ class SyncEngine {
                     // boundary crawl, no fund/weight churn) and hold the slot
                     // empty instead of refilling it on the next cycle. The
                     // virtualization above already released the funds.
-                    const disappearance = classifyDisappearance(mgr, currentGridOrder);
+                    // A missed fill event looks identical locally, so a
+                    // would-be-manual verdict is re-checked against on-chain
+                    // account history first (single page, rare path only) —
+                    // a confirmed fill books normally instead of holding.
+                    // Lookup failure (history unreachable) keeps the manual
+                    // verdict: with a healthy node the query succeeds, and a
+                    // node outage fails the open-orders read first so this
+                    // path never runs. (classifyDisappearanceAsync still
+                    // fail-opens on verifier contract violations.)
+                    const disappearance = await classifyDisappearanceAsync(mgr, currentGridOrder, async (vanishedOrderId: string) => {
+                        try {
+                            const accountRef = (mgr as any)?.accountId || (mgr as any)?.account || (mgr as any)?.config?.accountId || null;
+                            if (!accountRef) return null;
+                            return await chainOrders.findFillForOrderInHistory(accountRef, vanishedOrderId);
+                        } catch {
+                            return null;
+                        }
+                    });
                     if (disappearance === 'manual') {
-                        recordManualHold(mgr, currentGridOrder.id, currentGridOrder.price);
+                        recordManualHold(mgr, currentGridOrder.id, currentGridOrder.price, currentGridOrder.orderId);
                     } else {
                         // A SPREAD slot can carry an on-chain order (spread-correction
                         // activation). Resolve the real side before pushing: the fill

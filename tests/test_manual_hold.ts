@@ -17,6 +17,7 @@ const {
     isSlotHeld,
     getManualHoldMap,
     classifyDisappearance,
+    classifyDisappearanceAsync,
     clearMarkerPath,
     consumeClearMarker,
     serializeManualHolds,
@@ -177,5 +178,107 @@ check('null hold expires', isManualHoldExpired(null, 100, 0.075), true);
     check('record ignores empty', recordOrderPlacement(mgr, ''), undefined);
     check('record on missing manager safe', recordOrderPlacement(null, '1.7.1'), undefined);
 }
+
+// --- hold records carry the vanished orderId (serialize roundtrip) ---
+{
+    const mgr = fakeManager({});
+    mgr.orders.set('slot-1', { id: 'slot-1', price: 100 });
+    recordManualHold(mgr, 'slot-1', 100, '1.7.777');
+    check('hold stores orderId', mgr.manualHolds.get('slot-1').orderId, '1.7.777');
+    const snap = serializeManualHolds(mgr);
+    check('snapshot carries orderId', snap[0].orderId, '1.7.777');
+    const mgr2 = fakeManager({});
+    mgr2.orders.set('slot-1', { id: 'slot-1', price: 100 });
+    restoreManualHolds(mgr2, snap);
+    check('restore revives orderId', mgr2.manualHolds.get('slot-1').orderId, '1.7.777');
+    check('record without orderId still ok', recordManualHold(fakeManager({}), 's', 50), true);
+}
+
+// --- history-verify: a missed fill must never hold (async; runs after the sync summary) ---
+(async () => {
+    let passedAsync = 0;
+    const acheck = (name, actual, expected) => {
+        assert.strictEqual(actual, expected, `${name}: expected ${expected}, got ${actual}`);
+        passedAsync++;
+    };
+    // Snapshot consult (sync path): persisted recent-fill keys cover restarts
+    // that wipe the in-memory tracker.
+    {
+        const mgr = fakeManager({});
+        mgr._recentFillKeysSnapshot = { '1.7.200:99:1.11.5': Date.now() };
+        mgr._fillBatchInFlight = 0;
+        acheck('snapshot fill -> fill', classifyDisappearance(mgr, { id: 's', orderId: '1.7.200' }), 'fill');
+        acheck('snapshot miss -> manual', classifyDisappearance(mgr, { id: 's', orderId: '1.7.201' }), 'manual');
+    }
+    // Fast path never pays for the RPC.
+    {
+        let calls = 0;
+        const counting = async () => { calls++; return null; };
+        const mgr = fakeManager({});
+        mgr.processedFillTracker = new Map([['1.7.100:10:abc', Date.now()]]);
+        acheck('fast fill skips verifier', await classifyDisappearanceAsync(mgr, { id: 's', orderId: '1.7.100' }, counting), 'fill');
+        acheck('verifier not called', calls, 0);
+    }
+    // History verdicts: hit -> fill, clean miss -> manual, error -> fill (fail-open).
+    acheck('history hit -> fill',
+        await classifyDisappearanceAsync(fakeManager({}), { id: 's', orderId: '1.7.300' }, async () => ({ historyId: '1.11.9' })), 'fill');
+    acheck('history miss -> manual',
+        await classifyDisappearanceAsync(fakeManager({}), { id: 's', orderId: '1.7.301' }, async () => null), 'manual');
+    acheck('history error -> fill (fail-open)',
+        await classifyDisappearanceAsync(fakeManager({}), { id: 's', orderId: '1.7.302' }, async () => { throw new Error('node down'); }), 'fill');
+    acheck('no verifier -> manual',
+        await classifyDisappearanceAsync(fakeManager({}), { id: 's', orderId: '1.7.303' }, null), 'manual');
+    console.log(`✓ Manual hold history-verify tests passed! (${passedAsync} assertions)`);
+})().catch((err) => {
+    console.error('Test failed:', err);
+    process.exit(1);
+});
+
+// --- findFillForOrderInHistory: single-page scan (injected fetcher; runs after the sync summary) ---
+(async () => {
+    let passedH = 0;
+    const hcheck = (name, actual, expected) => {
+        assert.deepStrictEqual(actual, expected, `${name}: got ${JSON.stringify(actual)}`);
+        passedH++;
+    };
+    const page = [
+        { id: '1.11.10', op: [1, { order_id: '1.7.1' }], block_num: 100 },
+        { id: '1.11.11', op: [4, { order_id: '1.7.900' }], block_num: 101 },
+        { id: '1.11.12', op: ['fill_order', { orderId: '1.7.901' }], block_num: 102 },
+        { id: '1.11.13', op: [4, {}], block_num: 103 },
+        null,
+    ];
+    const fetcher = async (accountRef, stop, limit, start) => {
+        assert.strictEqual(accountRef, 'acct');
+        assert.strictEqual(stop, '1.11.0');
+        assert.ok(limit <= 100);
+        assert.strictEqual(start, '1.11.0');
+        return page;
+    };
+    const hit = await chainOrders.findFillForOrderInHistory('acct', '1.7.900', { fetcher });
+    hcheck('numeric fill op matches', hit && hit.historyId, '1.11.11');
+    const hit2 = await chainOrders.findFillForOrderInHistory('acct', '1.7.901', { fetcher });
+    hcheck('named fill op matches', hit2 && hit2.blockNum, 102);
+    hcheck('no match -> null', await chainOrders.findFillForOrderInHistory('acct', '1.7.999', { fetcher }), null);
+    hcheck('missing args -> null', await chainOrders.findFillForOrderInHistory(null, '1.7.900', { fetcher }), null);
+    let threw = false;
+    try {
+        await chainOrders.findFillForOrderInHistory('acct', '1.7.900', { fetcher: async () => { throw new Error('rpc down'); } });
+    } catch (e) {
+        threw = /rpc down/.test(String((e as any)?.message || e));
+    }
+    hcheck('rpc error throws (caller fail-opens)', threw, true);
+    let threw2 = false;
+    try {
+        await chainOrders.findFillForOrderInHistory('acct', '1.7.900', { fetcher: async () => ({}) });
+    } catch (e) {
+        threw2 = true;
+    }
+    hcheck('malformed page throws', threw2, true);
+    console.log(`✓ Fill history verify tests passed! (${passedH} assertions)`);
+})().catch((err) => {
+    console.error('Test failed:', err);
+    process.exit(1);
+});
 
 console.log(`✓ Manual hold tests passed! (${passed} assertions)`);

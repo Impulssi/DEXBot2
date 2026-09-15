@@ -161,6 +161,70 @@ function wasRecentlyOwnCancelled(orderId: any) {
     return true;
 }
 
+// Fill-history verification for disappearance classification (manual_hold).
+// A fill event can be missed entirely (reconnect gap, lossy subscription,
+// disabled sync loop) while an open-orders sync still notices the order is
+// gone. Without a fill record the disappearance looks exactly like an
+// operator manual cancel, and the slot would be held empty for hours.
+// This single-shot history scan distinguishes the two: it reads the latest
+// account history page and looks for a fill_order op carrying this order id.
+// Same get_account_history (account, stop, limit, start) calling convention
+// as the subscription gap-recovery scan. Single page (<=100 entries, under
+// typical api_limit_get_account_history) so a sync pass never stalls on
+// paging; fills older than the window keep the legacy verdict. Pure read:
+// no cursor moves, no fill booking (the caller books via filledOrders).
+// Returns the match ({historyId, blockNum, entry}) or null when the page
+// scanned clean. THROWS on lookup failure (no fetcher, RPC error, malformed
+// page) so the caller can fail open; null means "verified absent".
+const FILL_HISTORY_VERIFY_LIMIT = 100;
+const FILL_HISTORY_HEAD = '1.11.0';
+const FILL_ORDER_OP_ID = 4;
+
+function resolveHistoryFetcher(): ((accountRef: any, stop: any, limit: any, start: any) => Promise<any[]>) | null {
+    try {
+        const history = (BitShares as any)?.history;
+        if (!history) return null;
+        if (typeof history.getAccountHistory === 'function') {
+            return (accountRef: any, stop: any, limit: any, start: any) => history.getAccountHistory(accountRef, stop, limit, start);
+        }
+        if (typeof history.get_account_history === 'function') {
+            return (accountRef: any, stop: any, limit: any, start: any) => history.get_account_history(accountRef, stop, limit, start);
+        }
+        if (typeof history.call === 'function') {
+            return (accountRef: any, stop: any, limit: any, start: any) => history.call('get_account_history', [accountRef, stop, limit, start]);
+        }
+    } catch { /* unreachable history -> null below */ }
+    return null;
+}
+
+function extractFillOrderId(opData: any): string | null {
+    try {
+        if (!Array.isArray(opData)) return null;
+        const code = opData[0];
+        if (code !== FILL_ORDER_OP_ID && code !== 'fill_order') return null;
+        const data = opData[1] || {};
+        const id = data.order_id ?? data.orderId ?? null;
+        return id != null ? String(id) : null;
+    } catch { return null; }
+}
+
+async function findFillForOrderInHistory(accountRef: any, orderId: any, options: any = {}): Promise<{ historyId: string | null; blockNum: any; entry: any } | null> {
+    const wanted = orderId != null ? String(orderId) : '';
+    if (!accountRef || !wanted) return null;
+    const limit = Math.max(1, Math.min(FILL_HISTORY_VERIFY_LIMIT, Number(options?.limit) || FILL_HISTORY_VERIFY_LIMIT));
+    const fetcher = typeof options?.fetcher === 'function' ? options.fetcher : resolveHistoryFetcher();
+    if (typeof fetcher !== 'function') throw new Error('findFillForOrderInHistory: no account-history fetcher available');
+    const entries = await fetcher(accountRef, FILL_HISTORY_HEAD, limit, FILL_HISTORY_HEAD);
+    if (!Array.isArray(entries)) throw new Error('findFillForOrderInHistory: malformed history page');
+    for (const entry of entries) {
+        if (!entry) continue;
+        if (extractFillOrderId(entry.op) === wanted) {
+            return { historyId: entry.id != null ? String(entry.id) : null, blockNum: entry.block_num ?? entry.blockNum ?? null, entry };
+        }
+    }
+    return null;
+}
+
 // Key/auth helpers provided by modules/chain_keys.ts
 // (authenticate(), getPrivateKey(), MasterPasswordError)
 
@@ -1551,4 +1615,6 @@ function buildLiquidityPoolExchangeOp(accountId: any, poolId: any, sellAmountInt
 function getFillProcessingMode() {
     return FILL_PROCESSING_MODE;
 }
-export { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readOpenOrdersWithMetaSafe, readOpenOrdersGuarded, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp, executeBatch, findOverReducingUpdateOpError, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError, broadcastTxWithClassification }
+export { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readOpenOrdersWithMetaSafe, readOpenOrdersGuarded, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp,
+executeBatch, findOverReducingUpdateOpError, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError,
+broadcastTxWithClassification, findFillForOrderInHistory }
