@@ -261,7 +261,8 @@ class COWRebalanceEngine {
                 dustThresholdPercent,
                 gapSlots,
                 evacStreaks,
-                assets: this.assets
+                assets: this.assets,
+                config: this.config
             }
         );
 
@@ -2242,7 +2243,8 @@ class OrderManager {
             dustThresholdPercent: this.config?.gridLimits?.PARTIAL_DUST_THRESHOLD_PERCENTAGE,
             gapSlots: this._gapSlots,
             evacStreaks: this._gapEvacStreaks,
-            assets: this.assets
+            assets: this.assets,
+            config: this.config
         });
     }
 

@@ -9,7 +9,7 @@
 const assert = require('assert');
 const { resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, resolveBuyDeepCount, resolveBuyDeepSizes, isDeepShelfId, deepShelfPrices, BUY_WINDOW_DEFAULTS } = require('../modules/order/utils/math');
 const { ensureDeepShelfEntries, isDeepShelfFillOrder, resolveDeepShelfFloor, applyDeepManualSizes } = require('../modules/order/utils/order');
-const { validateWorkingGridFunds } = require('../modules/order/utils/validate');
+const { validateWorkingGridFunds, reconcileGrid } = require('../modules/order/utils/validate');
 const SyncEngine = require('../modules/order/sync_engine').default;
 
 let passed = 0;
@@ -246,6 +246,9 @@ deepAdoptChecks().then(() => {
     return fundPressureVictimChecks();
 }).then(() => {
     console.log(`✓ Fund pressure victim checks passed! (${passed} assertions)`);
+    return postFillShrinkDeepChecks();
+}).then(() => {
+    console.log(`✓ Post-fill shrink deep checks passed! (${passed} assertions)`);
 }).catch((e) => {
     console.error('Deep adopt checks failed:', e);
     process.exit(1);
@@ -347,4 +350,30 @@ async function fundPressureVictimChecks() {
         dryRun: false, planOnly: true,
     });
     check('no shelf: largest wins as before', victim2 && victim2.chainOrderObj.id, '1.7.910');
+}
+
+// --- Post-fill shrink must never cancel the live deep shelf (live 2026-09-15) ---
+// A rail buy fill shrinks the buy budget; the shrink target omits deep slots
+// (or sizes them zero). Generic reconcile must not cancel/rotate live deeps
+// as surplus/size-zero/orphans while the shelf is active — deep lifecycle
+// belongs to deep paths (placement, divergence updates, deep-fill handling).
+async function postFillShrinkDeepChecks() {
+    const master = new Map([
+        ['slot-8', { id: 'slot-8', type: ExcessOT.BUY, state: ExcessOS.ACTIVE, price: 88, size: 10, orderId: '1.7.908' }],
+        ['deep-0', { id: 'deep-0', type: ExcessOT.BUY, state: ExcessOS.ACTIVE, price: 72, size: 5, orderId: '1.7.910' }],
+        ['deep-1', { id: 'deep-1', type: ExcessOT.BUY, state: ExcessOS.ACTIVE, price: 71, size: 5, orderId: '1.7.911' }],
+        ['deep-2', { id: 'deep-2', type: ExcessOT.BUY, state: ExcessOS.ACTIVE, price: 70, size: 5, orderId: '1.7.912' }],
+    ]);
+    // Shrink target without shelf entries (post-fill rail budget).
+    const target = new Map([
+        ['slot-8', { id: 'slot-8', type: ExcessOT.BUY, state: ExcessOS.ACTIVE, price: 88, size: 10 }],
+    ]);
+    const cfg = { buyDeepCount: 3 };
+    const res = reconcileGrid(master, target, 8, { config: cfg, gapSlots: 0 });
+    const touched = res.actions.filter((a) => ['deep-0', 'deep-1', 'deep-2'].includes(a.id));
+    check('post-fill shrink never cancels live deeps', touched.length, 0);
+    // Positive control: disabling the count unwinds through the same path.
+    const res2 = reconcileGrid(master, target, 8, { config: { buyDeepCount: 0 }, gapSlots: 0 });
+    const touched2 = res2.actions.filter((a) => ['deep-0', 'deep-1', 'deep-2'].includes(a.id));
+    check('disabled shelf still unwinds (deep cancels planned)', touched2.length > 0, true);
 }

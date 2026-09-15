@@ -51,6 +51,7 @@ import {
     getDoubleDustThreshold,
     getSellStartIdx,
     isDeepShelfId,
+    resolveBuyDeepCount,
     isSlotIndexInGapBand,
     isEvacuationRotationAllowed,
     clamp,
@@ -492,6 +493,20 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
     const hasPlanGeometry = Number.isFinite(planGapSlots) && planGapSlots >= 0;
     const evacAssets = options?.assets ?? null;
     const actions: any[] = [];
+    // Deep shelf lifecycle belongs to dedicated deep paths (placement with
+    // manual sizes + delay/floor gates, divergence updates, deep-fill
+    // handling). Generic reconcile must never cancel/rotate live deep orders
+    // as "surplus", "size-zero" or "orphans": after a buy fill shrinks the
+    // rail budget, the shelf is the first victim of a naive sweep (observed
+    // live 2026-09-15: all 3 deeps cancelled post-fill, floor uncovered for
+    // ~10h). Gate on user intent (buyDeepCount > 0) so disabling the count
+    // still unwinds the shelf through the normal paths below.
+    const deepShelfActive = (() => {
+        try {
+            const cfg = (options as any)?.config;
+            return resolveBuyDeepCount(cfg) > 0;
+        } catch { return false; }
+    })();
     
     const surplusesBuy: any[] = [];
     const surplusesSell: any[] = [];
@@ -534,7 +549,11 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
 
         if (!masterOrder || masterOrder.state === ORDER_STATES.VIRTUAL) {
             // Slot is empty or virtual - check if we need to fill it
-            if (targetOrder.size > 0 && targetOrder.state === ORDER_STATES.ACTIVE) {
+            if (targetOrder.size > 0 && targetOrder.state === ORDER_STATES.ACTIVE && isCreateHealthy(targetOrder)) {
+                // Deep vacancies fill only via deep placement paths (manual
+                // sizes + delay/floor gates) — never by rail rotation/creation
+                // pairing below.
+                if (deepShelfActive && isDeepShelfId(id)) continue;
                 // This is a hole that needs filling
                 if (targetOrder.type === ORDER_TYPES.BUY) {
                     holesBuy.push({ id, order: targetOrder });
@@ -554,8 +573,10 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
         }
 
         // If master is on-chain but target should be VIRTUAL (outside window),
-        // this is a surplus candidate for rotation.
+        // this is a surplus candidate for rotation. Live deep orders are
+        // never reconcile-surplus while the shelf is active (see above).
         if (isOrderOnChain(masterOrder) && targetOrder.state === ORDER_STATES.VIRTUAL) {
+            if (deepShelfActive && isDeepShelfId(id)) continue;
             if (masterOrder.type === ORDER_TYPES.BUY) {
                 surplusesBuy.push({ id, master: masterOrder, target: targetOrder });
             } else if (masterOrder.type === ORDER_TYPES.SELL) {
@@ -566,6 +587,9 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
 
         if (masterOrder.size !== targetOrder.size) {
             if (targetOrder.size === 0) {
+                // A zero-sized deep target with an active shelf is a sizing
+                // glitch, not a cancel signal (divergence resizes deep slots).
+                if (deepShelfActive && isDeepShelfId(id)) continue;
                 actions.push({ type: COW_ACTIONS.CANCEL, id, orderId: masterOrder.orderId, reason: 'target-size-zero' });
             }
             // Intentionally no in-place size UPDATE here.
@@ -656,6 +680,9 @@ function reconcileGrid(masterGrid: any, targetGrid: any, targetBoundary: any, op
 
     for (const [id, masterOrder] of masterGrid) {
         if (!targetGrid.has(id) && isOrderOnChain(masterOrder)) {
+            // Live deep orders missing from this plan are re-adopted by sync,
+            // not cancelled (see above); count 0 still unwinds via this path.
+            if (deepShelfActive && isDeepShelfId(id)) continue;
             actions.push({ type: COW_ACTIONS.CANCEL, id, orderId: masterOrder.orderId, reason: 'orphan-slot' });
         }
     }
