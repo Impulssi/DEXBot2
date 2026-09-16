@@ -170,6 +170,39 @@ async function testDiscardedCreateMalformedDescriptorLogsError() {
     console.log('  PASS');
 }
 
+async function testDeepDuplicateCreateSuppressed() {
+    console.log('\n[CREATE-UNKNOWN-006] deep first placement (id-less descriptor, startup path) materializes — no duplicate...');
+    const logs = [];
+    const manager = createManagerFixture(logs);
+    manager.config.buyDeepCount = 3;
+    // Shape _createOrderFromGrid now supplies: price/size/type, no id.
+    const descriptor = { price: 0.00123, size: 5, type: 'buy' };
+    await manager.sync.synchronizeWithChain({
+        gridOrderId: 'deep-1',
+        chainOrderId: '1.7.900',
+        isPartialPlacement: false,
+        expectedType: 'buy',
+        fee: 0,
+        order: descriptor,
+    }, 'createOrder');
+
+    const slot = manager.orders.get('deep-1');
+    assert.ok(slot, 'deep slot must be materialized in master');
+    assert.strictEqual(slot.orderId, '1.7.900', 'chain linkage must be recorded');
+    assert.strictEqual(slot.type, 'buy', 'side preserved');
+    assert.strictEqual(Number(slot.price), 0.00123, 'descriptor price kept');
+    assert.ok(!logs.some((e) => e.level === 'error'), 'no linkage error');
+
+    // The materialized entry must survive shelf ensure (placed, not virtual):
+    // a second startup plan then sees the slot as filled, not empty.
+    const { ensureDeepShelfEntries } = require('../modules/order/utils/order');
+    const ensured = ensureDeepShelfEntries(manager.orders, manager);
+    const kept = (Array.isArray(ensured) ? ensured : []).find((e) => e && e.id === 'deep-1');
+    assert.ok(kept && kept.orderId === '1.7.900', 'placed shelf entry survives ensure (no re-place)');
+
+    console.log('  PASS');
+}
+
 async function run() {
     console.log('Running createOrder unknown-id regression tests (issue #23)...');
     await testUnknownIdWithDescriptorMaterializes();
@@ -177,6 +210,7 @@ async function run() {
     await testUnknownIdAlreadyTrackedIsIdempotent();
     await testDiscardedCreateMissingSlotMaterializes();
     await testDiscardedCreateMalformedDescriptorLogsError();
+    await testDeepDuplicateCreateSuppressed();
     console.log('\nAll createOrder unknown-id regression tests passed');
 }
 

@@ -581,6 +581,7 @@ export async function reconcileGridOrders({
                                 isPartialPlacement: false,
                                 expectedType: parsed.type,
                                 fee: btsFeeData?.createFee || 0,
+                                order: { price: candidate.price, size: candidate.size, type: candidate.type },
                             }, 'createOrder');
                             gridOrderIds.add(co.id);
                             phase2CreatedOrderIds.add(co.id);

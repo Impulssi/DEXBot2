@@ -692,7 +692,12 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
                 chainOrderId,
                 isPartialPlacement: false,
                 expectedType: gridOrder.type,
-                fee: btsFeeData.createFee
+                fee: btsFeeData.createFee,
+                // Placement descriptor for unknown-id recovery: if a grid
+                // reset raced the broadcast (or the id was never projected,
+                // e.g. deep shelf), the linkage handler materializes the slot
+                // from this instead of losing track (duplicate re-place).
+                order: { price: gridOrder.price, size: gridOrder.size, type: gridOrder.type },
             }, 'createOrder');
         } catch (syncErr: any) {
             const logger = manager && manager.logger;
@@ -997,6 +1002,7 @@ async function _finalizeStartupUpdate({ manager, preparedUpdate }: { manager: an
         fee: btsFeeData.updateFee,
         skipAccounting: false,
         deferredFee: deferredFeeFloat,
+        order: { price: plan.gridOrder.price, size: plan.gridOrder.size, type: plan.gridOrder.type },
     }, 'createOrder');
 }
 
@@ -1295,6 +1301,7 @@ async function _adoptPossiblyLandedCreate({
             isPartialPlacement: false,
             expectedType: gridOrder.type,
             fee: btsFeeData?.createFee || 0,
+            order: { price: gridOrder.price, size: gridOrder.size, type: gridOrder.type },
         }, 'createOrder');
         return matched.id || null;
     } catch (adoptErr: any) {
@@ -1573,7 +1580,8 @@ async function _executeStartupCreateGroupBatch({
                 chainOrderId,
                 isPartialPlacement: false,
                 expectedType: plan.gridOrder.type,
-                fee: btsFeeData.createFee
+                fee: btsFeeData.createFee,
+                order: { price: plan.gridOrder.price, size: plan.gridOrder.size, type: plan.gridOrder.type },
             }, 'createOrder');
         }
 
@@ -1677,6 +1685,7 @@ async function _executeStartupCreateGroupBatch({
                                 isPartialPlacement: false,
                                 expectedType: plan.gridOrder.type,
                                 fee: btsFeeData?.createFee || 0,
+                                order: { price: plan.gridOrder.price, size: plan.gridOrder.size, type: plan.gridOrder.type },
                             }, 'createOrder');
                             createdOrderIds.push(slot.orderId);
                             logger?.log?.(
