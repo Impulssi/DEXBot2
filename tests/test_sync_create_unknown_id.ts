@@ -177,6 +177,11 @@ async function testDeepDuplicateCreateSuppressed() {
     manager.config.buyDeepCount = 3;
     // Shape _createOrderFromGrid now supplies: price/size/type, no id.
     const descriptor = { price: 0.00123, size: 5, type: 'buy' };
+    // The chain order sits in the deferred-orphan list (fund counting).
+    manager._lastUnmatchedChainOrders = [
+        { chainOrderId: '1.7.900', type: 'buy', price: 0.00123, size: 5 },
+        { chainOrderId: '1.7.901', type: 'buy', price: 0.00124, size: 5 },
+    ];
     await manager.sync.synchronizeWithChain({
         gridOrderId: 'deep-1',
         chainOrderId: '1.7.900',
@@ -192,6 +197,11 @@ async function testDeepDuplicateCreateSuppressed() {
     assert.strictEqual(slot.type, 'buy', 'side preserved');
     assert.strictEqual(Number(slot.price), 0.00123, 'descriptor price kept');
     assert.ok(!logs.some((e) => e.level === 'error'), 'no linkage error');
+    // Adoption prunes the deferred record: fund counting must never see the
+    // same value in the slot AND in the orphan list (double-count drift).
+    const remaining = (manager._lastUnmatchedChainOrders || []).map((u) => u.chainOrderId);
+    assert.ok(!remaining.includes('1.7.900'), 'adopted order pruned from unmatched (no double-count)');
+    assert.ok(remaining.includes('1.7.901'), 'other orphans kept');
 
     // The materialized entry must survive shelf ensure (placed, not virtual):
     // a second startup plan then sees the slot as filled, not empty.

@@ -154,6 +154,7 @@ import {
     resolveDeepShelfFloor,
     ensureDeepShelfEntries,
     duplicateOrphanLogInfo,
+    _filterUnmatchedChainOrders,
     _stampCorrectionProvenance
 } from './utils/order.js';
 import { parseSlotIndex } from './utils/slot.js';
@@ -431,6 +432,7 @@ async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, cha
             filledOrders.push({ ...bestMatch });
             updatedOrders.push(spreadOrder);
             chainOrderIdsOnGrid.add(chainOrderId);
+            try { _filterUnmatchedChainOrders(mgr, chainOrderId); } catch { /* counting hygiene only */ }
             return true; // filled path
         }
     } else if (wasPartial) {
@@ -446,6 +448,9 @@ async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, cha
     }
     updatedOrders.push(bestMatch);
     chainOrderIdsOnGrid.add(chainOrderId);
+    // Adopted means matched: drop any deferred-orphan record so fund
+    // counting (which adds unmatched locks) never double-counts the slot.
+    try { _filterUnmatchedChainOrders(mgr, chainOrderId); } catch { /* counting hygiene only */ }
     return true;
 }
 
@@ -2369,7 +2374,7 @@ class SyncEngine {
                                 const adoptType = (expectedType === ORDER_TYPES.BUY || expectedType === ORDER_TYPES.SELL)
                                     ? expectedType
                                     : ORDER_TYPES.BUY;
-                                await mgr._applyOrderUpdate({
+                                const deepAdopted = await mgr._applyOrderUpdate({
                                     id: gridOrderId,
                                     type: adoptType,
                                     state: isPartialPlacement ? ORDER_STATES.PARTIAL : ORDER_STATES.ACTIVE,
@@ -2380,6 +2385,9 @@ class SyncEngine {
                                     skipAccounting: chainData.skipAccounting || false,
                                     fee: fee || 0
                                 });
+                                if (deepAdopted !== false) {
+                                    try { _filterUnmatchedChainOrders(mgr, chainOrderId); } catch { /* counting hygiene only */ }
+                                }
                                 mgr.logger?.log?.(
                                     `[SYNC] Deep shelf adopted ${gridOrderId} @${px} x${sz} -> ${chainOrderId}`,
                                     'info'
@@ -2565,6 +2573,7 @@ class SyncEngine {
                                             'error'
                                         );
                                     } else {
+                                        try { _filterUnmatchedChainOrders(mgr, chainOrderId); } catch { /* counting hygiene only */ }
                                         mgr.logger?.log?.(
                                             `[SYNC] createOrder for unknown grid order ${gridOrderId}: materialized ${materializeType} @${materializePrice} x${descriptorSize} (price source: ${priceSource}) -> ${chainOrderId} (master lost the slot mid-broadcast)`,
                                             'warn'
