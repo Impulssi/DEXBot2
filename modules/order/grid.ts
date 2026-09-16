@@ -1501,6 +1501,44 @@ export async function initializeGrid(manager: any): Promise<void> {
      * @param {string} opts.privateKey - Private key.
      * @returns {Promise<void>}
      */
+/**
+ * Recreate missing deep-shelf anchors after a grid rebuild.
+ *
+ * A rebuild starts from rail genesis and drops fork-kept deep-* entries,
+ * leaving live shelf orders as untracked orphans (fund drift) until
+ * something replaces them. This recreates the VIRTUAL shelf anchors via
+ * the normal update path (validation, indexes, dirty flag included) so the
+ * shelf is visible/persisted and chain orphans adopt in the reconcile.
+ * Never touches placed orders: only missing ids are inserted, always
+ * VIRTUAL/size-0/no-orderId.
+ *
+ * @param {Object} manager - OrderManager
+ * @returns {Promise<number>} Anchors inserted
+ */
+export async function reseedDeepShelfAnchors(manager: any): Promise<number> {
+    try {
+        const { ensureDeepShelfEntries } = require('./utils/order.js');
+        const seeded = ensureDeepShelfEntries(manager?.orders, manager) || [];
+        let reseeded = 0;
+        for (const e of seeded) {
+            if (!e || !e.id) continue;
+            const cur = manager.orders.get(e.id);
+            if (cur && cur.orderId) continue;
+            if (!cur) {
+                const applied = await manager._updateOrder(
+                    { ...e, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null },
+                    'resync-reseed',
+                    { skipAccounting: true }
+                );
+                if (applied) reseeded++;
+            }
+        }
+        if (reseeded > 0) manager.logger?.log?.(`[GRID-RESYNC] Reseeded ${reseeded} deep-shelf anchor(s) after rebuild`, 'info');
+        return reseeded;
+    } catch { /* shelf stays ephemeral; per-cycle ensure still applies */ }
+    return 0;
+}
+
 export async function recalculateGrid(manager: any, opts: any): Promise<void> {
         const { readOpenOrdersFn, chainOrders, account, privateKey } = opts;
 
@@ -1571,6 +1609,10 @@ export async function recalculateGrid(manager: any, opts: any): Promise<void> {
 
                 if (_resyncAborted) return;
                 await initializeGrid(manager);
+
+                // Deep-shelf reseed: a rebuild starts from rail genesis and
+                // drops fork-kept deep-* entries (see reseedDeepShelfAnchors).
+                await reseedDeepShelfAnchors(manager);
 
                 if (_resyncAborted) return;
                 const { reconcileGridOrders } = require('./grid_reconcile');

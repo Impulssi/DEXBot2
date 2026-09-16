@@ -406,20 +406,44 @@ class Accountant {
               const isBuy = order.type === ORDER_TYPES.BUY || spreadSide === ORDER_TYPES.BUY;
               const isSell = order.type === ORDER_TYPES.SELL || spreadSide === ORDER_TYPES.SELL;
 
-             if (isBuy) {
-                 if (isActive) {
-                     gridBuy += size;
-                     chainBuy += size;
-                 }
-                 if (isVirtual) virtualBuy += size;
-             } else if (isSell) {
-                 if (isActive) {
-                     gridSell += size;
-                     chainSell += size;
-                 }
-                 if (isVirtual) virtualSell += size;
-             }
-         }
+          if (isBuy) {
+              if (isActive) {
+                  gridBuy += size;
+                  chainBuy += size;
+              }
+              if (isVirtual) virtualBuy += size;
+          } else if (isSell) {
+              if (isActive) {
+                  gridSell += size;
+                  chainSell += size;
+              }
+              if (isVirtual) virtualSell += size;
+          }
+          }
+
+          // Deferred-but-live chain orders: the last sync saw these on chain
+          // without a grid slot (out-of-grid, boundary-unknown, shelf-full
+          // deferrals). They lock REAL funds — a BUY size is already quote,
+          // a SELL size is already base, same conventions as the slot loop
+          // above — so they belong in the on-chain committed sums. Without
+          // them every invariant check reports drift equal to their value
+          // and triggers futile recovery resyncs (the resync rebuild cannot
+          // adopt them either, so the loop never converges). Never counted
+          // as grid or placeable: only the committed (locked) side.
+          // Staleness is bounded by the sync refresh (the list is replaced
+          // wholesale each sync); a fill between syncs over-counts until the
+          // next refresh, at most one transient recovery.
+          try {
+              const unmatched = (mgr as any)?._lastUnmatchedChainOrders;
+              if (Array.isArray(unmatched)) {
+                  for (const u of unmatched) {
+                      const uSize = Number(u?.size);
+                      if (!Number.isFinite(uSize) || uSize <= 0) continue;
+                      if (u?.type === ORDER_TYPES.BUY) chainBuy += uSize;
+                      else if (u?.type === ORDER_TYPES.SELL) chainSell += uSize;
+                  }
+              }
+          } catch { /* committed sums stay grid-only */ }
 
          // STEP 5: Fetch blockchain free balances and compute totals
          const chainFreeBuy = mgr.accountTotals?.buyFree || 0;

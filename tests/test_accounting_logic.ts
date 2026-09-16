@@ -435,6 +435,46 @@ async function runCoreTests() {
         assert.strictEqual(slot.orderId, '1.7.5', 'Slot must keep its orderId');
     }
 
+    // Test: deferred-but-live chain orphans count as committed (no phantom drift)
+    console.log(' - Testing unmatched-orphan committed accounting...');
+    {
+        const manager = await createManager();
+        manager.pauseFundRecalc();
+        await manager._updateOrder({
+            id: 'slot-1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY,
+            size: 100, price: 90, orderId: '1.7.10'
+        });
+        await manager._updateOrder({
+            id: 'slot-9', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.SELL,
+            size: 25, price: 110, orderId: '1.7.11'
+        });
+        // Two deferred orphans the last sync saw live without grid slots:
+        // a shelf-priced buy (quote size) and an out-of-grid sell (base size).
+        (manager as any)._lastUnmatchedChainOrders = [
+            { chainOrderId: '1.7.800', type: ORDER_TYPES.BUY, price: 70, size: 50 },
+            { chainOrderId: '1.7.801', type: ORDER_TYPES.SELL, price: 200, size: 7 },
+        ];
+        // Totals consistent with the orphan-inclusive expectation so the
+        // invariant check stays quiet: buy 9850 + (100 + 50), sell 68 + (25 + 7).
+        await manager.setAccountTotals({ buy: 10000, sell: 100, buyFree: 9850, sellFree: 68 });
+        await manager.resumeFundRecalc();
+        assert.strictEqual(manager.funds.committed.chain.buy, 150, 'chain committed buy = grid active (100) + orphan (50)');
+        assert.strictEqual(manager.funds.committed.chain.sell, 32, 'chain committed sell = grid active (25) + orphan (7)');
+        assert.strictEqual(manager.funds.committed.grid.buy, 100, 'grid committed excludes orphans');
+        assert.strictEqual(manager.funds.committed.grid.sell, 25, 'grid committed excludes orphans');
+        // Stale/garbage entries never corrupt the sums.
+        manager.pauseFundRecalc();
+        (manager as any)._lastUnmatchedChainOrders = [
+            { chainOrderId: '1.7.802', type: ORDER_TYPES.BUY, price: 70, size: 0 },
+            { chainOrderId: '1.7.803', type: 'nonsense', price: 1, size: 9 },
+            null,
+        ];
+        await manager.setAccountTotals({ buy: 10000, sell: 100, buyFree: 9900, sellFree: 75 });
+        await manager.resumeFundRecalc();
+        assert.strictEqual(manager.funds.committed.chain.buy, 100, 'zero-size and untyped orphans ignored (buy)');
+        assert.strictEqual(manager.funds.committed.chain.sell, 25, 'zero-size and untyped orphans ignored (sell)');
+    }
+
     console.log('✓ Accountant logic tests passed!');
 }
 

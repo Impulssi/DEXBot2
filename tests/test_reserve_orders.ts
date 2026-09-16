@@ -1184,6 +1184,47 @@ async function runTests() {
         );
     }
 
+    console.log(' - grid rebuild reseeds missing deep-shelf anchors (resync drops shelf)...');
+    {
+        const { reseedDeepShelfAnchors } = require('../modules/order/grid');
+        const { deepShelfPrices } = require('../modules/order/utils/math');
+        const mkReseedMgr = async () => {
+            const mgr = new OrderManager({
+                market: 'TEST/BTS', assetA: 'TEST', assetB: 'BTS',
+                startPrice: 100, minPrice: 80, incrementPercent: 1, targetSpreadPercent: 0,
+                activeOrders: { buy: 6, sell: 3 }, reserveOrders: { buy: 0, sell: 0 },
+                buyDeepCount: 3,
+            });
+            mgr.logger.level = 'silent';
+            mgr.assets = { assetA: { id: '1.3.0', precision: 8, symbol: 'TEST' }, assetB: { id: '1.3.1', precision: 5, symbol: 'BTS' } };
+            await mgr.setAccountTotals({ buy: 100000, sell: 100, buyFree: 100000, sellFree: 100 });
+            await mgr.resetFunds();
+            return mgr;
+        };
+        // Empty shelf (post-rebuild): all three anchors recreated VIRTUAL.
+        const mgr = await mkReseedMgr();
+        mgr.pauseFundRecalc();
+        for (let i = 0; i < 3; i++) {
+            await mgr._updateOrder({ id: `slot-${i}`, type: ORDER_TYPES.BUY, price: 85 + i, size: 100, state: ORDER_STATES.ACTIVE, orderId: `1.7.${900 + i}` });
+        }
+        const added = await reseedDeepShelfAnchors(mgr);
+        assert.strictEqual(added, 3, 'reseeds all three missing anchors');
+        const want = deepShelfPrices(80, 1.01, 3);
+        for (let i = 0; i < 3; i++) {
+            const d = mgr.orders.get(`deep-${i}`);
+            assert(d, `deep-${i} exists`);
+            assert.strictEqual(d.state, ORDER_STATES.VIRTUAL, `deep-${i} virtual`);
+            assert.strictEqual(d.orderId, null, `deep-${i} unplaced`);
+            assert.strictEqual(Number(d.price), Number(want[i]), `deep-${i} floor-anchored`);
+        }
+        // Placed shelf untouched; second run inserts nothing.
+        await mgr._updateOrder({ id: 'deep-0', type: ORDER_TYPES.BUY, price: Number(want[0]), size: 500, state: ORDER_STATES.ACTIVE, orderId: '1.7.800' });
+        const added2 = await reseedDeepShelfAnchors(mgr);
+        assert.strictEqual(added2, 0, 'placed shelf never reseeded');
+        assert.strictEqual(mgr.orders.get('deep-0').orderId, '1.7.800', 'live shelf entry preserved');
+        await mgr.resumeFundRecalc();
+    }
+
     console.log('✓ Reserve orders tests passed!');
     process.exit(0);
 }
