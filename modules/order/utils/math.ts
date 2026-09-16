@@ -1616,6 +1616,13 @@ function validateBoundaryCommit(
 
     const sorted = Array.from(orders ?? [])
         .filter((o: any) => o && o.price != null && Number.isFinite(Number(o.price)))
+        // Fork-kept deep-* dip-shelf entries are not rail positions: they
+        // persist inline (price-sorted) below the rail and would shift every
+        // rail index in this positional mapping — pushing legitimate rail
+        // slots into the band window (plus reading as in-band strands).
+        // Rail geometry validates rail only; the shelf is floor-anchored
+        // outside it by design and can never strand the spread.
+        .filter((o: any) => !isDeepShelfId(o?.id))
         .sort((a: any, b: any) => Number(a.price) - Number(b.price));
     const maxIdx = sorted.length - 1;
     if (raw > maxIdx) {

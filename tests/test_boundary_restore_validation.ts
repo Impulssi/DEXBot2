@@ -167,6 +167,71 @@ async function testValidatorSemantics() {
     console.log('  PASS: validator semantics match commit vs restore strictness');
 }
 
+async function testDeepShelfExcludedFromBandMapping() {
+    console.log('Running test: deep shelf excluded from band mapping');
+    // Live shape: price-sorted array with placed deep-* inline below the
+    // rail. Without the exemption the deeps shift every rail slot and
+    // placed rail buys read as in-band strands (boundary erased on boot).
+    // Rail: slot-0..8 buys placed, slot-9..11 gap virtual, slot-12+ sells
+    // placed. Deeps interleaved below at cheaper pins, all placed.
+    const railBuys = [];
+    for (let i = 0; i <= 8; i++) {
+        railBuys.push({
+            id: `slot-${i}`,
+            price: 80 + i,
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,
+            size: 10,
+            orderId: `1.7.${100 + i}`
+        });
+    }
+    const gap = [];
+    for (let i = 9; i <= 11; i++) {
+        gap.push({
+            id: `slot-${i}`,
+            price: 80 + i,
+            type: ORDER_TYPES.SPREAD,
+            state: ORDER_STATES.VIRTUAL,
+            size: 0,
+            orderId: ''
+        });
+    }
+    const sells = [];
+    for (let i = 12; i <= 14; i++) {
+        sells.push({
+            id: `slot-${i}`,
+            price: 80 + i,
+            type: ORDER_TYPES.SELL,
+            state: ORDER_STATES.ACTIVE,
+            size: 10,
+            orderId: `1.7.${200 + i}`
+        });
+    }
+    const deeps = [
+        { id: 'deep-0', price: 70, type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, size: 5, orderId: '1.7.800' },
+        { id: 'deep-1', price: 71, type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, size: 5, orderId: '1.7.801' },
+        { id: 'deep-2', price: 72, type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, size: 5, orderId: '1.7.802' },
+    ];
+    const withDeeps = [...railBuys, ...gap, ...sells, ...deeps];
+    assert.strictEqual(
+        validatePersistedBoundary(8, withDeeps, 3).ok, true,
+        'inline placed deeps must not shift rail mapping or strand (boundary 8, gap 3)'
+    );
+    assert.strictEqual(
+        validateBoundaryCommit(8, withDeeps, 3).ok, true,
+        'commit gate agrees with deeps present'
+    );
+    // The exemption is deep-specific: a genuinely misplaced rail buy still fails.
+    const badRail = withDeeps.map((o) => o.id === 'slot-9'
+        ? { ...o, type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, size: 10, orderId: '1.7.999' }
+        : o);
+    const badResult = validatePersistedBoundary(8, badRail, 3);
+    assert.strictEqual(badResult.ok, false, 'misplaced rail buy still rejected with deeps present');
+    assert.strictEqual(badResult.reason, BOUNDARY_REJECT_PLACED_IN_BAND);
+
+    console.log('  PASS: deep shelf excluded from band mapping');
+}
+
 // ── loadGrid: honest restore passes through unchanged ───────────────────
 
 async function testLoadGridValidBoundaryPassthrough() {
@@ -424,6 +489,7 @@ async function testCrossedBookPrecedenceOverStranding() {
 
 async function runAll() {
     await testValidatorSemantics();
+    await testDeepShelfExcludedFromBandMapping();
     await testCrossedBookPrecedenceOverStranding();
     await testLoadGridValidBoundaryPassthrough();
     await testLoadGridRepairsPoisonedBoundary();
