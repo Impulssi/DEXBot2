@@ -658,6 +658,19 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
         return null;
     }
 
+    // HOLD re-check at execution time: a plan built before the operator
+    // cancelled the slot must not broadcast after the hold lands (pickers
+    // filter holds at plan time, but a sync classifying the disappearance
+    // can record the hold mid-flight). The placement would also auto-clear
+    // the hold on linkage, erasing operator intent.
+    if (isSlotHeld(manager, gridOrder?.id)) {
+        manager.logger?.log?.(
+            `[_createOrderFromGrid] SKIP: Create for ${gridOrder.id} suppressed — slot held (operator cancel); re-plans after release`,
+            'warn'
+        );
+        return null;
+    }
+
     const result = await chainOrders.createOrder(
         account,
         privateKey,
@@ -1474,6 +1487,13 @@ async function _executeStartupCreateGroupBatch({
         const currentSlot = manager.orders.get(gridOrder.id);
         if (currentSlot?.orderId) {
             logger?.log?.(`Startup: Skip create ${plan.orderLabel} - slot ${gridOrder.id} already has orderId ${currentSlot.orderId}`, 'warn');
+            continue;
+        }
+
+        // HOLD re-check (same plan/execute race as _createOrderFromGrid):
+        // the plan may predate a just-recorded operator hold.
+        if (isSlotHeld(manager, gridOrder.id)) {
+            logger?.log?.(`Startup: Skip create ${plan.orderLabel} - slot ${gridOrder.id} held (operator cancel)`, 'warn');
             continue;
         }
 

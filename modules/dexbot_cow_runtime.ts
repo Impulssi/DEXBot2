@@ -9,6 +9,7 @@
  */
 
 import * as chainOrdersModule from './chain_orders.js';
+import { isSlotHeld } from './order/manual_hold.js';
 const chainOrders = chainOrdersModule as any;
 const { readOpenOrdersWithMetaSafe } = chainOrdersModule as any;
 import { BroadcastUncertainError as BroadcastUncertainErrorBinding } from './dexbot_credential_client.js';
@@ -3686,6 +3687,20 @@ async function updateOrdersOnChainBatchCOWBody(
                     } catch (_e: any) { /* guard is best-effort */ }
 
                     const args = buildCreateOrderArgs(effectiveOrder, assetA, assetB);
+                    // HOLD re-check at emission: the plan may predate a
+                    // just-recorded operator hold (plan/execute race) — the
+                    // pickers filter holds, but a mid-flight hold must stop
+                    // the broadcast, or the placement auto-clears it.
+                    try {
+                        if (effectiveOrder?.id && isSlotHeld(bot?.manager, effectiveOrder.id)) {
+                            bot.manager.logger.log(
+                                `[HOLD] Skipping CREATE for ${effectiveOrder.id}: slot held (operator cancel); re-plans after release`,
+                                'warn'
+                            );
+                            if (effectiveOrder.id) skippedCreateSlotIds.add(effectiveOrder.id);
+                            continue;
+                        }
+                    } catch { /* hold check best-effort; planners filter upstream */ }
                     // GRID-PRICE-INVARIANT (blocking): the CREATE price must be
                     // the genesis level for this slot. A mismatch means state
                     // corruption upstream, so the emission is skipped rather

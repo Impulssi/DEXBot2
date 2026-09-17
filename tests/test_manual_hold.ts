@@ -24,6 +24,7 @@ const {
     restoreManualHolds,
 } = require('../modules/order/manual_hold');
 const chainOrders = require('../modules/chain_orders');
+const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
 let passed = 0;
 function check(name, actual, expected) {
@@ -276,6 +277,49 @@ check('null hold expires', isManualHoldExpired(null, 100, 0.075), true);
     }
     hcheck('malformed page throws', threw2, true);
     console.log(`✓ Fill history verify tests passed! (${passedH} assertions)`);
+})().catch((err) => {
+    console.error('Test failed:', err);
+    process.exit(1);
+});
+
+// --- execution gate: held slots never broadcast (plan/execute race; runs after the sync summary) ---
+(async () => {
+    let passedX = 0;
+    const xcheck = (name, actual, expected) => {
+        assert.strictEqual(actual, expected, `${name}: expected ${expected}, got ${actual}`);
+        passedX++;
+    };
+    const { OrderManager } = require('../modules/order/index').default;
+    const { _createOrderFromGrid } = require('../modules/order/grid_reconcile_internal');
+    const mgr = new OrderManager({
+        market: 'TEST/BTS', assetA: 'TEST', assetB: 'BTS',
+        startPrice: 100, incrementPercent: 1, targetSpreadPercent: 0,
+        activeOrders: { buy: 2, sell: 2 },
+    });
+    mgr.logger.level = 'silent';
+    mgr.assets = { assetA: { id: '1.3.0', precision: 8, symbol: 'TEST' }, assetB: { id: '1.3.1', precision: 5, symbol: 'BTS' } };
+    await mgr.setAccountTotals({ buy: 100000, sell: 100, buyFree: 100000, sellFree: 100 });
+    await mgr.resetFunds();
+    mgr.pauseFundRecalc();
+    await mgr._updateOrder({ id: 'slot-5', type: ORDER_TYPES.BUY, price: 90, size: 100, state: ORDER_STATES.VIRTUAL });
+    let broadcasts = 0;
+    const fakeChain = {
+        createOrder: async () => { broadcasts++; return { operation_results: [[0, '1.7.900']] }; },
+    };
+    const params = { chainOrders: fakeChain, account: 'a', privateKey: 'p', manager: mgr, dryRun: false };
+    // Race: hold lands after planning, before execution -> no broadcast.
+    recordManualHold(mgr, 'slot-5', 90);
+    const heldResult = await _createOrderFromGrid({ ...params, gridOrder: { id: 'slot-5', type: ORDER_TYPES.BUY, price: 90, size: 100 } });
+    xcheck('held create returns null', heldResult, null);
+    xcheck('held create never broadcasts', broadcasts, 0);
+    xcheck('slot stays empty', mgr.orders.get('slot-5').orderId || null, null);
+    // Control: same slot without the hold broadcasts (fixture reaches broadcast).
+    clearManualHold(mgr, 'slot-5');
+    const okResult = await _createOrderFromGrid({ ...params, gridOrder: { id: 'slot-5', type: ORDER_TYPES.BUY, price: 90, size: 100 } });
+    xcheck('unheld create broadcasts', broadcasts, 1);
+    xcheck('unheld create links', okResult, '1.7.900');
+    await mgr.resumeFundRecalc();
+    console.log(`✓ Manual hold execution-gate tests passed! (${passedX} assertions)`);
 })().catch((err) => {
     console.error('Test failed:', err);
     process.exit(1);
