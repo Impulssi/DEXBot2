@@ -4,12 +4,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from './chart_utils.js';
-import { getStorage } from '../modules/storage/index.js';
+import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT, uplotInlineTags } from '../chart_utils.js';
+import { getStorage } from '../../modules/storage/index.js';
 const { ensureDir, readJSON } = getStorage();
-import { fixedTo } from '../modules/order/utils/math.js';
-import { bindHoverStateFn, zoomResetScript } from './chart_ui.js';
-import { PATHS } from '../modules/paths.js';
+import { fixedTo } from '../../modules/order/utils/math.js';
+import { bindHoverStateFn, zoomResetScript } from '../chart_ui.js';
+import { PATHS } from '../../modules/paths.js';
 function parseArgs(argv = process.argv.slice(2)) {
     const cfg: { inputFile: string | null; outputFile: string; title: string; quiet: boolean } = {
         inputFile: null,
@@ -39,7 +39,7 @@ function showHelp() {
     console.log(`
 Derivative Chart Generator (uPlot)
 Usage:
-  node dist/analysis/derivative_chart_generator.js --input <file.json> [options]
+  node dist/analysis/legacy/derivative_chart_generator.js --input <file.json> [options]
 Options:
   --output FILE   Output HTML (default: <analysis charts dir>/derivative_chart.html)
   --title TEXT    Chart title
@@ -225,8 +225,7 @@ function generateHTML(data: any, title: string) {
     <meta name="darkreader-lock">
     <meta name="color-scheme" content="dark">
     <title>${escapeHtml(title)}</title>
-    <link rel="stylesheet" href="../uplot/uPlot.min.css">
-    <script src="../uplot/uPlot.iife.min.js"></script>
+    ${uplotInlineTags()}
     <style>
         :root { color-scheme: dark; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -871,5 +870,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         process.exit(1);
     });
 }
-export { generateHTML, parseArgs, showHelp, trendToNum }
+export { generateHTML }
 

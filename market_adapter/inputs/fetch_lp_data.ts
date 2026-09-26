@@ -36,12 +36,6 @@ import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { normalizePoolId, resolveAsset, findPoolByAssets } from '../utils/chain.js';
 import { writeJsonAtomic } from '../utils/atomic_write.js';
 import {
-    TAIL_REFRESH_HOURS,
-    IMMUTABLE_WINDOW_AGE_MS,
-    cachedCandlesInRange,
-    findMissingBucketRanges,
-    pruneImmutableGaps,
-    loadBucketCache,
     buildFetchWindowsFromRange,
     formatWindowLine,
     runCachedWindows,
@@ -200,44 +194,13 @@ function buildRequestKey(config: any, fullPoolId: any, assetA: any, assetB: any,
     };
 }
 
-function loadManifest(manifestPath: any) {
-    if (!storage.exists(manifestPath)) return null;
-    try {
-        return readJSON(manifestPath);
-    } catch (_: any) {
-        return null;
-    }
-}
-
 function loadCachedFetchContext(bot: any, intervalSeconds: any) {
     const dir = pairFolderPath(bot.assetA, bot.assetB);
     if (!storage.exists(dir)) return null;
 
     const label = toIntervalLabel(intervalSeconds);
-    const manifestFiles = storage.readdir(dir)
-        .filter((name: any) => name.endsWith(`${label}.json.fetch_manifest.json`))
-        .sort();
-
-    for (const file of manifestFiles) {
-        const manifest = loadManifest(path.join(dir, file));
-        const request = manifest?.request;
-        if (!request) continue;
-        if (request.intervalSeconds !== intervalSeconds) continue;
-        if (request.assetA?.symbol !== bot.assetA) continue;
-        if (request.assetB?.symbol !== bot.assetB) continue;
-        if (!request.pool || !request.assetA?.id || !request.assetB?.id) continue;
-        if (!Number.isFinite(request.assetA?.precision) || !Number.isFinite(request.assetB?.precision)) continue;
-        return {
-            poolId: request.pool,
-            assetA: request.assetA,
-            assetB: request.assetB,
-            source: 'manifest',
-            path: path.join(dir, file),
-        };
-    }
-
     const dataFiles = storage.readdir(dir)
-        .filter((name: any) => name.endsWith(`${label}.json`) && !name.includes('.chunk_') && !name.endsWith('.fetch_manifest.json'))
+        .filter((name: any) => name.endsWith(`${label}.json`))
         .sort();
 
     for (const file of dataFiles) {
@@ -268,11 +231,9 @@ function loadCachedFetchContext(bot: any, intervalSeconds: any) {
 // Bucket-level reuse lives in ./window_cache.js and is shared by all three
 // candle fetchers (pool, book, feed) through the single runCachedWindows
 // entry point. Storage is fixed calendar-month shards, so there is no
-// orphan cleanup and no per-run rewrite: below is only the LP-specific
-// identity predicate plus thin wrappers preserving the historical helper
-// names/exports.
+// orphan cleanup and no per-run rewrite.
 
-function isLpChunkMatch(meta: any, requestKey: any) {
+function isLpShardMatch(meta: any, requestKey: any) {
     if (meta.pool !== requestKey.pool) return false;
     if (meta.intervalSeconds !== requestKey.intervalSeconds) return false;
     if (meta.assetA?.id !== requestKey.assetA.id || meta.assetB?.id !== requestKey.assetB.id) return false;
@@ -280,17 +241,9 @@ function isLpChunkMatch(meta: any, requestKey: any) {
     return true;
 }
 
-function loadLocalChunkCache(outPath: any, requestKey: any, range?: { gte: number; lte: number } | null) {
-    return loadBucketCache(outPath, requestKey, isLpChunkMatch, range);
-}
-
-
 async function fetchCandlesSequentially(fullPoolId: any, assetA: any, assetB: any, config: any, outPath: any) {
     // Pool, book and feed fetches share ONE cache function: runCachedWindows
-    // in window_cache.js. Shard files double as the resume ledger (an
-    // interrupted run reuses finished months on retry), so the old sidecar
-    // *.fetch_manifest.json is no longer written — legacy files are still
-    // read by loadCachedFetchContext but never created.
+    // in window_cache.js. Stable shard files are the only cache format.
     const chunkMonths = resolveChunkMonths(config);
     const bucketMs = Number(config.intervalSeconds) * 1000;
     const effectiveTimeRange = config.timeRange
@@ -309,11 +262,11 @@ async function fetchCandlesSequentially(fullPoolId: any, assetA: any, assetB: an
     const total = windows.length;
 
     if (total > 1) {
-        console.log(`  Auto-splitting fetch into ${total} sequential ${chunkMonths}-month chunks`);
+        console.log(`  Auto-splitting fetch into ${total} sequential ${chunkMonths}-month fetch windows`);
     }
 
     const fetchRange = async (gte: string, lte: string, window: any, signal?: AbortSignal) => {
-        const tag = formatWindowLine('Chunk', window.index, total, window.gte, window.lte);
+        const tag = formatWindowLine('Window', window.index, total, window.gte, window.lte);
         const attemptStartMs = Date.now();
         // A partial window (one swap direction failed) is still returned for
         // this run's output, but flagged so the shared runner withholds it
@@ -348,7 +301,7 @@ async function fetchCandlesSequentially(fullPoolId: any, assetA: any, assetB: an
         windows,
         outPath,
         requestKey,
-        isMatch: isLpChunkMatch,
+        isMatch: isLpShardMatch,
         metaForWindow: (window: any) => ({
             source: `https://kibana.bitshares.dev (bitshares-*, op_type 63, pool ${requestKey.pool})`,
             pool: requestKey.pool,
@@ -365,7 +318,7 @@ async function fetchCandlesSequentially(fullPoolId: any, assetA: any, assetB: an
         fetchAttempts: FETCH_MAX_ATTEMPTS,
         fetchBackoffBaseMs: FETCH_RETRY_BACKOFF_BASE_MS,
         onFetchRetry: (info: any) => {
-            console.warn(`  Chunk fetch retry ${info.attempt}/${info.attempts} for ${String(info.gte).slice(0, 10)} → ${String(info.lte).slice(0, 10)} in ${info.backoffMs}ms after failure: ${getErrorMessage(info.error)}`);
+            console.warn(`  Window fetch retry ${info.attempt}/${info.attempts} for ${String(info.gte).slice(0, 10)} → ${String(info.lte).slice(0, 10)} in ${info.backoffMs}ms after failure: ${getErrorMessage(info.error)}`);
         },
     });
     console.log(`  Merged ${merged.length} candles across ${windows.length} window(s) (month-shard cache)`);
@@ -653,5 +606,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     });
 }
 
-export { applyPrecisionOverrides, parseBotsConfig, selectBot, fetchCandlesSequentially, outputPath, buildFetchWindowsFromRange, findMissingBucketRanges, loadLocalChunkCache, cachedCandlesInRange, pruneImmutableGaps, TAIL_REFRESH_HOURS, IMMUTABLE_WINDOW_AGE_MS }
+export { applyPrecisionOverrides, parseBotsConfig, selectBot, fetchCandlesSequentially, outputPath }
 

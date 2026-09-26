@@ -147,5 +147,5 @@ async function loadDaemonPrivateKey(accountName: string, sessionState: SessionSt
     return chainKeysImpl.decrypt(sessionEncryptedKey, currentSessionSecret);
 }
 
-export { buildSessionAccountCache, cacheSessionPrivateKey, loadDaemonPrivateKey }
+export { buildSessionAccountCache, loadDaemonPrivateKey }
 

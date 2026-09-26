@@ -221,5 +221,5 @@ function getSharedMarketAdapterRuntime(options = {}) {
     return sharedRuntime;
 }
 
-export { createMarketAdapterRuntime, getSharedMarketAdapterRuntime, isLikelyAdapterRunning, isLikelyMarketAdapterProcess, isLockStale, loadLockInfo, waitForChildExit }
+export { createMarketAdapterRuntime, getSharedMarketAdapterRuntime, isLikelyMarketAdapterProcess, isLockStale, loadLockInfo }
 

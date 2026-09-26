@@ -12,63 +12,58 @@
  * - Detects and flags out-of-spread conditions
  *
  * ===============================================================================
- * TABLE OF CONTENTS - Grid Functions (27 exported functions)
+ * TABLE OF CONTENTS - Grid Functions (22 exported functions)
  * ===============================================================================
  *
- * CONFIGURATION & CALCULATION (1 method)
- *   1. calculateGapSlots(incrementPercent, targetSpreadPercent) - Calculate spread gap size
+ * CONFIGURATION & CALCULATION (2 functions)
+ *   1. resolveRmsThresholdPct(manager) - Resolve the structural-divergence threshold
+ *   2. calculateGapSlots(incrementPercent, targetSpreadPercent) - Calculate spread gap size
  *
- * GRID SIZING & CONTEXT (1 method)
- *   3. _getSizingContext(manager, side) - Get budget and sizing parameters (internal)
- *      Determines budget from allocated funds, deducts BTS fees if needed
+ * GRID SIZING & CONTEXT (1 function)
+ *   3. _getSizingContext(manager, side, options) - Get budget and sizing parameters
+ *      Determines budget from allocated funds and optionally deducts BTS fees
  *
- * GRID CREATION (1 method)
+ * GRID CREATION (1 function)
  *   4. createOrderGrid(config) - Create geometric price grid
  *      Returns price levels from minPrice to maxPrice with increment spacing
  *
- * ORDER CACHE MANAGEMENT (1 method - internal)
- *   5. _clearOrderCachesLogic(manager) - Clear order caches (_ordersByType, _ordersByState)
+ * GRID LOADING & INITIALIZATION (2 functions - async)
+ *   5. loadGrid(manager, grid, boundaryIdx, genesisInput, options) - Load grid into manager orders
+ *   6. initializeGrid(manager) - Full grid initialization from config
  *
- * GRID LOADING & INITIALIZATION (2 methods - async)
- *   6. loadGrid(manager, grid, boundaryIdx) - Load grid into manager orders
- *   7. initializeGrid(manager) - Full grid initialization from config
+ * GRID RECALCULATION (1 function - async)
+ *   7. recalculateGrid(manager, opts) - Recalculate grid based on current state
  *
- * GRID RECALCULATION (1 method - async)
- *   8. recalculateGrid(manager, opts) - Recalculate grid based on current state
+ * GRID STATE CHECKING (1 function)
+ *   8. checkAndUpdateGridIfNeeded(manager) - Check if grid needs update
  *
- * GRID STATE CHECKING (1 method)
- *   9. checkAndUpdateGridIfNeeded(manager) - Check if grid needs update
+ * BLOCKCHAIN SYNCHRONIZATION (2 functions - async)
+ *   9. _recalculateGridOrderSizesFromBlockchain(manager, orderType, options) - Recalculate sizes from blockchain
+ *   10. updateGridFromBlockchainSnapshot(manager, orderType, fromBlockchainTimer, overrideBoundaryIdx) - Update grid from blockchain
  *
- * BLOCKCHAIN SYNCHRONIZATION (2 methods - async)
- *   10. _recalculateGridOrderSizesFromBlockchain(manager, orderType) - Recalculate sizes from blockchain
- *   11. updateGridFromBlockchainSnapshot(manager, orderType, fromBlockchainTimer) - Update grid from blockchain
- *
- * GRID COMPARISON (2 methods - async)
- *   12. compareGrids(calculatedGrid, persistedGrid, manager) - Compare two grids
+ * GRID COMPARISON (2 functions - async)
+ *   11. compareGrids(calculatedGrid, persistedGrid, manager) - Compare two grids
  *       Validates grid structure and reports divergence metrics
- *   13. monitorDivergence(manager, calculatedGrid, persistedGrid) - Unified divergence check
+ *   12. monitorDivergence(manager, calculatedGrid, persistedGrid) - Unified divergence check
  *       Runs ratio-based + RMS-based checks and returns combined result
  *
- * ON-CHAIN ORDER FETCHING (1 method - async)
- *   14. _getOnChainOrders(manager) - Collect on-chain buy/sell orders from manager
+ * SPREAD MANAGEMENT (2 functions)
+ *   13. calculateCurrentSpread(manager) - Calculate current bid-ask spread
+ *   14. checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch) - Check and flag spread condition
  *
- * SPREAD MANAGEMENT (2 methods - async)
- *   15. calculateCurrentSpread(manager) - Calculate current bid-ask spread
- *   16. checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch) - Check and flag spread condition
+ * GRID HEALTH MONITORING (4 functions)
+ *   15. checkGridHealth(manager, updateOrdersOnChainBatch) - Monitor grid health
+ *   16. checkWindowDust(manager) - Dust check scoped to the active buy/sell window
+ *   17. hasAnyDust(manager, partials, side) - Check for dust orders
+ *   18. getDustOrders(manager, partials, side) - Get dust order IDs
  *
- * GRID HEALTH MONITORING (6 methods)
- *   17. checkGridHealth(manager, updateOrdersOnChainBatch) - Monitor grid health (async)
- *   18. checkWindowDust(manager) - Dust check scoped to the active buy/sell window (async)
- *   19. _hasAnyDust(manager, partials, type) - Check for dust orders (internal)
- *   20. hasAnyDust(manager, partials, side) - Check for dust orders (public)
- *   21. getDustOrders(manager, partials, side) - Get all dust order IDs (public)
- *   22. determineOrderSideByFunds(manager, currentMarketPrice) - Determine priority side
+ * SIDE SELECTION (1 function)
+ *   19. determineOrderSideByFunds(manager, currentMarketPrice) - Determine priority side
  *
- * SPREAD CORRECTION (1 method)
- *   23. prepareSpreadCorrectionOrders(manager, preferredSide) - Prepare correction orders
- *
- * DUST DETECTION (1 method - internal)
- *   25. _getDustOrders(manager, partials, type) - Internal dust detection helper
+ * BLOAT STATUS (3 functions)
+ *   20. isGridBloated(manager, orders) - Check whether the grid is bloated
+ *   21. isGridBloatGraceActive(manager) - Check the bloat grace state
+ *   22. clearGridBloatFlag(manager) - Clear the bloat state
  *
  * ===============================================================================
  *
@@ -97,7 +92,6 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
 import { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DEFAULT_CONFIG, GRID_LIMITS, TIMING, PIPELINE_TIMING, MARKET_ADAPTER, INCREMENT_BOUNDS } from '../constants.js';
-const { GRID_COMPARISON } = GRID_LIMITS;
 import * as Format from './format.js';
 import {
     resolveMaxAsymmetryFactor,
@@ -109,6 +103,19 @@ import {
 const GRID_CONSTANTS = {
     RMS_PERCENTAGE_SCALE: 100,  // Convert RMS percentage threshold from percent to decimal
 };
+
+/**
+ * Central resolution for the RMS structural-divergence threshold (percent).
+ * Single source of truth: per-bot override wins, global GRID_COMPARISON default
+ * is the fallback. Used by compareGrids() and re-exported for the maintenance
+ * runtime so the reset log always shows the level that actually fired.
+ * @param {any} manager - OrderManager instance (may be null)
+ * @returns {number} Threshold in percent (0 = disabled)
+ */
+export function resolveRmsThresholdPct(manager: any): number {
+    return manager?.config?.gridLimits?.GRID_COMPARISON?.RMS_PERCENTAGE
+        ?? GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE;
+}
 
 function _snapshotFundState(manager: any): any {
     return {
@@ -170,9 +177,9 @@ import {
     reserveEdgeIdSet,
     resolveLiveReserveEdgeAnchorPrice
 } from './utils/order.js';
-import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry } from './utils/system.js';
+import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry, restoreLastFillPivot, resetLastFillPivot } from './utils/system.js';
 import * as MathUtils from './utils/math.js';
-import { derivePriceWithPoolRef } from './utils/withPoolRef.js';
+import { derivePriceWithPoolRef, resolveStartPriceMode } from './utils/withPoolRef.js';
 import { getWhitelistFlags } from '../market_adapter_whitelist.js';
 import { pruneManualHolds, isSlotHeld } from './manual_hold.js';
 
@@ -861,6 +868,23 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null,
                 manager.logger?.log?.(`Restored boundary index: ${restoredBoundary}`, 'info');
             }
 
+            // Restart resilience: restore the persisted LAST-FILL-GUARD pivot
+            // WITH the boundary — after the persisted genesis is applied and
+            // the grid re-typed, before the first reconcile/broadcast — so a
+            // restart cannot re-open the cold window where the guard is
+            // disabled and evacuation stamps get applied against a boundary
+            // that is still being rebuilt. restoreLastFillPivot validates the
+            // row against the manager's live genesis (refuses on mismatch —
+            // a regenerated grid drops it) and onto the price ladder with the
+            // same one-increment drift rule the runtime guard applies.
+            if (restoredBoundary !== null) {
+                try {
+                    restoreLastFillPivot(manager, (manager as any)?.accountOrders?.loadLastFillPivot?.() ?? null);
+                } catch (pivotErr: any) {
+                    manager.logger?.log?.(`[LAST-FILL-GUARD] Persisted pivot restore failed (${getErrorMessage(pivotErr)}); book seed takes over`, 'warn');
+                }
+            }
+
             // Reassign slot types based on current boundary.
             // Every slot's type must match its price-slot index (parseSlotIndex)
             // relative to the boundary + gapSlots, not array position.  After
@@ -1089,9 +1113,14 @@ export async function initializeGrid(manager: any): Promise<void> {
         if (typeof mpRaw !== 'number' || isNaN(mpRaw)) {
             try {
                 const { BitShares } = require('../bitshares_client');
-                const derived = await derivePriceWithPoolRef(BitShares, manager.config.assetA, manager.config.assetB, manager.config.priceMode || 'auto', manager.config.poolRef);
+                // startPrice is the master price source: pass its own mode so a
+                // pinned poolRef only refines pool discovery. Without this,
+                // the old `priceMode || 'auto'` read (priceMode is never set in
+                // the runtime path) let a poolRef override startPrice:"book".
+                const startPriceMode = resolveStartPriceMode(mpRaw, manager.config.priceMode || 'auto');
+                const derived = await derivePriceWithPoolRef(BitShares, manager.config.assetA, manager.config.assetB, startPriceMode, manager.config.poolRef);
                 if (derived) {
-                    manager.logger?.log?.(`[DIAGNOSTIC] initializeGrid: Derived new startPrice=${derived.toFixed(8)} (mode=${manager.config.priceMode || 'auto'})`, 'info');
+                    manager.logger?.log?.(`[DIAGNOSTIC] initializeGrid: Derived new startPrice=${derived.toFixed(8)} (mode=${startPriceMode})`, 'info');
                     manager.config.startPrice = Number(derived);
                 } else {
                     throw new Error(`Price derivation returned no result for ${manager.config.assetA}/${manager.config.assetB}`);
@@ -1403,6 +1432,20 @@ export async function initializeGrid(manager: any): Promise<void> {
         // deltas would shift the new anchor again for movement it already
         // contains (and their slot ids now name different prices).
         manager._clearPendingFillCrawls?.('grid rebuild');
+
+        // Same generation contract for the LAST-FILL-GUARD pivot: it was
+        // armed against the previous ladder, and restoreLastFillPivot would
+        // refuse it against the new genesis anyway. Drop it now so the guard
+        // re-arms on the first real fill of the new generation (the startup
+        // book seed may arm a heuristic pivot in the meantime, which is
+        // in-memory-only by provenance).
+        try {
+            if (typeof (manager as any)._resetLastFillPivot === 'function') {
+                (manager as any)._resetLastFillPivot('grid rebuild');
+            } else {
+                resetLastFillPivot(manager, 'grid rebuild');
+            }
+        } catch {}
 
         // RC-8: Update boundary with notification to dependent systems
         // Persist master boundary for StrategyEngine
@@ -2063,6 +2106,13 @@ export async function updateGridFromBlockchainSnapshot(manager: any, orderType: 
      * Each side's RMS divergence is compared against its own threshold.
      * Only sides exceeding the threshold are marked for update.
      *
+     * SCOPE: ACTIVE + VIRTUAL orders per side. VIRTUAL slots carry the planned
+     * reservation for unplaced rail slots (see funds.virtual); a persisted-vs-ideal
+     * drift there inflates the reservation and thereby pins Available
+     * (Available = ChainFree - Virtual - fees), so it is structural, not transient.
+     * PARTIAL orders are excluded (expected to deviate mid-fill); SPREAD placeholders
+     * are excluded (size-0, no committed structure).
+     *
      * PURPOSE: Detect if the calculated in-memory grid has diverged significantly from the
      * persisted grid state. High divergence indicates that order fills/rotations have caused
      * size distributions to deviate, potentially requiring grid size recalculation.
@@ -2107,14 +2157,19 @@ export async function compareGrids(calculatedGrid: any, persistedGrid: any, mana
             persistedSnap = snapshotResult.persisted;
         }
 
-        // Filter to ACTIVE orders only (excludes PARTIAL/VIRTUAL/SPREAD)
-        // Partial orders are excluded from divergence calculation as they are expected to deviate;
-        // they are instead handled by the available-funds ratio check or follow-up correction.
+        // Filter to ACTIVE + VIRTUAL orders (excludes PARTIAL/SPREAD).
+        // VIRTUAL slots hold the planned reservation (funds.virtual) for unplaced
+        // rail slots, so a persisted-vs-ideal drift there is structural: it moves
+        // Available = ChainFree - Virtual - fees. Partial orders are excluded from
+        // divergence calculation as they are expected to deviate; they are instead
+        // handled by the available-funds ratio check or follow-up correction.
         // Must be sorted ASC for calculateRotationOrderSizes to match geometric weight distribution
         const filterForRms = (orders: any, type: any): any[] => {
             // Deep shelf orders are dip insurance outside the slot-N grid —
             // they must not skew the divergence metric (ideals never contain
             // them, so counting persisted deeps would fake permanent drift).
+            // Upstream's ACTIVE|VIRTUAL variant would count empty (size-0 ghost)
+            // actives as real buys — keep fork's ACTIVE-only semantics.
             const result = Array.isArray(orders) ? orders.filter((o: any) => o && o.type === type && o.state === ORDER_STATES.ACTIVE && !MathUtils.isDeepShelfId(o.id)) : [];
             return result
                 .sort((a: any, b: any) => (a.price ?? 0) - (b.price ?? 0));
@@ -2130,8 +2185,8 @@ export async function compareGrids(calculatedGrid: any, persistedGrid: any, mana
         // so both buy and sell metrics share a single fund snapshot. This avoids the previous
         // double-recalculateFunds between the two sides and keeps the metric consistent even if
         // a fill event arrives between per-side calculations.
-        const computeSideIdeals = (activeOrders: any, type: any, ctx: any): any => {
-            if (!manager || !ctx || ctx.budget <= 0 || activeOrders.length === 0) return activeOrders;
+        const computeSideIdeals = (comparedOrders: any, type: any, ctx: any): any => {
+            if (!manager || !ctx || ctx.budget <= 0 || comparedOrders.length === 0) return comparedOrders;
 
             // Identify ALL slots currently assigned to this side from the calculated
             // grid snapshot (not a fresh read from manager.orders).  Using the snapshot
@@ -2144,7 +2199,7 @@ export async function compareGrids(calculatedGrid: any, persistedGrid: any, mana
                 .filter((o: any) => o.type === type)
                 .sort((a: any, b: any) => (a.price ?? 0) - (b.price ?? 0));
 
-            if (sideSlots.length === 0) return activeOrders;
+            if (sideSlots.length === 0) return comparedOrders;
 
             // Calculate geometric ideals for the ENTIRE side (all slots)
             try {
@@ -2162,10 +2217,10 @@ export async function compareGrids(calculatedGrid: any, persistedGrid: any, mana
                 const idealMap = new Map();
                 sideSlots.forEach((slot: any, i: any) => idealMap.set(slot.id, allIdealSizes[i]));
 
-                // Return the activeOrders subset with their true geometric ideal sizes
-                return activeOrders.map((o: any) => ({ ...o, size: idealMap.get(o.id) ?? 0 }));
+                // Return the compared subset with their true geometric ideal sizes
+                return comparedOrders.map((o: any) => ({ ...o, size: idealMap.get(o.id) ?? 0 }));
             } catch (e: any) {
-                return activeOrders;
+                return comparedOrders;
             }
         };
 
@@ -2191,8 +2246,9 @@ export async function compareGrids(calculatedGrid: any, persistedGrid: any, mana
         // Check if metrics exceed threshold and flag sides for regeneration
         // Set RMS_PERCENTAGE to 0 to disable RMS divergence checks
         let buyUpdated = false, sellUpdated = false;
-        if (manager && (manager.config?.gridLimits?.GRID_COMPARISON?.RMS_PERCENTAGE ?? GRID_COMPARISON.RMS_PERCENTAGE) > 0) {
-            const limit = (manager.config?.gridLimits?.GRID_COMPARISON?.RMS_PERCENTAGE ?? GRID_COMPARISON.RMS_PERCENTAGE) / GRID_CONSTANTS.RMS_PERCENTAGE_SCALE;
+        const rmsThresholdPct = resolveRmsThresholdPct(manager);
+        if (manager && rmsThresholdPct > 0) {
+            const limit = rmsThresholdPct / GRID_CONSTANTS.RMS_PERCENTAGE_SCALE;
 
             if (buyMetric > limit) {
                 // RC-3: Use Set for automatic duplicate prevention
@@ -2206,12 +2262,19 @@ export async function compareGrids(calculatedGrid: any, persistedGrid: any, mana
                 manager._gridSidesUpdated.add(ORDER_TYPES.SELL);
                 sellUpdated = true;
             }
+            manager.logger?.log?.(
+                `[RMS] BUY check: metric=${Format.formatPercent(buyMetric * 100, 2)}% (threshold=${rmsThresholdPct}%) → ${buyUpdated ? 'TRIGGER-RESYNC' : 'no trigger'} | SELL check: metric=${Format.formatPercent(sellMetric * 100, 2)}% (threshold=${rmsThresholdPct}%) → ${sellUpdated ? 'TRIGGER-RESYNC' : 'no trigger'}`,
+                'debug'
+            );
+        } else if (manager) {
+            manager.logger?.log?.(`[RMS] checks disabled (threshold=${rmsThresholdPct}%) — buy=${Format.formatPercent(buyMetric * 100, 2)}%, sell=${Format.formatPercent(sellMetric * 100, 2)}%`, 'debug');
         }
 
         return {
             buy: { metric: buyMetric, updated: buyUpdated },
             sell: { metric: sellMetric, updated: sellUpdated },
-            totalMetric: (buyMetric + sellMetric) / 2
+            totalMetric: (buyMetric + sellMetric) / 2,
+            thresholdPct: rmsThresholdPct
         };
     }
 
@@ -2250,7 +2313,8 @@ export async function monitorDivergence(manager: any, calculatedGrid: any, persi
             needsUpdate: buyUpdated || sellUpdated,
             buy: { updated: buyUpdated, ratio: ratioResult.buyUpdated, rms: rmsResult.buy.updated, metric: rmsResult.buy.metric, shrink: ratioResult.buyShrink === true },
             sell: { updated: sellUpdated, ratio: ratioResult.sellUpdated, rms: rmsResult.sell.updated, metric: rmsResult.sell.metric, shrink: ratioResult.sellShrink === true },
-            orderType: getOrderTypeFromUpdatedFlags(buyUpdated, sellUpdated)
+            orderType: getOrderTypeFromUpdatedFlags(buyUpdated, sellUpdated),
+            thresholdPct: rmsResult.thresholdPct
         };
     }
 
@@ -2319,6 +2383,10 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
         // This prevents concurrent fill processing from modifying funds while we're making decisions
         let correction: any = null;
         let shouldApplyCorrection = false;
+        // Set when determineOrderSideByFunds finds no side to fund: the caller
+        // refreshes account totals + open orders so the next cycle re-checks
+        // against fresh balances instead of recycling resting orders.
+        let fundsExhausted = false;
 
         if (!manager._gridLock) {
             manager.logger?.log?.('Spread check skipped: no grid lock available', 'warn');
@@ -2428,7 +2496,7 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
             // point are covered by the TOCTOU re-plan before broadcast.
             try { await manager.recalculateFunds(); } catch { /* best-effort */ }
             const decision = determineOrderSideByFunds(manager, lastPrice);
-            if (!decision.side) return false;
+            if (!decision.side) { fundsExhausted = true; return false; }
 
             // Perform spread correction by placing orders on the chosen side.
             correction = await prepareSpreadCorrectionOrders(manager, decision.side, manager.outOfSpread);
@@ -2503,7 +2571,10 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
                         `[SPREAD] Fund state changed; no side has sufficient funds for re-plan. Skipping cycle.`,
                         'warn'
                     );
-                    return { ordersPlaced: 0, partialsMoved: 0 };
+                    // Same no-free-funds condition as the initial decision:
+                    // signal the caller to refresh account totals/open orders.
+                    fundsExhausted = true;
+                    return { ordersPlaced: 0, partialsMoved: 0, fundsExhausted };
                 }
                 const rePlanCorrection = await prepareSpreadCorrectionOrders(manager, rePlanDecision.side, manager.outOfSpread);
                 if (rePlanCorrection && ((rePlanCorrection.ordersToPlace?.length || 0) + (rePlanCorrection.ordersToUpdate?.length || 0) > 0)) {
@@ -2538,7 +2609,7 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
                 return { ordersPlaced: 0, partialsMoved: 0 };
             }
         }
-        return { ordersPlaced: 0, partialsMoved: 0 };
+        return { ordersPlaced: 0, partialsMoved: 0, fundsExhausted };
     }
 
     /**
@@ -2882,54 +2953,22 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         }
 
         if (!side) {
-            const committedBuy = Math.max(0, Number(manager.funds?.committed?.chain?.buy || 0));
-            const committedSell = Math.max(0, Number(manager.funds?.committed?.chain?.sell || 0));
-            const marketPrice = Number(currentMarketPrice);
-            const hasValidPrice = Number.isFinite(marketPrice) && marketPrice > 0;
-
-            if (committedBuy > buyMinUnit || committedSell > sellMinUnit) {
-                if (hasValidPrice) {
-                    const buyComparable = committedBuy;
-                    const sellComparable = committedSell * marketPrice;
-                    side = buyComparable >= sellComparable ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-                } else if (committedBuy > buyMinUnit && committedSell <= sellMinUnit) {
-                    side = ORDER_TYPES.BUY;
-                } else if (committedSell > sellMinUnit && committedBuy <= buyMinUnit) {
-                    side = ORDER_TYPES.SELL;
-                } else {
-                    // Both sides hold committed inventory but market valuation is
-                    // unavailable — leave side null (skip) rather than default to
-                    // BUY. A deterministic cross-asset guess is exactly the
-                    // wrong-side risk above; the next cycle with a real price
-                    // decides. Carry the reason so the bottom skip log does not
-                    // misreport this branch as "no committed inventory".
-                    skipReason =
-                        `market price unavailable (${String(currentMarketPrice)}) with committed inventory on both sides ` +
-                        `(committed buy=${Format.formatAmount8(committedBuy)}, committed sell=${Format.formatAmount8(committedSell)})`;
-                }
-
-                if (side) {
-                    manager.logger?.log?.(
-                        `Spread correction using redistribution fallback on ${side} ` +
-                        `(free buy=${Format.formatAmount8(buyAvailable)}, free sell=${Format.formatAmount8(sellAvailable)}, ` +
-                        `price=${hasValidPrice ? Format.formatAmount8(marketPrice) : 'unavailable'})`,
-                        'info'
-                    );
-                }
-            }
-        }
-
-        if (!side) {
+            // PURE FUND-DRIVEN: a zero/insufficient free balance skips the
+            // correction outright. Committed inventory resting in orders is
+            // never recycled to fund it — shrinking a resting order was the
+            // source of stale-size inventory moves. The caller refreshes
+            // account totals + open orders instead, because the balances may
+            // simply be a stale snapshot (the grid does not lose funds).
             manager.logger?.log?.(
                 skipReason
                     ? `Spread correction skipped: ${skipReason}`
-                    : `Spread correction skipped: insufficient free funds and no committed inventory to redistribute ` +
+                    : `Spread correction skipped: insufficient free funds ` +
                       `(buy=${Format.formatAmount8(buyAvailable)}, sell=${Format.formatAmount8(sellAvailable)})`,
                 'warn'
             );
         }
 
-        return { side, reason: side ? `Choosing ${side}` : (skipReason || 'Insufficient funds or committed inventory') };
+        return { side, reason: side ? `Choosing ${side}` : (skipReason || 'Insufficient free funds') };
     }
 
     /**
@@ -3313,8 +3352,16 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
             Number(manager.funds?.available?.[sideName] || 0),
             Number(sideName === 'buy' ? manager.accountTotals?.buyFree : manager.accountTotals?.sellFree) || 0
         ));
+        // PURE FUND-DRIVEN: corrections are funded exclusively by free
+        // available/chainFree. No resting order is ever shrunk to manufacture
+        // budget (the previous self-funded/redistribution paths moved
+        // inventory within a rail and were gamed by stale-size snapshots).
+        // When free funds cannot cover every target, the loop below places /
+        // tops-up what they allow and stops; the caller refreshes account
+        // totals + open orders to find out whether the shortfall was a stale
+        // accounting read (the grid does not lose funds, it holds them in
+        // resting orders).
 
-        const minAbsoluteSize = getMinOrderSize(railType, manager.assets);
         const prioritizedTargets: any[] = [];
 
         if (edgePartial && edgePartial.id) {
@@ -3348,46 +3395,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
             return { ordersToPlace: [], ordersToUpdate: [], origin: 'spread-correction' };
         }
 
-        const totalNeeded = prioritizedTargets.reduce((sum: any, t: any) => sum + Math.max(0, Number(t.needed || 0)), 0);
-        let recoveredBudget = 0;
-        const redistributionUpdates: any[] = [];
-
-        if (totalNeeded > availableFund + precisionEpsilon) {
-            let shortfall = totalNeeded - availableFund;
-
-            const donors = sideSlots
-                .filter((o: any) => hasOnChainId(o) && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL))
-                .filter((o: any) => !edgePartial || o.id !== edgePartial.id)
-                .sort((a: any, b: any) => railType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
-
-            for (const donor of donors) {
-                if (shortfall <= precisionEpsilon) break;
-
-                const donorCurrent = Number(donor.size || 0);
-                const donorIdeal = Number(idealById.get(donor.id) || 0);
-                const donorFloor = Math.max(minAbsoluteSize, donorIdeal);
-                const donorReducible = Math.max(0, donorCurrent - donorFloor);
-                if (donorReducible <= precisionEpsilon) continue;
-
-                const reduction = Math.min(donorReducible, shortfall);
-                const donorNext = donorCurrent - reduction;
-                if (donorNext <= precisionEpsilon) continue;
-                if (!isOrderHealthy(donorNext, railType, manager.assets, donorIdeal || donorNext)) continue;
-
-                redistributionUpdates.push({ partialOrder: { ...donor }, newSize: donorNext });
-                recoveredBudget += reduction;
-                shortfall -= reduction;
-            }
-
-            if (recoveredBudget > precisionEpsilon) {
-                manager.logger?.log?.(
-                    `[SPREAD-CORRECTION] Recovered ${Format.formatSizeByOrderType(recoveredBudget, railType, manager.assets)} on ${sideName} via redistribution`,
-                    'info'
-                );
-            }
-        }
-
-        let remainingBudget = availableFund + recoveredBudget;
+        let remainingBudget = availableFund;
 
         for (const target of prioritizedTargets) {
             if (remainingBudget <= precisionEpsilon) break;
@@ -3470,17 +3478,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
             }
         }
 
-        const combinedUpdates = [...redistributionUpdates];
-        for (const plannedUpdate of ordersToUpdate) {
-            const id = plannedUpdate?.partialOrder?.id || (plannedUpdate as any)?.id;
-            if (!id) continue;
-            const existingIdx = combinedUpdates.findIndex((u: any) => (u?.partialOrder?.id || u?.id) === id);
-            if (existingIdx >= 0) {
-                combinedUpdates[existingIdx] = plannedUpdate;
-            } else {
-                combinedUpdates.push(plannedUpdate);
-            }
-        }
+        const combinedUpdates = [...ordersToUpdate];
 
         if (spreadCandidates.length < missingSlots) {
             manager.logger?.log?.(

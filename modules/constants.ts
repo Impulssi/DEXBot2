@@ -134,7 +134,7 @@
 
 import { BUILD_DIR } from './utils/build_dir.js';
 import { readGeneralSettings } from './general_settings.js';
-import { mergeSettings } from './settings_merge.js';
+import { mergeSettings, buildNodesView } from './settings_merge.js';
 import { getErrorMessage } from './utils/errors.js';
 const ORDER_TYPES = Object.freeze({
     SELL: 'sell',
@@ -171,7 +171,7 @@ let DEFAULT_CONFIG = {
     startPrice: "pool",          // Market price source: "pool" (liquidity pool), "book" (order book), or numeric value
     minPrice: "2x",               // Lower price bound: "Nx" = N times below startPrice, or numeric value
     maxPrice: "2x",               // Upper price bound: "Nx" = N times above startPrice, or numeric value
-    gridPrice: null,              // Optional reference price for x-factor bounds calculation.
+    gridPrice: "ama3",            // Reference price for x-factor bounds calculation (default: AMA3 preset).
                                   // "pool"    = use the live pool price for the pair
                                   // "book"    = use the live order book price for the pair
                                   // "ama"/"ama1".."ama4" = use the effective center snapshot from profiles/orders/<botKey>.dynamicgrid.json
@@ -208,12 +208,12 @@ let DEFAULT_CONFIG = {
 
 // Range quality zones for price bounds (minPrice/maxPrice multipliers).
 // Used for pre-entry legend in the bot editor (mountain-style).
-// Thresholds per user spec: green >=2x, yellow >=1.55x, orange 1.40x–1.55x, red <1.40x.
+// Thresholds per user spec: green >=2x, yellow >=1.55x, orange 1.45x–1.55x, red <1.45x.
 let RANGE_QUALITY = {
     GREEN_MIN: 2.0,   // >=2.0x → green (wide)
     YELLOW_MIN: 1.55, // >=1.55x → yellow (effeciant)
-    ORANGE_MIN: 1.40, // >=1.40x → orange (tight)
-    RED_MAX: 1.40,    // <1.40x → red (suizidal) — exclusive upper bound for red
+    ORANGE_MIN: 1.45, // >=1.45x → orange (tight)
+    RED_MAX: 1.45,    // <1.45x → red (suizidal) — exclusive upper bound for red
 };
 
 // Timing constants used by OrderManager and helpers
@@ -300,13 +300,33 @@ let TIMING = {
     // survive moderate fill-processing bursts.
     DUST_CANCEL_TIMEOUT_MS: 5 * 1000,  // 5 seconds
 
+    // BROADCAST_STALE_CLEAR_MS: a leaked/hung broadcast flag is hard-cleared
+    // after this long so it cannot permanently block rebalancing
+    // (see manager._clearStaleBroadcastFlag). This is the SINGLE authority on
+    // "when is a broadcast region stale": both the maintenance-tick deferral
+    // (shouldDeferMaintenanceForBroadcast) and the fill-consumer deferral
+    // bound (FILL_BROADCAST_DEFER_MAX_MS, derived below) are expressed in
+    // terms of it, so they cannot be tuned out of agreement.
+    BROADCAST_STALE_CLEAR_MS: 120000,  // 120 seconds
+
+    // BROADCAST_DEFER_SAFETY_MARGIN_MS: headroom added to
+    // BROADCAST_STALE_CLEAR_MS when deriving FILL_BROADCAST_DEFER_MAX_MS, so a
+    // region that is still considered live by the stale-clear watchdog cannot
+    // first trip the fill-consumer deferral bound (which would drop the
+    // consumer into the in-lock wait the deferral exists to avoid).
+    BROADCAST_DEFER_SAFETY_MARGIN_MS: 30000,  // 30 seconds
+
     // FILL_BROADCAST_DEFER_MAX_MS: Bound on fill-consumer deferral while a
     // broadcast region is active. The consumer defers (instead of acquiring
     // the fill lock and sleeping up to 30s inside it) so concurrent consumers
     // never queue as lock waiters and time out. Past this bound a stuck flag
     // falls through to the legacy in-lock wait, which still caps at 30s and
     // proceeds — a leaked flag can delay fills, never starve them.
-    FILL_BROADCAST_DEFER_MAX_MS: 60 * 1000,  // 60 seconds
+    // Derived after override merge from BROADCAST_STALE_CLEAR_MS +
+    // BROADCAST_DEFER_SAFETY_MARGIN_MS (see end of this module), so the
+    // ordering invariant holds by construction. The value below is only a
+    // floor for that derivation.
+    FILL_BROADCAST_DEFER_MAX_MS: 120000,  // 120 seconds (raised after merge to stale-clear + margin)
 
     // FILL_TOTALS_RETRY_BASE_MS / MAX_MS: Backoff for re-processing fills
     // parked when the accountTotals refresh failed (stale snapshot). The
@@ -482,6 +502,14 @@ let TIMING = {
     // is detached from it.
     // Derived as SYNC_LOCK_TIMEOUT_MS * 2 after override merge (see end of this module).
     SYNC_LOCK_FORCE_RELEASE_AGE_MS: 40000, // overridden by derivation after merge
+
+    // GRID_LOCK_HOLD_WARN_MS: observability threshold for _gridLock hold
+    // duration. That lock has no acquisition timeout and its callers cannot
+    // safely recover from a rejected acquire, so an over-long critical
+    // section is surfaced (warn + metric) by the maintenance tick rather than
+    // timed out or force-released. A hold crossing this threshold means a
+    // section is running unbounded and should be bounded at the source.
+    GRID_LOCK_HOLD_WARN_MS: 15000,
 
     // GRID_BLOAT_RESYNC_GRACE_MS: Grace period before the maintenance runtime
     // re-triggers a structural resync for a previously detected grid bloat.
@@ -690,6 +718,15 @@ let GRID_LIMITS = {
     // warn threshold one cycle earlier). Cancel settles the slot back to a
     // spread placeholder — no re-placement, fee-light.
     GAP_EVACUATION_CANCEL_THRESHOLD: 3,
+
+    // LAST_FILL_PIVOT_TTL_MS: Maximum age of a persisted LAST-FILL-GUARD
+    // pivot for it to be re-armed at startup. The pivot is a "latest fill"
+    // fact, not a permanent ratchet: after long downtime (dormant bot, stale
+    // market regime) a restored pivot would veto legitimate placements
+    // indefinitely, so it expires instead. In-memory pivots acquired at
+    // runtime are NOT expired — the guard has no clock there and the pivot
+    // is refreshed by every fresh fill.
+    LAST_FILL_PIVOT_TTL_MS: 24 * 60 * 60 * 1000,  // 24 hours
 
 
     // Grid comparison metrics
@@ -927,6 +964,39 @@ let FILL_PROCESSING = {
     // Reduced from 300s to 60s per tuning review: time-sensitive fills (e.g.,
     // credential daemon recovery) should not wait 5 minutes between retries.
     CONSUMER_BACKOFF_MAX_MS: 60000,
+
+    // CORRECTION_LOCK_HOLD_BUDGET_MS: wall-clock budget for the sequential
+    // price-update drain in correctAllPriceMismatches. That drain holds
+    // _gridLock (no acquisition timeout), so the invariant to protect is
+    // *lock-hold duration*, not update count: each update costs SYNC_DELAY_MS
+    // plus its RPC round-trip, and that round-trip grows with chain
+    // congestion. The drain stops pulling new updates once this much time has
+    // elapsed, so a slow chain drains fewer per cycle instead of holding the
+    // lock past the 20s fill-lock timeout (the "Lock acquisition timeout"
+    // cascade). Cancel-class entries (duplicate orphans / surplus / type
+    // mismatch) are ALWAYS fully drained — they are batched with no inter-op
+    // delay and are fund-safety-critical — and are never charged against this
+    // budget. Only the sequential price-update loop is budgeted; the
+    // remainder stays queued durably and re-drains on the next cycle.
+    CORRECTION_LOCK_HOLD_BUDGET_MS: 4000,
+
+    // CORRECTION_MAX_UPDATES_PER_CYCLE: optional hard cap on price updates
+    // drained per cycle, layered on top of CORRECTION_LOCK_HOLD_BUDGET_MS.
+    // Default null = no count cap (the hold-time budget alone governs, so the
+    // bound adapts to real RPC latency); a positive integer pins the count;
+    // 0 drains no price updates this cycle. Cancel-class entries are never
+    // budgeted by either knob.
+    CORRECTION_MAX_UPDATES_PER_CYCLE: null,
+
+    // CORRECTION_QUEUE_WARN_THRESHOLD: emit a rate-limited warn when the
+    // persisted correction queue reaches this size, so a growing backlog is
+    // surfaced instead of silently starving placements.
+    CORRECTION_QUEUE_WARN_THRESHOLD: 10,
+
+    // CORRECTION_QUEUE_WARN_RATE_LIMIT_MS: minimum spacing between
+    // correction-backlog warns (the drain runs every maintenance tick; the
+    // alarm must not spam).
+    CORRECTION_QUEUE_WARN_RATE_LIMIT_MS: 5 * 60 * 1000,
 };
 
 // Cleanup and maintenance parameters
@@ -1287,14 +1357,15 @@ let MARKET_ADAPTER = {
     DYNAMIC_WEIGHT_VOLATILITY_SCALE_X_MAX: 100.0,
 
     // ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR: Maximum ratio tilt applied to min/max
-    // grid bounds when the AMA slope indicates a strong trend. At full slope strength:
-    //   Downtrend: minPrice divisor grows by 1+factor, maxPrice multiplier shrinks by 1-factor
-    //   Uptrend:   maxPrice multiplier grows by 1+factor, minPrice divisor shrinks by 1-factor
+    // grid bounds when the AMA slope indicates a strong trend. Reciprocal /
+    // log-symmetric tilt scales BOTH bounds by the same factor, so total log width
+    // (and slot count) is preserved and only the geometric center translates:
+    //   Downtrend: both bounds ÷ (1+factor)   Uptrend: both bounds × (1+factor)
     // This widens the bound in the trend direction and tightens the opposite side,
     // giving the grid more room when the AMA center trails price in a trend.
     // 0 disables asymmetry. Recommended range: 0.15–0.35.
     // Overridable per bot via market_adapter_settings.json.
-    ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR: 0.35,
+    ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR: 0.333,
 
     // ASYMMETRIC_BOUNDS_MIN_SCALE_SLOTS: Minimum number of price levels the
     // narrowed/tightened side of a range-scaled grid must keep between the grid
@@ -1599,8 +1670,8 @@ let COW_PERFORMANCE = {
     // gap-slot count (DEXBot._getGapSlotBatchSize, surfaced via
     // _getMaxOpsPerBroadcast for backward compatibility). One fill batch can
     // expand into many more order operations (e.g. 4 fills -> 12 creates +
-    // 4 updates = 16 ops), so batches larger than the gap-slot count are
-    // split into sequential broadcasts of at most gapSlots ops each,
+    // 4 updates = 16 ops), so batches larger than gapSlots + 1 are
+    // split into sequential broadcasts of at most gapSlots + 1 ops each,
     // bounding per-transaction stress on the chain.
 
     // MAX_CANCELS_PER_BROADCAST: Maximum number of limit_order_cancel ops in a
@@ -1783,6 +1854,27 @@ let NATIVE_CLIENT = {
         // underlying connection failure; this window prevents redundant failover work.
         CLOSE_COALESCE_MS: 250,
 
+        // Escalation for a login session that keeps rejecting cached api ids
+        // (`_local_apis.size() > api_id`) even after the in-place recovery
+        // re-registers them. The retry-once path in callWithApiRecovery handles
+        // the normal reconnect case; a node/session that keeps replying stale is
+        // wedged, and only a fresh socket (preferably on another node) clears it.
+        // After STALE_API_FORCE_RECONNECT_AFTER stale errors within
+        // STALE_API_WINDOW_MS the client forces a reconnect that reports the
+        // active node as failed so the transport deprioritizes it.
+        STALE_API_FORCE_RECONNECT_AFTER: 3,
+        STALE_API_WINDOW_MS: 60000,
+
+        // Debounce for forced reconnects (transport.forceReconnect), enforced
+        // once per chain client so every escalation source shares it: the
+        // stale api_id window above and the subscriptions fill-channel watchdog.
+        // A wedged session trips both counters in the same tick, so without a
+        // shared window they would stack two reconnects on top of each other.
+        // Once recovery is failing repeatedly this is the floor on how often the
+        // transport is allowed to be torn down; the transport's own exponential
+        // backoff still applies on top of it.
+        FORCED_RECONNECT_COOLDOWN_MS: 30000,
+
         // WebSocket close codes treated as benign — they do NOT count as a
         // node failure. 1000 = normal closure, 1001 = going away (server
         // shutdown/deploy). Any other code, or wasClean === false, is abnormal.
@@ -1874,6 +1966,53 @@ let NATIVE_CLIENT = {
         // Default: 60 seconds.
         FILL_POLL_INTERVAL_MS: 60000,
 
+        // CHANNEL_DEGRADED_FAILURE_THRESHOLD: Consecutive processObjects
+        // failures for one account before the fill channel is considered
+        // degraded. The 2026-09-25 incident had every history call rejected
+        // for hours (stale api id) while the process stayed "connected", so
+        // the bot silently missed fills until a manual restart. Crossing this
+        // threshold forces a reconnect (which re-establishes the session and
+        // fires the post-reconnect safety-net sync).
+        CHANNEL_DEGRADED_FAILURE_THRESHOLD: 3,
+
+        // Minimum gap (ms) between fill-channel error logs for the same account.
+        // Without this, a dead channel logs one warn per poll per account and
+        // floods the error log (95k lines in ~3h during the incident).
+        CHANNEL_ERROR_LOG_INTERVAL_MS: 60000,
+
+        // CHANNEL_RETRY_LADDER_MS: escalating re-scan delays (ms) used after a
+        // channel failure, instead of waiting for the next 60s fill-poll tick.
+        // One failed scan proves nothing, but a channel still failing seconds
+        // later is wedged — and waiting out the poll cadence costs 3 ticks
+        // (3 min of blind fills) per escalation. The ladder verifies a recovery
+        // attempt quickly, then hands back to the regular poll so a permanently
+        // dead channel cannot become a tight scan loop.
+        //
+        // This does NOT raise the reconnect rate: TRANSPORT.FORCED_RECONNECT_
+        // COOLDOWN_MS still floors that. The ladder's job is to find out within
+        // seconds whether a reconnect actually worked, so the next permitted
+        // reconnect fires immediately instead of idling until the next poll.
+        // Set to [] to disable fast retries entirely.
+        CHANNEL_RETRY_LADDER_MS: [5000, 10000, 15000],
+
+        // CHANNEL_RETRY_MAX_REFILLS: how many times one continuous failure run
+        // may restart the ladder after a reconnect was issued. Without this bound
+        // the ladder would chain forever whenever reconnects are issued faster
+        // than the ladder completes (which is exactly what happens if
+        // FORCED_RECONNECT_COOLDOWN_MS is ever tuned below the ladder total) —
+        // a permanently dead channel would then scan every 5s indefinitely
+        // instead of settling back to the 60s poll. The operator alert fires
+        // within this many recovery cycles, so once the cap is hit the fast
+        // path has already done its job.
+        CHANNEL_RETRY_MAX_REFILLS: 3,
+
+        // CHANNEL_RECOVERY_ALERT_AFTER: how many forced-reconnect cycles an
+        // account may go through without the channel recovering before the
+        // watchdog escalates to a distinct operator-facing alert. Purely
+        // informational reconnect looping is invisible; this makes "recovery is
+        // not working, consider a restart" a log line an operator can act on.
+        CHANNEL_RECOVERY_ALERT_AFTER: 3,
+
     },
 
     // -------------------------------------------------------------------------
@@ -1920,6 +2059,38 @@ let NATIVE_CLIENT = {
 };
 
 // --- LOCAL SETTINGS OVERRIDES ---
+/**
+ * Canonical default general.settings.json document — the single source for
+ * first-run creation (dexbot.ts), the editor settings fallback
+ * (account_bots.loadGeneralSettings), and the local-overrides merge below.
+ * Key order matches the editor-saved file (NODE_MANAGEMENT in place, NODES
+ * derived last) so all three producers emit byte-compatible documents.
+ * Sections are cloned — callers may mutate the result freely.
+ */
+function buildDefaultGeneralSettings(): Record<string, any> {
+    return {
+        LOG_LEVEL,
+        GRID_LIMITS: { ...GRID_LIMITS, GRID_COMPARISON: { ...GRID_LIMITS.GRID_COMPARISON } },
+        TIMING: { ...TIMING },
+        UPDATER: { ...UPDATER },
+        MARKET_ADAPTER: { ...MARKET_ADAPTER },
+        NODE_MANAGEMENT: { ...NODE_MANAGEMENT },
+        DEFAULT_CONFIG: { ...DEFAULT_CONFIG },
+        FILL_PROCESSING: { ...FILL_PROCESSING },
+        PIPELINE_TIMING: { ...PIPELINE_TIMING },
+        CREDENTIAL_PROMPTS: { ...CREDENTIAL_PROMPTS },
+        MAINTENANCE: { ...MAINTENANCE },
+        COW_PERFORMANCE: { ...COW_PERFORMANCE },
+        INCREMENT_BOUNDS: { ...INCREMENT_BOUNDS },
+        FEE_PARAMETERS: { ...FEE_PARAMETERS },
+        API_LIMITS: { ...API_LIMITS },
+        LOGGING_CONFIG: { ...LOGGING_CONFIG },
+        NATIVE_CLIENT: { ...NATIVE_CLIENT },
+        LAUNCHER: { ...LAUNCHER },
+        NODES: buildNodesView(NODE_MANAGEMENT),
+    };
+}
+
 // Load user-defined settings from profiles/general.settings.json if it exists.
 // This allows preserving settings during updates without git stashing.
 // Lazy require breaks the circular dependency: constants → general_settings → constants
@@ -1931,26 +2102,7 @@ const settings = readGeneralSettings({
 });
 
 if (settings) {
-    const merged = mergeSettings(settings, {
-        LOG_LEVEL,
-        TIMING,
-        GRID_LIMITS,
-        FILL_PROCESSING,
-        PIPELINE_TIMING,
-        DEFAULT_CONFIG,
-        UPDATER,
-        CREDENTIAL_PROMPTS,
-        MAINTENANCE,
-        COW_PERFORMANCE,
-        INCREMENT_BOUNDS,
-        FEE_PARAMETERS,
-        API_LIMITS,
-        LOGGING_CONFIG,
-        NATIVE_CLIENT,
-        LAUNCHER,
-        NODE_MANAGEMENT,
-        MARKET_ADAPTER,
-    });
+    const merged = mergeSettings(settings, buildDefaultGeneralSettings());
     LOG_LEVEL = merged.LOG_LEVEL;
     TIMING = merged.TIMING;
     GRID_LIMITS = merged.GRID_LIMITS;
@@ -1974,6 +2126,30 @@ if (settings) {
 // Post-merge derivations: compute values from their documented relationships
 // so that user overrides to base constants propagate automatically.
 TIMING.SYNC_LOCK_FORCE_RELEASE_AGE_MS = TIMING.SYNC_LOCK_TIMEOUT_MS * 2;
+
+// Broadcast deferral bounds are all expressed in terms of the single stale
+// authority (BROADCAST_STALE_CLEAR_MS): the maintenance-tick deferral uses it
+// directly (shouldDeferMaintenanceForBroadcast) and the fill-consumer bound is
+// staleClear + a named safety margin. Deriving rather than declaring keeps the
+// ordering invariant true by construction; the check below catches a future
+// edit or override that breaks it at load time instead of silently at runtime.
+const _broadcastStaleClearMs = Number(TIMING.BROADCAST_STALE_CLEAR_MS) > 0
+    ? Number(TIMING.BROADCAST_STALE_CLEAR_MS)
+    : 120000;
+const _broadcastDeferSafetyMarginMs = Number(TIMING.BROADCAST_DEFER_SAFETY_MARGIN_MS) > 0
+    ? Number(TIMING.BROADCAST_DEFER_SAFETY_MARGIN_MS)
+    : 30000;
+TIMING.FILL_BROADCAST_DEFER_MAX_MS = Math.max(
+    Number(TIMING.FILL_BROADCAST_DEFER_MAX_MS) > 0 ? Number(TIMING.FILL_BROADCAST_DEFER_MAX_MS) : 0,
+    _broadcastStaleClearMs + _broadcastDeferSafetyMarginMs
+);
+if (!(Number(TIMING.FILL_BROADCAST_DEFER_MAX_MS) > _broadcastStaleClearMs)) {
+    throw new Error(
+        `[constants] invariant violated: FILL_BROADCAST_DEFER_MAX_MS (${TIMING.FILL_BROADCAST_DEFER_MAX_MS}) ` +
+        `must exceed BROADCAST_STALE_CLEAR_MS (${_broadcastStaleClearMs}) — the fill-consumer deferral bound ` +
+        `must outlast the stale-broadcast watchdog.`
+    );
+}
 
 // Freeze objects to prevent accidental runtime modifications
 Object.freeze(ORDER_TYPES);
@@ -2016,5 +2192,5 @@ Object.freeze(MARKET_ADAPTER.AMAS);
 Object.freeze(MARKET_ADAPTER);
 Object.freeze(CREDENTIAL_PROMPTS);
 
-export { ORDER_TYPES, ORDER_STATES, REBALANCE_STATES, COW_ACTIONS, DEFAULT_CONFIG, TIMING, RANGE_QUALITY, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, CR_ZONES, DEFAULT_TARGET_CR, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, PIPELINE_TIMING, UPDATER, LAUNCHER, COW_PERFORMANCE, NATIVE_CLIENT, MARKET_ADAPTER, BUILD_DIR, BTS_PRECISION, DAEMON_ERRORS, DAEMON_CODES, CREDENTIAL_PROMPTS }
+export { ORDER_TYPES, ORDER_STATES, REBALANCE_STATES, COW_ACTIONS, DEFAULT_CONFIG, TIMING, RANGE_QUALITY, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, CR_ZONES, DEFAULT_TARGET_CR, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, PIPELINE_TIMING, UPDATER, LAUNCHER, COW_PERFORMANCE, NATIVE_CLIENT, MARKET_ADAPTER, BUILD_DIR, BTS_PRECISION, DAEMON_ERRORS, DAEMON_CODES, CREDENTIAL_PROMPTS, buildDefaultGeneralSettings }
 

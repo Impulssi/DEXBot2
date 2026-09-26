@@ -101,32 +101,6 @@ async function privateKeyToPublicKey(rawKey: Uint8Array, compressed = true): Pro
     return pureSecp.privateKeyToPublicKey(rawKey, compressed);
 }
 
-// ── DER parsing ─────────────────────────────────────────────────────
-
-function sigFromDer(derSig: Uint8Array): { r: Uint8Array; s: Uint8Array } {
-    if (derSig.length < 8 || derSig[0] !== 0x30) throw new Error('Invalid DER signature: missing sequence tag');
-    let offset = 2;
-    if (derSig[1] & 0x80) {
-        const lenBytes = derSig[1] & 0x7F;
-        if (lenBytes > 2) throw new Error('Invalid DER signature: length too large');
-        let seqLen = 0;
-        for (let i = 0; i < lenBytes; i++) seqLen = (seqLen << 8) | derSig[2 + i];
-        offset = 2 + lenBytes;
-    }
-    if (offset >= derSig.length || derSig[offset] !== 0x02) throw new Error('Invalid DER signature: missing r integer tag');
-    const rLen = derSig[offset + 1];
-    const rStart = offset + 2;
-    if (rStart + rLen > derSig.length) throw new Error('Invalid DER signature: r value truncated');
-    const r = derSig.slice(rStart, rStart + rLen);
-    const sTagOffset = rStart + rLen;
-    if (sTagOffset >= derSig.length || derSig[sTagOffset] !== 0x02) throw new Error('Invalid DER signature: missing s integer tag');
-    const sLen = derSig[sTagOffset + 1];
-    const sStart = sTagOffset + 2;
-    if (sStart + sLen > derSig.length) throw new Error('Invalid DER signature: s value truncated');
-    const s = derSig.slice(sStart, sStart + sLen);
-    return { r, s };
-}
-
 // ── Deterministic K (RFC 6979) ─────────────────────────────────────
 
 async function deterministicK(digest: Uint8Array, privateKey: Uint8Array, counter = 0): Promise<bigint> {

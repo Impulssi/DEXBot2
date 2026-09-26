@@ -96,4 +96,4 @@ function resolveSource(config: SourceConfig, options: { quiet?: boolean } = {}):
 }
 
 export { resolveSource, listAvailableBots }
-export type { SourceConfig, SourceResolution }
+export type { SourceConfig }

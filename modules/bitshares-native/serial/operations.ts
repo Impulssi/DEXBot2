@@ -426,8 +426,6 @@ const fee_schedule = Serializer('fee_schedule', {
     scale: uint32,
 });
 
-const void_result = Serializer('void_result', {});
-
 const asset = Serializer('asset', {
     amount: int64,
     asset_id: protocol_id_type('asset'),
@@ -576,37 +574,6 @@ operation.st_operations[76] = credit_deal_update;
 operation.st_operations[63] = liquidity_pool_exchange;
 operation.st_operations[77] = limit_order_update;
 
-const generic_operation_result = Serializer('generic_operation_result', {
-    new_objects: setType(object_id_type),
-    updated_objects: setType(object_id_type),
-    removed_objects: setType(object_id_type),
-});
-
-const generic_exchange_operation_result = Serializer('generic_exchange_operation_result', {
-    paid: arrayType(asset),
-    received: arrayType(asset),
-    fees: arrayType(asset),
-});
-
-const extendable_operation_result = extensionType([
-    { name: 'impacted_accounts', type: setType(protocol_id_type('account')) },
-    { name: 'new_objects', type: setType(object_id_type) },
-    { name: 'updated_objects', type: setType(object_id_type) },
-    { name: 'removed_objects', type: setType(object_id_type) },
-    { name: 'paid', type: arrayType(asset) },
-    { name: 'received', type: arrayType(asset) },
-    { name: 'fees', type: arrayType(asset) },
-]);
-
-const operation_result = staticVariantType([
-    void_result,
-    object_id_type,
-    asset,
-    generic_operation_result,
-    generic_exchange_operation_result,
-    extendable_operation_result,
-]);
-
 const transaction = Serializer('transaction', {
     ref_block_num: uint16,
     ref_block_prefix: uint32,
@@ -624,15 +591,5 @@ const signed_transaction = Serializer('signed_transaction', {
     signatures: arrayType(bytesType(65)),
 });
 
-const processed_transaction = Serializer('processed_transaction', {
-    ref_block_num: uint16,
-    ref_block_prefix: uint32,
-    expiration: time_point_sec,
-    operations: arrayType(operation),
-    extensions: setType(future_extensions),
-    signatures: arrayType(bytesType(65)),
-    operation_results: arrayType(operation_result),
-});
-
-export { operation, transaction, signed_transaction, processed_transaction, transfer, limit_order_create, limit_order_cancel, call_order_update, fill_order, asset_settle, limit_order_update, credit_offer_accept, credit_deal_repay, credit_deal_update, liquidity_pool_exchange, fee_schedule, fee_parameters, asset, price, void_result, transfer_operation_fee_parameters, limit_order_create_operation_fee_parameters, limit_order_cancel_operation_fee_parameters, call_order_update_operation_fee_parameters, fill_order_operation_fee_parameters, asset_settle_operation_fee_parameters, limit_order_update_operation_fee_parameters, credit_offer_accept_operation_fee_parameters, credit_deal_repay_operation_fee_parameters, credit_deal_update_operation_fee_parameters, liquidity_pool_exchange_operation_fee_parameters, account_create_operation_fee_parameters, account_update_operation_fee_parameters, account_whitelist_operation_fee_parameters, account_upgrade_operation_fee_parameters, account_transfer_operation_fee_parameters, asset_create_operation_fee_parameters, asset_update_operation_fee_parameters, asset_update_bitasset_operation_fee_parameters, asset_update_feed_producers_operation_fee_parameters, asset_issue_operation_fee_parameters, asset_reserve_operation_fee_parameters, asset_fund_fee_pool_operation_fee_parameters, asset_global_settle_operation_fee_parameters, asset_publish_feed_operation_fee_parameters, asset_settle_cancel_operation_fee_parameters, asset_claim_fees_operation_fee_parameters, witness_create_operation_fee_parameters, witness_update_operation_fee_parameters, proposal_create_operation_fee_parameters, proposal_update_operation_fee_parameters, proposal_delete_operation_fee_parameters, withdraw_permission_create_operation_fee_parameters, withdraw_permission_update_operation_fee_parameters, withdraw_permission_claim_operation_fee_parameters, withdraw_permission_delete_operation_fee_parameters, committee_member_create_operation_fee_parameters, committee_member_update_operation_fee_parameters, committee_member_update_global_parameters_operation_fee_parameters, vesting_balance_create_operation_fee_parameters, vesting_balance_withdraw_operation_fee_parameters, worker_create_operation_fee_parameters, custom_operation_fee_parameters, assert_operation_fee_parameters, balance_claim_operation_fee_parameters, override_transfer_operation_fee_parameters, transfer_to_blind_operation_fee_parameters, blind_transfer_operation_fee_parameters, transfer_from_blind_operation_fee_parameters, asset_claim_pool_operation_fee_parameters, asset_update_issuer_operation_fee_parameters, bid_collateral_operation_fee_parameters, execute_bid_operation_fee_parameters, htlc_create_operation_fee_parameters, htlc_redeem_operation_fee_parameters, htlc_redeemed_operation_fee_parameters, htlc_extend_operation_fee_parameters, htlc_refund_operation_fee_parameters, custom_authority_create_operation_fee_parameters, custom_authority_update_operation_fee_parameters, custom_authority_delete_operation_fee_parameters, ticket_create_operation_fee_parameters, ticket_update_operation_fee_parameters, liquidity_pool_create_operation_fee_parameters, liquidity_pool_delete_operation_fee_parameters, liquidity_pool_deposit_operation_fee_parameters, liquidity_pool_withdraw_operation_fee_parameters, samet_fund_create_operation_fee_parameters, samet_fund_delete_operation_fee_parameters, samet_fund_update_operation_fee_parameters, samet_fund_borrow_operation_fee_parameters, samet_fund_repay_operation_fee_parameters, credit_offer_create_operation_fee_parameters, credit_offer_delete_operation_fee_parameters, credit_offer_update_operation_fee_parameters, credit_deal_expired_operation_fee_parameters, liquidity_pool_update_operation_fee_parameters, fba_distribute_operation_fee_parameters }
+export { operation, transaction, signed_transaction, transfer, limit_order_create, limit_order_cancel, call_order_update, fill_order, asset_settle, limit_order_update, credit_offer_accept, credit_deal_repay, credit_deal_update, liquidity_pool_exchange, fee_schedule, asset, price }
 

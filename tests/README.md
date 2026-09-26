@@ -88,7 +88,7 @@ Interactive tools and performance benchmarks (not part of CI).
 
 ### Edge Cases & Regression
 Tests targeting specific bugs, race conditions, and failure modes.
-*Examples:* `test_critical_bug_fixes.ts`, `test_race_condition_fixes_batch1.ts`, `test_patch17_invariants.ts`, `test_shutdown_reentrancy.ts`, `test_multifill_opposite_partial.ts`
+*Examples:* `test_critical_bug_fixes.ts`, `test_race_condition_fixes_batch1.ts`, `test_patch17_invariants.ts`, `test_shutdown_reentrancy.ts`, `test_multifill_opposite_partial.ts`, `test_correction_queue_staleness.ts`, `test_spread_pure_fund_driven.ts`, `test_sync_lock_id_verification.ts`
 
 ### Utilities & Helpers
 Shared utility functions, precision handling, chain helpers.
@@ -119,6 +119,15 @@ Shared utility functions, precision handling, chain helpers.
 - No double-spending between orders
 
 **Reference:** [docs/FUND_MOVEMENT_AND_ACCOUNTING.md](../docs/FUND_MOVEMENT_AND_ACCOUNTING.md)
+
+### Grid-Price Invariant & Hold Guards
+- Every emitted order's price must equal its slot's genesis level (`priceForSlot(idx, genesis)`); off-grid emissions are blocked, not counted
+- The guard itself plus the live batch wiring, escalation thresholds, and per-order stranded-hold clocks are each pinned and mutation-tested
+- Adoption keeps the slot's own level; `loadGrid` repairs a pre-existing off-grid slot price
+
+**Reference:** [docs/GRID_PRICE_INVARIANT.md](../docs/GRID_PRICE_INVARIANT.md)
+
+**Examples:** `test_grid_price_invariant_guard.ts`, `test_grid_price_invariant_wiring.ts`, `test_grid_price_slot_invariant.ts`, `test_final_pivot_gate.ts`, `test_hold_and_center_guards.ts`, `test_sync_out_of_grid_defer.ts`
 
 ---
 

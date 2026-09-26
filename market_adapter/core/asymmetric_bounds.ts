@@ -9,8 +9,8 @@ function resolveMaxAsymmetryFactor(primaryValue: any, secondaryValue: any, defau
 /**
  * Base grid-range ratios relative to the center price. Shared by the metrics
  * (safe-asymmetry cap) and the bounds application math so both stay consistent:
- *   baseMinDiv = gp / minP  → DOWN-side safe factor is 1 − 1/baseMinDiv
- *   baseMaxMult = maxP / gp → UP-side   safe factor is 1 − 1/baseMaxMult
+ *   baseMinDiv = gp / minP  → UP-side   safe factor is baseMinDiv − 1
+ *   baseMaxMult = maxP / gp → DOWN-side safe factor is baseMaxMult − 1
  */
 function resolveBaseBounds(centerPrice: any, minPrice: any, maxPrice: any) {
     const gp = Number(centerPrice);
@@ -60,9 +60,12 @@ function computeAsymmetricBoundsMetrics({
     }
 
     const { baseMinDiv, baseMaxMult } = baseBounds;
+    // Log-symmetric tilt shifts the whole band by 1/(1+a) (down) or (1+a)
+    // (up). The tightened bound stays at/above the fixed AMA center when
+    // baseMaxMult ≥ 1+a (down) / baseMinDiv ≥ 1+a (up), i.e. a ≤ bound − 1.
     const maxSafeAsymmetryFactor = trend === 'DOWN'
-        ? (baseMaxMult > 1 ? 1 - (1 / baseMaxMult) : 0)
-        : (baseMinDiv > 1 ? 1 - (1 / baseMinDiv) : 0);
+        ? (baseMaxMult > 1 ? baseMaxMult - 1 : 0)
+        : (baseMinDiv > 1 ? baseMinDiv - 1 : 0);
 
     return {
         rawAsymmetryFactor,
@@ -85,13 +88,14 @@ function applyAsymmetricBounds(params: any) {
             const { gp, baseMinDiv, baseMaxMult } = baseBounds;
             const asymmetry = metrics.appliedAsymmetryFactor as number;
 
-            if (trend === 'DOWN') {
-                resolvedMinPrice = gp / (baseMinDiv * (1 + asymmetry));
-                resolvedMaxPrice = gp * (baseMaxMult * (1 - asymmetry));
-            } else {
-                resolvedMinPrice = gp / (baseMinDiv * (1 - asymmetry));
-                resolvedMaxPrice = gp * (baseMaxMult * (1 + asymmetry));
-            }
+            // Reciprocal / log-symmetric tilt: scale BOTH bounds by the same
+            // factor. Δlog = ±ln(1+a) exactly, so total log-width (and slot
+            // count) is preserved and only the band's geometric center
+            // translates toward the trend. The tightened side can never
+            // reach the center (1/(1+a) > 0).
+            const scale = trend === 'DOWN' ? 1 / (1 + asymmetry) : 1 + asymmetry;
+            resolvedMinPrice = (gp / baseMinDiv) * scale;
+            resolvedMaxPrice = (gp * baseMaxMult) * scale;
         }
     }
 

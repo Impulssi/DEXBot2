@@ -73,17 +73,25 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
   - `_commitWorkingGrid` clears them only when the plan's boundary was actually applied — a held boundary (`boundaryHeld`), a gate-rejected boundary, and a null boundary all leave them owed.
   - `consumePendingFillCrawls` applies them onto a restored finite boundary; `applyPersistedPendingCrawls` is the shared startup/recovery wrapper used before sync/reconcile; `_clearPendingFillCrawls` drops them when the boundary is re-anchored (grid rebuild via `initializeGrid`, rejected snapshot via `rejectCorruptedGridSnapshot`, persisted snapshot wipe via `AccountOrders.clearGrid`).
 
+- `INV-COW-009` LAST-FILL-GUARD pivot survives restarts with the snapshot, and only as a fill fact
+  - Single source of truth: the manager's in-memory pivot is authoritative at runtime; the disk row is a mirror that rides the grid snapshot (`persistGridSnapshot` → `storeMasterGrid` 10th param → `lastFillPivot`), so it invalidates in lockstep with the boundary/genesis instead of forming a second ledger (the `_pendingFillCrawls` lockstep contract).
+  - Provenance gate: only a pivot written through the shared `setLastFillPivot(type, price, 'fill')` writer is persist-eligible. A book-seeded pivot (`seedLastFilledPricesFromBook`, provenance `'book'`) is a heuristic — max resting buy / min resting sell is not market truth — and is never fossilized into the snapshot. The fill-batch and queued-fill refresh sites funnel through one implementation (free function in `utils/system.ts`; `OrderManager._setLastFillPivot` delegates to it), so value, timestamp, and provenance cannot drift apart; the queued-fill refresh and the restore path call the same free function directly, with the legacy-stub fallback built into the shared writer rather than copy-pasted. A single-sided book arms through the same writer with provenance `'book'`; the two-sided midpoint and per-side mirror seeds stay direct writes by design, because they carry no pivot provenance and must not be persist-eligible.
+  - The row carries `{price, type, fillsAt, genesisHash}` validated by one shared gate (`normalizeLastFillPivot`) used by BOTH the `storeMasterGrid` sanitizer and the loader — the two shape checks cannot drift. `null` from the payload builder always clears the stored row (consumed pivot / cold manager / no live genesis), `undefined` stays a legacy no-op for old callers, and a malformed shape also clears.
+  - Restore ordering: `grid.loadGrid` restores the pivot right after `_restoreBoundary` — with the persisted genesis applied and the grid re-typed, BEFORE the first reconcile/broadcast — so a restart cannot re-open the cold window where evacuation stamps get applied against a boundary still being rebuilt. All `loadGrid` callers (startup resume, price-match resume, recovery reload) inherit it; there is no second restore call site to drift.
+  - Validation chain (`restoreLastFillPivot`): TTL expiry (`GRID_LIMITS.LAST_FILL_PIVOT_TTL_MS`, 24h; the pivot is a "latest fill" fact, not a permanent ratchet; expired pivots hand over to the startup book seed) and genesis binding (mismatched hash = dead generation) erase the row through one shared drop path (`clearPersistedLastFillPivot` under the bot's persistence lock, best-effort). Off-grid refusal (`resolveOnGridPivot` — the runtime's own ladder validator, imported lazily from the restore site so ONE implementation serves both the per-probe live guard and the restore; the restorer can never accept a value the runtime would refuse per probe) is a no-op that falls back to the book seed and leaves the row for the next snapshot flush to clear (the cold in-memory pivot makes the payload builder return null). The snapped ladder level is restored, never the raw float, and the ORIGINAL `fillsAt` is preserved through `setLastFillPivot`'s `atMs` param so the TTL keeps meaning "age of the last fill", not "time since this restart".
+  - Generation invalidation mirrors the pending-crawl ledger: `initializeGrid` and `rejectCorruptedGridSnapshot` clear the in-memory pivot via `resetLastFillPivot` (exposed as `OrderManager._resetLastFillPivot`), which clears the FULL scalar family — per-side mirrors included — so `seedLastFilledPricesFromBook`'s cold gate cannot be silently suppressed by stale per-side values after a grid rebuild, and `AccountOrders.clearGrid` wipes the persisted row with the snapshot. The guard re-arms on the first real fill of the new generation.
+
 - `INV-PROJ-001` New projected orders remain virtual
   - Orders projected into empty slots must be `VIRTUAL` with no `orderId` until chain confirmation.
 
 - `INV-PROJ-002` Preserve on-chain PARTIAL size in projection
   - If identity is retained (`keepOrderId=true`) and current state is `PARTIAL`, projected size must preserve current on-chain remaining size.
   - It must not be overwritten by ideal geometric `targetSize`.
-  - Exception: a `PARTIAL` with a rotation/size-update action targeting its `orderId` does use `targetSize` (the explicit-UPDATE path at `modules/order/utils/validate.ts:959`).
+  - Exception: a `PARTIAL` with a rotation/size-update action targeting its `orderId` does use `targetSize` (the explicit-UPDATE path at `modules/order/utils/validate.ts:1129`).
   - Preserve-path size must be normalized to finite, non-negative value.
 
 - `INV-PROJ-003` ACTIVE on-chain projection preserves current size (same as PARTIAL)
-  - If identity is retained and state is `ACTIVE`, projection preserves current on-chain size via the same `shouldPreserveSize` path as `PARTIAL` (`validate.ts:958-972`).
+  - If identity is retained and state is `ACTIVE`, projection preserves current on-chain size via the same `shouldPreserveSize` path as `PARTIAL` (`validate.ts:1129`).
   - An explicit UPDATE action targeting the `orderId` is required to apply `targetSize`.
 
 - `INV-ID-001` Order identity retention rule
@@ -102,7 +110,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 - `INV-ACC-003` Cross-bot fund registry invariant (INVARIANT 3)
   - Shared-account per-bot commitment must not exceed the bot's proportional share of chain balance.
   - Checked with widened tolerance `max(PERCENT_TOLERANCE * 3, 0.15)`.
-  - Registry failure logs an error (`accounting.ts:554-563`, with a "CRITICAL FIX: Log as ERROR instead of WARN" comment), not a silent skip.
+  - Registry failure logs an error (`order/accounting.ts:574-590`, with a "CRITICAL FIX: Log as ERROR instead of WARN" comment), not a silent skip.
 
 ---
 
@@ -195,8 +203,16 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
   - Top-of-window partials remain always eligible.
   - Two PARTIALs sharing a price with no active sibling do not qualify (left to rebalancer).
 
+- `INV-GRID-004` Slot price equals its genesis level ([GRID_PRICE_INVARIANT.md](GRID_PRICE_INVARIANT.md))
+  - `order.price` for a slot-`idx` order must equal `priceForSlot(idx, genesis)`; the genesis ladder is the only authoritative price for a slot.
+  - Enforced at all six emission sites (CREATE / UPDATE / CREATE-FALLBACK, RECONCILE-CREATE / RECONCILE-UPDATE, STARTUP-CREATE): an off-grid emission is blocked, never broadcast.
+  - Range guards (`isChainPriceOutOfGrid`) are bounds checks, not membership checks — they cannot substitute for this invariant.
+  - Adoption keeps the slot's own level (a fill/chain price is metadata, not the slot's price); `loadGrid` repairs a pre-existing off-grid slot price at load.
+  - Tests: GPI-001..015 (`tests/test_grid_price_invariant_guard.ts`), GPI-WIRE-001..009 (`tests/test_grid_price_invariant_wiring.ts`), LEGACY-ADOPT/MATERIALIZE/ADOPT-NAME (`tests/test_sync_out_of_grid_defer.ts`).
+
 ---
 
+<a id="reconcile"></a>
 ## Reconcile ([GRID_RECONCILE.md](GRID_RECONCILE.md))
 
 - `INV-RECON-001` Rotation-only size updates in reconcile
@@ -208,18 +224,17 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
   - Dust health thresholding applies consistently to both CREATE and rotation destination holes.
 
 - `INV-RECON-003` Reconcile cancels duplicate chain orders unconditionally
-  - When an unmatched order is within `looseTolerance` of an active grid order, it must be cancelled on chain via `_cancelChainOrder` with `releaseUntrackedFunds: true`.
+  - An unmatched chain order whose price equals an active same-type grid slot's price (exact slot-price equality via `priceSlotEqual` at the asset precision) is a suspected duplicate and must be cancelled on chain via `_cancelChainOrder` with `releaseUntrackedFunds: true`.
   - Cancelled IDs are filtered out of `unmatchedParsed` to prevent reprocessing.
   - No size guard — any duplicate at the same price is a violation.
-  - `SUSPECTED_DUPLICATE_TOLERANCE_FLOOR` (absolute price floor) is removed — only `tolerance * SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER` is used.
-  - `SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER` is a file-local constant (`modules/order/grid_reconcile.ts`, value `5`), not a centralized `constants.ts` entry.
+  - The earlier fuzzy `SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER` (5× `calculatePriceTolerance`) and `SUSPECTED_DUPLICATE_TOLERANCE_FLOOR` are removed; only exact price-level equality triggers a reconcile cancel.
 
 - `INV-RECON-004` Rebalance must not convert on-chain slots to SPREAD via CREATE
   - `performSafeRebalance` must not emit `CREATE` actions that convert existing on-chain slots into SPREAD orders.
   - On-chain mid-slot must keep its BUY/SELL type before commit.
 
 - `INV-RECON-005` Extreme placement ordering
-  - BUY placements must use nearest available free slots first (descending price, so the nearest-to-center slots fill first — `validate.ts:465-468`).
+  - BUY placements must use nearest available free slots first (descending price, so the nearest-to-center slots fill first — `order/utils/order.ts` `buildOutsideInPairGroups`).
   - SELL placements must use nearest available free slots first (ascending price).
 
 ---
@@ -228,7 +243,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 
 - `INV-BATCH-001` Illegal state batch abort
   - `executeBatch` throws `ILLEGAL_SPREAD_STATE` on an illegal grid layout (emitted at `modules/order/utils/validate.ts`, propagated via `modules/order/manager.ts` `_throwOnIllegalState`).
-  - The `_handleBatchHardAbort` catch for `ILLEGAL_ORDER_STATE` (`dexbot_state_recovery.ts:133`) is a test-only dead branch — production never emits that code; only the test stub at `tests/test_patch17_invariants.ts:396` uses it.
+  - The `_handleBatchHardAbort` catch for `ILLEGAL_ORDER_STATE` (`dexbot_class.ts:455`) is a test-only dead branch — production never emits that code; only a test stub uses it.
   - In production, recovery + cooldown are armed on the next maintenance tick via `_abortFlowIfIllegalState` (the `INV-MAINT-002` path), returning `abortedForIllegalState: true` to the caller. The caller does not need to return immediately; the maintenance tick handles recovery.
   - Hard abort triggers one immediate recovery sync (`_triggerStateRecoverySync`) plus arms one maintenance cooldown cycle (`_maintenanceCooldownCycles = Math.max(current, 1)`).
 
@@ -247,7 +262,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
     - NOT virtualize the slot.
     - Preserve `orderId` until sync reconciles it.
     - NOT mark the order as stale-cleaned.
-  - Fast path: if the batch result indicates `ORDER_SIZE_DRIFT_TARGETED` (`dexbot_state_recovery.ts:263`), a targeted repair applies the correction directly and skips `_triggerStateRecoverySync`.
+  - Fast path: if the batch result indicates `ORDER_SIZE_DRIFT_TARGETED` (`dexbot_state_recovery.ts:269`), a targeted repair applies the correction directly and skips `_triggerStateRecoverySync`.
 
 ---
 
@@ -271,7 +286,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 - `INV-REG-001` Cross-bot allocation ≤ proportional share
   - Per-bot committed amounts (sum of on-chain orders) must not exceed `totalChainBalance × allocatedPercent`.
   - Violation triggers an error-level log entry (not silent), with tolerance `max(PERCENT_TOLERANCE * 3, 0.15)`.
-  - Registry registration is pre-flight + atomic; only shared-account bots register (`dexbot.ts:535` filters `accountGroups[a].length > 1`), and registration completes before any shared-account bot starts.
+  - Registry registration is pre-flight + atomic; only shared-account bots register (`dexbot.ts:611` filters `accountGroups[a].length > 1`), and registration completes before any shared-account bot starts.
   - Release happens in `DEXBot.shutdown`.
 
 - `INV-REG-002` Async-locked registry writes

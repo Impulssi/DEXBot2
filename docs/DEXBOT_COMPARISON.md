@@ -1,7 +1,7 @@
 # DEXBot vs DEXBot2 — Detailed Comparison Report
 
 > **Date:** 2026-09-02 *(metrics refreshed against local source trees)*
-> **Scope:** Full architectural, functional, and operational comparison between the original [DEXBot](https://github.com/Codaone/DEXBot) (Python, v1.0.0) and DEXBot2 (TypeScript, v1.6.3).
+> **Scope:** Full architectural, functional, and operational comparison between the original [DEXBot](https://github.com/Codaone/DEXBot) (Python, v1.0.0) and DEXBot2 (TypeScript, v1.6.7).
 > **Audience:** Developers, contributors, and operators evaluating or migrating between the two projects.
 
 ---
@@ -36,7 +36,7 @@
 
 | Attribute | DEXBot (original) | DEXBot2 |
 |---|---|---|
-| **Release Track** | 1.0.0 | v1.6.3 |
+| **Release Track** | 1.0.0 | v1.6.7 |
 | **Language** | Python 3.6+ | TypeScript 5.x |
 | **Status** | Released 1.0.0, unmaintained | Active development |
 | **Last Repo Activity** | May 23, 2020 | 2026-09-02 |
@@ -140,7 +140,7 @@ DEXBot brings a full Python desktop GUI and a strategy plugin model. DEXBot2 is 
 
 - **Four specialized engines** (Accountant, StrategyEngine, Grid, SyncEngine) coordinate through OrderManager
 - **Copy-on-Write** grid: planning happens on isolated `WorkingGrid`; committed atomically or discarded on failure
-- **Targeted fill subscription** via `set_subscribe_callback` → `get_account_history_operations` filtered for `OP_FILL_ORDER` fill operations; push-triggered fixed-cap fill batching (max 4 fills per batch)
+- **Targeted fill subscription** via `set_subscribe_callback` → `get_account_history_operations` filtered for `OP_FILL_ORDER` fill operations; push-triggered gap-slot batching (a unified batch contains at most `gapSlots + 1` fills)
 - **Market Adapter**: AMA-based price tracking, dynamic buy/sell weighting, Kalman confirmation, ATR/regime dampening, asymmetric grid bounds, and configurable delta triggers
 - **`fund_registry.ts`**: shared-account fund registry — tracks per-account, per-bot fund and collateral allocations; pre-registered atomically at startup so all bots sharing an account see a consistent proportional split before any bot starts; cross-bot invariant enforcement
 - **Bot keys**: deterministic name-derived key (`sanitizeKey(name)`) with uniqueness enforced at all write paths — eliminates name-collision risk across restarts and config reorders
@@ -208,8 +208,8 @@ DEXBot brings a full Python desktop GUI and a strategy plugin model. DEXBot2 is 
 - **Fixed reference boundary** divides BUY zone (below) from SELL zone (above)
 - **Dynamic spread gap** around market price (configurable `targetSpreadPercent`)
 - On fill: grid **crawls** — boundary shifts, slots reassign roles, new orders placed
-- **Partial fill consolidation**: dust detection and cleanup
-- **Fixed-cap fill batching**: 1–4 fills per unified batch, >4 chunked at 4-fill boundaries
+- **Partial fill handling**: immediate on-chain dust cancellation plus fund-driven correction of surviving non-dust partials
+- **Gap-slot fill batching**: `1..gapSlots+1` fills per unified batch; deeper queues are chunked at `gapSlots+1`
 - **Replay-safe fill dedupe**: processed-fill persistence prevents duplicate accounting after restarts or resyncs
 - **Dynamic weighting**: AMA slope, Kalman confirmation, ATR volatility, and regime gates can bias buy/sell allocation without changing the core grid model
 - **Asymmetric range scaling**: trend diagnostics can tilt grid bounds during recalculation, giving the grid more room in the direction of movement
@@ -326,7 +326,7 @@ workers:
 ### DEXBot2
 
 - **Format:** JSON (`profiles/bots.json`, `profiles/general.settings.json`)
-- **No GUI wizard** — manual JSON editing plus scripts/runtime helpers
+- **No GUI wizard** — interactive `dexbot bot` menu editor for main settings; advanced keys edited directly in JSON
 - **~27 configuration objects** in `modules/constants.ts`, frozen via `Object.freeze` (loaded at startup)
 - Runtime parameters via environment variables (`RUN_LOOP_MS`, `BOT_NAME`, launcher/daemon settings, etc.)
 - `profiles/general.settings.json` for global timing/limits/node settings
@@ -357,7 +357,7 @@ workers:
 | Feature | DEXBot | DEXBot2 |
 |---|---|---|
 | **Format** | YAML | JSON |
-| **Interactive Setup** | Yes (whiptail + PyQt5 GUI) | No (manual edit) |
+| **Interactive Setup** | Yes (whiptail + PyQt5 GUI) | Yes (`dexbot bot` menu editor) |
 | **Key Encryption** | No (file-system only) | Yes (AES-256-GCM) |
 | **Multi-bot in one config** | Yes (YAML array) | Yes (JSON array) |
 | **Runtime overrides** | Env vars (limited) | Env vars (full) |
@@ -508,7 +508,7 @@ Where:
 | Feature | DEXBot | DEXBot2 |
 |---|---|---|
 | **Desktop GUI** | Yes (PyQt5) | No |
-| **Interactive Config Wizard** | Yes (GUI + whiptail) | No |
+| **Interactive Config Wizard** | Yes (GUI + whiptail) | No (menu-driven editor, not a guided wizard) |
 | **CLI** | Yes (Click) | Yes (custom) |
 | **Real-time Status** | GUI view | `unlock status` / `dexbot stat` + log tailing |
 | **Automation Surface** | Plugin/strategy hooks | Claw modules, scripts, and runtime helpers |
@@ -754,7 +754,7 @@ Where:
 - Single hardcoded core strategy (boundary-crawl grid)
 - Extending core trading behavior requires modifying runtime modules
 - Market adapter (`market_adapter/`) provides real-time signal-driven parameter tuning: AMA center, dynamic weights, Kalman confirmation, ATR/regime dampening, and asymmetric bounds
-- `analysis/` tools provide AMA fitting, dynamic-weight research, derivative/Kalman signal research, volatility/regime analysis, bot-parameter sweeps, bot-activity queries (`bot_usage/`), and FIFO-based trade PnL analysis (`trade_profitability.ts`)
+- `analysis/` tools provide AMA fitting, dynamic-weight research, Kalman signal research, volatility/regime analysis, bot-parameter sweeps, bot-activity queries (`bot_usage/`), and FIFO-based trade PnL analysis (`trade_profitability.ts`)
 - `claw/` exposes a separate automation and AI-consumption layer: profile reading, chain queries/actions, short MPA workflows, position health, runtime manifests, and skill/plugin artifacts
 
 ### Extensibility Comparison
@@ -776,7 +776,7 @@ Where:
 
 | Metric | DEXBot | DEXBot2 |
 |---|---|---|
-| **Release Track** | 1.0.0 | v1.6.3 |
+| **Release Track** | 1.0.0 | v1.6.7 |
 | **Active Since** | ~2018 | December 2025 |
 | **Last Commit** | May 23, 2020 | 2026-09-02 |
 | **Total Commits** | 2281 | 2,125 (v1.4.25) |
@@ -863,7 +863,7 @@ The 500× figure is not theoretical: it materializes in production when higher o
 - **Single core strategy** — no runtime-swappable plugin system, but the boundary-crawl grid is deeply engineered with AMA/Kalman/ATR/regime adaptive signals, making it far more capable and configurable than DEXBot's individual strategies
 - No GUI — requires CLI proficiency
 - No DEXBot-style external CEX price-feed strategy support
-- JSON config requires manual editing (no wizard)
+- Advanced bot keys (`debtPolicy`, `creditOnly`, `min_BTS_value`) require manual JSON editing; main settings are interactive via `dexbot bot`
 - Backtesting/research exists under `analysis/`, but it is not a polished end-user backtesting product
 - No community/plugin ecosystem
 - Heavy documentation suggests significant learning curve for contributors

@@ -124,6 +124,10 @@ function createTransport(config: TransportConfig = {}) {
     let autoreconnect = false;
     let intentionalClose = false;
     let reconnectAttempts = 0;
+    // Single-flight connect. A forced reconnect can land while a
+    // scheduleReconnect() timer is already sweeping the node list; without this
+    // guard both sweeps run concurrently, open two sockets and orphan one.
+    let connectInFlight: Promise<void> | null = null;
     const maxReconnectAttempts = 20;
     // Close-event debounce for the currently active socket only. Stale sockets
     // are ignored by identity so a fresh socket close can never be suppressed by
@@ -219,7 +223,7 @@ function createTransport(config: TransportConfig = {}) {
             setStatus('closed');
             reconnectTimer = setTimeout(() => {
                 reconnectTimer = null;
-                tryConnect().catch(() => scheduleReconnect());
+                startConnect().catch(() => scheduleReconnect());
             }, SLOW_RECONNECT_INTERVAL_MS);
             return;
         }
@@ -227,7 +231,7 @@ function createTransport(config: TransportConfig = {}) {
         reconnectAttempts++;
         reconnectTimer = setTimeout(() => {
             reconnectTimer = null;
-            tryConnect().catch(() => scheduleReconnect());
+            startConnect().catch(() => scheduleReconnect());
         }, delay);
     }
 
@@ -502,6 +506,29 @@ function createTransport(config: TransportConfig = {}) {
         throw new AllNodesFailed(lastConnectErrors);
     }
 
+    /**
+     * Run a connect sweep, coalescing concurrent callers onto one attempt.
+     * Returns the in-flight sweep when one is already running so a forced
+     * reconnect never races a scheduled reconnect into parallel sockets.
+     *
+     * `supersede` is for the explicit connect() path, which has just called
+     * disconnect() and therefore genuinely wants a fresh sweep against the
+     * CURRENT node list — inheriting a sweep that started under the old list
+     * could land it on a node the caller just replaced.
+     */
+    function startConnect(supersede: boolean = false): Promise<void> {
+        if (!supersede && connectInFlight) return connectInFlight;
+        const attempt: Promise<void> = tryConnect();
+        connectInFlight = attempt;
+        // Swallow on the tracking copy only: callers still see the rejection via
+        // the returned promise, and this keeps the stored handle from ever
+        // becoming an unhandled rejection.
+        attempt.catch(() => {}).finally(() => {
+            if (connectInFlight === attempt) connectInFlight = null;
+        });
+        return attempt;
+    }
+
     async function connect(servers?: string[], autoReconnect = false): Promise<void> {
         if (Array.isArray(servers)) {
             nodeList = servers.filter(s => s && typeof s === 'string');
@@ -540,7 +567,7 @@ function createTransport(config: TransportConfig = {}) {
         disconnect();
         autoreconnect = autoReconnect;
         intentionalClose = false;
-        await tryConnect();
+        await startConnect(true);
     }
 
     function disconnect(): void {
@@ -568,6 +595,70 @@ function createTransport(config: TransportConfig = {}) {
         connectingSockets.clear();
         nodeUrl = null;
         setStatus('closed');
+    }
+
+    /**
+     * Force a reconnect on the active connection, preferring a different node.
+     *
+     * The normal close/keep-alive paths only observe a *socket* failure. A
+     * wedged login session (e.g. cached api ids rejected with
+     * `_local_apis.size() > api_id` after a server-side session swap) leaves
+     * the socket open while every namespaced RPC fails, so nothing ever tears
+     * it down. This reports the active node as failed (so shouldSkipNode /
+     * the failure ledger deprioritizes it) and closes the socket with
+     * autoreconnect armed, letting the reconnect land on a healthy node.
+     *
+     * No-op when there is no active socket.
+     * @param {string} reason - Human-readable trigger for logs/metrics
+     */
+    function forceReconnect(reason: string = 'forced'): void {
+        if (!ws || !nodeUrl) return;
+        const failedNode = nodeUrl;
+        const oldSocket = ws;
+        // A forced reconnect is a fresh connection attempt, not a continuation
+        // of the backoff from a prior failure, so it must count as a reconnect
+        // (attempt > 0) for _onConnected to fire onReconnect (subscription
+        // re-establishment + post-reconnect safety-net sync).
+        //
+        // Math.max, not `= 1`: never lower an attempt count that is already
+        // elevated, only guarantee it is at least 1.
+        //
+        // NOTE: today this is an invariant guard rather than a behavior change.
+        // forceReconnect() is a no-op unless a socket is live, and the first
+        // failed reconnect attempt nulls `ws`, so it can only ever run right
+        // after _onConnected reset the counter to 0 — where Math.max(x, 1) and
+        // `= 1` are identical. It matters only if cleanup()/attemptConnect ever
+        // stop nulling `ws`, which would make a forced reconnect land mid-backoff
+        // and clamp the exponential growth back to the minimum delay.
+        reconnectAttempts = Math.max(reconnectAttempts, 1);
+        autoreconnect = true;
+        intentionalClose = false;
+        // Report once here; the teardown below detaches the old close handler so
+        // the node is never double-struck for this event.
+        notifyNodeFailure(failedNode, `forced reconnect: ${reason}`, 'forced-reconnect');
+        transportLogger.warn(`Forcing reconnect on ${failedNode} (${reason})`);
+
+        // Tear down synchronously instead of waiting for the close handshake:
+        // an unresponsive peer may never send its close frame, which is exactly
+        // the wedged-session case this recovery exists for. Detach onclose first
+        // so our own close() cannot schedule a second, duplicate reconnect.
+        oldSocket.onclose = null;
+        // A pending reconnectTimer is ours to clear (it would open a second
+        // socket). A timer that already fired is null and its sweep is tracked
+        // by connectInFlight, so startConnect below coalesces onto it instead of
+        // racing it.
+        if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+        }
+        cleanup();
+        try { oldSocket.close(); } catch (_: any) {}
+        ws = null;
+        setStatus('closed');
+
+        // Re-establish on the next preferred (non-failed) node. If this attempt
+        // fails, fall back to the normal backoff.
+        startConnect().catch(() => scheduleReconnect());
     }
 
     function call(method: string, params: any[], timeoutMs: number = rpcTimeoutMs): Promise<any> {
@@ -628,6 +719,7 @@ function createTransport(config: TransportConfig = {}) {
     return {
         connect,
         disconnect,
+        forceReconnect,
         call,
         addMessageHandler,
         getStatus,

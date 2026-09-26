@@ -14,7 +14,7 @@ trade, assuming you are new to BitShares and the Linux terminal:
 
 **Prerequisite:** DEXBot2 is installed. See the "Installation" section of the
 root [README](../README.md#-installation) for installation options
-(`npm i -g dexbot` or clone + `npm install`).
+(`npm i -g dexbot` or clone + `npm install` + `npm link`).
 
 ---
 
@@ -39,10 +39,10 @@ for the full vision.
   external asset through on-chain price feeds and is collateralized by BTS.
   Trading it works like any other pair — the price feeds just keep it pegged.
 - A **peer-to-peer (P2P) credit system** — on-chain lending between accounts,
-  with no bank or broker in the middle. Lenders offer assets at interest
-  through **credit offers**; borrowers pledge collateral to borrow and repay
-  (or auto-repay) on expiry. DEXBot2 can borrow MPAs and take credit offers for
-  you — see [MPA and Credit Usage](MPA_CREDIT_USAGE.md#which-section-do-i-need).
+  no bank or broker in the middle. Lenders offer assets at interest through **credit
+  offers**; borrowers pledge collateral and repay (or auto-repay) on expiry.
+  DEXBot2 can borrow MPAs and take credit offers for you — see
+  [MPA and Credit Usage](MPA_CREDIT_USAGE.md#which-section-do-i-need).
 
 DEXBot2 is a **grid trading bot** for these pairs: it places a ladder of buy
 and sell orders around a reference price and profits as price oscillates
@@ -55,8 +55,8 @@ through the grid.
 ### 2.1 Register an account
 
 DEXBot2 does **not** create accounts — the account must exist on-chain before
-the bot can resolve it. Registration is the same on-chain operation from any
-wallet, so pick whichever UI suits you:
+the bot can resolve it. Any wallet can register one; pick whichever UI suits
+you:
 
 1. Open one of the account-creation pages and choose to create a new account:
    - **bts.exchange (hosted BitShares UI)** —
@@ -67,10 +67,10 @@ wallet, so pick whichever UI suits you:
      email or SMS verification; a secret phrase is shown once, so save it.
 2. Pick an account name. It must be globally unique and consist of lowercase
    letters, digits, and dashes (e.g. `my-grid-bot`).
-3. Registration costs a small fee in BTS. With **XBTS DEX** the exchange pays
-   the blockchain registration fee for you, so signup is effectively free. If
-   you become a **Lifetime Member (LTM)** you save 80% on all blockchain fees
-   and can register **premium (short) account names**.
+3. Registration costs a small BTS fee; with **XBTS DEX** the exchange pays it
+   for you, so signup is effectively free. Becoming a **Lifetime Member (LTM)**
+   saves 80% on all blockchain fees and allows registering **premium (short)
+   account names**.
 4. Save the **master password / secret phrase / backup** in a safe place. It is
    the only way to recover or export your keys.
 
@@ -93,10 +93,10 @@ with.
 
 ### 2.3 Gateways and supported assets
 
-On-chain assets come from two sources: **gateways** issue assets that represent
-real coins from other blockchains, and **market-pegged assets (MPAs)** are
-backed by BTS collateral and tracked to an external reference by on-chain price
-feeds. The main gateway operators are:
+Two sources of on-chain assets: **gateways** issue assets representing real
+coins from other blockchains, and **market-pegged assets (MPAs)** are backed by
+BTS collateral and tracked to an external reference by on-chain price feeds.
+The main gateway operators are:
 
 #### ioxbank — [https://www.ioxbank.com/](https://www.ioxbank.com/)
 
@@ -150,10 +150,9 @@ maintenance collateral ratio, and feed behavior.
 
 #### Classic bitAssets (MPA)
 
-The original BitShares market-pegged assets, defined in the core genesis
-([bitshares-core](https://github.com/bitshares/bitshares-core) genesis) and
-still the reference MPA set on the network. Same mechanics as HONEST.Assets:
-BTS-collateralized, tracked to an external reference by on-chain price feeds.
+The original BitShares MPAs from the core genesis
+([bitshares-core](https://github.com/bitshares/bitshares-core)) — still the
+reference MPA set on the network. Same mechanics as HONEST.Assets:
 
 | bitAsset | Tracks | bitAsset | Tracks |
 | :--- | :--- | :--- | :--- |
@@ -167,8 +166,8 @@ BTS-collateralized, tracked to an external reference by on-chain price feeds.
 | bitCAD | Canadian dollar | bitAUD | Australian dollar |
 | bitCHF | Swiss franc | bitNZD | New Zealand dollar |
 
-Trading bitAssets works like any other pair — e.g. `bitUSD / BTS` — and they
-can be borrowed/shorted with a collateral position just like the HONEST set.
+Trade them like any other pair (e.g. `bitUSD / BTS`); borrowable/shortable with
+a collateral position just like the HONEST set.
 
 ---
 
@@ -215,11 +214,11 @@ The easiest way to get the **active** private key (WIF) is the reference wallet
 > the **key icon** next to the active key → in the popup click **show** → enter
 > your wallet password → the WIF private key is displayed.
 
-Other wallets either hide the key behind encryption (trade.xbts.io, BeetVault)
-or keep keys in a connected wallet app (Astro UI). In those cases the fallback
-is always your **master password / secret phrase**: the active key is
-deterministically derived from it and can be regenerated in any wallet that
-supports password login — most conveniently in bts.exchange.
+Other wallets hide the key behind encryption (trade.xbts.io, BeetVault) or a
+connected wallet app (Astro UI). Fallback in all cases: the **master password /
+secret phrase** — the active key is deterministically derived from it and can
+be regenerated in any wallet that supports password login, most conveniently
+in bts.exchange.
 
 ---
 
@@ -262,14 +261,15 @@ Key answers for your first bot:
 - **startPrice** — leave the default (`"pool"` reads the liquidity-pool price,
   `"book"` reads the order-book mid price, or a number for a fixed anchor). If
   your pair has no native pool, set **poolRef** to a pool id such as `1.19.48`.
+- **Active / Dry run / adapter flags** — boolean prompts accept `y`, `yes`, or
+  `true` and `n`, `no`, or `false`; Enter keeps the shown default.
 
 Keep all other defaults — they are sensible. Prefer **relative values** where
 possible: dynamic price sources like `"pool"` / `"book"` for `startPrice`,
 `"ama"` for `gridPrice`, `"2x"`-style multipliers for `minPrice` / `maxPrice`,
-and `"100%"`-style percentages for funds (`botFunds`). Relative values rescale
-automatically as the market moves; fixed numbers do not. The bot editor
-highlights these inputs live: **green** = relative/dynamic (recommended),
-**red** = fixed absolute value.
+and percentage funds (`botFunds`) — they rescale automatically as the market
+moves; fixed numbers do not. The editor highlights this live: **green** =
+relative/dynamic (recommended), **red** = fixed absolute value.
 
 The only things worth tuning later:
 
@@ -279,17 +279,14 @@ The only things worth tuning later:
   more grid levels and smaller orders, larger increments fewer levels and
   larger orders. Smaller increments cycle faster — higher profits, but more
   fees.
-- `weightDistribution` — advanced order sizing per side (`{ "sell": …,
-  "buy": … }`, range `-1` to `2`). Higher weight puts more funds in orders
-  near the market price; lower weight shifts funds toward the grid edge.
-  `-1` = super-valley, `0` = valley, `0.5` = neutral, `1` = mountain
-  (default), `2` = super-mountain — the bot editor shows this scale live.
-  Leave it at the default `{ "sell": 1.0, "buy": 1.0 }` for your first bot.
+- `weightDistribution` — advanced order sizing per side
+  (`{ "sell": …, "buy": … }`, range `-1`–`2`): higher = more funds in orders
+  near the market price, lower = shifted toward the grid edge. `-1` =
+  super-valley, `0` = valley, `0.5` = neutral, `1` = mountain (default),
+  `2` = super-mountain — shown live in the editor. Leave the default
+  `{ "sell": 1.0, "buy": 1.0 }` for your first bot.
 - `minPrice` / `maxPrice` — grid bounds. Once AMA is active, tighten them
   around the market's maximum expected volatility instead of a wide range.
-- `gridPrice` — set it to `"ama"` so the market adapter centers the grid on the
-  AMA signal (`"ama"` uses the pair's default preset; `"ama1"`–`"ama4"` pin a
-  specific one, fastest to slowest).
 
 See the "Recommended Bot Setup" section of the
 [README](../README.md#recommended-bot-setup).
@@ -310,16 +307,23 @@ saves, so you always know whether anything else is needed.
 
 ### Activate the market adapter
 
-For AMA pricing, enable the market adapter once:
+New bots anchor on `gridPrice: "ama3"`, but AMA pricing only goes live once
+the per-bot adapter `Price` flag is on: run `dexbot bot`, choose
+`2) Modify bot`, pick the bot, then `6) Adapter` and set **Price** to yes
+(`y` / `yes` / `true` all count; Enter keeps the current value). Without it
+the adapter still computes state but live output stays in dry-run.
 
-```bash
-dexbot white
-```
+To change how closely the grid center tracks the market, set `gridPrice` in
+`3) Price`: `"ama1"` reacts fastest, `"ama4"` is the slowest and steadiest
+(higher numbers smooth more), and `"ama"` uses the pair's default preset.
 
-This writes `profiles/market_adapter_whitelist.json` for your AMA bot so it
-writes live grid files and recalc triggers. New entries enable AMA pricing only;
-range scaling stays disabled unless you opt in with `dexbot white --asymmetric-bounds`.
-DEXBot2 starts/stops the adapter automatically when active AMA bots exist.
+The three flags are stored per bot in `profiles/market_adapter_whitelist.json`:
+
+- **Price** — live grid files and recalc triggers (`ama: true`)
+- **Weight** — dynamic buy/sell weights (opt-in)
+- **Range** — range scaling (opt-in; stays off until enabled here)
+
+The adapter is started/stopped automatically when active AMA bots exist.
 
 ---
 
@@ -373,6 +377,78 @@ Stop the runtime with `dexbot stop`. `dexbot restart` restarts it.
 ---
 
 ## Troubleshooting first-run mistakes
+
+### "`npm link` says permission denied / `EACCES`"
+
+Don't use `sudo npm link` — it creates root-owned files that break later
+builds and runs. With a user-owned Node (nvm, Homebrew) `npm link` needs no
+root. Check first:
+
+```bash
+which node npm       # both should point at your user install
+npm prefix -g        # must be a directory you own
+```
+
+- **System Node (`/usr/bin`, `/usr/local/bin`)?** Redirect npm to your home
+  directory instead of using `sudo`:
+
+  ```bash
+  mkdir -p ~/.npm-global
+  npm config set prefix ~/.npm-global
+  # add ~/.npm-global/bin to PATH, then re-open the shell
+  ```
+
+  Packages installed before the redirect stay in the old prefix — reinstall
+  what you need (`npm i -g dexbot`) and check `which dexbot` points under
+  `~/.npm-global`.
+
+- **Already ran `sudo npm link`?** Undo it and relink as yourself:
+
+  ```bash
+  sudo npm unlink -g dexbot
+  sudo chown -R "$(whoami)" <path-to-your-DEXBot2-checkout>
+  cd <path-to-your-DEXBot2-checkout>
+  npm install && npm link
+  ```
+
+Check with `dexbot --help`.
+
+### "npm says it blocked dexbot's install scripts (`prepare` / `postinstall`)"
+
+npm 12+ no longer runs lifecycle scripts of installed packages unless they
+are allowlisted (supply-chain hardening,
+[npm/rfcs#868](https://github.com/npm/rfcs/blob/master/text/0868-allow-scripts.md)).
+You'll see `npm warn install-scripts ... blocked` listing dexbot's
+`postinstall` and `prepare`. It shows up with `npm link` because link adds
+your checkout to the **global** install tree as a `file:` dependency — npm
+treats it like any third-party package and blocks its scripts. The warning's
+own advice (`npm install-scripts ls` / `approve`) is a dead end here: in your
+project the checkout is the project root, which npm deliberately never lists
+or approves. Don't chase it.
+
+A plain `npm install` is **not** gated — it runs the project's own `prepare`
+directly, so the correct from-source order is:
+
+```bash
+cd <path-to-your-DEXBot2-checkout>
+npm install      # runs prepare → builds dist/
+npm link         # a blocked prepare here is harmless
+```
+
+If you skipped the install (or want to be sure), run `npm run build`. Bins
+are never gated, so once `dist/` exists the linked `dexbot` works. The
+blocked `postinstall` is only the "DEXBot2 installed!" banner — cosmetic;
+`npm i -g dexbot` may warn about the same banner and that's harmless too
+(the published package ships prebuilt).
+
+### "`Unknown command: dexbot` right after installing/linking"
+
+- **The link or build silently failed** — see the two entries above.
+  `which dexbot` must point into a directory you own (not `/usr/bin` or
+  `/usr/local/bin`).
+- **The shell hasn't noticed the new command yet.** Open a fresh shell
+  (`exec fish`, `exec bash`, or reopen the terminal), or run `hash -r` in
+  bash.
 
 ### "I imported my key but the bot's orders are rejected"
 

@@ -73,7 +73,7 @@
  */
 
 
-import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT, COW_PERFORMANCE, COW_ACTIONS, DEFAULT_CONFIG } from '../../constants.js';
+import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT, COW_PERFORMANCE, COW_ACTIONS, DEFAULT_CONFIG, FILL_PROCESSING } from '../../constants.js';
 import * as Format from '../format.js';
 import * as MathUtils from './math.js';
 import Logger from '../../order/logger.js';
@@ -235,9 +235,26 @@ function _stampCorrectionProvenance(entry: any, source: string): any {
 }
 
 /**
- * Drain-time staleness validation for a price-update correction entry
- * (Fix 1): verify the queued intent still matches the LIVE grid geometry
- * before broadcasting.
+ * Find the live grid slot that currently owns a chain order.
+ * When slotId is supplied, only that exact slot is considered; otherwise all
+ * live slots are searched. This keeps stale-decision guards consistent without
+ * changing which owner is considered valid.
+ */
+function findLiveOrderOwnerByChainId(manager: any, chainOrderId: any, slotId?: any): any | null {
+    if (!(manager?.orders instanceof Map) || !chainOrderId) return null;
+    if (slotId) {
+        const slot = manager.orders.get(slotId);
+        return slot?.orderId === chainOrderId && isOrderPlaced(slot) ? slot : null;
+    }
+    for (const order of manager.orders.values()) {
+        if (order?.orderId === chainOrderId && isOrderPlaced(order)) return order;
+    }
+    return null;
+}
+
+/**
+ * Drain-time staleness validation for a correction entry: verify the queued
+ * intent still matches the LIVE grid geometry before broadcasting.
  *
  * A correction entry snapshots {slot id, chainOrderId, expectedPrice} at
  * queue time. Any geometry-changing resync (trigger-file resync,
@@ -255,18 +272,60 @@ function _stampCorrectionProvenance(entry: any, source: string): any {
  *      uses) or calculatePriceTolerance on legacy grids (same predicate
  *      the detector uses there).
  *
- * Cancel-type entries (cancelOnly / isSurplus) are exempt — a cancel is
- * idempotent (gone orders resolve via the orderGone path) and never
- * re-prices onto a stale level.
+ * Cancel-only duplicate-orphan decisions need an ownership check. They are
+ * queued when a chain order has no matching grid slot, but startup reconcile
+ * can subsequently relocate that same chain id into an empty valid slot. A
+ * replayed cancel would then destroy the freshly updated in-place order.
+ *
+ * Type-mismatch and gap-evacuation surplus decisions have their own source-
+ * specific checks. A type mismatch is actionable only while the same live
+ * slot still owns the id and still has the mismatched type. A gap evacuation
+ * is actionable only while the same live slot remains in the current gap
+ * band. Both otherwise use the old cancellation branch, so allowing either
+ * decision to replay would recreate the same stale-replay regression.
  *
  * @param {Object} manager - OrderManager instance (live grid + assets)
  * @param {Object} entry - Queued correction entry
  * @returns {{valid: boolean, reason: string}} valid=false drops the entry
  */
 function _validatePriceCorrectionEntry(manager: any, entry: any): { valid: boolean; reason: string } {
-    if (!entry || entry.cancelOnly === true || entry.isSurplus === true) {
-        return { valid: true, reason: 'cancel-type' };
+    if (!entry) return { valid: false, reason: 'missing correction entry' };
+    if (entry.cancelOnly === true) {
+        const owningSlot = findLiveOrderOwnerByChainId(manager, entry.chainOrderId);
+        if (owningSlot) {
+            return {
+                valid: false,
+                reason: `chain order is now owned by ${owningSlot.id || 'a live grid slot'}; queued duplicate-orphan cancel is stale`,
+            };
+        }
+        return { valid: true, reason: 'cancel-only-untracked' };
     }
+    if (entry.typeMismatch === true) {
+        const targetType = entry.sideUpdated || entry.type;
+        const slotId = entry?.gridOrder?.id;
+        const slot = findLiveOrderOwnerByChainId(manager, entry.chainOrderId, slotId);
+        if (!slot) {
+            return { valid: false, reason: `type-mismatch target ${slotId || '?'} no longer owns ${entry.chainOrderId}` };
+        }
+        if (!targetType || slot.type === targetType) {
+            return { valid: false, reason: `type-mismatch for ${entry.chainOrderId} was repaired (${slot.type} now matches ${targetType || 'chain type'})` };
+        }
+        return { valid: true, reason: 'type-mismatch-still-live' };
+    }
+    if (entry.gapEvacuation === true) {
+        const slotId = entry?.gridOrder?.id;
+        const slot = findLiveOrderOwnerByChainId(manager, entry.chainOrderId, slotId);
+        if (!slot) {
+            return { valid: false, reason: `gap-evacuation target ${slotId || '?'} no longer owns ${entry.chainOrderId}` };
+        }
+        const idx = parseSlotIndex(slot.id);
+        const geometry = geometryTypeForSlotIndex(idx, manager?.boundaryIdx, manager?._gapSlots);
+        if (geometry !== ORDER_TYPES.SPREAD) {
+            return { valid: false, reason: `gap-evacuation target ${slotId} is no longer in the current gap band` };
+        }
+        return { valid: true, reason: 'gap-evacuation-still-live' };
+    }
+    if (entry.isSurplus === true) return { valid: true, reason: 'surplus-cancel' };
     const slotId = entry?.gridOrder?.id;
     const slot = (slotId && manager?.orders instanceof Map) ? manager.orders.get(slotId) : null;
     if (!slot) {
@@ -493,6 +552,13 @@ function buildFillKey(fillOrParts: any) {
     return `${orderId}:${blockNum}:${historyId}`;
 }
 
+function _currentCorrectionGridOrder(manager: any, correctionInfo: any): any | null {
+    const slotId = correctionInfo?.gridOrder?.id;
+    if (!slotId || !(manager?.orders instanceof Map)) return null;
+    const liveSlot = manager.orders.get(slotId);
+    return liveSlot?.orderId === correctionInfo?.chainOrderId ? liveSlot : null;
+}
+
 /**
  * Record a fresh on-chain placement timestamp for surplus-cancel grace.
  * Called when a slot gains a chain orderId it did not have before (create,
@@ -540,6 +606,7 @@ function isFreshlyPlacedOrder(manager: any, chainOrderId: string | null | undefi
  * Cancels surplus orders; updates price for others.
  * Removes from correction queue after processing.
  * 
+ * Surplus settlement is skipped when the live slot no longer owns the chain order; the next sync's pass-1 phantom cleanup virtualizes that slot.
  * @param {Object} manager - OrderManager instance
  * @param {Object} correctionInfo - Correction details {gridOrder, chainOrderId, expectedPrice, size, type, isSurplus}
  * @param {string} accountName - Account name for blockchain transaction
@@ -598,8 +665,9 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
             const sideLabel = type === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
             manager.logger?.log?.(`[CORRECTION] Cancelling surplus/mismatched ${sideLabel} order ${chainOrderId} for slot ${gridOrder?.id || 'unknown'}`, 'info');
             await accountOrders.cancelOrder(accountName, privateKey, chainOrderId);
-            if (gridOrder && manager._applyOrderUpdate) {
-                const spreadOrder = convertToSpreadPlaceholder(gridOrder);
+            const settlementGridOrder = _currentCorrectionGridOrder(manager, correctionInfo);
+            if (settlementGridOrder && manager._applyOrderUpdate) {
+                const spreadOrder = convertToSpreadPlaceholder(settlementGridOrder);
                 await manager._applyOrderUpdate(spreadOrder, 'surplus-type-mismatch-cancel', {
                     skipAccounting: false,
                     fee: 0
@@ -713,8 +781,11 @@ async function _resolveCancelledCorrection(manager: any, entry: any): Promise<vo
     if (entry.cancelOnly) {
         clearDuplicateOrphanDetection(chainOrderId);
     }
-    if (!entry.cancelOnly && entry.isSurplus && entry.gridOrder && manager._applyOrderUpdate) {
-        const spreadOrder = convertToSpreadPlaceholder(entry.gridOrder);
+    const settlementGridOrder = !entry.cancelOnly && entry.isSurplus
+        ? _currentCorrectionGridOrder(manager, entry)
+        : null;
+    if (settlementGridOrder && manager._applyOrderUpdate) {
+        const spreadOrder = convertToSpreadPlaceholder(settlementGridOrder);
         await manager._applyOrderUpdate(spreadOrder, 'surplus-type-mismatch-cancel', {
             skipAccounting: false,
             fee: 0
@@ -852,6 +923,69 @@ async function _batchCancelCorrections(manager: any, entries: any[], accountName
 }
 
 /**
+ * Resolve the wall-clock budget for the sequential price-update drain in
+ * correctAllPriceMismatches. Cancel-class entries are never budgeted; only
+ * the SYNC_DELAY_MS-spaced update loop is bounded, so an unbounded backlog
+ * cannot hold _gridLock (no acquisition timeout) for minutes. Reads the bot
+ * config override first, then the frozen default. Non-finite/non-positive
+ * falls back to the frozen default, then to 4000ms.
+ * @param {any} manager
+ * @returns {number} Positive hold budget in milliseconds
+ */
+function resolveCorrectionHoldBudget(manager: any): number {
+    const raw = manager?.config?.fillProcessing?.CORRECTION_LOCK_HOLD_BUDGET_MS
+        ?? (FILL_PROCESSING as any)?.CORRECTION_LOCK_HOLD_BUDGET_MS;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+    return 4000;
+}
+
+/**
+ * Resolve the optional hard cap on price updates drained per cycle. Layered
+ * on top of the hold-time budget: unset (null/undefined/non-finite) means no
+ * count cap and the elapsed-time budget alone governs; a finite value >= 0 is
+ * honored verbatim (0 intentionally drains no updates this cycle).
+ * @param {any} manager
+ * @returns {number} Finite cap, or Infinity when uncapped
+ */
+function resolveCorrectionMaxUpdates(manager: any): number {
+    const raw = manager?.config?.fillProcessing?.CORRECTION_MAX_UPDATES_PER_CYCLE
+        ?? (FILL_PROCESSING as any)?.CORRECTION_MAX_UPDATES_PER_CYCLE;
+    if (raw == null) return Infinity;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+    return Infinity;
+}
+
+/**
+ * Resolve the correction-backlog warn threshold (see
+ * CORRECTION_QUEUE_WARN_THRESHOLD). Non-positive disables the alarm.
+ * @param {any} manager
+ * @returns {number}
+ */
+function resolveCorrectionWarnThreshold(manager: any): number {
+    const raw = manager?.config?.fillProcessing?.CORRECTION_QUEUE_WARN_THRESHOLD
+        ?? (FILL_PROCESSING as any)?.CORRECTION_QUEUE_WARN_THRESHOLD;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+    return 0;
+}
+
+/**
+ * Resolve the correction-backlog warn rate-limit window.
+ * @param {any} manager
+ * @returns {number}
+ */
+function resolveCorrectionWarnRateLimitMs(manager: any): number {
+    const raw = manager?.config?.fillProcessing?.CORRECTION_QUEUE_WARN_RATE_LIMIT_MS
+        ?? (FILL_PROCESSING as any)?.CORRECTION_QUEUE_WARN_RATE_LIMIT_MS
+        ?? TIMING?.STALE_TOTALS_WARN_RATE_LIMIT_MS;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+    return 5 * 60 * 1000;
+}
+
+/**
  * Correct all pending price mismatches atomically.
  * Cancel-type corrections (duplicate orphans, surplus) are batched into
  * chunked multi-op transactions; price updates run sequentially.
@@ -864,6 +998,39 @@ async function _batchCancelCorrections(manager: any, entries: any[], accountName
  */
 async function correctAllPriceMismatches(manager: any, accountName: any, privateKey: any, accountOrders: any) {
     if (!manager || !manager._gridLock) return { corrected: 0, failed: 0, results: [] };
+
+    // 6b: backlog alarm (rate-limited). Emitted even when the drain defers
+    // below, because deferral is exactly when the queue is growing.
+    const queuedBefore = Array.isArray(manager.ordersNeedingPriceCorrection)
+        ? manager.ordersNeedingPriceCorrection.length
+        : 0;
+    const warnThreshold = resolveCorrectionWarnThreshold(manager);
+    if (warnThreshold > 0 && queuedBefore >= warnThreshold) {
+        const now = Date.now();
+        const warnRateLimitMs = resolveCorrectionWarnRateLimitMs(manager);
+        const lastWarn = Number(manager._correctionQueueWarnAt) || 0;
+        if (now - lastWarn >= warnRateLimitMs) {
+            manager._correctionQueueWarnAt = now;
+            manager?.logger?.log?.(
+                `[CORRECTION] Backlog: ${queuedBefore} pending correction(s) (threshold ${warnThreshold}); ` +
+                `draining budgeted price updates per cycle so _gridLock is not held across a long drain`,
+                'warn'
+            );
+        }
+    }
+
+    // 7a: pre-acquire deferral. _gridLock has NO acquisition timeout, so
+    // taking it while a broadcast/placement region is active holds it across
+    // the region and starves every concurrent per-op lock acquisition (the
+    // broadcaster's own _applySync/cancel calls). Leave corrections queued —
+    // the next sync / maintenance tick drains them once the region ends.
+    if (manager.isBroadcastingActive?.() === true) {
+        manager?.logger?.log?.(
+            `[CORRECTION] Drain deferred: broadcast/placement region active; ${queuedBefore} correction(s) stay queued`,
+            'debug'
+        );
+        return { corrected: 0, failed: 0, results: [], staleDropped: 0, deferred: true, reason: 'broadcast-active' };
+    }
 
     return await manager._gridLock.acquire(async () => {
         const results: any[] = [];
@@ -881,13 +1048,12 @@ async function correctAllPriceMismatches(manager: any, accountName: any, private
             return true;
         });
 
-        // Fix 1 — drain-time staleness validation for price-update entries:
-        // a geometry-changing resync between queue and drain leaves entries
-        // whose slot was re-slotted or re-priced. Broadcasting them would
-        // revert the resync's placement (duplicate-price-level incident).
-        // Validate against the LIVE slot; drop stale entries (the next sync
-        // re-queues if the order is genuinely still off-target). Cancel-type
-        // entries are exempt (idempotent, never re-price).
+        // Drain-time staleness validation: a geometry-changing resync between
+        // queue and drain can re-slot/re-price UPDATEs or adopt a previously
+        // untracked chain order. Drop stale price updates before they revert
+        // the resync, and stale cancel-only decisions before they cancel a
+        // freshly relocated in-place order. The next sync re-queues if the
+        // order is genuinely still off-target.
         const liveEntries: any[] = [];
         for (const entry of ordersToCorrect) {
             const check = _validatePriceCorrectionEntry(manager, entry);
@@ -896,37 +1062,73 @@ async function correctAllPriceMismatches(manager: any, accountName: any, private
                 continue;
             }
             _removeCorrectionEntry(manager, entry.chainOrderId, entry?.isSurplus);
+            if (entry?.cancelOnly === true) clearDuplicateOrphanDetection(entry.chainOrderId);
+            if (entry?.cancelOnly === true || entry?.isSurplus === true) {
+                _filterUnmatchedChainOrders(manager, entry.chainOrderId);
+            }
+            if (entry?.gapEvacuation === true && manager?._gapEvacCancelQueued instanceof Set && entry?.gridOrder?.id) {
+                manager._gapEvacCancelQueued.delete(entry.gridOrder.id);
+            }
             staleDropped++;
             results.push({ ...entry, result: { success: true, skipped: true, staleDropped: true, staleReason: check.reason } });
+            const correctionKind = (entry?.cancelOnly === true || entry?.isSurplus === true) ? 'cancel' : 'price';
             manager?.logger?.log?.(
-                `[CORRECTION] Dropping stale price correction for ${entry.chainOrderId} ` +
+                `[CORRECTION] Dropping stale ${correctionKind} correction for ${entry.chainOrderId} ` +
                 `(queued ${entry.queuedBy || 'unknown-source'}@${entry.queuedAt ? new Date(entry.queuedAt).toISOString() : 'unknown-time'}): ` +
                 `${check.reason}; re-queued by next sync if still off-target`,
                 'info'
             );
         }
 
-        const canBatch = liveEntries.length > 1
+        // 6a: cancel-class entries are always fully drained (batched, no
+        // inter-op delay, fund-safety-critical). Only the SYNC_DELAY_MS-spaced
+        // price-update loop is budgeted; the unselected remainder stays queued
+        // durably and re-drains next cycle.
+        const cancelEntries = liveEntries.filter((c: any) => c.cancelOnly === true || c.isSurplus === true);
+        const updateEntries = liveEntries.filter((c: any) => !(c.cancelOnly === true || c.isSurplus === true));
+
+        const canBatch = cancelEntries.length > 1
             && typeof accountOrders?.buildCancelOrderOp === 'function'
             && typeof accountOrders?.executeBatch === 'function';
-        let serialEntries = liveEntries;
+        let serialCancels: any[] = cancelEntries;
         if (canBatch) {
-            const cancelEntries = liveEntries.filter((c: any) => c.cancelOnly === true || c.isSurplus === true);
-            const updateEntries = liveEntries.filter((c: any) => !(c.cancelOnly === true || c.isSurplus === true));
-            if (cancelEntries.length > 1) {
-                const batchOutcome = await _batchCancelCorrections(
-                    manager, cancelEntries, accountName, privateKey, accountOrders
-                );
-                corrected += batchOutcome.corrected;
-                failed += batchOutcome.failed;
-                serialEntries = [...batchOutcome.unresolved, ...updateEntries];
-            }
+            const batchOutcome = await _batchCancelCorrections(
+                manager, cancelEntries, accountName, privateKey, accountOrders
+            );
+            corrected += batchOutcome.corrected;
+            failed += batchOutcome.failed;
+            // Unresolved cancels still serialize (they must not be dropped).
+            serialCancels = batchOutcome.unresolved;
         }
 
-        for (const correctionInfo of serialEntries) {
+        for (const correctionInfo of serialCancels) {
             const result = await correctOrderPriceOnChain(manager, correctionInfo, accountName, privateKey, accountOrders);
             results.push({ ...correctionInfo, result });
             if (result && result.success) corrected++; else failed++;
+            await sleep(TIMING.SYNC_DELAY_MS);
+        }
+
+        // Price updates are bounded by wall-clock lock-hold budget (primary)
+        // plus an optional hard count cap. The window opens *after* cancels so
+        // fund-critical cancels are never delayed by the update budget, and it
+        // is measured from the clock rather than a fixed count so a slow chain
+        // (large RPC round-trip) drains fewer updates instead of holding
+        // _gridLock past the 20s fill-lock timeout. Leftovers stay queued in
+        // order for the next cycle.
+        const holdBudgetMs = resolveCorrectionHoldBudget(manager);
+        const maxUpdates = resolveCorrectionMaxUpdates(manager);
+        const updateDeadline = Date.now() + holdBudgetMs;
+        let updatesProcessed = 0;
+        let deferredUpdates = 0;
+        for (const correctionInfo of updateEntries) {
+            if (updatesProcessed >= maxUpdates || Date.now() >= updateDeadline) {
+                deferredUpdates++;
+                continue;
+            }
+            const result = await correctOrderPriceOnChain(manager, correctionInfo, accountName, privateKey, accountOrders);
+            results.push({ ...correctionInfo, result });
+            if (result && result.success) corrected++; else failed++;
+            updatesProcessed++;
             await sleep(TIMING.SYNC_DELAY_MS);
         }
         // Persist master grid mutations from surplus-type-mismatch cancellations.
@@ -936,7 +1138,18 @@ async function correctAllPriceMismatches(manager: any, accountName: any, private
         if (corrected > 0 && typeof manager.persistGrid === 'function') {
             await manager.persistGrid();
         }
-        return { corrected, failed, results, staleDropped };
+        if (deferredUpdates > 0) {
+            const queuedAfter = Array.isArray(manager.ordersNeedingPriceCorrection)
+                ? manager.ordersNeedingPriceCorrection.length
+                : 0;
+            manager?.logger?.log?.(
+                `[CORRECTION] Deferred ${deferredUpdates} price update(s) to the next cycle ` +
+                `(hold budget ${holdBudgetMs}ms${Number.isFinite(maxUpdates) ? `, cap ${maxUpdates}` : ''}, ` +
+                `${queuedAfter} still queued)`,
+                'info'
+            );
+        }
+        return { corrected, failed, results, staleDropped, deferredUpdates };
     });
 }
 
@@ -3260,8 +3473,8 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
 }
 
 // ================================================================================
-// Union: upstream refactor (+ liveWindowIdSet, correction provenance, grid
-// price invariant) + fork deep-shelf/grace exports.
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, _validatePriceCorrectionEntry, _stampCorrectionProvenance, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isNonBlockingUnmatchedOrder, isStrandedHoldOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isDeepShelfFillOrder, resolveDeepShelfFloor, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, _filterUnmatchedChainOrders, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds, reserveEdgeIdSet, liveWindowIdSet, checkGridPriceInvariant, reportGridPriceInvariant }
+// Union: upstream refactor (+ findLiveOrderOwnerByChainId, correction provenance,
+// grid price invariant, liveWindowIdSet) + fork deep-shelf/grace/orphan-count exports.
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, _validatePriceCorrectionEntry, _stampCorrectionProvenance, findLiveOrderOwnerByChainId, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isNonBlockingUnmatchedOrder, isStrandedHoldOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, getOrderSize, deriveTargetBoundary, isDeepShelfFillOrder, resolveDeepShelfFloor, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, _filterUnmatchedChainOrders, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds, reserveEdgeIdSet, liveWindowIdSet, checkGridPriceInvariant, reportGridPriceInvariant }
 export { resolveReserveEdgeAnchorPrice, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge, collectRefillSlotIds, recordOrderPlacement, isFreshlyPlacedOrder };
 

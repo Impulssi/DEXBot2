@@ -11,7 +11,7 @@ function toIntervalLabel(intervalSeconds: any) {
  * Filename-safe slug: lowercase, non-alphanumerics collapsed to a single
  * underscore, no leading/trailing underscores. Single home for the helper
  * previously copied into fetch_lp_data.ts, kibana_feed_source.ts,
- * fetch_book_data.ts and scripts/tv.ts.
+ * fetch_book_data.ts and scripts/chart_command.ts.
  */
 function slugPart(value: any) {
     return String(value || '')

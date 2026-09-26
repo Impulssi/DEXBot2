@@ -1,4 +1,9 @@
 process.env.DEXBOT_SKIP_PROFILE_VALIDATION = '1';
+// Keep this test hermetic: a dev checkout can hold real market_adapter/claw
+// state, and the explicit relocation notices would otherwise pollute the
+// captured warnings asserted below.
+process.env.DEXBOT_MARKET_ADAPTER_DATA_DIR = '/tmp/dexbot-test-dexbot-startup-ma';
+process.env.DEXBOT_CLAW_DATA_DIR = '/tmp/dexbot-test-dexbot-startup-claw';
 const assert = require('assert');
 const fs = require('fs');
 const { runEsmMockStages } = require('./helpers/esm_mocks');

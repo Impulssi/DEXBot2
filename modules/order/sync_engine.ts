@@ -877,23 +877,14 @@ class SyncEngine {
             }
         }
 
-        // Re-verify that all collected order IDs still exist in mgr.orders before
-        // locking. A concurrent createOrder/cancelOrder could have removed or
-        // modified an order between collection above and the lock call below.
-        // The _gridLock serializes the main reconciliation against _applyOrderUpdate,
-        // but this re-verification catches the window before _gridLock acquisition.
-        const validOrderIds = new Set<string>();
-        for (const id of orderIdsToLock) {
-            if (mgr.orders.has(id)) {
-                validOrderIds.add(id);
-            } else {
-                mgr.logger?.log?.(
-                    `[SYNC] Order ${id} disappeared between collection and locking; skipping`,
-                    'debug'
-                );
-            }
-        }
-        const orderIdsToLockFinal = [...validOrderIds];
+        // Collection and locking are synchronous (no await in between), so no
+        // order can disappear here — lock the whole collected set. Both slot
+        // ids and chain order ids are kept: they are aliases of the same order.
+        // The old re-verification validated chain ids with
+        // mgr.orders.has(chainId), which never matches (chain ids are values,
+        // not keys) and logged every placed order as "disappeared between
+        // collection and locking" (~40 false lines per sync).
+        const orderIdsToLockFinal = [...orderIdsToLock];
 
         const chainOrderIdsOnGrid = new Set<string>();
         const matchedGridOrderIds = new Set<string>();

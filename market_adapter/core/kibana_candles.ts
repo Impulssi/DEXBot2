@@ -436,5 +436,5 @@ async function fetchKibanaClosePrices(params: any) {
     return candles.map(([, , , , close]: any) => close);
 }
 
-export { buildDirectionalDocumentQuery, resolveRequestedFillRange, fetchKibanaCandles, fetchKibanaClosePrices, sourceFieldsForFieldMap, DEFAULT_CONFIG }
+export { buildDirectionalDocumentQuery, resolveRequestedFillRange, fetchKibanaCandles, fetchKibanaClosePrices, sourceFieldsForFieldMap }
 

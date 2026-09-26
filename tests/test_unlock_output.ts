@@ -304,8 +304,8 @@ async function runForegroundTest() {
     assert.strictEqual(state.calls.length, 1, 'foreground mode should spawn the bot process once');
     assert.deepStrictEqual(
         state.calls[0].args,
-        [DEXBOT_JS, 'test'],
-        'foreground mode should launch the shared dexbot entry point'
+        [DEXBOT_JS, 'worker'],
+        'foreground mode should launch the shared dexbot entry point as `worker`'
     );
     assert.strictEqual(state.calls[0].options.stdio, 'inherit', 'foreground bot output should go to the terminal');
     const countLine = `DEXBot2 started ${activeBotNames.length} ${activeBotNames.length === 1 ? 'bot' : 'bots'} in foreground`;

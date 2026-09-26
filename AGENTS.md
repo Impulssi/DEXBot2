@@ -18,7 +18,7 @@ Conventional prefix (`fix:`, `feat:`, `docs:`) + body explaining **why** for non
 
 ## Key Files
 - Entry: `dexbot.ts`, `bot.ts`, `pm2.ts`, `unlock.ts`, `credential-daemon.ts`
-- Core: `modules/dexbot_class.ts`, `modules/constants.ts`, `modules/fund_registry.ts`, `modules/settings_merge.ts`, `modules/credit_runtime.ts`, `modules/credit_pricing.ts`
+- Core: `modules/dexbot_class.ts`, `modules/constants.ts`, `modules/bot_defaults.ts`, `modules/fund_registry.ts`, `modules/settings_merge.ts`, `modules/credit_runtime.ts`, `modules/credit_pricing.ts`
 - Orders: `modules/order/manager.ts`, `strategy.ts`, `accounting.ts`, `sync_engine.ts`, `grid.ts`, `working_grid.ts`
 - Chain: `modules/chain_orders.ts`, `modules/account_orders.ts`, `modules/bitshares_client.ts`, `modules/node_manager.ts`
 - Config: `profiles/bots.json`, `profiles/general.settings.json` + `profiles/market_profiles.json` (auto-generated on first run)

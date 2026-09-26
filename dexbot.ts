@@ -41,52 +41,22 @@ const __dirname = _esmDirname(__filename);
  * CLI COMMANDS
  * ===============================================================================
  *
- * TRADING OPERATIONS:
- *   dexbot test <bot>             - Test-run single bot (live trading)
- *   dexbot drystart <bot>         - Start bot in dry-run mode (no transactions)
+ * `dexbot help` is the single source of truth (grouped one-liners below;
+ * `dexbot --cli-examples` prints curated snippets):
  *
- * 🛠️ BOT MANAGEMENT:
- *   dexbot reset all              - Reset all active bot grids (full regeneration)
- *   dexbot reset <bot>            - Reset bot grid (full regeneration)
- *   dexbot default                - Reset settings to defaults (deletes general.settings.json, market_profiles.json, market_adapter_settings.json)
- *   dexbot disable all            - Mark all bots inactive in config
- *   dexbot disable <bot>          - Mark bot inactive in config
- *   dexbot clear                  - Clear all log files in <profiles>/logs/
- *
- * CONFIGURATION:
- *   dexbot key                    - Set up master password and keyring
- *   dexbot bot                    - Interactive editor for bot definitions
- *
- * PM2 ORCHESTRATION:
- *   dexbot pm2                    - Start all bots via PM2 with daemon
- *   dexbot pm2 stop all           - Stop all PM2 bot processes
- *   dexbot pm2 stop <bot>         - Stop specific bot
- *   dexbot pm2 delete all         - Delete all bots from PM2
- *   dexbot pm2 delete <bot>       - Delete specific bot from PM2
- *   dexbot pm2 help               - Show PM2 command help
- *
- * STATUS:
- *   dexbot status                 - Show bot runtime status (unlock monolithic/isolated or PM2)
- *
- * MAINTENANCE:
- *   dexbot update                 - Update to latest version (pull + install + restart)
- *   dexbot stop                   - Stop the monolithic runtime
- *   dexbot reload                 - Reload the monolithic runtime (leaves credential daemon untouched)
- *   dexbot restart                - Restart the monolithic runtime (re-unlocks credential daemon)
- *   dexbot delete                 - Stop/delete all runtime processes
-  *   dexbot export <bot>           - Export trading history to CSV/JSON for local analysis/
- *   dexbot order                  - Analyze persisted order grids in profiles/orders/
- *   dexbot order [<bot>]          - Analyze only the specified bot's order grid
- *   dexbot order --export         - Export order analysis as standalone HTML report
- *   dexbot order [<bot>] --export - Export only the specified bot's analysis
- *   dexbot credit               - Show live summed MPA + borrowed-credit positions per asset per bot
- *   dexbot credit [<bot>]       - Show only the specified bot's positions
- *   dexbot tv <bot|pool|pair>   - TradingView chart: 1h candles, N months (default 3, --month N)
- *   dexbot help                   - Show this help message
+ * Runtime:   dexbot start [bot] | stop | reload | restart | delete | status
+ *            dexbot pm2 [stop|delete|restart|reload|claw-only|update|help]
+ * Trading:   dexbot test <bot> | drystart <bot> | reset {all|<bot>}
+ * Config:    dexbot bot | key | enable {all|<bot>} | disable {all|<bot>} | default | update
+ * Analysis:  dexbot order [<bot>] [--export] | export <bot> | credit [<bot>]
+ *            dexbot tv <target> | dw <target>
+ * Files:     dexbot clear | clear-orders | clear-market-adapter | clear-all
  *
  * NPM SCRIPTS (alternative invocation):
  *   npm run pm2:start                - Start bots (requires ecosystem.config.cjs pre-generated)
  *   npm run pm2:stop                 - Stop all PM2 bots
+ *   npm run pm2:unlock               - Run dist/pm2.js (authenticate + generate config + start all)
+ *   npm run pm2:claw-only            - Run dist/pm2.js claw-only
  *
  * ===============================================================================
  * CONFIGURATION
@@ -155,7 +125,8 @@ const {
     saveSettingsFile,
 } = require('./modules/bot_settings');
 const { buildRuntimeScriptArgs } = require('./modules/launcher/runtime_entry');
-const { PATHS, getHomeProfilesDir, getRecalculateTriggerFile } = require('./modules/paths');
+const { parseWorkerArgs, LAUNCHER_WORKER_COMMAND } = require('./modules/launcher/launch_modes');
+const { PATHS, getHomeProfilesDir, getRecalculateTriggerFile, printRelocationNotices } = require('./modules/paths');
 const credentialPolicy = require('./modules/credential_policy');
 const { Config } = require('./modules/config');
 const { getErrorMessage } = require('./modules/utils/errors');
@@ -179,12 +150,12 @@ if (typeof credentialPolicy.checkPolicyFileSecurity === 'function') credentialPo
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
 
-const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'tv', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'clear-holds', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'reload', 'help'];
+const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'tv', 'dw', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'clear-holds', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'reload', 'help'];
 const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'unlock', defaults: 'default', stp: 'stop', stopall: 'stop', restartall: 'restart', reloadall: 'reload' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
 const CLI_EXAMPLES = [
-    { title: 'Test-run a bot from the tracked config', command: 'dexbot test <bot>', notes: 'Targets the named entry in profiles/bots.json.' },
+    { title: 'Run a bot from the tracked config', command: 'dexbot test <bot>', notes: 'Runs live; targets the named entry in profiles/bots.json.' },
     { title: 'Dry-run a bot without broadcasting', command: 'dexbot drystart <bot>', notes: 'Forces the run into dry-run mode even if the stored config was live.' },
     { title: 'Disable a bot in config', command: 'dexbot disable <bot>', notes: 'Marks the bot inactive in config.' },
     { title: 'Enable a bot in config', command: 'dexbot enable <bot>', notes: 'Marks the bot active in config.' },
@@ -232,41 +203,56 @@ const cliArgs = process.argv.slice(2);
  * Show the CLI usage/help text when requested or upon invalid commands.
  */
 function printCLIUsage() {
+    // Grouped so the full command set stays scannable; descriptions are one line each
+    // and the description column is derived, so alignment never drifts.
+    const groups: Array<[string, Array<[string, string]>]> = [
+        ['Runtime', [
+            ['start [bot]', 'Start the monolithic runtime (--foreground, --isolated, --dryrun, --headless, claw-only, credit).'],
+            ['stop', 'Stop the monolithic runtime.'],
+            ['reload', 'Reload the monolithic runtime (leaves credential daemon untouched).'],
+            ['restart', 'Restart the monolithic runtime (re-unlocks credential daemon).'],
+            ['delete', 'Stop/delete all runtime processes.'],
+            ['status', 'Show bot runtime status (unlock monolithic/isolated or PM2).'],
+            ['pm2 [<sub>]', 'Start all active bots via PM2; also stop/restart/reload/delete (dexbot pm2 help).'],
+        ]],
+        ['Trading', [
+            ['test <bot>', 'Run the named bot live once (not a dry run).'],
+            ['drystart <bot>', 'Same as test but forced dry-run.'],
+            ['reset {all|<bot>}', 'Trigger grid reset(s); auto-reloads if running, else applies on next start.'],
+        ]],
+        ['Config', [
+            ['bot', 'Interactive bot configurator (bots.json).'],
+            ['key', 'Set up master password and keyring.'],
+            ['enable {all|<bot>}', 'Mark bot(s) active in config.'],
+            ['disable {all|<bot>}', 'Mark bot(s) inactive in config.'],
+            ['default', 'Reset settings to defaults (deletes generated settings files).'],
+            ['update', 'Update DEXBot2 from the repository and restart active bots.'],
+        ]],
+        ['Analysis', [
+            ['order [<bot>]', 'Analyze order grids (spread, increment, funds); --export for HTML.'],
+            ['export <bot>', 'Export bot trades/settings to CSV/JSON for local analysis.'],
+            ['credit [<bot>]', 'Live summed MPA + borrowed-credit positions per asset per bot.'],
+            ['tv <target>', 'TradingView chart: 1h candles for <bot|pool-id|AssetA/AssetB> over --month N (default 3).'],
+            ['dw <target>', 'Dynamic-weight research chart: same targets/flags as tv (see analysis/).'],
+        ]],
+        ['Files', [
+            ['clear', 'Remove all log files from <profiles>/logs/.'],
+            ['clear-orders', 'Remove all persisted order files from <profiles>/orders/.'],
+            ['clear-market-adapter', 'Remove market adapter data, state, and logs.'],
+            ['clear-all', 'Remove orders, logs, market adapter, and claw files (all of the above).'],
+        ]],
+    ];
+    const width = Math.max(...groups.flatMap(([, entries]) => entries.map(([cmd]) => cmd.length))) + 2;
     console.log('Usage: dexbot [command] [bot]');
-    console.log('Commands:');
-    console.log('  test <bot>        Test-run the named bot (one-shot, live trading).');
-    console.log('  start [bot]       Start the monolithic runtime. Counterpart to stop.');
-    console.log('  drystart <bot>    Same as test but forces dry-run execution.');
-    console.log('  reset all         Trigger grid resets for all active bots.');
-    console.log('  reset <bot>       Trigger a grid reset (auto-reloads if running, or applies on next start).');
-    console.log('  default, defaults Reset settings to defaults (deletes general.settings.json, market_profiles.json, market_adapter_settings.json).');
-    console.log('  disable all       Mark all bots inactive in config.');
-    console.log('  disable <bot>     Mark the bot inactive in config.');
-    console.log('  enable all        Mark all bots active in config.');
-    console.log('  enable <bot>      Mark the bot active in config.');
-    console.log('  export <bot>      Export bot trades and settings to CSV/JSON for local analysis/.');
-    console.log('  key               Launch the chain key helper (modules/chain_keys.ts).');
-    console.log('  bot               Launch the interactive bot configurator (modules/account_bots.ts).');
-    console.log('  pm2               Start all active bots with PM2 (authenticate + generate config + start).');
-    console.log('  update            Update DEXBot2 from the repository and restart active bots.');
-    console.log('  order             Analyze persisted order grids in <profiles>/orders/ (spread, increment, funds). Use --export for HTML.');
-    console.log('  credit [<bot>]    Show live summed MPA + borrowed-credit positions per asset per bot.');
-    console.log('  tv <target>       TradingView chart: 1h candles for <bot|pool-id|AssetA/AssetB> over --month N (default 3).');
-    console.log('  order [<bot>]     Analyze only the specified bot.');
-    console.log('  status, stat, stats  Show bot runtime status (unlock monolithic/isolated or PM2).');
-    console.log('  unlock            Legacy alias for start (repo-root: `./unlock`).');
-    console.log('  stop              Stop the monolithic runtime.');
-    console.log('  reload            Reload the monolithic runtime (leaves credential daemon untouched).');
-    console.log('  restart           Restart the monolithic runtime (re-unlocks credential daemon).');
-    console.log('  delete            Stop/delete all runtime processes.');
-    console.log('  whitelist, white  Generate market adapter whitelist from AMA bot configs. Flags (--dynamic-weight, --asymmetric-bounds, --prune, --bot <key>) are forwarded. --bot implies overwrite for that key.');
-    console.log('  clear             Remove all log files from <profiles>/logs/ (runs scripts/clear-logs.sh).');
-    console.log('  clear-orders      Remove all persisted order files from <profiles>/orders/.');
-    console.log('  clear-market-adapter  Remove market adapter data, state, and logs.');
-    console.log('  clear-all         Remove orders, logs, and market adapter files (combines the above).');
-    console.log('Options:');
-    console.log('  --cli-examples    Print curated CLI snippets.');
-    console.log('  -h, --help        Show this help text.');
+    for (const [title, entries] of groups) {
+        console.log(`${title}:`);
+        for (const [cmd, desc] of entries) {
+            console.log(`  ${cmd.padEnd(width)}${desc}`);
+        }
+    }
+    console.log('Help & options:');
+    console.log(`  ${'help, -h, --help'.padEnd(width)}Show this help.`);
+    console.log(`  ${'--cli-examples'.padEnd(width)}Print curated CLI snippets.`);
     console.log('Envs: OPEN_ORDERS_SYNC_LOOP_MS controls the open-orders sync polling delay; LIVE_BOT_NAME or BOT_NAME selects a single entry.');
 }
 
@@ -288,7 +274,7 @@ if (cliArgs.some(arg => CLI_HELP_FLAGS.includes(arg))) {
     // so the script prints its usage. Only scripts with offline help handling
     // belong here — forwarding to a script without it could misinterpret the
     // flag as input (e.g. a bot-name filter triggering live work).
-    const HELP_OWNING_COMMANDS = new Set(['credit', 'tv']);
+    const HELP_OWNING_COMMANDS = new Set(['credit', 'tv', 'dw']);
     const requestedCommand = COMMAND_ALIASES[cliArgs[0]] ?? cliArgs[0];
     if (!HELP_OWNING_COMMANDS.has(requestedCommand)) {
         printCLIUsage();
@@ -347,8 +333,7 @@ async function runAccountManager({ waitForConnection = false, exitAfter = false,
 
      let succeeded = false;
      try {
-         await chainKeys.main();
-         succeeded = true;
+         succeeded = await chainKeys.main();
      } finally {
          if (disconnectAfter) {
              try {
@@ -902,13 +887,29 @@ async function exportBotTrades(botName: string | undefined) {
 
 /**
  * Parse and execute CLI commands.
-  * Supported commands: test, drystart, reset, default, disable, enable, key, bot, pm2, update, export, order, credit, tv, clear, status, whitelist, unlock, help
+  * Supported commands: test, drystart, reset, default, disable, enable, key, bot, pm2, update, export, order, credit, tv, dw, clear, status, unlock, help
  * @returns {Promise<boolean>} True if a command was handled, false otherwise
  */
 async function handleCLICommands() {
     if (!cliArgs.length) return false;
+
+    // The unlock supervisor spawns the bot worker as `dexbot worker` with
+    // DEXBOT_LAUNCHER_WORKER=1 so the process table identifies it as the bot
+    // worker. Intercept before command validation (`worker` is internal).
+    if (Config.DEXBOT_LAUNCHER_WORKER && cliArgs[0] === LAUNCHER_WORKER_COMMAND) {
+        const worker = parseWorkerArgs(cliArgs.slice(1));
+        await startBotByName(worker.botName, { dryRun: worker.dryrun });
+        return true;
+    }
+
     const [rawCommand, target] = cliArgs;
     const command = COMMAND_ALIASES[rawCommand] ?? rawCommand;
+    // `start`/`unlock` and `pm2` delegate to child launchers that print the
+    // relocation notices themselves (after they know whether onboarding is
+    // needed); printing here too would duplicate them.
+    const childOwnsRelocationNotices = command === COMMAND_ALIASES.start || command === 'pm2';
+    if (!childOwnsRelocationNotices) printRelocationNotices();
+
     if (!CLI_COMMANDS.includes(command)) {
         console.error(startupError(`Unknown command '${command}'.`));
         printCLIUsage();
@@ -1018,24 +1019,6 @@ async function handleCLICommands() {
             await exportBotTrades(target);
             process.exit(0);
             return true;
-        case 'whitelist': {
-            const { spawnSync } = require('child_process') as any as any;
-            const scriptArgs = buildRuntimeScriptArgs({
-                codeRoot: __dirname,
-                scriptSegments: ['scripts', 'generate_market_adapter_whitelist'],
-                scriptArgs: cliArgs.slice(1),
-            });
-            const result = spawnSync(Config.EXEC_PATH, scriptArgs, {
-                cwd: PATHS.PROJECT_ROOT,
-                stdio: 'inherit',
-            });
-            if (result.error) {
-                console.error(`whitelist: ${result.error.message}`);
-                process.exit(1);
-            }
-            process.exit(result.status ?? 0);
-            return true;
-        }
         case 'order': {
             const { spawnSync } = require('child_process') as any as any;
             const scriptArgs = buildRuntimeScriptArgs({
@@ -1072,11 +1055,12 @@ async function handleCLICommands() {
             process.exit(result.status ?? 0);
             return true;
         }
-        case 'tv': {
+        case 'tv':
+        case 'dw': {
             const { spawnSync } = require('child_process') as any as any;
             const scriptArgs = buildRuntimeScriptArgs({
                 codeRoot: __dirname,
-                scriptSegments: ['scripts', 'tv'],
+                scriptSegments: ['scripts', command],
                 scriptArgs: cliArgs.slice(1),
             });
             const result = spawnSync(Config.EXEC_PATH, scriptArgs, {
@@ -1084,7 +1068,7 @@ async function handleCLICommands() {
                 stdio: 'inherit',
             });
             if (result.error) {
-                console.error(`tv: ${result.error.message}`);
+                console.error(`${command}: ${result.error.message}`);
                 process.exit(1);
             }
             process.exit(result.status ?? 0);
@@ -1400,55 +1384,16 @@ async function bootstrap() {
         console.log('='.repeat(50));
         console.log();
 
-        // Generate default general.settings.json for new installations
+        // Generate default general.settings.json for new installations.
+        // Single canonical defaults document (modules/constants.ts) — the same
+        // builder the editor fallback and the local-overrides merge use. This
+        // also drops the dead ANCHOR:{} key and adds NODE_MANAGEMENT, keeping
+        // first-run files byte-compatible with editor-saved ones.
         const SETTINGS_FILE = path.join(PROFILES_DIR, 'general.settings.json');
-        const {
-            LOG_LEVEL, GRID_LIMITS, TIMING, UPDATER, NODE_MANAGEMENT,
-            MARKET_ADAPTER, DEFAULT_CONFIG, FILL_PROCESSING,
-            PIPELINE_TIMING, CREDENTIAL_PROMPTS, MAINTENANCE,
-            COW_PERFORMANCE, INCREMENT_BOUNDS, FEE_PARAMETERS,
-            API_LIMITS, LOGGING_CONFIG, NATIVE_CLIENT, LAUNCHER, ANCHOR,
-        } = require('./modules/constants');
+        const { buildDefaultGeneralSettings } = require('./modules/constants');
 const { writeJSON } = storage;
 
-        // Create NODES config from NODE_MANAGEMENT constants
-        const nodesConfig = {
-            enabled: NODE_MANAGEMENT.DEFAULT_ENABLED,
-            list: NODE_MANAGEMENT.DEFAULT_NODES,
-            healthCheck: {
-                enabled: true,
-                intervalMs: NODE_MANAGEMENT.HEALTH_CHECK_INTERVAL_MS,
-                timeoutMs: NODE_MANAGEMENT.HEALTH_CHECK_TIMEOUT_MS,
-                maxPingMs: NODE_MANAGEMENT.MAX_PING_MS,
-                blacklistThreshold: NODE_MANAGEMENT.BLACKLIST_THRESHOLD
-            },
-            selection: {
-                strategy: NODE_MANAGEMENT.SELECTION_STRATEGY,
-                preferredNode: null
-            }
-        };
-
-        const defaultSettings = {
-            LOG_LEVEL,
-            NODES: nodesConfig,
-            GRID_LIMITS: { ...GRID_LIMITS },
-            TIMING: { ...TIMING },
-            UPDATER: { ...UPDATER },
-            MARKET_ADAPTER: { ...MARKET_ADAPTER },
-            DEFAULT_CONFIG: { ...DEFAULT_CONFIG },
-            FILL_PROCESSING: { ...FILL_PROCESSING },
-            PIPELINE_TIMING: { ...PIPELINE_TIMING },
-            CREDENTIAL_PROMPTS: { ...CREDENTIAL_PROMPTS },
-            MAINTENANCE: { ...MAINTENANCE },
-            COW_PERFORMANCE: { ...COW_PERFORMANCE },
-            INCREMENT_BOUNDS: { ...INCREMENT_BOUNDS },
-            FEE_PARAMETERS: { ...FEE_PARAMETERS },
-            API_LIMITS: { ...API_LIMITS },
-            LOGGING_CONFIG: { ...LOGGING_CONFIG },
-            NATIVE_CLIENT: { ...NATIVE_CLIENT },
-            LAUNCHER: { ...LAUNCHER },
-            ANCHOR: { ...ANCHOR },
-        };
+        const defaultSettings = buildDefaultGeneralSettings();
         writeJSON(SETTINGS_FILE, defaultSettings);
         console.log(startupSuccess('✓ Created default general.settings.json'));
         console.log();
@@ -1460,12 +1405,19 @@ const { writeJSON } = storage;
         const setupKeys = setupKeysAnswer === 'y' || setupKeysAnswer === 'yes';
         if (setupKeys) {
             console.log();
-            await chainKeys.main();
-            console.log();
-            console.log(startupSuccess('Master password configured! Now you can:'));
-            console.log('  dexbot bot   - Create and manage bots');
-            console.log('  dexbot        - Run your configured bots');
-            console.log();
+            const keySetupCompleted = await chainKeys.main();
+            if (keySetupCompleted) {
+                console.log();
+                console.log(startupSuccess('Master password configured! Now you can:'));
+                console.log('  dexbot bot   - Create and manage bots');
+                console.log('  dexbot        - Run your configured bots');
+                console.log();
+            } else {
+                console.log();
+                console.log('Master password setup cancelled.');
+                console.log('Run `dexbot key` when you are ready to configure it.');
+                console.log();
+            }
         } else {
             console.log();
             console.log('You can set up your master password later by running:');

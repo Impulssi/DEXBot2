@@ -67,7 +67,7 @@ Mixed BUY/SELL batches are validated per asset using a signed-delta **peak** run
 
 #### Implementation Location
 
-File: `modules/dexbot_cow_runtime.ts` — `validateOperationFunds()` (line 1488), called from the COW batch broadcast path at line 2908. `modules/dexbot_class.ts` exposes a thin wrapper `_validateOperationFunds()` (line 1122).
+File: `modules/dexbot_cow_runtime.ts` — `validateOperationFunds()` (line 1655), called from the COW batch broadcast path at line 4457.
 
 ```javascript
 // Per-asset peak requirement vs. quantized chain-free snapshot.
@@ -114,9 +114,9 @@ See [developer_guide.md#order-state-helper-functions](developer_guide.md#order-s
 
 **Mechanism**: Fill events arrive via `modules/dexbot_fill_runtime.ts` (the fill-runtime module), which pushes them into `bot._incomingFillQueue` (declared in `modules/dexbot_class.ts`). The drain loop in `dexbot_fill_runtime.ts` then chunks the queue into capped batches and calls `modules/order/manager.ts::processFilledOrders` (line 1438) once per chunk to run the full rebalance pipeline.
 
-**Batch Sizing Algorithm**: Batch size is derived from the grid gap-slot count (`DEXBot._getGapSlotBatchSize`): a queue depth at or below gapSlots is processed as one unified batch; deeper queues are chunked into repeated batches of gapSlots (the last chunk may be smaller). The same gap-slot size caps order operations per broadcast transaction (oversized op batches are split into sequential broadcasts).
+**Batch Sizing Algorithm**: Batch size is derived from the grid gap-slot count + 1 (`DEXBot._getGapSlotBatchSize`): a queue depth at or below gapSlots+1 is processed as one unified batch; deeper queues are chunked into repeated batches of gapSlots+1 (the last chunk may be smaller). The same gapSlots+1 size caps order operations per broadcast transaction (oversized op batches are split into sequential broadcasts).
 
-**Configuration**: no fixed constant — both `FILL_PROCESSING.MAX_FILL_BATCH_SIZE` and `COW_PERFORMANCE.MAX_OPS_PER_BROADCAST` were removed; batch sizing follows the grid gap-slot count.
+**Configuration**: no fixed constant — both `FILL_PROCESSING.MAX_FILL_BATCH_SIZE` and `COW_PERFORMANCE.MAX_OPS_PER_BROADCAST` were removed; batch sizing follows the grid gap-slot count + 1.
 
 #### Fill Batch Processing Timeline
 
@@ -299,7 +299,7 @@ When a fill occurs, the boundary shifts to "follow" the price.
 
 ### 3.2 Global Side Capping
 
-Budgets are dynamic. The bot calculates `TotalSideBudget` from `funds.allocated.{buy,sell}` (the `botFunds`-capped capital per side — see §1.3). This ensures the bot never attempts to deploy more than its configured share of account capital, even when the account holds additional free balance for other bots or manual trading.
+Budgets are dynamic. The bot calculates the per-side budget via `getSideBudget` from `funds.allocated.{buy,sell}` (the `botFunds`-capped capital per side — see §1.3). This ensures the bot never attempts to deploy more than its configured share of account capital, even when the account holds additional free balance for other bots or manual trading.
 
 **Safety Check:**
 If the calculated ideal grid requires more capital than available in the allocation, the *increase* is capped.
@@ -478,15 +478,15 @@ When a grid is regenerated or resized, existing partial orders (partially filled
 A partial order is classified as **Dust** if:
 $$Size_{current} < Size_{ideal} \times 0.05$$
 
-Dust orders are too small to be efficient on-chain and are marked for consolidation into the grid rebuild cycle.
+Dust orders are too small to be efficient on-chain and are **cancelled immediately on detection** — no delay, no timer (`cancelDustOrders()`, `[DUST]` tag). Detection runs on every fill/sync tick plus a 5-minute health check (`DUST_HEALTH_CHECK_INTERVAL_MS`) as a crash/restart safety net; the cancel flows through the synthetic-fill pipeline so funds return to `ChainFree`.
 
 ### 4.2 Consolidation Strategy
 
 When the strategy engine encounters partial orders during rebalancing:
 
 **Direct Approach** (Simplified):
-1. **Identify unhealthy partials**: Detect any partial orders below the 5% dust threshold on each side
-2. **Mark for consolidation**: Flag partials as needing attention in the next rebalance cycle
+1. **Cancel dust first**: partials below the 5% dust threshold are cancelled on detection (see §4.1) and never reach the rebuild
+2. **Consolidate the remainder**: surviving partials are absorbed when the grid is rebuilt in the next rebalance cycle
 3. **Fund-driven grid rebuild**: Rather than complex slot-by-slot merge/split logic, the entire grid is regenerated based on current total funds (including proceeds from fills)
 4. **Natural redistribution**: The rebuilt grid automatically sizes all orders (including those replacing consolidation candidates) using the Ideal Grid sizing formula
 5. **Spread maintenance**: The target spread gap remains constant at `targetSpreadPercent`—no dynamically inflated corrections
@@ -751,7 +751,7 @@ Quantization has a single source of truth: `quantizeFloat()` in `modules/order/u
 
 #### 5.5.4 Relationship to Fund Validation
 
-The corrected fund validation in `_validateOperationFunds()` uses quantized values:
+The corrected fund validation in `validateOperationFunds()` uses quantized values:
 
 ```javascript
 // Check: Does required amount fit in available balance?
@@ -801,4 +801,4 @@ To prevent "Time-of-Check to Time-of-Use" errors:
 **TOCTOU protection in `processFillAccounting`.** `_buildBtsDeferredRefundAdjustment` reads `btsFeeState` from `mgr.orders` while the order lock is held — the lock is acquired before accounting runs, and the POST-RESET and BOOTSTRAP tracked-fill accounting paths follow the same locking pattern.
 
 ---
-*Technical Reference for DEXBot2 v1.6.3 release*
+*Technical Reference for DEXBot2 v1.6.7 release*

@@ -1114,6 +1114,41 @@ async function testAutoCancelSkipsFingerprinted() {
     console.log('✓ UNC-011 passed');
 }
 
+async function testAutoCancelSkipsNowOwnedOrphan() {
+    console.log('\n[UNC-011c] _autoCancelOneUnmatchedOrphan skips a stale unmatched entry now owned by the grid...');
+    const bot = makeBot();
+    bot._currentCycleId = 13;
+    const orderId = '1.7.888';
+    bot.manager.orders.set('slot-888', {
+        id: 'slot-888',
+        orderId,
+        type: ORDER_TYPES.SELL,
+        price: 0.05,
+        size: 1,
+        state: ORDER_STATES.ACTIVE,
+    });
+    bot.manager._lastUnmatchedChainOrders = [
+        { chainOrderId: orderId, reason: 'price-drift-orphan' },
+    ];
+    const origCancel = chainOrders.cancelOrder;
+    const origRecord = chainOrders.recordOwnCancel;
+    let cancelCalled = false;
+    chainOrders.cancelOrder = async () => { cancelCalled = true; return {}; };
+    chainOrders.recordOwnCancel = () => {};
+    try {
+        const result = await bot._autoCancelOneUnmatchedOrphan();
+        assert.strictEqual(result.cancelled, false, 'a chain order now owned by the grid must not be auto-cancelled');
+        assert.strictEqual(result.reason, 'now-owned');
+        assert.strictEqual(result.slotId, 'slot-888');
+        assert.strictEqual(cancelCalled, false);
+        assert.strictEqual(bot.manager._lastUnmatchedChainOrders.length, 0, 'stale unmatched entry must be evicted');
+    } finally {
+        chainOrders.cancelOrder = origCancel;
+        chainOrders.recordOwnCancel = origRecord;
+    }
+    console.log('✓ UNC-011c passed');
+}
+
 async function testAutoCancelOnlyPriceDriftOrphans() {
     console.log('\n[UNC-011b] _autoCancelOneUnmatchedOrphan skips non-price-drift orphans...');
     const bot = makeBot();
@@ -1791,6 +1826,7 @@ async function main() {
     await testAutoCancelUsesSyncEngineChainOrderIdShape();
     await testAutoCancelSkipsWhenPendingBroadcasts();
     await testAutoCancelSkipsFingerprinted();
+    await testAutoCancelSkipsNowOwnedOrphan();
     await testAutoCancelOnlyPriceDriftOrphans();
     await testCowCatchBlockPassesFillLockAlreadyHeld();
     await testExecuteWithRetryOnUncertainRetriesOnce();

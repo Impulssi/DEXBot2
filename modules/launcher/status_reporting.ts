@@ -91,5 +91,5 @@ function printControlStatus(status: any) {
     }
 }
 
-export { STATUS_COLORS, colorStatus, statusTitle, statusLabel, statusBool, statusActiveBotName, statusSuccess, statusError, readProcStat, readProcMemMB, readProcCpuTime, readProcCpuPercent, readProcUptime, formatControlUptime, formatMemoryWithUptime, printControlStatus }
+export { STATUS_COLORS, colorStatus, statusTitle, statusLabel, statusBool, statusActiveBotName, statusSuccess, statusError, readProcStat, readProcMemMB, readProcCpuTime, readProcCpuPercent, readProcUptime, formatMemoryWithUptime, printControlStatus }
 

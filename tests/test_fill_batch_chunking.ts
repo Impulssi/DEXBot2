@@ -3,7 +3,7 @@
  *
  * Tests for _processFillsWithBatching — verifies gap-slot-derived batch
  * sizing enforcement across the unified fill-chunking + rebalance +
- * broadcast pipeline (batch size = manager._gapSlots).
+ * broadcast pipeline (batch size = gap slots + 1, DEXBot._getGapSlotBatchSize).
  */
 
 const assert = require('assert');
@@ -11,9 +11,11 @@ const DEXBot = require('../modules/dexbot_class').default;
 require('../modules/order/grid'); // ensure loaded
 const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 
-// Gap-slot-derived batch size used by these tests (mirrors manager._gapSlots
-// assigned in makeBot below).
-const MAX_BATCH = 4;
+// Grid gap-slot count used by these tests. The production batch cap is
+// gapSlots + 1 (DEXBot._getGapSlotBatchSize), so a 4-slot gap yields the
+// 5-fill MAX_BATCH the assertions below expect.
+const GAP_SLOTS = 4;
+const MAX_BATCH = GAP_SLOTS + 1;
 
 function makeFill(id: string, orderId: string | null = null, type: string = 'SELL') {
     return { id, orderId: orderId || `1.7.${id.replace(/\D/g, '')}`, type, price: 0.02, size: 100, isPartial: false, blockNum: 1000 + parseInt(id.replace(/\D/g, ''), 10) || 1 };
@@ -34,7 +36,7 @@ function makeBot() {
     });
 
     bot.manager = {
-        _gapSlots: MAX_BATCH,
+        _gapSlots: GAP_SLOTS,
         logger: {
             log: (msg: string, lvl: string) => { /* silent */ },
             logFundsStatus: () => {},
@@ -107,7 +109,9 @@ function makeBootstrapBot() {
     });
 
     const orders = new Map();
-    for (let i = 1; i <= 6; i++) {
+    // Seed enough live orders that every bootstrap fill (MAX_BATCH + 2 of
+    // them) matches an order instead of being dropped as unmatched.
+    for (let i = 1; i <= MAX_BATCH + 2; i++) {
         orders.set(`buy-${i}`, {
             id: `buy-${i}`,
             orderId: `1.7.${i}`,
@@ -136,7 +140,7 @@ function makeBootstrapBot() {
     bot.manager = {
         orders,
         config: bot.config,
-        _gapSlots: MAX_BATCH,
+        _gapSlots: GAP_SLOTS,
         logger: {
             log: () => {},
         },
@@ -207,7 +211,7 @@ async function runTests() {
     // --- Test 4: MAX_BATCH + 1 fills (chunked into 2 batches) ---
     {
         const bot = makeBot();
-        const totalFills = MAX_BATCH + 2; // e.g. 6 when MAX_BATCH=4
+        const totalFills = MAX_BATCH + 2; // one full batch plus a partial tail
         const fills = Array.from({ length: totalFills }, (_, n) => makeFill(`sell${n + 1}`));
         const result = await bot._processFillsWithBatching(fills, null, 'test-chunked');
         assert.strictEqual(result.aborted, false, 'chunked fills should not abort');
@@ -226,7 +230,7 @@ async function runTests() {
         console.log(`  ✓ ${totalFills} fills chunked into ${MAX_BATCH} + ${totalFills - MAX_BATCH}`);
     }
 
-    // --- Test 5: two full batches (e.g. 8 fills when MAX_BATCH=4) ---
+    // --- Test 5: two full batches ---
     {
         const bot = makeBot();
         const totalFills = MAX_BATCH * 2;
@@ -399,7 +403,7 @@ async function runTests() {
 
         assert.strictEqual(pipelineCalls.length, 2, 'bootstrap fills should be processed in two chunks');
         assert.strictEqual(pipelineCalls[0].fillCount, MAX_BATCH, 'first chunk should have MAX_BATCH fills');
-        assert.strictEqual(pipelineCalls[1].fillCount, 2, 'second chunk should contain remaining fills');
+        assert.strictEqual(pipelineCalls[1].fillCount, totalFills - MAX_BATCH, 'second chunk should contain remaining fills');
     }
 
     console.log('\nAll fill batch chunking tests passed.\n');

@@ -1,7 +1,7 @@
 # The Grid-Price Invariant
 
 Status: **implemented; the emission check is BLOCKING**
-Last verified against `test` HEAD `1382f267` (2026-09-13).
+Last code-reviewed against the v1.6.7 release baseline `d4e0ce0b` (2026-09-26).
 
 ## The invariant
 
@@ -37,75 +37,23 @@ range" (passes every range guard) and "not a valid slot" (violates the
 invariant), with no check in between.** Range guards cannot see it; only a
 grid-membership check can.
 
-## The failure mechanism
+## Why this guard exists
 
-The engine had two contradictory sources of truth for "what price is this slot":
+`isChainPriceOutOfGrid` answers "is the price inside the configured range?", not
+"is it *this slot's* level?" — so a non-grid price can sit inside the range and
+pass every range guard (see the band explanation above). Historically the engine
+held two sources of truth for a slot's price: the genesis ladder and the mutable
+`slot.price` field written from chain data. The mutable field repeatedly won —
+orphan adoption stored the chain price, the COW `CREATE` path re-broadcast
+`liveSlot.price` in place of the planned price, and the fill-guard pivot was
+seeded from unanchored fill prices — after which the off-grid price re-entered
+the engine as "evidence" and ratcheted.
 
-| Concept | Source | Used by |
-|---|---|---|
-| Genesis table | `priceForSlot(idx, genesis)` | grid build, load validation |
-| Live slot price | `slot.price`, mutated from chain | COW broadcast, fill guard pivot |
-
-Every observed violation was the second winning over the first. Five distinct
-mechanisms fed it:
-
-- **S1 — chain price overwrote the slot's identity price.** Orphan adoption set
-  `price: chainOrder.price`, so a slot's id and its price could disagree.
-- **S2 — pre-broadcast substitution re-broadcast the corrupted price.** The
-  planned (genesis-derived) price was replaced with `liveSlot.price` — i.e. with
-  whatever S1 wrote — and logged at `debug`, so it was invisible.
-- **S3 — guards tested range membership, never grid membership.** See the table
-  above.
-- **S4 — the fill-guard pivot was untrusted.** `_lastFilledPrice` was written
-  from fill prices at four sites, none validated against the grid. A guard that
-  keeps the grid consistent was anchored to the same fill chain that S1/S2 could
-  corrupt. Nothing protected the pivot itself.
-- **S5 — bypasses skipped even that guard.** Spread-correction origins bypass it
-  by design; the guard was stated to run on the "final post-freshness price",
-  i.e. the price S2 had already replaced.
-
-The unifying hazard: a price that is off-grid becomes *grid evidence*, and is
-then re-emitted as if it were real market structure.
-
-## The writer chain (historical)
-
-Both links are now closed. The trace is kept because the *shape* is what the
-check guards against recurring.
-
-1. **Adoption overwrote the grid level** — `modules/order/sync_engine.ts`, the
-   legacy no-genesis fallback (`sync-pass2-adopt-orphan` branch):
-   ```ts
-   const adoptedOrder = {
-       ...adoptedSlot, orderId: chainOrderId, type: chainOrder.type,
-       state: adoptedState, size: chainOrder.size,
-       price: chainOrder.price,   // <-- genesis price discarded
-       ...
-   };
-   ```
-   It also matched by price *tolerance* rather than
-   `slotIndexForPrice` + `isSlotInRail`, so it could land an order in a slot
-   whose genesis price was far away — then cement that distance.
-
-2. **Pre-broadcast substitution propagated it** — `modules/dexbot_cow_runtime.ts`,
-   the CREATE branch's `liveSlot`/`priceDrift` block:
-   ```ts
-   const effectiveOrder = (priceDrift > 0)
-       ? { ...order, price: livePrice, ... }   // planned price discarded
-       : order;
-   ```
-   The name "freshness" implied the live price was *more* correct. That is only
-   safe if `slot.price` is invariantly a genesis level — the exact thing nothing
-   enforced.
-
-Net: a chain order at a non-grid price was adopted into a slot, became that
-slot's price, and was re-broadcast as a fresh CREATE at the same non-grid price.
-A buy above the book fills immediately; the fill price then fed downstream
-consumers (role rotation, boundary heuristics, the fill-guard pivot), which
-inherited it as evidence and ratcheted further.
-
-The observed signature: escalating BUYs at `0.363 → 0.565 → 0.614 → 0.739 →
-0.793` against a ~0.31 market — each a `BUY > pivot` violation — then matched
-lots sold back at ~0.306 for roughly -61%, plus a 107-violation burst.
+The guard closes that class by construction: a legitimate order equals its
+genesis level, so only a genuinely non-grid price can be rejected. The full
+incident trace — the individual writers, the observed ratchet, and the commit
+provenance — is preserved in
+[ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md](ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md) (Appendix A).
 
 ## Enforcement: the six emission sites
 
@@ -122,10 +70,20 @@ Every site that builds a create/update op now runs the invariant check via
 | `RECONCILE-UPDATE` | `grid_reconcile_internal.ts` |
 | `STARTUP-CREATE` | `grid_reconcile_internal.ts` |
 
-**The check fails open on anything unjudgeable** — missing genesis, synthetic or
-chain-order ids, out-of-ladder indices, non-finite prices — so it can only fire
-on a genuine mismatch and cannot false-positive on a legitimately wide grid.
-That property is why it is safe where the earlier tuned guards were not.
+**The check fails open on anything unjudgeable** (full fail-open policy in
+["This BLOCKS"](#this-blocks) below), so it can only fire on a genuine mismatch
+and cannot false-positive on a legitimately wide grid. That property is why it
+is safe where the earlier tuned guards were not.
+
+**Not every fix needed an emission site.** The `sync_engine.ts` materialize
+path (a CREATE landing after master lost the slot) materializes a *slot*
+rather than emitting an op, so the emission check never sees it — it needed
+its own fix, deriving both price and order type from the ladder
+(`priceForSlot(parseSlotIndex(gridOrderId), genesis)`) and keeping the carried
+descriptor price only when there is no genesis ladder to derive from
+(migration), warning when it does. `virtualizeOrder`,
+`convertToSpreadPlaceholder` and `toRailHolePlaceholder` were audited and
+verified identity-preserving, including under the checker.
 
 The correct pattern already existed in the codebase:
 `isUnknownFillOrderAdoptable` (`modules/dexbot_fill_runtime.ts`) derives the
@@ -155,6 +113,81 @@ re-derives the expected level from the slot *id* and compares it against the
 passed price, so it never validates a price against itself. A producer that
 paired a source price with a destination id is caught (13.9% drift in the
 fixture), as is a destination hole carrying an already-corrupted price (28%).
+
+### The seventh gate: final pre-broadcast pivot re-check
+
+The per-action LAST-FILL-GUARD checks run against the pivot frozen at batch
+start. A fill queued between that freeze and the broadcast passes every
+per-action check on a stale pivot and ships (live incident: freeze at 0.745,
+sell fill queued at 0.765, batch broadcast at 0.910 — the violating rotation
+filled 6s later, 0.6% below the true threshold). `runFinalPivotGate`
+(`modules/dexbot_cow_runtime.ts`) closes that window: after the op-building
+loop and immediately before broadcast it re-refreshes the pivot (peek-only,
+never drains the fill queue) and, if it changed, re-runs the guard against
+every BUILT op:
+
+- an unchanged pivot is a pure no-op; violators drop into the existing
+  skipped-slot restore paths (dropped rotations restore from master, dropped
+  creates count toward the boundary-hold intersect), so the summary reports
+  them as skipped, not passed;
+- cancel and size-update ops are never gated; bypass parity with the build
+  loop (spread-correction CREATEs, stamped gap-evacuation UPDATEs);
+- it fails open on anything unjudgeable — unresolvable price/type, cold pivot,
+  a refresh throw — the same policy as the emission guard;
+- lockstep compaction remaps the stored pending-broadcast indexes (old→new),
+  so a dropped CREATE cannot leave the uncertain-broadcast reconcile adopting
+  a matched chain order into the wrong slot.
+
+Tested by FG-1..11 (`tests/test_final_pivot_gate.ts`), including the incident
+replay (FG-2) and the index-remap hygiene (FG-7/FG-11).
+
+### The pivot rides the grid snapshot
+
+The guard reads `_lastFilledPrice`/`_lastFilledType`, so the pivot must be live
+before the first decision of a run — including while the boundary is still
+being rebuilt. Without a persisted row the guard starts every process cold, and
+the startup book seed (`seedLastFilledPricesFromBook`, max resting buy / min
+resting sell) is only a proxy: it goes wrong whenever the book is not adjacent
+to the last fill (partials, rotations, reserve shelf, dust).
+
+`persistGridSnapshot` therefore writes a `{price, type, fillsAt, genesisHash}`
+row alongside the grid (`storeMasterGrid`'s `lastFillPivot` parameter, written
+under the bot's persistence lock), and `loadGrid` restores it via
+`restoreLastFillPivot` right after `_restoreBoundary` — with the grid re-typed
+and genesis applied, before the first reconcile/broadcast — so startup,
+price-match resume, and the recovery reload all inherit one call site.
+
+Rules that keep the mirror honest:
+
+- **The manager's in-memory pivot stays authoritative at runtime.** The row is a
+  mirror that rides the grid snapshot, so it invalidates in lockstep with the
+  boundary/genesis instead of forming a second ledger (the `_pendingFillCrawls`
+  lockstep contract).
+- **Provenance gates persistence.** One writer, `setLastFillPivot(type, price,
+  'fill' | 'book')`; only `'fill'` is persist-eligible, so a book seed never
+  fossilizes as market truth. One shared shape gate (`normalizeLastFillPivot`)
+  serves the snapshot sanitizer and the loader, so the two checks cannot drift.
+- **Restore validates before it re-arms**, in order: TTL (24h,
+  `GRID_LIMITS.LAST_FILL_PIVOT_TTL_MS`, with the ORIGINAL `fillsAt` preserved
+  through `setLastFillPivot`'s `atMs` so it keeps meaning "age of the last
+  fill", not "time since last restart") → genesis binding (a row from a dead
+  generation is refused) → on-grid (the runtime's own `resolveOnGridPivot`
+  ladder validator, reused from `utils/system.ts`, so the restorer can never
+  accept a value the live guard would refuse per probe). TTL and
+  genesis-mismatch verdicts erase the row through one shared drop path
+  (`AccountOrders.clearPersistedLastFillPivot`); an off-ladder row is a no-op
+  that falls back to the book seed. The snapped ladder level is restored, never
+  the raw float.
+- **The generation wipes the pivot.** `initializeGrid` and
+  `rejectCorruptedGridSnapshot` call `resetLastFillPivot`, which clears the
+  full scalar family including the per-side mirrors (so the book seed's cold
+  gate is not silently suppressed by a stale mirror), and `AccountOrders.clearGrid`
+  drops the persisted row with the snapshot.
+
+Tested by LFP-1..8 (`tests/test_last_fill_pivot_persistence.ts`) for the
+store/load round-trip shape gates, null-clears vs undefined no-ops, the
+provenance gate, `fillsAt` preservation, TTL and genesis-mismatch erasure, and
+off-ladder refusal.
 
 ### This BLOCKS
 
@@ -360,6 +393,30 @@ only true surplus is cancelled. Funds are released by price-updating, not by
 inventing a new cancellation policy. A dedicated
 `DEFERRED_HOLD_RESYNC_COOLDOWN_MS` (6h) bounds repeats.
 
+### Known limitation: no market-aware "left the bounds" signal
+
+The hold is per-order and reactive: the bot cannot distinguish "one stray
+order outside the range" from "the market left the range entirely", so it
+cannot warn *before* orders become stranded. The earlier anchor/divergence
+constants (`ANCHOR.DIVERGENCE_INFO`, `DIVERGENCE_WARN`) were removed with the
+anchor itself; only `calculateGridSideDivergenceMetric` survives, used for
+side-divergence metrics in `grid.ts`. Until a market-aware signal exists, the
+24h escalation fires on a timer rather than on cause — whether the market left
+the bounds or one order is simply stranded, because neither case is
+distinguishable from the hold record alone. The blast radius is bounded by
+the stranded-reasons allow-list above. The designated home for a real signal
+is divergence telemetry built on `calculateGridSideDivergenceMetric`.
+
+## Key constants (`modules/constants.ts`, `TIMING`)
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `GRID_PRICE_INVARIANT_RESYNC_THRESHOLD` | 3 | Consecutive rejecting batches per slot before a structural resync |
+| `GRID_PRICE_INVARIANT_RESYNC_COOLDOWN_MS` | 15 min | Bounds repeat resyncs for the same corruption |
+| `DEFERRED_HOLD_ESCALATE_MS` | 24 h | Age at which a stranded deferred hold escalates |
+| `DEFERRED_HOLD_RESYNC_COOLDOWN_MS` | 6 h | Bounds repeat resyncs for stale holds |
+| `STALE_TOTALS_WARN_RATE_LIMIT_MS` | 60 s | Slow re-warn interval for an unchanged hold set |
+
 ## Implementation status
 
 | Item | State |
@@ -374,6 +431,11 @@ inventing a new cancellation policy. A dedicated
 | Invariant check at 6 emission sites | **landed — BLOCKING (rejects off-grid emissions)** |
 | Fill-guard pivot validated onto the ladder (`resolveOnGridPivot`) | **landed** |
 | `[HOLD]` enrichment + slow re-warn | **landed** |
+| Final pre-broadcast pivot gate re-checks BUILT ops on a refreshed pivot | **landed** |
+| Fill-guard pivot persisted with the grid snapshot (provenance: fills only) | **landed** |
+| Pivot restored with the boundary (TTL → genesis → on-grid validation chain) | **landed** |
+| Pivot mutation behind one provenance-tagged writer (`setLastFillPivot`) | **landed** |
+| Grid generation invalidates the pivot (in-memory + persisted row) | **landed** |
 
 `resolveOnGridPivot` snaps a near-ladder pivot to its slot level but **refuses to
 rewrite a far-off-ladder one** onto an edge slot — silently clamping would dress
@@ -382,7 +444,8 @@ reported.
 
 ## Verification
 
-- **Unit:** for every emitted op, `price === priceForSlot(idx, genesis)`.
+- **Unit (GPI-001..015, `tests/test_grid_price_invariant_guard.ts`):** for
+  every emitted op, `price === priceForSlot(idx, genesis)`.
   Rotation UPDATEs additionally assert `newPrice` matches the **destination**
   slot's level (GPI-010); an off-grid emission is **refused**, a genesis level is
   permitted (GPI-011); unjudgeable inputs fail open (GPI-012); the emitted
@@ -398,10 +461,26 @@ reported.
 - **Unit:** pre-broadcast drift is reported at `warn` and the op is built from
   the *planned* price (`tests/test_cow_orchestration_fixes.ts`).
 - **Unit:** pivot snapping and off-ladder refusal
-  (`tests/test_last_fill_guard.ts`, PIVOT-001..003).
+  (`tests/test_last_fill_guard.ts`, PIVOT-001..003); the final pre-broadcast
+  pivot gate re-checks BUILT ops on a refreshed pivot, drops violators into the
+  skipped-slot restore paths, remaps pending indexes on compaction, and never
+  gates cancels or size-updates (`tests/test_final_pivot_gate.ts`, FG-1..11,
+  including the 2026-09-13 stale-pivot incident replay).
+- **Unit:** pivot snapshot round-trip and its restore validation chain
+  (`tests/test_last_fill_pivot_persistence.ts`, LFP-1..8) — shape gates,
+  provenance, TTL, genesis binding, off-ladder refusal, full-family reset.
 - **External gate:** `analysis/grid_correction_check.ts` — target 0 sustained
   violations at 168h/720h. **The baseline is NOT clean:** 4 of 5 bots were
   non-zero over 7 days, so this is a live signal, not a historical one.
+- **Live status:** the blocking check has seen live traffic — 75 judgeable
+  checks (`site=COW`, `violated=0`, `unchecked=0`) across four live bot logs
+  on 2026-09-14. No live **rejection** or **escalation** has been observed
+  yet, so the resync thresholds (`GRID_PRICE_INVARIANT_RESYNC_THRESHOLD`,
+  `DEFERRED_HOLD_ESCALATE_MS`) remain validated only by mutation tests. The
+  first `violated>0` in production should be read as a real writer, not a
+  false positive: a legitimate order equals its genesis level by
+  construction. Treat the first escalation as a genuine signal about how
+  long an in-process corruption actually survives.
 
 Each behavioural fix above is mutation-tested (revert the fix, confirm the test
 fails) so the tests are known to discriminate rather than merely pass.
@@ -451,51 +530,6 @@ in the fixture). That is the evidence that blocking is safe: a legitimate order
 equals its genesis level by construction, so only a genuinely mis-priced
 emission can be rejected.
 
-## What is still open
-
-1. **The blocking check has never seen live traffic.** `violated` and
-   `pivotOffGrid` are unobserved: no bot has run this code. The guard is safe by
-   construction (fail-open on everything unjudgeable; a legitimate order equals
-   its genesis level), and the first live rejection should be read as a real
-   writer rather than assumed to be a false positive — but the first
-   `violated>0` in production is the signal to investigate, not to retune.
-   Before enabling it on a live bot, confirm the fail-open paths are exercised
-   at startup (no genesis) in whatever configuration is being run. The
-   escalation thresholds (`GRID_PRICE_INVARIANT_RESYNC_THRESHOLD`,
-   `DEFERRED_HOLD_ESCALATE_MS`) are in the same position: reasoned from the
-   stall mechanism and mutation-tested, but never observed against a live
-   corruption. Treat the first escalation as a genuine signal about how long an
-   in-process corruption actually survives.
-2. **Which writer caused the 2026-08-30 event is not confirmed.** The mechanism
-   is proven real at HEAD; mapping it to that event is inference from fill
-   prices/timestamps plus the removed `d808c052`/`e2898e51` code. That window's
-   own logs are gone (retention starts 2026-09-11).
-3. **No known remaining writer of `slot.price` from carried data.** The
-   `sync_engine.ts` materialize path (a CREATE landing after master lost the
-   slot) wrote `price: descriptorPrice` — the carried price — and now derives
-   the level from `priceForSlot(parseSlotIndex(gridOrderId), genesis)` instead,
-   keeping the descriptor price only when there is no genesis ladder to derive
-   from (migration), and warning when it does. Note this path is **not covered
-   by the emission check**, because it materializes a slot rather than emitting
-   an order, so it needed its own fix.
-   `virtualizeOrder`, `convertToSpreadPlaceholder` and `toRailHolePlaceholder`
-   were audited and verified identity-preserving, including under the checker.
-4. **No explicit "market has left the configured bounds" signal.** The hold is
-   per-order and reactive, so the bot cannot distinguish "one stray order
-   outside the range" from "the market left the range entirely", nor warn
-   *before* orders become stranded. The designated place is the divergence
-   telemetry (`ANCHOR.DIVERGENCE_INFO` / `DIVERGENCE_WARN`,
-   `calculateGridSideDivergenceMetric`) — note those constants survive even
-   though the anchor that fed them was removed, so consumers may be partly dead.
-   Note the escape hatch is now time-based rather than market-aware: a 24h hold
-   escalates whether the market left the bounds or one order is simply stranded,
-   because neither case is distinguishable from the hold record alone. A genuine
-   "market left the bounds" signal would let the escalation fire on cause rather
-   than on a timer. The timer's blast radius is narrowed by restricting the
-   trigger to genuinely stranded reasons (`isStrandedHoldOrder`): holds that the
-   owning machinery already resolves — a broadcast region, an uncommitted
-   boundary, an unchanged replan — no longer reach the escalation at all.
-
 ## The removed placement gate: do NOT naively re-land
 
 `d808c052` added `checkPlacementPriceSanity` (reject a planned price >5% from a
@@ -528,7 +562,7 @@ Implication: restoring `checkPlacementPriceSanity` alone would **not** fix that.
 Any re-land must fix the out-of-bounds-skip deadlock *and* clamp the rotation
 independently of the anchor. See `git show d808c052` for the removed
 implementation; the removal provenance (symbol → built → removed) is recorded in
-`docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md`.
+`docs/ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md`.
 
 ## Caveats
 

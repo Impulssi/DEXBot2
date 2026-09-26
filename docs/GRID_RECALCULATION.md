@@ -25,7 +25,7 @@ rebuild around that snapshot.
 | **Initial AMA Snapshot** | Market adapter | Bot has no accepted AMA `gridCenterPrice` yet | Write `dynamicgrid.json`, then write a trigger file | Full grid resync around the first accepted AMA center |
 | **AMA Center Move** | Market adapter | Current AMA center moves past the configured delta threshold | Write `dynamicgrid.json`, then write a trigger file | Full grid resync around the new accepted AMA center |
 | **AMA Slope Range Move** | Market adapter | Range-scaling bot's accepted AMA-slope baseline moves past threshold | Write range-scaling fields to `dynamicgrid.json`, then write a trigger file | Full grid resync with updated asymmetric range/offset data |
-| **RMS Structural Divergence** | Bot runtime maintenance | Current grid shape diverges from persisted/on-chain grid by RMS threshold | Refresh `gridCenterPrice` from latest `amaCenterPrice`, then run full grid resync | Full grid resync from latest market-adapter snapshot |
+| **RMS Structural Divergence** | Bot runtime maintenance | Current grid shape diverges from persisted grid (ACTIVE + VIRTUAL) by RMS threshold | Refresh `gridCenterPrice` from latest `amaCenterPrice`, then run full grid resync | Full grid resync from latest market-adapter snapshot |
 | **Available-Funds Resize** | Bot runtime maintenance | Filled-order proceeds exceed `GRID_REGENERATION_PERCENTAGE` (grow), or grid-tracked size exceeds allocation by that threshold after fund removal (shrink) | Recalculate affected side/order sizes through maintenance logic | Order-size/grid maintenance update, not an AMA recenter trigger |
 
 Each source is evaluated independently. Market-adapter full-resync requests are
@@ -260,27 +260,10 @@ need a reset to move to the new asymmetric range and offset placement price.
 ### Configuration
 
 Range scaling is enabled by the whitelist's `asymmetricBounds: true` flag.
-Generate or update the AMA whitelist with:
-
-```bash
-dexbot white
-```
-
-This writes `profiles/market_adapter_whitelist.json`. The default generation
-enables AMA live writes for new AMA bots, while leaving dynamic weights and
-range scaling disabled.
-
-To opt new AMA entries into range scaling:
-
-```bash
-dexbot white --asymmetric-bounds
-```
-
-To overwrite one existing bot (otherwise preserved):
-
-```bash
-dexbot white --asymmetric-bounds --bot <botKey>
-```
+Set it per bot in the editor: `dexbot bot` → `2) Modify bot` → pick the bot →
+`6) Adapter` → **Range** = yes. The flag is stored in
+`profiles/market_adapter_whitelist.json` next to **Price** (AMA pricing) and
+**Weight** (dynamic weights); all three default to off until enabled.
 
 The snapshot fields involved are:
 
@@ -289,6 +272,14 @@ The snapshot fields involved are:
 - `gridPriceOffsetPct`: signed market/start-price offset derived from AMA slope
 - `amaSlopeDeltaPercent`: distance from the accepted baseline
 - `amaSlopeThresholdPercent`: threshold required to trigger the reset
+
+**Trigger threshold.** By default the reset fires when the slope delta crosses
+`AMA_SLOPE_DELTA_THRESHOLD_PERCENT`, a percentage of the AMA max slope
+(`(value/100) × maxSlopePct`) — default `8%`, stored under `MARKET_ADAPTER` in
+`profiles/general.settings.json` and editable via `dexbot bot` → `1) Grid
+Drift` (`AMA-Slope Δ`). An explicit `amaSlopeDeltaThresholdPercent` in
+`profiles/market_adapter_settings.json` bypasses the factor and is used
+directly as an average percent-per-bar threshold.
 
 AMA slope values are stored and compared as average percent per bar. Older
 settings that used cumulative percent over the full lookback can either be
@@ -313,17 +304,25 @@ so the adapter converts them when loading overrides. New settings should use
 
 ### What It Does
 Compares the **calculated grid** currently held by the bot with the
-**persisted/on-chain grid state**. When structural divergence exceeds the
-threshold, the bot performs a full grid resync.
+**persisted grid state** (ACTIVE on-chain orders plus VIRTUAL planned
+reservations). When structural divergence exceeds the threshold, the bot
+performs a full grid resync.
+
+**Scope (per side):** the metric covers **ACTIVE + VIRTUAL** orders. PARTIAL
+orders are excluded (expected to deviate mid-fill) and SPREAD placeholders are
+excluded (size-0). VIRTUAL slots carry the planned reservation for unplaced
+rail slots (`funds.virtual`), so a persisted-vs-ideal drift there moves
+`Available = ChainFree − Virtual − fees` and is treated as structural.
 
 **Why it matters:** Order fills, rotations, and fee deductions can make the
-active grid shape drift away from the stored/on-chain picture. RMS divergence
+grid shape drift away from the stored picture. RMS divergence
 detects that structural drift. Once it crosses the threshold, DEXBot rebuilds
 from the latest market-adapter snapshot instead of trying to keep patching the
 old shape.
 
 The RMS calculation compares the runtime grid (calculated from the bot's
-config and live dynamic weights) against the persisted/on-chain grid state.
+config and live dynamic weights) against the persisted grid state
+(ACTIVE + VIRTUAL).
 Crossing the threshold only changes the follow-up action: the bot refreshes
 `gridCenterPrice` from the latest `amaCenterPrice` in `dynamicgrid.json`,
 then runs the full resync path.
@@ -336,7 +335,7 @@ code paths and log differently:
 
 | Path | Fires from | Trigger | Log signature |
 |------|-----------|---------|---------------|
-| **Periodic divergence** | `dexbot_maintenance_runtime.ts` periodic sync loop | `Grid.monitorDivergence()` reports `buy.rms` or `sell.rms` above threshold | `Grid update triggered by structural divergence during periodic: buy=..., sell=...` |
+| **Periodic divergence** | `dexbot_maintenance_runtime.ts` periodic sync loop | `Grid.monitorDivergence()` reports `buy.rms` or `sell.rms` above threshold | `[RMS] Grid update triggered by structural divergence during periodic: buy=...% sell=...% (threshold=...%) sides=... → TRIGGER-RESYNC (rms_structural_grid_resync)` |
 | **Structural recovery (COW guard)** | `dexbot_class.ts` `_wireStructuralGridResyncRequest()` | Order manager detects unmatched chain orders during copy-on-write placement | `[RECOVERY] Running structural full grid resync for <reason> (N unmatched chain order(s))` |
 
 The structural-recovery path is debounced through `_structuralGridResyncTimer`
@@ -376,7 +375,7 @@ and dedupes while one resync is already pending or running.
 ### How It Works
 
 1. **Grid Engine** (`modules/order/grid.ts`) calculates the ideal grid state
-2. Compares with the actual blockchain grid state after fills/rotations
+2. Compares with the persisted grid state — ACTIVE on-chain orders plus VIRTUAL planned reservations — after fills/rotations
 3. Computes RMS divergence metric:
    ```
    RMS = √(mean of ((calculated - persisted) / persisted)²)
@@ -558,9 +557,14 @@ market_adapter_ama_slope_delta_threshold
 
 **RMS Divergence Trigger:**
 ```
-Grid update triggered by structural divergence during periodic: buy=..., sell=...
+[RMS] Grid update triggered by structural divergence during periodic: buy=16.20% sell=2.10% (threshold=14.3%) sides=buy → TRIGGER-RESYNC (rms_structural_grid_resync)
 Grid regeneration triggered. Performing full grid resync...
 Recorded grid reset metadata for dynamic grid state.
+```
+
+At `debug` level each tick also emits the per-side check detail (mirroring the `[DIVERGENCE]` ratio-check line):
+```
+[RMS] BUY check: metric=...% (threshold=14.3%) → TRIGGER-RESYNC/no trigger | SELL check: metric=...% (threshold=14.3%) → TRIGGER-RESYNC/no trigger
 ```
 
 **Available-Funds Resize Trigger:**
@@ -613,6 +617,6 @@ Removed trigger file.
 - `modules/dexbot_class.ts` — `_performGridResync()`, `requestGridReset()`, and COW-guard structural recovery wiring
 - `modules/order/grid.ts` — RMS divergence check and grid comparison
 - `modules/order/manager.ts` — Available-funds resize threshold logic
-- `modules/market_adapter_whitelist.ts` / `scripts/generate_market_adapter_whitelist.ts` — Whitelist generation backing `dexbot white`
+- `modules/market_adapter_whitelist.ts` — Whitelist storage/read helpers (the bot editor's `6) Adapter` reads and writes the same file)
 - `profiles/general.settings.json` — User-editable configuration
 - `profiles/bots.json` — Per-bot configuration including AMA

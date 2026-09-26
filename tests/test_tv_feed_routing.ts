@@ -11,7 +11,7 @@ const {
     feedAgeMs,
     feedName,
     FEED_STALE_WARN_AGE_MS,
-} = require('../scripts/tv');
+} = require('../scripts/chart_command');
 
 const BTS = { id: '1.3.0', precision: 5, symbol: 'BTS' };
 const MPA = { id: '1.3.5649', precision: 4, symbol: 'HONEST.USD' };

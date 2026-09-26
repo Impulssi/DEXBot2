@@ -497,7 +497,12 @@ export function consumeDeferredDrainMarker(bot: any): boolean {
  * through ({ defer: false, stuckFallback: true }) to the legacy path whose
  * in-lock wait still caps at 30s and proceeds — a leaked flag can delay
  * fills, never starve them. The marker resets whenever the consumer
- * proceeds, so only continuous deferral counts toward the bound.
+ * proceeds, so only continuous deferral counts toward the bound. The bound
+ * is also re-armed whenever the active region advances its start timestamp
+ * (manager._broadcastingStartedAt), so a legitimately long region — startup
+ * reconcile Phase 2 with many create groups — cannot accumulate deferral
+ * time across the whole region and trip the bound mid-flight; only a
+ * genuinely frozen flag (timestamp never advances) reaches the fallback.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {number} [nowMs] - Clock override (tests)
  * @returns {{ defer: boolean; stuckFallback: boolean }} defer=true means the
@@ -510,8 +515,21 @@ function shouldDeferFillForBroadcast(bot: any, nowMs?: number): { defer: boolean
         active = bot?.manager?.isBroadcastingActive?.() === true;
     } catch { active = false; }
     if (!active) {
-        if ((bot as any)?._fillBroadcastDeferSince) (bot as any)._fillBroadcastDeferSince = 0;
+        if (bot) {
+            if ((bot as any)._fillBroadcastDeferSince) (bot as any)._fillBroadcastDeferSince = 0;
+            (bot as any)._fillBroadcastDeferRegionAt = 0;
+        }
         return { defer: false, stuckFallback: false };
+    }
+    // Region-change detection: startBroadcasting() refreshes
+    // _broadcastingStartedAt on every increment, so an advancing timestamp
+    // proves the region is live and re-arms the bound. A frozen flag does
+    // not advance it and still falls through at the bound.
+    const regionStartedAt = Number((bot as any)?.manager?._broadcastingStartedAt) || 0;
+    const lastRegionAt = Number((bot as any)?._fillBroadcastDeferRegionAt) || 0;
+    if (regionStartedAt && regionStartedAt !== lastRegionAt) {
+        (bot as any)._fillBroadcastDeferRegionAt = regionStartedAt;
+        (bot as any)._fillBroadcastDeferSince = now;
     }
     const deferMaxMs = Number((TIMING as any)?.FILL_BROADCAST_DEFER_MAX_MS) > 0
         ? Number((TIMING as any).FILL_BROADCAST_DEFER_MAX_MS)
@@ -520,6 +538,7 @@ function shouldDeferFillForBroadcast(bot: any, nowMs?: number): { defer: boolean
     if (!since) (bot as any)._fillBroadcastDeferSince = now;
     if (since && (now - since) >= deferMaxMs) {
         (bot as any)._fillBroadcastDeferSince = 0;
+        (bot as any)._fillBroadcastDeferRegionAt = 0;
         return { defer: false, stuckFallback: true };
     }
     return { defer: true, stuckFallback: false };
@@ -1510,5 +1529,5 @@ async function consumeFillQueue(bot: any, chainOrders: any) {
     }
 }
 
-export { wireProcessedFillTracking, flushProcessedFillPersistence, flushProcessedFillPersistenceForKeys, buildOrphanFillFallbackKey, applyReplaySafeFillAccounting, applyReplaySafeTrackedFillAccounting, applyReplaySafeOrphanFillAccounting, processSweepOrphanFill, createFillCallback, maxConsecutiveFillConsumerFailures, computeFillConsumerBackoffMs, scheduleFillConsumerRestart, scheduleDeferredFillRetry, shouldDeferFillForBroadcast, consumeFillQueue, processFillsWithBootstrapMode }
+export { wireProcessedFillTracking, flushProcessedFillPersistence, flushProcessedFillPersistenceForKeys, buildOrphanFillFallbackKey, applyReplaySafeFillAccounting, applyReplaySafeTrackedFillAccounting, applyReplaySafeOrphanFillAccounting, processSweepOrphanFill, createFillCallback, scheduleFillConsumerRestart, scheduleDeferredFillRetry, shouldDeferFillForBroadcast, consumeFillQueue, processFillsWithBootstrapMode }
 

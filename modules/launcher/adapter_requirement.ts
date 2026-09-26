@@ -23,7 +23,7 @@
  *     stale-lock handling). The wrapper exports DEXBOT_ADAPTER_OWNER=wrapper into the
  *     bot child env; bots then skip their own sync/poll and act as pure
  *     adapter-output consumers.
- *   - Wrapper-less modes (dexbot test one-shot, isolated supervisor, PM2):
+ *   - Wrapper-less modes (the one-shot runner, isolated supervisor, PM2):
  *     the variable is unset and the first/only bot keeps the in-bot fallback
  *     via getSharedMarketAdapterRuntime / pm2.
  *
@@ -153,8 +153,6 @@ function readAdapterRequirement(botsFile?: string): {
 }
 
 export {
-    ADAPTER_OWNER_ENV,
-    WRAPPER_ADAPTER_OWNER,
     isWrapperAdapterOwner,
     buildAdapterFingerprint,
     readAdapterRequirement,

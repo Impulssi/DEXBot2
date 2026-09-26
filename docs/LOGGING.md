@@ -43,6 +43,8 @@ Module → Logger.log() ──┬→ console (stdout/stderr)
                               + JSON lines (optional)
 ```
 
+**Under PM2** the console branch is the only active sink: PM2 captures stdout/stderr into `profiles/logs/<app>.log`, so the Logger suppresses its own file writes and its timestamps (PM2's `log_date_format` prefixes each line). Keep console output enabled under PM2 — auto-quieting it would leave PM2 with nothing to capture. Use `quietUnderPm2: true` only if you deliberately want a silent process.
+
 ---
 
 ## Log Levels
@@ -155,7 +157,13 @@ The default `LOG_LEVEL` is `"info"`. For production or minimal output, set to `"
 
 Example: 1.1GB budget with 10 rotated files → each file rotates at ~100MB, max total ~1.1GB.
 
-Under PM2, rotation is auto-suppressed — PM2 handles its own log files.
+Under PM2, the Logger's own file writes and rotation are suppressed — PM2 owns the log files. PM2 core does **not** rotate them (the per-app `max_size` field is ignored), so `dexbot pm2` installs and configures the `pm2-logrotate` module (100M per file, retain 10, compressed) on first start. To manage rotation yourself, install it ahead of time:
+
+```bash
+pm2 install pm2-logrotate
+pm2 set pm2-logrotate:max_size 100M
+pm2 set pm2-logrotate:retain 10
+```
 
 ---
 
@@ -243,6 +251,7 @@ Prefix tags used in log messages to help operators identify event types. To find
 | `[SPREAD-CORRECTION]` | `order/grid.ts` | Partial order spread correction |
 | `[STRATEGY]` | `order/strategy.ts` | Fee event cache and strategy decisions |
 | `[RECONCILE]` | `order/utils/validate.ts` | Grid reconciliation ([GRID_RECONCILE.md](GRID_RECONCILE.md)) |
+| `[RMS]` | `order/grid.ts`, `dexbot_maintenance_runtime.ts` | RMS structural-divergence checks: per-side `metric vs threshold → TRIGGER-RESYNC/no trigger` at `debug` (plus a `checks disabled` variant when the threshold is 0), reset line with threshold + breaching sides at `info` |
 | `[GAP-EVAC]` | `order/utils/validate.ts`, `order/manager.ts`, `dexbot_startup_runtime.ts`, `dexbot_state_recovery.ts` | Stuck in-band (gap-band) order streak warnings, cancel-only evacuation teeth, persisted-streak restore counts |
 | `[GRID-TYPE-CORRECT]` | `order/grid.ts` | One-time backfill retype of legacy empty slots to rail-typed holes on load |
 | `[LAST-FILL-GUARD]` | `dexbot_cow_runtime.ts` | Last-fill-guard blocks plus gap-evacuation bypass allows/stale-stamp downgrades |
@@ -264,6 +273,13 @@ New/updated operator-visible messages added by the uncertain-broadcast and COW h
 | `⚠ FAILED attempt N/3` / `✗ BLACKLISTED after N failures` | Daemon node health ledger — per-node retry exhaustion then blacklist |
 | `[DUST] Chain refetch after verified cancel is TRUNCATED/EMPTY; applying local cancel sync` | Truncated-read fallback in the dust-cancel refetch path |
 | `authoritative absence verified` | Aligned retry log wording — re-broadcast only on provable absence |
+| `Fill channel DEGRADED for <account>: N consecutive history-scan failures … forcing reconnect` | Fill-history channel stayed dead while the socket looked open; the watchdog forced a reconnect (which re-establishes the session and fires the post-reconnect safety-net sync) |
+| `Fill channel recovered for <account> [after N forced reconnect(s)]` | A previously degraded channel completed a successful history scan; `N` is how many forced reconnects it took (the clause is omitted when it recovered without an issued reconnect) |
+| `processObjects (fill-poll): error … (+N suppressed)` | Throttled fill-channel error; `+N suppressed` counts repeats collapsed within the log interval |
+| `processObjects (retry<N>-after-<context>): error …` | Fast re-scan rung fired after a channel failure (ladder 5s/10s/15s), to verify a recovery attempt without waiting for the next 60s poll tick. `N` is the rung |
+| `Fill channel for <account> did NOT recover after N forced reconnects … fills may be missed … restart the bot` | **Operator action required.** Automatic recovery ran its full escalation and the channel is still dead — the log line that makes a failed recovery visible instead of a silent reconnect loop |
+| `⚠ <node>… FAILED attempt N/3 (fill channel unrecoverable for <account>: …)` | **Node strike recorded.** Emitted only after N forced reconnects failed to clear the channel, i.e. the node itself is suspect. A forced reconnect on its own never costs a node a strike — a session-level wedge that clears on the first cycle leaves the strike ledger untouched. Three of these blacklist the node for 24h |
+| `Forcing reconnect on <node> (<reason>)` | Transport-level forced reconnect (stale api_id escalation or fill-channel watchdog); the node is reported failed so the reconnect prefers another node |
 
 ---
 
@@ -315,7 +331,7 @@ Yes — each bot entry in `profiles/bots.json` accepts an optional `logging` fie
 The per-bot `logging` is deep-merged on top of the global config from `general.settings.json`. See `modules/runtime_settings.ts` for the merge logic and `modules/order/manager.ts` for where the merged config reaches the logger.
 
 **Q: What about PM2?**
-The logger auto-detects PM2 and suppresses file writes (PM2 captures stdout/stderr). File rotation is also suppressed under PM2.
+The logger auto-detects PM2 and suppresses its own file writes because PM2 captures stdout/stderr into `profiles/logs/<app>.log`. It never auto-quiets under PM2 (that would drop every line — stdout is the only sink). Log rotation moves to `pm2-logrotate`, which `dexbot pm2` installs automatically on first start.
 
 **Q: Are log lines lost on crash?**
 Queued-but-unwritten lines could be lost. Critical errors go to stderr immediately (PM2 captures those). Queue drains every 100ms. Call `flush()` on shutdown.

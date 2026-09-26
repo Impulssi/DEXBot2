@@ -250,6 +250,25 @@ async function runTests() {
         });
     }
 
+    console.log(' - heldForMs tracks live hold duration...');
+    {
+        const lock = new AsyncLock();
+        assert.strictEqual(lock.heldForMs(), 0, 'idle lock reports no hold');
+        const gate = deferred();
+        const entered = deferred();
+        const p = lock.acquire(async () => {
+            entered.resolve();
+            await gate.promise;
+        });
+        await entered.promise;
+        assert.strictEqual(lock.isLocked(), true, 'lock is held');
+        await new Promise((r) => setTimeout(r, 25));
+        assert.ok(lock.heldForMs() >= 20, `heldForMs must grow while held (got ${lock.heldForMs()})`);
+        gate.resolve();
+        await p;
+        assert.strictEqual(lock.heldForMs(), 0, 'released lock reports no hold');
+    }
+
     console.log('\n✓ AsyncLock Force-Release tests passed!');
 }
 

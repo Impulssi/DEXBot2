@@ -40,5 +40,3 @@ export const CLI_COLORS = {
   silver: '\x1b[38;5;250m', // light silver grey (bots editor)
   greenBold: '\x1b[1;32m', // bold green (bots editor)
 } as const;
-
-export type CliColors = typeof CLI_COLORS;

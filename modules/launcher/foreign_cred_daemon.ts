@@ -157,5 +157,5 @@ async function ensureNoForeignCredentialDaemon({
     return false;
 }
 
-export { ensureNoForeignCredentialDaemon, findCredentialSocketOwnerPid, readCredentialSocketInode, readOwnedCredentialDaemonPid, stopPid }
+export { ensureNoForeignCredentialDaemon, findCredentialSocketOwnerPid, readCredentialSocketInode }
 

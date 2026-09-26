@@ -389,6 +389,8 @@ function testDrawdownStablePeakMonotonic() {
         `monotonic 12 trades: hadStablePeak should be true, got ${m.mddHadStablePeak}`);
     assert.ok(m.mddPct >= 0,
         `monotonic 12 trades: mddPct should be ≥ 0 (no drawdown), got ${m.mddPct}`);
+    assert.strictEqual(m.mddAbsBts, 0,
+        `monotonic 12 trades: absolute drawdown should be 0, got ${m.mddAbsBts}`);
 }
 
 function testDrawdownStablePeakEarly() {
@@ -417,6 +419,190 @@ function testDrawdownStablePeakEarly() {
         `early 6 trades: mddPct (absolute min equity) should be > 0, got ${m.mddPct}`);
 }
 
+// ─── Window-aware annualisation ───────────────────────────────────────────
+
+/** A winning round-trip (buy @ buyPrice, sell @ sellPrice) timestamped alike. */
+function roundTrip(seq: number, timeIso: string, buyPrice: number, sellPrice: number, amount: number) {
+    return [
+        t({
+            direction: 'buy', baseAmount: amount, quoteAmount: amount * buyPrice,
+            price: buyPrice, sequence: seq, orderId: `1.7.${seq}`,
+            isMaker: true, marketFeeReal: 0, time: timeIso,
+        }),
+        t({
+            direction: 'sell', baseAmount: amount, quoteAmount: amount * sellPrice,
+            price: sellPrice, sequence: seq + 1, orderId: `1.7.${seq + 1}`,
+            isMaker: true, marketFeeReal: 0, time: timeIso,
+        }),
+    ];
+}
+
+function testWindowAnnualisationDailyBins() {
+    // Three winning round-trips on day 1, queried over a 10-day window.
+    const trades: any[] = [];
+    for (let i = 0; i < 3; i++) {
+        trades.push(...roundTrip(i * 2 + 1, `2025-01-01T0${i + 1}:00:00Z`, 10, 11, 10));
+    }
+    const pair = analyzePair(trades, 'fifo');
+    const startMs = Date.parse('2025-01-01T00:00:00Z');
+    const endMs = Date.parse('2025-01-11T00:00:00Z'); // exactly 10 days
+    const m = computeMetrics(pair, { startMs, endMs });
+
+    assert.strictEqual(m.periodLabel, '1d', '10-day window should bin daily');
+    assert.strictEqual(m.periodCount, 10, 'window must be zero-filled to 10 daily periods');
+    assert.strictEqual(m.periodSpanDays, 10, 'window span is 10 days');
+    assert.ok(Math.abs(m.annualFactor - Math.sqrt(365)) < 1e-9, 'daily annualisation factor');
+    assert.ok(Number.isFinite(m.sharpeAnn), 'Sharpe should be finite');
+    assert.ok(Number.isFinite(m.sharpeAnnSE), 'Sharpe standard error should be reported');
+
+    // Flat days are included, so the mean must be diluted by the 9 empty days.
+    assert.ok(Number.isFinite(m.projectedNetPnlPerDay), 'per-day projection finite');
+    const expectedAnn = pair.totalRealizedPnlNet / 10 * 365;
+    assert.ok(Math.abs(m.projectedNetPnlAnn - expectedAnn) < 1e-6,
+        `annual projection = window net PnL / 10d * 365, got ${m.projectedNetPnlAnn}`);
+
+    // Exact scaling identity: all PnL sits in period 0 with 9 zero-filled
+    // periods, so sharpeAnn must equal per-period Sharpe × √365. Guards the
+    // annualisation constant and the zero-fill from drifting.
+    const net = pair.totalRealizedPnlNet;
+    const meanE = net / 10;
+    const stdE = Math.sqrt((9 * meanE * meanE + (net - meanE) ** 2) / 9);
+    const expectedSharpe = (meanE / stdE) * Math.sqrt(365);
+    assert.ok(Math.abs(m.sharpeAnn - expectedSharpe) < 1e-9,
+        `sharpeAnn = per-period Sharpe × √365, expected ${expectedSharpe}, got ${m.sharpeAnn}`);
+
+    // No losing periods: Sortino must be ∞ (undefined), never 0.
+    assert.strictEqual(m.sortinoAnn, Infinity,
+        `no losing periods should give Sortino = Infinity, got ${m.sortinoAnn}`);
+}
+
+function testPartialPeriodDropped() {
+    const trades = roundTrip(1, '2025-01-01T01:00:00Z', 10, 11, 10);
+    const pair = analyzePair(trades, 'fifo');
+    const startMs = Date.parse('2025-01-01T00:00:00Z');
+    const endMs = startMs + 100 * 3600_000; // 100h → 4 complete daily periods
+    const m = computeMetrics(pair, { startMs, endMs });
+    assert.strictEqual(m.periodLabel, '1d', '100h window should still bin daily');
+    assert.strictEqual(m.periodCount, 4, 'only the 4 complete days are scored');
+
+    // Projection must share the bins' whole-period basis: scored span is 4
+    // whole days, not the queried 4.1667d, so a trailing-day fill can never
+    // inflate the projection while being absent from Sharpe/Sortino.
+    assert.ok(Math.abs(m.scoredSpanDays - 4) < 1e-9,
+        `scored span should be 4 whole days, got ${m.scoredSpanDays}`);
+    const expectedAnn = pair.totalRealizedPnlNet / 4 * 365;
+    assert.ok(Math.abs(m.projectedNetPnlAnn - expectedAnn) < 1e-6,
+        `projection over scored days, expected ${expectedAnn}, got ${m.projectedNetPnlAnn}`);
+    // Activity shares the same basis: 1 scored lot over 4 whole days.
+    assert.ok(Math.abs(m.fillsPerDay - 0.25) < 1e-9,
+        `fills/day uses scored span, expected 0.25, got ${m.fillsPerDay}`);
+}
+
+function testScoredActivityExcludesTail() {
+    // One round-trip inside the scored window (day 1) and one in the trailing
+    // partial period (97h in). Every window-derived metric must ignore the
+    // tail lot — ratios, projection AND activity rates alike.
+    const trades = [
+        ...roundTrip(1, '2025-01-01T01:00:00Z', 10, 11, 10),
+        ...roundTrip(3, '2025-01-05T01:00:00Z', 10, 12, 10),
+    ];
+    const pair = analyzePair(trades, 'fifo');
+    const startMs = Date.parse('2025-01-01T00:00:00Z');
+    const endMs = startMs + 100 * 3600_000; // 4 whole days scored of 4.1667d
+    const m = computeMetrics(pair, { startMs, endMs });
+
+    assert.ok(Math.abs(m.scoredSpanDays - 4) < 1e-9, '4 whole days scored');
+    // 1 scored lot over 4 scored days — NOT 2 lots over 4 days.
+    assert.ok(Math.abs(m.fillsPerDay - 0.25) < 1e-9,
+        `activity must exclude the tail lot, expected 0.25 fills/day, got ${m.fillsPerDay}`);
+    // Only lot 1's buy+sell quote (100 + 110) is scored → 210 / 4 = 52.5.
+    assert.ok(Math.abs(m.avgVolumePerDay - 52.5) < 1e-9,
+        `volume must exclude the tail lot, expected 52.5/day, got ${m.avgVolumePerDay}`);
+    // Projection likewise excludes the tail lot's PnL.
+    const scoredNet = pair.realizedPnls
+        .filter(r => Date.parse(r.exitTime) < startMs + 4 * 86400000)
+        .reduce((s, r) => s + r.pnlNet, 0);
+    assert.ok(Math.abs(m.projectedNetPnlAnn - scoredNet / 4 * 365) < 1e-6,
+        `projection uses scored lots only, got ${m.projectedNetPnlAnn}`);
+}
+
+function testBoundaryTradeFoldedIntoLastPeriod() {
+    // A round-trip exiting exactly at the window end must count toward the
+    // last period when the window is an exact bin multiple (ES query is
+    // inclusive of `lte`) — not silently vanish from every window metric.
+    const trades = roundTrip(1, '2025-01-11T00:00:00Z', 10, 11, 10);
+    const pair = analyzePair(trades, 'fifo');
+    const startMs = Date.parse('2025-01-01T00:00:00Z');
+    const endMs = Date.parse('2025-01-11T00:00:00Z'); // exactly 10 days
+    const m = computeMetrics(pair, { startMs, endMs });
+    assert.strictEqual(m.periodCount, 10, 'boundary trade must not extend the window');
+    assert.ok(Number.isFinite(m.sharpeAnn), 'boundary trade must be binned (finite Sharpe)');
+    assert.strictEqual(m.sortinoAnn, Infinity,
+        'boundary trade must be binned (winning window → Sortino ∞)');
+    const expectedAnn = pair.totalRealizedPnlNet / 10 * 365;
+    assert.ok(Math.abs(m.projectedNetPnlAnn - expectedAnn) < 1e-6,
+        `boundary trade must feed the projection, expected ${expectedAnn}, got ${m.projectedNetPnlAnn}`);
+}
+
+function testUnparseableTimeFillsExcludedEverywhere() {
+    // A fill whose timestamp fails to parse has no calendar period, so it is
+    // excluded from every window-derived metric — ratios, projection and
+    // activity rates alike — keeping one consistent scored basis.
+    const trades = [
+        ...roundTrip(1, '2025-01-01T01:00:00Z', 10, 11, 10),
+        ...roundTrip(3, 'not-a-date', 10, 12, 10),
+    ];
+    const pair = analyzePair(trades, 'fifo');
+    const startMs = Date.parse('2025-01-01T00:00:00Z');
+    const endMs = Date.parse('2025-01-11T00:00:00Z'); // exactly 10 days
+    const m = computeMetrics(pair, { startMs, endMs });
+
+    // Only the parseable lot counts: 1 / 10 scored days.
+    assert.ok(Math.abs(m.fillsPerDay - 0.1) < 1e-9,
+        `unparseable-time lot must be excluded, expected 0.1 fills/day, got ${m.fillsPerDay}`);
+    // Only the parseable lot's notional: (100 + 110) / 10 = 21.
+    assert.ok(Math.abs(m.avgVolumePerDay - 21) < 1e-9,
+        `unparseable-time notional must be excluded, expected 21/day, got ${m.avgVolumePerDay}`);
+    // Projection uses the same strict basis.
+    const scoredNet = pair.realizedPnls
+        .filter(r => {
+            const t = Date.parse(r.exitTime);
+            return Number.isFinite(t) && t >= startMs && t < startMs + 10 * 86400000;
+        })
+        .reduce((s, r) => s + r.pnlNet, 0);
+    assert.ok(Math.abs(m.projectedNetPnlAnn - scoredNet / 10 * 365) < 1e-6,
+        `projection must exclude the unbinable lot, got ${m.projectedNetPnlAnn}`);
+    assert.ok(Number.isFinite(m.sharpeAnn), 'Sharpe unaffected by the unbinable lot');
+}
+
+function testWindowAnnualisationHourlyBins() {
+    const trades: any[] = [];
+    for (let i = 0; i < 3; i++) {
+        trades.push(...roundTrip(i * 2 + 1, `2025-01-01T0${i + 1}:00:00Z`, 10, 11, 10));
+    }
+    const pair = analyzePair(trades, 'fifo');
+    const startMs = Date.parse('2025-01-01T00:00:00Z');
+    const endMs = Date.parse('2025-01-01T06:00:00Z'); // 6 hours
+    const m = computeMetrics(pair, { startMs, endMs });
+
+    assert.strictEqual(m.periodLabel, '1h', 'short window should bin hourly');
+    assert.strictEqual(m.periodCount, 6, '6h window = 6 hourly periods');
+    assert.ok(Math.abs(m.annualFactor - Math.sqrt(8760)) < 1e-9, 'hourly annualisation factor');
+}
+
+function testSinglePeriodHasNoSharpe() {
+    const trades = roundTrip(1, '2025-01-01T01:00:00Z', 10, 11, 10);
+    const pair = analyzePair(trades, 'fifo');
+    const m = computeMetrics(pair, {
+        startMs: Date.parse('2025-01-01T00:00:00Z'),
+        endMs: Date.parse('2025-01-01T01:00:00Z'),
+    });
+    assert.strictEqual(m.periodCount, 1, 'one hourly period in a 1h window');
+    assert.ok(Number.isNaN(m.sharpeAnn), 'single period has no dispersion → NaN Sharpe');
+    assert.ok(Number.isNaN(m.sharpeAnnSE), 'NaN standard error with a single period');
+    assert.ok(Number.isNaN(m.sortinoAnn), 'single period → NaN Sortino (nothing to estimate)');
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────
 
 function main() {
@@ -431,6 +617,13 @@ function main() {
     testSellWithoutFee();
     testDrawdownStablePeakMonotonic();
     testDrawdownStablePeakEarly();
+    testWindowAnnualisationDailyBins();
+    testWindowAnnualisationHourlyBins();
+    testPartialPeriodDropped();
+    testScoredActivityExcludesTail();
+    testBoundaryTradeFoldedIntoLastPeriod();
+    testUnparseableTimeFillsExcludedEverywhere();
+    testSinglePeriodHasNoSharpe();
     console.log('✓ trade profitability fee tests passed');
 }
 

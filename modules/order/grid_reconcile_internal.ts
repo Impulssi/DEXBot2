@@ -783,11 +783,13 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
  * @param {boolean} [params.releaseUntrackedFunds=false] - If true, release the cancelled order's
  *   committed funds via addToChainFree. Use only for unmatched chain orders that have no
  *   corresponding ACTIVE/PARTIAL grid slot (where synchronizeWithChain cannot release them).
- * @returns {Promise<void>}
+ * @param {Function} [params.shouldCancel] - Optional final pre-broadcast ownership/geometry guard.
+ * @returns {Promise<boolean>} true when a cancellation was actually submitted
  * @private
  */
-async function _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId, dryRun, chainOrderObj, releaseUntrackedFunds = false }: { chainOrders: any; account: any; privateKey: any; manager: any; chainOrderId: any; dryRun: any; chainOrderObj: any; releaseUntrackedFunds?: boolean; }): Promise<void> {
-    if (dryRun) return;
+async function _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId, dryRun, chainOrderObj, releaseUntrackedFunds = false, shouldCancel = null }: { chainOrders: any; account: any; privateKey: any; manager: any; chainOrderId: any; dryRun: any; chainOrderObj: any; releaseUntrackedFunds?: boolean; shouldCancel?: (() => boolean) | null; }): Promise<boolean> {
+    if (dryRun) return false;
+    if (typeof shouldCancel === 'function' && !shouldCancel()) return false;
 
     // The snapshot this cancel is based on may be stale: another path (e.g. the
     // sync-layer cancel-only correction) may already have cancelled the order and
@@ -846,6 +848,7 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
             });
         }
     }
+    return true;
 }
 
 /**
@@ -1332,7 +1335,7 @@ async function _adoptPossiblyLandedCreate({
  * size. This durable marker is the ONLY evidence that distinguishes a true
  * sized-VIRTUAL orphan from a normal planned slot, so the persisted grid's
  * loadGrid sanitizer drops sizes only for flagged slots (see grid.ts and
- * docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §3 lineage).
+ * docs/ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md §3 lineage).
  */
 async function _markSlotsCreateUncertain(manager: any, slotIds: any[], logger?: any): Promise<void> {
     if (!manager?.orders || typeof manager.applyGridUpdateBatch !== 'function') return;
@@ -1794,6 +1797,16 @@ async function _executePlannedStartupCreates({
 
     logger?.log?.(`Startup: Executing ${createPlans.length} planned create(s) in ${groups.length} outside->center group(s)`, 'info');
 
+    // 7c: yield to the event loop between create groups. Phase 2 holds the
+    // broadcasting region across the whole loop; a blocking/synchronous
+    // stretch of group prep + master mutations must not starve timers and
+    // watchdog pollers (region-end reschedule, _awaitBroadcastIdle, stale-flag
+    // clear) that run on the macrotask queue. The network I/O in each group
+    // already yields, but an explicit yield guarantees it per group.
+    // setTimeout(0) (not setImmediate): this module is browser-safe, and
+    // setImmediate is Node-only.
+    const yieldBetweenCreateGroups = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
     for (let i = 0; i < groups.length; i++) {
         const group = groups[i];
         const labels = group.map((p: any) => `${p.orderType.toUpperCase()}:${p.gridOrder?.id}`).join(', ');
@@ -1811,6 +1824,7 @@ async function _executePlannedStartupCreates({
                 totalGroups: groups.length,
                 });
             for (const id of batchIds) createdOrderIds.add(id);
+            await yieldBetweenCreateGroups();
             continue;
         }
 
@@ -1831,6 +1845,8 @@ async function _executePlannedStartupCreates({
                 });
             if (chainOrderId) createdOrderIds.add(chainOrderId);
         }
+
+        await yieldBetweenCreateGroups();
     }
 
     const failedCount = Math.max(0, createPlans.length - createdOrderIds.size);
@@ -1994,6 +2010,9 @@ async function _reconcileStartupSide({
                     chainOrderId: cancelInfo.chainOrderObj.id,
                     chainOrderObj: cancelInfo.chainOrderObj,
                     releaseUntrackedFunds: true,
+                    orderType,
+                    boundaryIdx: manager?.boundaryIdx,
+                    gapSlots: manager?._gapSlots,
                 });
             }
         }
@@ -2223,6 +2242,9 @@ async function _reconcileStartupSide({
                         chainOrderId: x.chain.id,
                         chainOrderObj: x.chain,
                         releaseUntrackedFunds: true,
+                        orderType,
+                        boundaryIdx: manager?.boundaryIdx,
+                        gapSlots: manager?._gapSlots,
                     });
                     cancelCount--;
                 }
@@ -2246,6 +2268,11 @@ async function _reconcileStartupSide({
                 plannedCancels.push({
                     chainOrderId: o.orderId,
                     chainOrderObj: o,
+                    gridOrderId: o.id,
+                    gridOrder: { ...o },
+                    orderType,
+                    boundaryIdx: manager?.boundaryIdx,
+                    gapSlots: manager?._gapSlots,
                     // Matched-slot funds are tracked on the grid slot; only
                     // unmatched orphans release untracked funds (mirrors the
                     // execute branch, which passes no release flag here).

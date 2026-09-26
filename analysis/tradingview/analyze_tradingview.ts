@@ -245,6 +245,11 @@ async function main() {
             },
             smaPeriod: config.smaPeriod,
             amaDefaults: {
+                // Intentionally the 3-param AMA (er/fast/slow) only: the in-page
+                // recomputation has no erSmoothPeriod input by decision — `dexbot tv`
+                // stays a plain candle chart. The dw research chart and the live
+                // adapter are the mirrors of the full bot AMA config (incl.
+                // ama.erSmoothPeriod); the knob is inert by default (global 0).
                 erPeriod: config.amaErPeriod ?? amaConfig.erPeriod,
                 fastPeriod: config.amaFastPeriod ?? amaConfig.fastPeriod,
                 slowPeriod: config.amaSlowPeriod ?? amaConfig.slowPeriod,

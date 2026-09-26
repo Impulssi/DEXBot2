@@ -728,6 +728,46 @@ async function testCloseClassification() {
     }
 }
 
+async function testForceReconnect() {
+    const { createTransport } = require('../modules/bitshares-native/transport');
+    const port = 18000 + Math.floor(Math.random() * 1000);
+    const wsServer = await createWsServer(port);
+    const failures: any[] = [];
+    const reconnects: string[] = [];
+
+    try {
+        const transport = createTransport({
+            keepAliveIntervalMs: 60000,
+            onNodeFailure: (url, message, source) => failures.push({ url, message, source }),
+            onReconnect: async (url) => { reconnects.push(url); },
+        });
+        await transport.connect([`ws://127.0.0.1:${port}/ws`], true);
+        assert.strictEqual(transport.isConnected(), true, 'Should be connected before forceReconnect');
+
+        // forceReconnect is the recovery path for a socket that looks open but
+        // serves no usable session (e.g. every RPC rejects cached api ids). It
+        // must report the active node as failed and re-establish the connection.
+        transport.forceReconnect('unit-test');
+        assert.ok(failures.some((f: any) => f.source === 'forced-reconnect'),
+            'forceReconnect must report the active node as failed');
+
+        const start = Date.now();
+        while (reconnects.length === 0 && Date.now() - start < 5000) {
+            await new Promise(r => setTimeout(r, 50));
+        }
+        assert.ok(reconnects.length >= 1, 'forceReconnect must re-establish the connection and fire onReconnect');
+        assert.strictEqual(transport.isConnected(), true, 'Should be connected after forced reconnect');
+        // The forced close must not double-report as a connection strike.
+        assert.strictEqual(failures.filter((f: any) => f.source === 'connection').length, 0,
+            'forced reconnect must not double-report a connection failure');
+
+        transport.disconnect();
+        console.log('  PASS: forceReconnect reports failure and re-establishes');
+    } finally {
+        (wsServer as any).close();
+    }
+}
+
 async function testShouldSkipNode() {
     const { createTransport } = require('../modules/bitshares-native/transport');
     const portA = 19600 + Math.floor(Math.random() * 100);
@@ -777,6 +817,7 @@ async function testShouldSkipNode() {
         await testKeepAliveRecovery();
         await testNodeFailureReportsOnce();
         await testCloseClassification();
+        await testForceReconnect();
         await testShouldSkipNode();
         console.log('\n=== All transport tests passed ===');
     } catch (e) {

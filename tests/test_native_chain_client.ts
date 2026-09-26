@@ -162,6 +162,102 @@ function sendWsFrame(socket, data) {
     socket.write(Buffer.concat([header, payload]));
 }
 
+/**
+ * Mock node that enforces per-session api registration like bitshares-core's
+ * login_api: calling an api id that this session has not registered returns
+ * `Execution error: Assert Exception: _local_apis.size() > api_id: `.
+ * resetSession() clears the registered ids to simulate a server-side session
+ * swap (or a reconnect where the client never saw a 'closed' event).
+ */
+function createStrictWsServer(port) {
+    let activeRegistered = null;
+    return new Promise((resolve, reject) => {
+        const server = http.createServer((req, res) => {
+            res.writeHead(200);
+            res.end('ok');
+        });
+
+        function reply(socket, id, result) {
+            sendWsFrame(socket, JSON.stringify({ id, jsonrpc: '2.0', result }));
+        }
+        function replyError(socket, id, message) {
+            sendWsFrame(socket, JSON.stringify({ id, jsonrpc: '2.0', error: { code: 10, message } }));
+        }
+
+        server.on('upgrade', (req, socket) => {
+            const key = req.headers['sec-websocket-key'];
+            const acceptKey = crypto.createHash('sha1')
+                .update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+                .digest('base64');
+            socket.write(
+                'HTTP/1.1 101 Switching Protocols\r\n' +
+                'Upgrade: websocket\r\n' +
+                'Connection: Upgrade\r\n' +
+                'Sec-WebSocket-Accept: ' + acceptKey + '\r\n\r\n'
+            );
+
+            // The login api (id 1) is always addressable; everything else must
+            // be registered via login_api.<namespace>() on this session.
+            const registered = new Set([1]);
+            activeRegistered = registered;
+
+            socket.on('data', (chunk) => {
+                try {
+                    const frame = parseWsFrame(chunk);
+                    if (!frame || !frame.payload) return;
+                    const msg = JSON.parse(frame.payload.toString());
+                    if (msg.method !== 'call') return;
+                    const [apiId, method] = msg.params;
+
+                    if (apiId === 1) {
+                        if (method === 'login') reply(socket, msg.id, true);
+                        else if (method === 'database') { registered.add(0); reply(socket, msg.id, 0); }
+                        else if (method === 'history') { registered.add(2); reply(socket, msg.id, 2); }
+                        else if (method === 'network_broadcast') { registered.add(3); reply(socket, msg.id, 3); }
+                        else reply(socket, msg.id, {});
+                        return;
+                    }
+
+                    if (!registered.has(apiId)) {
+                        replyError(socket, msg.id, 'Execution error: Assert Exception: _local_apis.size() > api_id: ');
+                        return;
+                    }
+
+                    if (method === 'get_chain_id') {
+                        reply(socket, msg.id, '4018d7844c78f6a6c41c6a552b898022310fc5dec06da467ee7905a8dad512c8');
+                    } else if (method === 'get_chain_properties') {
+                        reply(socket, msg.id, { address_prefix: 'BTS' });
+                    } else if (method === 'get_global_properties') {
+                        reply(socket, msg.id, { parameters: { core_asset: '1.3.0' } });
+                    } else if (method === 'get_assets') {
+                        reply(socket, msg.id, [{ id: '1.3.0', precision: 5, symbol: 'BTS' }]);
+                    } else if (method === 'get_market_history') {
+                        reply(socket, msg.id, [{ open: 100, close: 105, high: 110, low: 95, volume: 1000 }]);
+                    } else {
+                        reply(socket, msg.id, {});
+                    }
+                } catch (_) {}
+            });
+            socket.on('error', () => {});
+        });
+
+        server.once('error', reject);
+        server.listen(port, '127.0.0.1', () => {
+            resolve({
+                server,
+                port,
+                resetSession() {
+                    if (activeRegistered) {
+                        activeRegistered.clear();
+                        activeRegistered.add(1);
+                    }
+                },
+                close() { server.close(); },
+            });
+        });
+    });
+}
+
 // ── Test: API proxy wiring ───────────────────────────────────────────────
 
 async function testApiProxyWiring() {
@@ -303,6 +399,140 @@ function testBroadcastProxy() {
     console.log('  PASS: Broadcast proxy methods');
 }
 
+// ── Test: stale api_id recovery ──────────────────────────────────────────
+
+async function testStaleApiIdRecovery() {
+    const { createChainClient } = require('../modules/bitshares-native/chain_client');
+    const port = 20000 + Math.floor(Math.random() * 1000);
+    const wsServer = await createStrictWsServer(port);
+
+    try {
+        const client = createChainClient({
+            nodes: [`ws://127.0.0.1:${port}/ws`],
+            autoreconnect: false,
+        });
+        await client.connect();
+
+        // Prime both channels so the client caches _historyApiId / _dbApiId.
+        const initialHistory = await client.history.getMarketHistory('1.3.0', '1.3.1', 3600, 0, 0);
+        assert.ok(Array.isArray(initialHistory), 'initial history call should work');
+        const initialAssets = await client.db.get_assets(['1.3.0']);
+        assert.ok(Array.isArray(initialAssets), 'initial db call should work');
+
+        // Simulate a node failover that swapped the server-side login session
+        // without the client observing a 'closed' event. The cached api ids are
+        // now unregistered on the new session.
+        (wsServer as any).resetSession();
+
+        // Regression: before the fix this permanent `_local_apis` assert wedged
+        // the fill-history channel until process restart. The client must now
+        // re-register the namespace on the current session and retry.
+        const recoveredHistory = await client.history.getMarketHistory('1.3.0', '1.3.1', 3600, 0, 0);
+        assert.ok(Array.isArray(recoveredHistory), 'history call should recover from stale api id');
+
+        (wsServer as any).resetSession();
+        const recoveredAssets = await client.db.get_assets(['1.3.0']);
+        assert.ok(Array.isArray(recoveredAssets), 'db call should recover from stale api id');
+
+        client.disconnect();
+        console.log('  PASS: stale api id recovery');
+    } finally {
+        (wsServer as any).close();
+    }
+}
+
+// ── Test: repeated stale api_id forces a hard reconnect ──────────────────
+
+async function testRepeatedStaleApiForcesReconnect() {
+    const { createChainClient } = require('../modules/bitshares-native/chain_client');
+    const { NATIVE_CLIENT } = require('../modules/constants');
+    const threshold = Number(NATIVE_CLIENT.TRANSPORT.STALE_API_FORCE_RECONNECT_AFTER) || 3;
+    const port = 20000 + Math.floor(Math.random() * 1000);
+    const wsServer = await createStrictWsServer(port);
+    const failures: any[] = [];
+
+    try {
+        const client = createChainClient({
+            nodes: [`ws://127.0.0.1:${port}/ws`],
+            autoreconnect: true,
+            onNodeFailure: (url, message, source) => failures.push({ url, message, source }),
+        });
+        await client.connect();
+        // Prime _dbApiId.
+        await client.db.get_assets(['1.3.0']);
+
+        // Each resetSession + call produces ONE stale-id error (the in-place
+        // recovery re-registers and retries). A sustained run must escalate to a
+        // forced reconnect that marks the node failed, instead of retrying the
+        // wedged session forever.
+        for (let i = 0; i < threshold; i++) {
+            (wsServer as any).resetSession();
+            try {
+                await client.db.get_assets(['1.3.0']);
+            } catch (_e) {
+                // The forced reconnect can close the socket mid-call; expected.
+            }
+        }
+
+        assert.ok(
+            failures.some((f: any) => f.source === 'forced-reconnect'),
+            `expected a forced-reconnect node failure after ${threshold} stale api_id errors`
+        );
+
+        client.disconnect();
+        console.log('  PASS: repeated stale api_id forces reconnect');
+    } finally {
+        (wsServer as any).close();
+    }
+}
+
+// ── Test: forced reconnects share one per-client cooldown ────────────────
+
+async function testForcedReconnectCooldown() {
+    const { createChainClient } = require('../modules/bitshares-native/chain_client');
+    const { NATIVE_CLIENT } = require('../modules/constants');
+    const cooldown = Number(NATIVE_CLIENT.TRANSPORT.FORCED_RECONNECT_COOLDOWN_MS) || 30000;
+    const port = 21000 + Math.floor(Math.random() * 1000);
+    const wsServer = await createStrictWsServer(port);
+    const failures: any[] = [];
+
+    try {
+        const client = createChainClient({
+            nodes: [`ws://127.0.0.1:${port}/ws`],
+            autoreconnect: true,
+            onNodeFailure: (url, message, source) => failures.push({ url, message, source }),
+        });
+        await client.connect();
+
+        // Both escalation sources (the subscriptions fill-channel watchdog and
+        // the stale api_id window) call this same wrapper, so its cooldown is
+        // their single shared window. Two consecutive requests stand in for
+        // those two call sites: the second must coalesce, not tear down again.
+        const first = client.forceReconnect('first');
+        assert.strictEqual(first, 'issued', 'the first forced reconnect must be issued');
+
+        const second = client.forceReconnect('second');
+        assert.strictEqual(second, 'coalesced',
+            `a second forced reconnect inside the ${cooldown}ms window must coalesce`);
+
+        const forcedStrikes = () => failures.filter((f: any) => f.source === 'forced-reconnect').length;
+        assert.strictEqual(forcedStrikes(), 1,
+            'the coalesced second request must not emit another forced-reconnect node failure');
+
+        client.disconnect();
+        // A client that never issued a reconnect and has no live socket must not
+        // report `issued` (which would let callers count a no-op cycle and burn
+        // the cooldown).
+        const idle = createChainClient({ nodes: [`ws://127.0.0.1:${port}/ws`] });
+        assert.strictEqual(idle.forceReconnect('idle'), 'unavailable',
+            'a forced reconnect with no live socket and no recent attempt must report unavailable');
+
+        console.log('  PASS: forced reconnects share one per-client cooldown');
+    } finally {
+        (wsServer as any).close();
+    }
+}
+
 // ── Run all tests ────────────────────────────────────────────────────────
 
 (async () => {
@@ -314,6 +544,9 @@ function testBroadcastProxy() {
                 await testApiProxyWiring();
                 await testLazyApiRegistration();
                 await testReadOnlyClient();
+                await testStaleApiIdRecovery();
+                await testRepeatedStaleApiForcesReconnect();
+                await testForcedReconnectCooldown();
                 testChainConfigValidation();
                 testSetNodes();
                 testBroadcastProxy();

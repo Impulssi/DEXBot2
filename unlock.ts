@@ -52,12 +52,16 @@ import { createCredentialDaemonController } from './modules/launcher/credential_
 import { buildScopedChildEnv } from './modules/launcher/child_env.js';
 import { parseUnlockArgs } from './modules/launcher/launch_modes.js';
 import { UPDATER, LAUNCHER } from './modules/constants.js';
+import { formatStartupNotice } from './modules/cli_start_output.js';
 import { runtime } from './modules/runtime.js';
-import { PATHS } from './modules/paths.js';
+import { PATHS, printRelocationNotices } from './modules/paths.js';
 import { buildRuntimeScriptArgs } from './modules/launcher/runtime_entry.js';
 import { sendControlCommand } from './modules/launcher/supervisor_control.js';
 import { registerCleanup, setupGracefulShutdown } from './modules/graceful_shutdown.js';
 import { normalizeBotEntry, resolveRawBotEntries, loadSettingsFile } from './modules/bot_settings.js';
+import { main as runBotEditor } from './modules/account_bots.js';
+import { setSuppressConnectionLog, disconnectClient } from './modules/bitshares_client.js';
+import { selectStartOnboardingCommand } from './modules/cli_start_onboarding.js';
 import * as chainKeys from './modules/chain_keys.js';
 import * as credentialPolicy from './modules/credential_policy.js';
 import { getWhitelistFlags } from './modules/market_adapter_whitelist.js';
@@ -425,7 +429,56 @@ async function runIsolated({ botName, botEntry = null, stayResident = false, sta
 
 // ── Main entry point ───────────────────────────────────────────────
 
-async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRACE_MS }: any = {}) {
+/**
+ * Handle first-run setup at the launcher boundary. This is shared by
+ * `dexbot start`, `dexbot unlock`, and direct `node unlock` invocations.
+ * Internal supervisor children must not reopen onboarding after the parent
+ * has already completed it. Returns true when an editor was opened; it does
+ * not print relocation notices (the caller owns that, since a quiet first run
+ * should not print diagnostics ahead of the editor).
+ */
+async function runStartOnboardingIfNeeded({ allowInteractive = true, nonInteractiveFlag = '--headless' }: { allowInteractive?: boolean; nonInteractiveFlag?: string } = {}): Promise<boolean> {
+    const keySetup = chainKeys.hasKeySetup();
+    let botCount = 0;
+    if (keySetup) {
+        const { config } = loadSettingsFile(BOTS_FILE, { silent: true });
+        botCount = resolveRawBotEntries(config).length;
+    }
+
+    const onboardingCommand = selectStartOnboardingCommand(keySetup, botCount);
+    if (!onboardingCommand) return false;
+
+    if (!allowInteractive) {
+        const command = onboardingCommand === 'key' ? 'dexbot key' : 'dexbot bot';
+        throw new Error(`Incomplete setup for ${nonInteractiveFlag}; run ${command} interactively first.`);
+    }
+
+    console.log(formatStartupNotice(onboardingCommand === 'key'
+        ? "No key vault configured yet - entering key setup ('dexbot key')."
+        : "Key vault configured but no bots defined - entering bot setup ('dexbot bot').", {
+        isTTY: process.stdout.isTTY,
+        noColor: Boolean(Config.NO_COLOR),
+    }));
+
+    if (onboardingCommand === 'key') {
+        await chainKeys.main();
+        return true;
+    }
+
+    setSuppressConnectionLog(true);
+    try {
+        await runBotEditor();
+    } finally {
+        try {
+            disconnectClient();
+        } catch (err: any) {
+            console.warn('Failed to disconnect BitShares after bot helper exit:', getErrorMessage(err) || err);
+        }
+    }
+    return true;
+}
+
+async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRACE_MS, exitAfterOnboarding = false, onboard = false }: any = {}) {
     if (typeof chainKeys.checkKeysFileSecurity === 'function') chainKeys.checkKeysFileSecurity();
     if (typeof credentialPolicy.checkPolicyFileSecurity === 'function') credentialPolicy.checkPolicyFileSecurity(PATHS.PROFILES.DAEMON_POLICIES_JSON);
 
@@ -434,6 +487,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
     const forceForegroundIsolated = Config.DEXBOT_ISOLATED_FOREGROUND;
     const isMonolithicBgChild = Config.DEXBOT_MONOLITHIC_BG;
     const forceForeground = argv.includes('--foreground');
+    const isInternalChild = isDetachedSupervisorChild || isMonolithicBgChild;
 
     if (parsed.control) {
         await handleControl({ cmd: parsed.control.cmd, target: parsed.control.target ?? undefined });
@@ -441,6 +495,22 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
     }
 
     const { botName, clawOnly, creditOnly, isolated, dryrun, headless, passwordFile } = parsed;
+    // Onboarding is a launcher-CLI concern: the direct-run bootstrap opts in so
+    // programmatic callers (tests, embeds) never block on an interactive prompt.
+    if (onboard && !isInternalChild) {
+        // Non-interactive entry points (headless automation, dry-run
+        // validation) must fail fast instead of blocking on an editor prompt.
+        const nonInteractiveFlag = headless ? '--headless' : (dryrun ? '--dryrun' : null);
+        const onboarding = await runStartOnboardingIfNeeded({
+            allowInteractive: !nonInteractiveFlag,
+            nonInteractiveFlag: nonInteractiveFlag ?? '--headless',
+        });
+        if (onboarding) {
+            if (exitAfterOnboarding) process.exit(0);
+            return;
+        }
+    }
+    if (!isInternalChild) printRelocationNotices();
     let effectiveBotName = botName;
     if (creditOnly && !effectiveBotName) {
         const creditBots = listConfiguredBots().filter((b: any) => b.creditOnly === true && b.active !== false);
@@ -626,7 +696,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
                     // DEXBOT_ADAPTER_OWNER marks the wrapper watchdog as the
                     // sole market-adapter spawner so the bot child skips its
                     // own adapter sync/poll (both foreground and background).
-                    env: { ...process.env, DEXBOT_ADAPTER_OWNER: 'wrapper' },
+                    env: { ...process.env, DEXBOT_ADAPTER_OWNER: 'wrapper', DEXBOT_LAUNCHER_WORKER: '1' },
                     stdio: isMonolithicBgChild ? 'pipe' : 'inherit',
                 });
                 botProcessRef.current = botProcess;
@@ -1055,7 +1125,7 @@ if (isUnlockStartDirectRun) {
     }
     (async () => {
         try {
-            await main();
+            await main({ exitAfterOnboarding: true, onboard: true });
         } catch (err) {
             console.error(statusError(`unlock failed: ${getErrorMessage(err) || err}`));
             process.exit(1);
@@ -1063,5 +1133,5 @@ if (isUnlockStartDirectRun) {
     })();
 }
 
-export { buildDexbotStartArgs, candidateRuntimeScriptPaths, ensureNoForeignCredentialDaemon, findCredentialSocketOwnerPid, isLikelyCredentialDaemonProcess, main, pidMatchesScriptCandidates, waitForChildSpawn, waitForStableChildStartup }
+export { buildDexbotStartArgs, candidateRuntimeScriptPaths, ensureNoForeignCredentialDaemon, findCredentialSocketOwnerPid, isLikelyCredentialDaemonProcess, main, runStartOnboardingIfNeeded, pidMatchesScriptCandidates, waitForChildSpawn, waitForStableChildStartup }
 

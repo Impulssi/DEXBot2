@@ -1,15 +1,141 @@
-# Consolidated Orphan-Fix Summary — Supersedes 4 Test-Branch Plans
+# DEXBot2 Order Engine Retrospective (Post-1.0.0)
 
-> **Supersedes (safe to delete next commit):**
-> `docs/GAP_BAND_ORPHAN_PREVENTION_PLAN.md` · `docs/LADDER_RECENTER_ORPHAN_ROOT_CAUSE.md` · `docs/ORPHAN_FILL_INVARIANT_ROOT_CAUSE_AND_FIX.md` · `docs/PRICE_FIRST_ALIGNMENT_PLAN.md`
-> All content below is merged in condensed form — incident data, fix lists, invariants, verification targets and rollback gates are preserved; some narrative rationale is compressed. Original files were added only on `test` (`git diff origin/dev...HEAD --diff-filter=A` shows only these 4 `*.md` adds).
+> Single hub for the order engine's post-stable evolution: a **synthesis** of why it kept
+> misbehaving (Part I) and the preserved **incident & fix ledger** (Part II), formerly
+> `CONSOLIDATED_ORPHAN_FIX_SUMMARY.md`.
+>
+> **Sources:** `CHANGELOG.md` v1.0.0 → v1.6.3; `docs/GRID_PRICE_INVARIANT.md`;
+> `docs/COW_INVARIANTS.md`. Generic terms only — no live markets, accounts, or order ids.
+>
+> **Scope / snapshot:** v1.0.0 → v1.6.3.
+>
+> **Section numbering:** Part II deliberately keeps its original `§0`–`§8` numbers because
+> source-code comments and tests cite them (e.g. `… §2 fix #1`, `… §3 lineage`). Part I uses
+> `R1`–`R5` so the two never collide. The closing appendix is unnumbered (`A`) so the cited `§` range stays fixed.
+>
+> **How to read:** start with **Part I** for the explanation; drop into **Part II** when you need
+> the per-incident evidence, commit hashes, and verification targets.
+>
+> **See also:** [GRID_PRICE_INVARIANT.md](GRID_PRICE_INVARIANT.md) ·
+> [COW_INVARIANTS.md](COW_INVARIANTS.md) · [GRID_RECONCILE.md](GRID_RECONCILE.md) ·
+> [EVOLUTION.md](EVOLUTION.md) · [CHANGELOG.md](../CHANGELOG.md).
+
+---
+
+## Contents
+
+**Part I — Synthesis**
+- R1. The one root cause
+- R2. Recurring bug families
+- R3. Meta-patterns (the actual "madness")
+- R4. What actually fixed it
+- R5. Lessons
+
+**Part II — Incident & Fix Ledger**
+- 0. Terminology
+- 1. Gap-Band Orphan — Prevention Plan (P1–P6)
+- 2. Ladder Recenter Orphan — Root Cause (Aug 26–30 2026)
+- 3. Orphan-Fill & Fund-Invariant — Root Cause & Fix Plan
+- 4. Price-First Alignment Plan
+- 5. Cross-doc fix lineup (dependency order)
+- 6. Consolidated invariants
+- 7. Consolidated verification — grid-correction check as regression gate
+- 8. Provenance & supersession record
+- A. Grid-Price Invariant — former failure trace (appendix)
+
+---
+
+## Part I — Synthesis
+
+### R1. The one root cause
+
+BitShares offers **no atomic grid swap**. The engine can only broadcast cancel /
+limit-order-update / create operations over an unreliable network and then *guess* whether
+they landed. A lost or ambiguous response — **"uncertain broadcast"** — means the bot either
+forgets real orders (**orphans**) or re-places over live ones (**duplicates**). There is no
+rollback, so the runtime is a perpetual reconciliation loop trying to infer chain truth from
+local state.
+
+**Everything below is fallout from that.**
+
+### R2. Recurring bug families
+
+| Family | Symptom | Representative handling |
+|---|---|---|
+| **Orphan orders** | Live chain orders absent from local state; locked funds, accidental cancels, re-placement | Adoption, committed-order protection, durable orphan gates — fixed/re-broken repeatedly |
+| **Ghost / phantom orders** | Local slot with no real order, or a live order no slot owns; `size > 0` with no `orderId` | Virtualization guards, ghost-order cleanup, dust cancel |
+| **Self-trading / crossing** | Re-pricing a BUY above own SELLs (or vice versa) | `LAST-FILL-GUARD` (pivot formula revised twice) + final pre-broadcast pivot gate |
+| **Grid-price invariant** | Two sources of truth for a slot price (genesis ladder vs mutable `slot.price`); orphan adoption corrupted the ladder | Enforce ladder price at every emission site; escalate persistent violations to resync |
+| **Boundary drift / gap band** | Buy/sell split index moved without matching fills, stranding live orders in the band | Prevention plans P1–P6 landed, then largely reverted; replaced by fill-driven boundary + last-fill guard |
+| **Fund-accounting races** | Stale totals, optimistic deductions, "orphan-fill death spiral" | Lag guards, tolerance widening, rebuild-from-chain, invariant escalation |
+| **Concurrency / locks** | Non-reentrant lock, force-release orphaned timers, TOCTOU, chunked-broadcast self-fills | Reentrant `AsyncLock`, generation counters, swept-band exclusion |
+| **Infinite loops** | grid-bloat → resync → bloat; plan→skip→restore holes; `NO_FEASIBLE_BOUNDARY` freeze | Cooldowns, grace windows, minimal cancel ladders |
+| **Silent hangs** | Retries that depended on a future event that never came | Level-triggered scheduling with time-based watchdogs |
+| **Stale queues** | Queued price corrections replayed onto a resynced grid, reverting good placements | Pre-broadcast validation against the live slot |
+| **Shelf / reserve orders** | Non-grid orders poisoning every "orders on grid" counter (issue #27) | Slot-N gating across all counters |
+
+Families **not** detailed in Part II: silent hangs and stale correction queues are covered in
+`CHANGELOG.md` (v1.6.1 and v1.6.3 respectively); shelf/reserve orders in issue #27 and the v1.6.x
+notes; the grid-price invariant has its own doc — [GRID_PRICE_INVARIANT.md](GRID_PRICE_INVARIANT.md).
+
+### R3. Meta-patterns (the actual "madness")
+
+1. **Revert yo-yo.** `MarketAnchor` / `BOUNDARY-EVIDENCE` / `BAND-EXCLUSION` were added
+   then reverted. Gap-band sweeps shipped and were pulled after cancelling legitimate
+   orders. Part II annotates fixes as `LANDED` / `REVERTED` / `SUPERSEDED`.
+2. **Guards on guards.** Each fix exposed a new failure mode, so the engine accumulated
+   fallback paths, origin stamps, bypass flags, and tolerance knobs. New bug → another
+   guard, rarely a simpler model.
+3. **Incident documentation as a genre.** Part II exists because the same classes of bug
+   kept returning and the fix plans themselves kept being superseded.
+4. **Daemon vs demon.** The literal daemons (credential/signing/node) were boundable —
+   socket leaks, shutdown races, node failover. The demons were *policy* for uncertain
+   state; you can restart a daemon, you can only *model* an ambiguous broadcast, and the
+   model kept being wrong.
+
+### R4. What actually fixed it
+
+- **Genesis-frozen price-slot determinism** (v1.4.25+): `slot-N` → exact ladder price
+  becomes the single source of truth, replacing tolerance-based price matching. Killed a
+  whole family of orphan/duplicate bugs.
+- **Single ownership:** one writer for the boundary, one owner for the adapter/market
+  config, one authoritative set of counters.
+- **Global last-fill guard + final pre-broadcast gate:** one pivot rule, enforced at the
+  last moment before broadcast, with fail-open semantics for unjudgeable ops.
+
+The winning strategy was **removing writers and sources of truth**, not adding handlers.
+
+### R5. Lessons
+
+1. In a no-atomicity, unreliable-response system, **state reconciliation is the product** —
+   treat it as such.
+2. Prefer **one source of truth** over many reconcilers with tolerances.
+3. Guard at the **last responsible moment** (pre-broadcast), not at every intermediate step.
+4. Every new guard is a liability if it is not backed by a **repair path**; self-healing
+   beats fail-closed alone.
+5. Make deferred work **level-triggered** — never let a retry depend on a future event.
+6. If a fix class keeps returning, the model is wrong, not the fix.
+
+---
+
+## Part II — Incident & Fix Ledger (formerly `CONSOLIDATED_ORPHAN_FIX_SUMMARY.md`)
+
+**What this part is:** the per-incident evidence behind Part I's synthesis — root causes, fix
+plans, `LANDED`/`REVERTED`/`SUPERSEDED` statuses, commit hashes, and verification targets.
+
+> **Provenance:** consolidates four superseded test-branch plans, now deleted:
+> `GAP_BAND_ORPHAN_PREVENTION_PLAN.md` · `LADDER_RECENTER_ORPHAN_ROOT_CAUSE.md` ·
+> `ORPHAN_FILL_INVARIANT_ROOT_CAUSE_AND_FIX.md` · `PRICE_FIRST_ALIGNMENT_PLAN.md`.
+> Content is merged in condensed form — incident data, fix lists, invariants, verification targets
+> and rollback gates are preserved; some narrative rationale is compressed. The four originals
+> were added only on `test`.
 
 **Scope:** `modules/order/{grid,strategy,sync_engine,manager,grid_reconcile*}` · `modules/order/utils/{math,order,system}` · `modules/{dexbot_class,dexbot_cow_runtime,dexbot_maintenance_runtime,dexbot_fill_runtime,dexbot_state_recovery,chain_orders,config,constants,paths}` · `market_adapter` re-anchor triggers · `analysis/grid_correction_check.ts`
 **Statuses corrected against `test` HEAD `a54863ca` (2026-08-31), refreshed against `1382f267` (2026-09-13):** the source docs' own wording (`proposed` / `analysis complete` / `investigation complete — fix plan pending` / `Phase 2 flag enabled`) predated later fix commits, so each plan item now carries a `LANDED` / `REVERTED` / `SUPERSEDED` annotation with the implementing commit hash. Key corrections: GAP P1–P5 landed `f94d6ec4` but the P2 sweep was reverted (`3713c496`) and the P1 writer + post-commit assert reverted (`e2898e51`); PRICE_FIRST Phase 2 projection was enabled (`1bbf1a23`) then removed (`3713c496`) — the anchor is shadow telemetry only.
 
 ---
 
-## 0. Terminology
+### 0. Terminology
 
 **Naming:** instance/order IDs are genericized (`bot-A` = grid bot, `bot-B`/`bot-C` = credit bots, `bot-D/D2` = grid bots; `<order-N>` = `1.7.x`). Same token = same order within a section. Market pairs are genericized as `<pair>`; account names `1.2.x` placeholders.
 
@@ -19,7 +145,9 @@
 
 ---
 
-## 1. Gap-Band Orphan — Prevention Plan (P1–P6) — from `GAP_BAND_ORPHAN_PREVENTION_PLAN.md` (Status: implemented `f94d6ec4` 2026-08-29, with subsequent amendments — landing map below)
+### 1. Gap-Band Orphan — Prevention Plan (P1–P6)
+
+> **Source:** `GAP_BAND_ORPHAN_PREVENTION_PLAN.md` · **Status:** implemented `f94d6ec4` (2026-08-29), with subsequent amendments — landing map below.
 
 **Landing map (corrected 2026-08-31):**
 - **P1** — landed `f94d6ec4` (same-batch CANCEL injection in `COWRebalanceEngine.execute` + `_assertGapBandIntactPostCommit` cancelOnly). **REVERTED `e2898e51`** ("remove placement guards that interfered with normal operation") — both sites removed; stranding is now handled by `calculateIdealBoundary` + `LAST-FILL-GUARD` + adoption path (P3 gate removed `e7231534`).
@@ -27,9 +155,11 @@
 - **P3** — landed `f94d6ec4` (`validateBoundaryAgainstChainEvidence` + reconcile phase-1 gate + `placementsAllowed` adoption-only mode); amended `3713c496` (anchor demoted to non-authoritative hint, can never veto); extended `a54863ca` (NO_FEASIBLE escalates a straddle-cancel ladder instead of freezing). **REVERTED `e7231534`** — `validateBoundaryAgainstChainEvidence` (`grid_reconcile.ts:359`) and `placementsAllowed` (`grid_reconcile_internal.ts:1601`) removed; **current** boundary derives from `calculateIdealBoundary` (`order/utils/order.ts:1216` via `grid.ts:160`) + `LAST-FILL-GUARD` (`manager.ts:1679`/`dexbot_cow_runtime.ts:1624`), not a P3 chain-evidence gate.
 - **P4** — landed `f94d6ec4` (`dexbot_state_recovery.ts:581 rejectCorruptedGridSnapshot` clears in-memory + persisted boundary on reject). Live.
 - **P5** — landed `f94d6ec4` (skip/defer logging + `STRUCTURAL_RESYNC_MAX_DEFER_MS` force, `dexbot_maintenance_runtime.ts:2242-2266`). Live.
-- **P6** — landed `f94d6ec4` as `tests/test_gap_band_regression.ts` + `tests/test_boundary_chain_evidence.ts` (updated by `3713c496`/`e2898e51`/`a54863ca` to the amended behavior).
+- **P6** — landed `f94d6ec4` (2026-08-29) as boundary chain-evidence regression coverage, since superseded by the boundary-geometry suite (`tests/test_boundary_anchor_recovery.ts`, `tests/test_boundary_restore_validation.ts`) and the slot-invariant guard tests.
 
-### 1.1 Incident summary (2026-08-29 09:29–12:00 UTC, `<pair>`, generic `1.2.x/1.7.x`)
+#### 1.1 Incident summary
+
+*Incident window: 2026-08-29 09:29–12:00 UTC · `<pair>`, generic `1.2.x`/`1.7.x` ids.*
 
 1. After corrupted-snapshot rejection, recovery restored **stale persisted boundary 131** while true market was ~140+ (`Restored boundary index: 131` then `[RECOVERY][SNAPSHOT-REJECT] drift sell=0.00 buy=2036.67`).
 2. With boundary 131, slot-144 was valid sell-rail; startup reconcile adopted/updated unmatched chain sell to slot-144 (`Startup: Updating chain SELL ... -> grid slot-144`), broadcast in 35-op startup batch.
@@ -39,31 +169,44 @@
 
 **Core defect:** invariant *"no live order inside gap band"* enforced by detectors/warnings, never by a writer.
 
-### 1.2 P1 — Cancel in same batch that strands (highest leverage) *(LANDED `f94d6ec4`; REVERTED `e2898e51` — see landing map)*
+#### 1.2 P1 — Cancel in the same batch that strands (highest leverage)
+
+*Status: LANDED `f94d6ec4`; REVERTED `e2898e51` — see landing map.*
 - `calculateTargetGrid` (`modules/order/strategy.ts` SPREAD GUARD) already identifies stray in-band slots with live orders and keeps them `BUY/SELL`; comment claims `cancelled by sync pass-1 type-mismatch handling` — never fired. **Change:** emit `cancelOnly` ops for orderId-bearing in-band slots in same COW plan (model: duplicate-price `cancelOnly` at `sync_engine.ts` pass-2).
 - Belt-and-braces: `_assertGapBandIntactPostCommit` (`manager.ts`) already collects `problems {id, price}`; on detection immediately queue `cancelOnly` for those ids instead of only flagging. **With P1, incident dies at 09:33:57 — stranded order cancelled same commit.**
 
-### 1.3 P2 — Gap-band orphan sweep (self-healing net) *(LANDED `f94d6ec4`; REVERTED `3713c496` — replaced by adopt-after-chain-evidence-correction; see landing map)*
+#### 1.3 P2 — Gap-band orphan sweep (self-healing net)
+
+*Status: LANDED `f94d6ec4`; REVERTED `3713c496` — replaced by adopt-after-chain-evidence-correction; see landing map.*
 - Sync pass-2 (`sync_engine.ts` unmatched-chain branch) + runtime reconcile (`grid_reconcile.ts` phase-1): when unmatched chain price sits **strictly inside implied gap band** (shared `MathUtils.isSlotInRail` geometry test) → queue `cancelOnly` instead of `no adoptable slot found` / `no active same-side grid order exists`. Cleans any already-live orphan within one sync cycle.
 
-### 1.4 P3 — Never place against unvalidated boundary (origin) *(LANDED `f94d6ec4`; amended `3713c496`, `a54863ca`; **REVERTED `e7231534`** — gate removed, retained as historical context)*
+#### 1.4 P3 — Never place against an unvalidated boundary (origin)
+
+*Status: LANDED `f94d6ec4`; amended `3713c496`, `a54863ca`; **REVERTED `e7231534`** — gate removed, retained as historical context.*
 Poison input was `_restoreBoundary(131)` from stale snapshot; `validatePersistedBoundary` couldn't catch (band empty at restore, stranding created by placement).
 - **As landed:** after restore/rebuild, re-derived boundary from chain before placement: placed-order distribution (highest live BUY / lowest live SELL), market anchor, recent fill evidence via `computePriceAnchoredBoundaryTarget` (`order/utils/order.ts`). If derived disagreed beyond threshold, used derived + loud log.
 - **Gate (removed):** `_reconcileStartupSide` (`grid_reconcile_internal.ts`) had `placementsAllowed` adoption-only mode — creating/price-updating into rail required boundary validated against chain+fills; without validation → deferred placements. Removed `e7231534` (P3 reverted) and fully deleted as dead code in current determinism cleanup — boundary now via `calculateIdealBoundary` + `LAST-FILL-GUARD`, not chain-evidence veto.
 
-### 1.5 P4 — Snapshot-reject must discard boundary *(LANDED `f94d6ec4` — live)*
+#### 1.5 P4 — Snapshot-reject must discard boundary
+
+*Status: LANDED `f94d6ec4` — live.*
 Sequence `Restored boundary index: 131` *then* `[SNAPSHOT-REJECT] Deleting corrupted snapshot` — rejected boundary stayed. In `recoverFromPersistedGrid` (`dexbot_state_recovery.ts`): validate first, restore only on pass; on fail discard boundary with snapshot, fall through to re-derivation (originally P3 `validateBoundaryAgainstChainEvidence`; P3 reverted `e7231534` — now `calculateIdealBoundary` + `LAST-FILL-GUARD`).
 
-### 1.6 P5 — Structural resync requests must not vanish *(LANDED `f94d6ec4` — live)*
+#### 1.6 P5 — Structural resync requests must not vanish
+
+*Status: LANDED `f94d6ec4` — live.*
 `09:33:57 Requesting structural resync` swallowed (`requestStructuralGridResync` in `dexbot_maintenance_runtime.ts` skips if already scheduled/running, `_batchInFlight` deferral re-arms timer uncapped). Hours unanswered.
 - Log every skip/defer with reason; add max-defer deadline forcing resync after re-arms.
 
-### 1.7 P6 — Regression tests *(LANDED `f94d6ec4` as `test_gap_band_regression.ts` + `test_boundary_chain_evidence.ts`; **DELETED `e7231534`** — both files removed with P3 revert; no P6 tests remain at HEAD)*
+#### 1.7 P6 — Regression tests
+
+*Status: LANDED, then superseded — the boundary chain-evidence and geometry assertions are now held by `tests/test_boundary_anchor_recovery.ts` (ANCHOR-001..004) and `tests/test_boundary_restore_validation.ts`.*
 - A (P1): stale boundary → startup updates into slot X → boundary snaps past X → assert cancel emitted same batch, no live in-band. (P1 later reverted `e2898e51`.)
 - B (P2): seed live orphan strictly inside gap with no duplicate price → sync/reconcile → assert `cancelOnly` within one cycle. (P2 reverted `3713c496`.)
 - C (P3/P4): corrupted snapshot stale vs fill evidence → rebuild → assert placements use re-derived boundary, rejected boundary not reused. **Both tests deleted `e7231534`** with P3 revert; P4 behavior now covered by `test_dexbot_state_recovery` + `test_periodic_sync_fill_rebalance`.
 
-### 1.8 Rollout order
+#### 1.8 Rollout order
+
 1. **P1+P2+P4** (writer cancel + sweep + reject-discard) — self-enforcing invariant
 2. **P5** observability/force
 3. **P3** re-derivation gate (largest surface, fast-follow) — **REVERTED `e7231534`** (gate removed; `placementsAllowed` deleted)
@@ -71,12 +214,17 @@ Sequence `Restored boundary index: 131` *then* `[SNAPSHOT-REJECT] Deleting corru
 
 ---
 
-## 2. Ladder Recenter Orphan — Root Cause (Aug 26–30 2026) — from `LADDER_RECENTER_ORPHAN_ROOT_CAUSE.md` (Status: analysis complete; Fixes #1–#7 landed 2026-08-30 per doc header)
+### 2. Ladder Recenter Orphan — Root Cause (Aug 26–30 2026)
 
-### 2.1 Symptom
+> **Source:** `LADDER_RECENTER_ORPHAN_ROOT_CAUSE.md` · **Status:** fixes #1–#7 landed 2026-08-30.
+
+#### 2.1 Symptom
+
 Falling market Aug 28 after ~17:00 UTC: bot **placed new SELLs below own live sells** (self-undercut). Next day orphans filled on bounce, proceeds credited outside grid accounting (`[ORPHAN-FILL] Processing funds for unknown order`), drift `±22` slots `[ANCHOR-DIVERGENCE]` from Aug 29 12:40. Not boundary crawl — dominant trigger is **regeneration re-anchor** (separate from PRICE_FIRST lag mode).
 
-### 2.2 Reproduction (systemic, not bot-D-only) — post-`cd690000` (commit "heal and prevent sized-orphan phantom orders") audit window `2026-08-30T00:24:26Z→07:48Z`
+#### 2.2 Reproduction (systemic, not bot-D-only)
+
+*Audit window: post-`cd690000` ("heal and prevent sized-orphan phantom orders"), `2026-08-30T00:24:26Z→07:48Z`.*
 
 | Metric | bot-A | bot-B | bot-C | Basis |
 |---|---|---|---|---|
@@ -89,7 +237,7 @@ Falling market Aug 28 after ~17:00 UTC: bot **placed new SELLs below own live se
 
 `00:00–00:24Z` quiet → 58/60/91 attributable to post-`cd690000` code. Confirms re-anchor (fix #1) is root cause; phantom-order heal treated symptom.
 
-### 2.3 Four modes, one symptom family
+#### 2.3 Four modes, one symptom family
 
 **Mode A — orphan (re-anchor) — primary.** Aug 28 evening: regeneration re-centers ladder, live asks unmanaged, new sell rail starts below them. Timeline Table §2.6.
 
@@ -101,7 +249,7 @@ Falling market Aug 28 after ~17:00 UTC: bot **placed new SELLs below own live se
 
 **Post-commit hardening (§2.3 sub):** (1) lagging-node read-back thrash bot-B `06:43:09–06:47:09` after chunk5/9 fail — fresh CREATEs absent (`<order-7> likely lagging node`), protection piled to 14, all CREATEs rejected, 30s cap forced resync mid-broadcast ~4 min/24 events; (2) sync lock `timed out after 20000ms` + `[SYNC] abandoned force-released 69355ms` (~70s lost), bot-C ~110 `Structural resync defer` warnings at 250 ms/30s; (3) `[MAINT] n/m price correction(s) failed` ratios `2/3,2/2,1/8,2/25,1/23,1/14` — stale slot maps.
 
-### 2.4 Incident timeline (bot-D Aug 28 17:09→Aug 29 17:27)
+#### 2.4 Incident timeline (bot-D Aug 28 17:09→Aug 29 17:27)
 
 | Time | Event |
 |---|---|
@@ -120,10 +268,11 @@ Falling market Aug 28 after ~17:00 UTC: bot **placed new SELLs below own live se
 
 + 11 graceful restarts in 30h (`Restored boundary` 57×).
 
-### 2.5 Root-cause chain (code refs)
+#### 2.5 Root-cause chain (code refs)
+
 1. Ladder quantized to center. 2. Recovery resyncs re-anchor via two config points (see Fix #1). 3. Tolerance rounding-scale `≈0.036` at 1110 vs AMA shift `0.045%` → `~0.5` shift = 15× tolerance → pass-1 + pass-2 adoption (`sync_engine.ts:146-156,:1040-1060`) reject. 4. `PRICE_DRIFT_TOLERANCE_MULTIPLIER 4` (`constants.ts:557`) → budget 0.144 < 0.43 diff → no `price-drift-orphan` → only logged (`dexbot_maintenance_runtime.ts:1311-1317`). 5. Regenerated ladder sell rail below orphans → self-undercut; `maxFilledSellPrice/minFilledBuyPrice` built from grid-tracked fills only → guard unenforceable once orphans unmanaged; orphans later fill outside accounting.
 
-### 2.6 Ranked fixes (with 2026-08-30 landed status)
+#### 2.6 Ranked fixes (with 2026-08-30 landed status)
 
 **#1 Stop re-anchoring on recovery resyncs (two config points, highest leverage) — LANDED 2026-08-30 (`4838bcb0`).**
 `rms_structural_grid_resync` → both flipped: (`dexbot_maintenance_runtime.ts:2327` `requestGridReset` call, hardcoded `refreshCenterPrice:false`) + (`:102` `GRID_RESYNC_REASONS.rms_structural_grid_resync.shouldRefreshCenterPrice: false`, covers the `buildGridResyncOptions('rms_structural_grid_resync')` call sites at `:1710-1712`). Structural resync keeps geometry; re-anchor only on manual/trigger-file and `GRID_RESYNC_REASONS` market-adapter delta/slope/bootstrap — intentionally stay `true`. `requestGridReset` default `TRUE` (`:2194`) so manual resets still re-anchor. Risk if center moved: geometry briefly mispriced but managed vs orphaning.
@@ -148,21 +297,27 @@ Throttle `Structural resync defer` to first/last per cap window (was 120/30s); l
 
 **Mode C hardening — OPEN.** (a) COW pre-broadcast gap-band reject; (b) order-existence check off slot→orderId map. Note: the GAP-P1 same-batch cancel that covered commit-time in-gap placement was reverted `e2898e51`; **P3 gate removed `e7231534`** — commit-time in-gap placement is currently covered by `LAST-FILL-GUARD` + adoption (no chain-evidence veto).
 
-### 2.7 Relation to PRICE_FIRST draft
+#### 2.7 Relation to PRICE_FIRST draft
+
 #1 removes Mode A & major boundary churn; PRICE_FIRST fixes Mode B (09:32 triple direct target, 17:27 sweep budget < displacement shows lag at scale); #5 complementary (draft solves *which* boundary, #5 makes it stick). Sequence: #1 → PRICE_FIRST flag → #2/#3 → #4/#5.
 
-### 2.8 Verification — moved to §7 (plus gap/Mode C/drift targets there)
+#### 2.8 Verification — moved to §7 (plus gap/Mode C/drift targets there)
 
 ---
 
-## 3. Orphan-Fill & Fund-Invariant — Root Cause & Fix Plan — from `ORPHAN_FILL_INVARIANT_ROOT_CAUSE_AND_FIX.md` (Status: P0s + rotation LANDED `1b27f6eb`/`4838bcb0`/`d808c052`; P1 atomicity PARTIAL; duplicate-cancel hard-error and P2 counters still open; Scope: `dexbot_cow_runtime.ts, sync_engine.ts, chain_orders.ts, dexbot_state_recovery.ts, dexbot_maintenance_runtime.ts, strategy.ts, constants.ts`; Evidence: `profiles/logs/<bot>.log` Aug 28 17:40–17:57, Aug 29 15:13–15:19)
+### 3. Orphan-Fill & Fund-Invariant — Root Cause & Fix Plan
 
-### 3.1 TL;DR — one cascade
+> **Source:** `ORPHAN_FILL_INVARIANT_ROOT_CAUSE_AND_FIX.md` · **Status:** P0s + rotation landed `1b27f6eb`/`4838bcb0`/`d808c052`; P1 atomicity partial; duplicate-cancel hard-error and P2 counters still open.
+> **Scope:** `dexbot_cow_runtime.ts`, `sync_engine.ts`, `chain_orders.ts`, `dexbot_state_recovery.ts`, `dexbot_maintenance_runtime.ts`, `strategy.ts`, `constants.ts` · **Evidence:** `profiles/logs/<bot>.log` Aug 28 17:40–17:57, Aug 29 15:13–15:19.
+
+#### 3.1 TL;DR — one cascade
+
 1. COW concurrency lets fill batch plan against stale master and double-place at same price. 2. Second batch commit refused (`master mutation during rebalancing`) → fresh chain orders not in master. 3. Fallback adoption re-reads capped `get_full_accounts` truncating freshest orders + lossy duplicate-price skip → master diverges. 4. Fund recalc flags violation → recovery deletes (now "corrupted") snapshot, regenerates from truncated read (40/42) permanently orphaning two orders. 5. Orphans fill no-slot → `ORPHAN-FILL` → more violations → recovery reloads stale boundary → slot-90 same-slot refill loop.
 
 Slot-90 loop is *proximate* form; rotation suppression is mechanism, cascade is upstream cause detaching boundary.
 
-### 3.2 Full picture
+#### 3.2 Full picture
+
 **Step 1 — Race:** ~`17:40:39–51` market moved fast, buys filled, boundary crawled down, sells `<order-1>…<order-4>`, `<order-5>`, `<order-6>…<order-10>`. `_batchInFlight` serializes fill consumer but planning+broadcast not atomic with master commit: Batch A broadcasts `<order-1>…<order-4>,<order-5>` at `17:40:39`; Batch B plans stale, places `<order-6>/<order-7>` at same prices (`17:40:42 a COW broadcast is already in flight; deferring`), commit refused `17:40:51.237 [COW] Refusing stale working grid commit: master mutation during rebalancing` (now `utils/validate.ts:1102`), adoption `Orphaned chain order … duplicates price level of active slot-88` (`sync_engine.ts:906`).
 
 **Step 2 — Refused → invariant:** Fresh sells not recorded, adoption `adoptPlacedBatchFromChain` (`dexbot_cow_runtime.ts:3364`) capped window drops freshest (`chain_orders.ts:573-638`), adoption lossy `<order-6> NOT adopted / <order-9>→slot-106 / <order-10>→slot-107`, collides with re-plan `Rejecting CREATE for slot-105/106 existing orderId=<order-8>/<order-9>` (`17:40:51.335`). Fund recalc `CRITICAL: Fund invariant violation (SELL): blockchainTotal (474877) != trackedTotal (473173) diff:1703.62 allowed:474.87`.
@@ -173,7 +328,7 @@ Slot-90 loop is *proximate* form; rotation suppression is mechanism, cascade is 
 
 **Step 5 — Rotation same-slot:** `15:19:06` partial fill `<order-11>` slot-90 dust `2.92`, dust detection cancelled the residual, synthesizing a fill with `skipBoundaryShift:true` (removed `1b27f6eb`; defensive check removed this commit — `order/utils/order.ts` and `manager.ts` no longer inspect `skipBoundaryShift`; reintroduction would silently restore the same-slot fill loop) → `isShiftEligibleFill` false → boundary crawl suppressed. `processFilledOrders` only rebalances non-partial (`manager.ts:1460`) but synthetic `isDelayedRotationTrigger` forces rebalance with boundary frozen → slot-90 stays `BUY` → `Placed buy slot-90 -> <order-12>` `15:19:15` → `FILL DETECTED slot-90` `15:19:39`. Boundary detached (`projected=72 drift -18`, `PROJECTION_ENABLED false` `constants.ts:729`; the projection override itself was removed `3713c496`) → buy above market re-fills. Root fix: filled buy should rotate (SELL or bottom BUY), not re-stamp same price — LANDED `1b27f6eb`.
 
-### 3.3 Fix plan (layered; statuses corrected against HEAD — see §3 header)
+#### 3.3 Fix plan (layered; statuses corrected against HEAD — see §3 header)
 
 **P0 Reliable ID-based adoption after refused commit — LANDED `1b27f6eb` (hardened `d808c052`).** Kills orphan/invariant at source: `adoptPlacedBatchFromChain` builds `collectKnownOnChainOrderIds(mgr, placedResults, placedContexts)` (`dexbot_cow_runtime.ts:3281,3364`) = `mgr.grid[*].orderId ∪ fresh CREATE ids from `extractBatchOperationResults(result)[i][1]`↔`executedContexts[i]` (`:3293`); re-read by ID `chainOrders.batchReadOrders (chain_orders.ts:530)` → `syncFromOpenOrders(fullChain, {skipAccounting:false})`; lagging-node deferral: if ANY fresh CREATE id `null` → defer (`return false`) keep protection (later read adopts), by-id error → defer (no fallback to window); absent master ids = expected. `d808c052` added a retry (3 attempts, 2s/4s backoff) before deferring. Window read remains fallback only and defers on `truncated`.
 
@@ -191,27 +346,38 @@ Slot-90 loop is *proximate* form; rotation suppression is mechanism, cascade is 
 from `manager.orders` and would otherwise re-plan-and-reject it forever; and a deferred hold unchanged for
 `DEFERRED_HOLD_ESCALATE_MS` (24h) escalates to the same resync (`deferred-hold-stale`), giving
 "held indefinitely" the exit the per-cycle hold policy lacks. Both reuse the existing debounced,
-batch-in-flight-aware resync path. The hold age is measured from the signature-stable clock
-(`_lastHeldChainOrderSignatureSince`), **not** `_lastUnmatchedChainOrdersAt` — the latter refreshes on every
-observing sync and would make an age gate unfirable.
+batch-in-flight-aware resync path. The hold age is measured **per stranded
+order** (`_strandedHoldSince`, a bot-scoped map keyed `id@price/size:reason`),
+not from the whole-held-set signature clock (`_lastHeldChainOrderSignatureSince`
+drives LOGGING only — a whole-set age clock would be reset by unrelated churn,
+because one hold flapping in and out restarts it, starving a genuinely stranded
+order of escalation forever — HOLD-010) and **not** from
+`_lastUnmatchedChainOrdersAt` — the latter refreshes on every observing sync
+and would make an age gate unfirable (HOLD-007).
 
 Still open: drift logging/alert >active window, re-stamp BUY above anchor metric, refused-commit and orphan-fill counters. Deferred-hold observability is no longer open — the `[HOLD]` summary now names side/price/size/reason/off-grid distance and slow-re-warns on an unchanged hold (`modules/dexbot_maintenance_runtime.ts`, `docs/GRID_PRICE_INVARIANT.md`).
 
-### 3.4 Key code references (from source table)
+#### 3.4 Key code references (from source table)
 
 `dexbot_cow_runtime.ts:3281,3364` by-id adoption (`collectKnownOnChainOrderIds`/`adoptPlacedBatchFromChain`); `:3293` placed IDs from broadcast result; stale-commit refusal `utils/validate.ts:1102`; `sync_engine.ts:906-913` duplicate skip + `queueCorrection`; `chain_orders.ts:573-638` truncation cap; `:503 readSingleOrder, :530 batchReadOrders` immune; `dexbot_state_recovery.ts:314,581` recovery/reject; `dexbot_maintenance_runtime.ts:806 performGridResync`; `order/utils/order.ts:1560-1561` `isShiftEligibleFill`; `strategy.ts:345-369` fill-range rotation guard; `constants.ts:729` `PROJECTION_ENABLED` (unused since `3713c496`); `<bot>.log 15:19:06→39` slot-90 loop.
 
 ---
 
-## 4. Price-First Alignment Plan — from `PRICE_FIRST_ALIGNMENT_PLAN.md` (Status: Phase 1 SHIPPED and live as shadow telemetry; **Phase 2 projection was enabled `1bbf1a23`, then REMOVED `3713c496`** after a live-bot incident — the anchor veto overrode chain evidence and drove destructive gap-band cancels; the anchor is now observability-only and the boundary is chain-evidence-derived. Phase 3 is moot (no second write path to retire); Phase 4 golden tests landed (`tests/test_anchor_golden_geometry.ts`). Scope: grid boundary state `modules/order/`; Related: three-layer crawl/anchor/guard fix)
+### 4. Price-First Alignment Plan
 
-### 4.1 Goal
+> **Source:** `PRICE_FIRST_ALIGNMENT_PLAN.md` · **Status:** Phase 1 shipped and live as shadow telemetry; Phase 2 projection was enabled (`1bbf1a23`) then **removed** (`3713c496`) after a live-bot incident — the anchor veto overrode chain evidence and drove destructive gap-band cancels. The anchor is now observability-only; the boundary is chain-evidence-derived. Phase 3 is moot (no second write path to retire); boundary geometry is pinned by `tests/test_boundary_anchor_recovery.ts` (ANCHOR-001..004) and `tests/test_grid_price_slot_invariant.ts`.
+> **Scope:** grid boundary state `modules/order/` · **Related:** three-layer crawl/anchor/guard fix.
+
+#### 4.1 Goal
+
 One source of truth `MarketAnchor` (fill-derived), boundary demoted to rebuildable cache. Phase 2 is goal; Phase 3 deletion conditional on soak evidence. **KPI:** `[PLACEMENT-GUARD]` rotations = 0 + divergence telemetry flatlined.
 
-### 4.2 Background
+#### 4.2 Background
+
 Grid's "where is market" maintained two ways that disagree: boundary (discrete, crawled) vs fill prices (continuous, authoritative). Every incident = boundary diverging from price.
 
-### 4.3 Key decisions
+#### 4.3 Key decisions
+
 | # | Decision | Rationale |
 |---|---|---|
 | D1 | Price overrides funds, bounded fund floor (≤½ active window; severe shortfalls reduce sizes via `calculateBudgetedSizes`) | Preserve I1 unconditionally; sizing degrades gracefully |
@@ -221,37 +387,48 @@ Grid's "where is market" maintained two ways that disagree: boundary (discrete, 
 | D5 | Anchor never persisted — book-seeded (highest buy / lowest sell) startup, `startPrice` fallback | No schema/migration, fossilized book; guard covers until first fill |
 | D6 | Deletion evidence-gated (14-day) | Phases 1–2 carry safety; deletion hygiene must earn risk |
 
-### 4.4 Invariants I1–I6
-I1 No order on wrong side of just-filled price (`sell ≤ maxFill, buy > minFill`) — `test_boundary_price_anchor.ts`; I2 Single eligible fill ±1 crawl — `test_multi_partial_consolidation.ts`; I3 Just-filled BUY refills as BUY at fill price — `test_multifill_opposite_partial.ts`; I4 Boundary never exceeds gap-aware ceiling / collapses on degenerate geometry — `test_boundary_restore_validation.ts`; I5 Price-less fills degrade conservatively — `test_boundary_price_anchor.ts #4`; I6 COW-commit-only writes (`_setBoundary`) — `test_cow_boundary_slot_replacement.ts`.
+#### 4.4 Invariants I1–I6
 
-### 4.5 Phase 1 — MarketAnchor + divergence telemetry (no behavior change) — SHIPPED
+I1 No order on wrong side of just-filled price (`sell ≤ maxFill, buy > minFill`) — `test_last_fill_guard.ts` (LFG-1..7); I2 Single eligible fill ±1 crawl — `test_multi_partial_consolidation.ts`; I3 Just-filled BUY refills as BUY at fill price — `test_multifill_opposite_partial.ts`; I4 Boundary never exceeds gap-aware ceiling / collapses on degenerate geometry — `test_boundary_restore_validation.ts`; I5 Price-less fills degrade conservatively — `test_boundary_anchor_recovery.ts` ANCHOR-003; I6 COW-commit-only writes (`_setBoundary`) — `test_cow_boundary_slot_replacement.ts`.
+
+#### 4.5 Phase 1 — MarketAnchor + divergence telemetry (no behavior change)
+
+*Status: SHIPPED.*
 In-memory `marketAnchor` on manager (`dexbot_fill_runtime.ts`) `lastFillPrice/maxFilledSellPrice/minFilledBuyPrice/lastFillSide/updatedAt` updated on eligible fill (`isShiftEligibleFill`), `buildFillKey` deduped, block ordered (D4, D5); book-seeding; shadow log `[ANCHOR-DIVERGENCE] projected=X bookkept=Y drift=Z` `|Z|>1` warn (>~3), thresholds `constants.ts`; freshness 15 min OR >3 increments beyond anchor (`ANCHOR_FRESHNESS`); replay protection history uses latest only; tagging replay vs live via `sync_engine.ts`. Gate: suite green + unit for idempotent/block/replay/freshness/book-seeding.
 
-### 4.6 Phase 2 — Projection live (goal) — SUPERSEDED: landed `1bbf1a23` (flag on), REMOVED `3713c496`
+#### 4.6 Phase 2 — Projection live (goal)
+
+*Status: SUPERSEDED — landed `1bbf1a23` (flag on), REMOVED `3713c496`.*
 Pure `projectAnchorToGrid(anchor, allSlots, gapSlots)` via `computePriceAnchoredBoundaryTarget` (`order/utils/order.ts`), gap centered on traded range + I4 ceiling; `calculateTargetGrid` (`strategy.ts`): `boundaryIdx = anchorFresh ? project(...) : legacyDeriveTargetBoundary(...)` gated `projectionEnabled` (D3); fund floor D1 at most ½ window (`syncBoundaryToFunds/calculateFundDrivenBoundary` `utils/system.ts`); placement guard unchanged as enforcement I1; stale-anchor continues from last range decayed to AMA center (not fall back to crawl). Gate: suite green flag on/off + property harness random bursts/re-plans/replays/empty-book all I1–I6; flip per-bot start smaller, 48h soak watcher `ANCHOR-DIVERGENCE`/`PLACEMENT-GUARD`/fund friction. **Done = incident class closed, rollback = flag flip.**
 **Post-mortem (`3713c496`):** the projection override plus the anchor's veto role let a fresh fill-anchor override chain evidence under a stale boundary, and the gap-band sweep then cancelled legitimate orders. Removed: the `projectionEnabled` gating, the `projectAnchorToGrid` boundary override, and the fund-floor pull in `calculateTargetGrid`. `strategy.ts:232-236` records the decision — the anchor is shadow telemetry only (`[ANCHOR-DIVERGENCE]`/`[ANCHOR-STALE]`). The original fill-range rotation guard remains at `strategy.ts:345-369`; the `d808c052` price-sanity/anchor-refill guard extensions were removed `e2898e51`.
 
-### 4.7 Phase 3 — Conditional deletion (evidence-gated 14-day zero rotations + flat divergence) *(MOOT: Phase 2 was removed `3713c496`, so there is no second write path to retire; the legacy machinery below is the live path)*
+#### 4.7 Phase 3 — Conditional deletion
+
+*Status: MOOT — Phase 2 was removed (`3713c496`), so there is no second write path to retire; the legacy machinery below is the live path. Original gate: 14-day zero rotations + flat divergence.*
 3a: `deriveTargetBoundary` collapses to initial-recovery + projection; delete `netShift`/cross-chunk budget/window-cap; delete `_boundaryShiftBudget/_boundaryShiftBudgetBase/_boundaryAnchor` (`dexbot_class.ts`) + re-plan restore (`dexbot_cow_runtime.ts`); fund sync now D1 floor only; spread-correction promotes via anchor; remaining readers projection-based; `manager._setBoundary` stays (I6). 3b: `account_orders.loadBoundaryIdx` (`validatePersistedBoundary` `dexbot_state_recovery.ts`) + `storeGrid` (`utils/system.ts`) stop persisting boundary; startup = load grid → book-seed → project. Gate: harness + fund-floor/recovery cases; kill-switch: corrupt/delete snapshot must converge from chain alone.
 
-### 4.8 Phase 4 — Geometry golden tests (pin, don't refactor) *(LANDED: `tests/test_anchor_golden_geometry.ts`)*
-Golden files canonical grid × gap `{0,1,2,3}` × price at/between slots × direction asserting `calculateIdealBoundary/getSellStartIdx/projectAnchorToGrid` agree. Gate: green.
+#### 4.8 Phase 4 — Boundary geometry coverage (pin, don't refactor)
 
-### 4.9 Sequencing & risk
+*Status: LANDED with the projection, then superseded — boundary geometry is pinned by `tests/test_boundary_anchor_recovery.ts` (ANCHOR-001..004) and `tests/test_grid_price_slot_invariant.ts`.*
+
+#### 4.9 Sequencing & risk
+
+Work on `test`; per-phase mergeable unit with soak; flag flip is sharp edge — per-bot; D1 validated in soak; if 14-day never clean → stop at Phase 2 (guard+projection hold invariants).
+
 | Phase | Size | Risk | Rollback |
 |---|---|---|---|
 | 1 | 2–3d | none | delete struct |
 | 2 | 3–5d | medium | `projectionEnabled=false` |
 | 3 | 3–4d | low (evidence-gated) | revert |
 | 4 | 1d | none | n/a |
-Work on `test`; per-phase mergeable unit with soak; flag flip is sharp edge — per-bot; D1 validated in soak; if 14-day never clean → stop at Phase 2 (guard+projection hold invariants).
 
-### 4.10 Definition of Done
+#### 4.10 Definition of Done
+
 Goal (Phase 2): I1–I6 property pass, full suite green, harness random, 48h per-bot no fund-invariant; Full alignment (Phase 3): 14-day zero guard rotations + zero divergence warnings, no path increments `boundaryIdx` (only read/project), answer "where will next sell be?" from one struct.
 
 ---
 
-## 5. Cross-doc fix lineup (deduplicated, dependency order)
+### 5. Cross-doc fix lineup (deduplicated, dependency order)
 
 1. **GAP P1+P2+P4** + **LADDER #1** earliest (gap writer + re-anchor stop — highest leverage, prevents Aug 28 cascade 7 regs×orphaning). — *GAP P1/P2 landed `f94d6ec4` then reverted (`3713c496`/`e2898e51`); GAP P4 + LADDER #1 live.*
 2. **LADDER #4 / PRICE Phase 1** log-only, parallel. — *done (`4838bcb0`; Phase 1 telemetry live).*
@@ -264,7 +441,8 @@ Goal (Phase 2): I1–I6 property pass, full suite green, harness random, 48h per
 
 ---
 
-## 6. Consolidated invariants (what must hold after all fixes)
+### 6. Consolidated invariants (what must hold after all fixes)
+
 - **Gap-band (amended `3713c496`/`e2898e51`; **P3 reverted `e7231534`**):** in-gap chain orders are never cancelled as a self-healing net; they are adopted by the normal reconcile path once the boundary is re-derived via `calculateIdealBoundary` (P3 `validateBoundaryAgainstChainEvidence` gate removed `e7231534`). Placement into the band is prevented by `LAST-FILL-GUARD` / `findCrossedOrder`, not by P3 cancellation sweeps.
 - **Identity:** every resync (incl. startup reconcile) leaves no live order unmanaged (adopted-or-cancelled-as-surplus, surplus = `chainCount-targetCount` farthest-first).
 - **Monotonicity (grid-check):** adjacent same-direction fills monotonic rising sell / falling buy (equal OK).
@@ -272,7 +450,7 @@ Goal (Phase 2): I1–I6 property pass, full suite green, harness random, 48h per
 
 ---
 
-## 7. Consolidated verification — grid-correction check as regression gate
+### 7. Consolidated verification — grid-correction check as regression gate
 
 **Tooling (new):** `analysis/grid_correction_check.ts` (see §0) — primary external check for all docs' inversions; run per market:
 ```
@@ -298,11 +476,80 @@ Original doc regression excerpts preserved: GAP P6 A/B/C; LADDER §2.8 checks (1
 
 ---
 
-## 8. Deletion checklist (next commit)
+### 8. Provenance & supersession record
 
-- [x] `git rm docs/GAP_BAND_ORPHAN_PREVENTION_PLAN.md docs/LADDER_RECENTER_ORPHAN_ROOT_CAUSE.md docs/ORPHAN_FILL_INVARIANT_ROOT_CAUSE_AND_FIX.md docs/PRICE_FIRST_ALIGNMENT_PLAN.md` (staged 2026-08-31)
-- [x] No other doc/index lists the four (verified 2026-08-31); `analysis/README.md` documents the new `grid_correction_check` tool.
-- [x] Stale `*.md` filename references in code comments/tests updated to this file (9 module files, 6 test files).
-- [ ] No code refs lost — all paths in §§1–4 remain anchored to this file.
+- [x] Deleted the four superseded plans: `git rm docs/GAP_BAND_ORPHAN_PREVENTION_PLAN.md docs/LADDER_RECENTER_ORPHAN_ROOT_CAUSE.md docs/ORPHAN_FILL_INVARIANT_ROOT_CAUSE_AND_FIX.md docs/PRICE_FIRST_ALIGNMENT_PLAN.md` (staged 2026-08-31)
+- [x] No other doc/index lists the four (verified 2026-08-31); `analysis/README.md` documents the `grid_correction_check` tool.
+- [x] Stale `*.md` filename references in code comments/tests updated to the consolidated doc (9 module files, 6 test files), then re-pointed to this hub when it absorbed the summary.
 
 *Generated 2026-08-31 from the 4 test-only docs at their HEAD contents; statuses corrected against `test` HEAD `a54863ca` the same day, then refreshed against `1382f267` (2026-09-13). Landed/reverted/superseded annotations carry commit hashes where known; **line references in §§1-4 were re-verified at `a54863ca` and are subject to drift** — treat them as pointers, not assertions. The GRID-PRICE-INVARIANT guard is **BLOCKING** at all six emission sites (CREATE / UPDATE / CREATE-FALLBACK in `modules/dexbot_cow_runtime.ts`, RECONCILE-CREATE / RECONCILE-UPDATE / STARTUP-CREATE in `modules/order/grid_reconcile_internal.ts`): an off-grid emission is skipped, not merely counted, so a `violated>0` line means an emission was *prevented* rather than a writer merely *pinned*. Counters are still reported (`site=`, `checked=`, `violated=`, `unchecked=`) for observability — see `docs/GRID_PRICE_INVARIANT.md`.*
+
+---
+
+### A. Grid-Price Invariant — former failure trace
+
+> Companion to [GRID_PRICE_INVARIANT.md](GRID_PRICE_INVARIANT.md), which states the
+> invariant and its live enforcement. This appendix preserves the historical trace
+> that motivated the guard; the writers below are all closed.
+
+**Two contradictory sources of truth** for "what price is this slot":
+
+| Concept | Source | Used by (then) |
+|---|---|---|
+| Genesis table | `priceForSlot(idx, genesis)` | grid build, load validation |
+| Live slot price | `slot.price`, mutated from chain | COW broadcast, fill-guard pivot |
+
+Every observed violation was the second winning over the first. Five mechanisms fed it:
+
+- **S1 — chain price overwrote the slot's identity price.** Orphan adoption set
+  `price: chainOrder.price`, so a slot's id and its price could disagree.
+- **S2 — pre-broadcast substitution re-broadcast the corrupted price.** The planned
+  (genesis-derived) price was replaced with `liveSlot.price` — whatever S1 wrote — and
+  logged at `debug`, so it was invisible.
+- **S3 — guards tested range membership, never grid membership.**
+- **S4 — the fill-guard pivot was untrusted.** `_lastFilledPrice` was written from fill
+  prices at four sites, none validated against the grid.
+- **S5 — bypasses skipped even that guard.** Spread-correction origins bypass it by
+  design; the guard ran on the "final post-freshness price", i.e. the price S2 had
+  already replaced.
+
+The unifying hazard: an off-grid price becomes *grid evidence*, then is re-emitted as
+if it were real market structure.
+
+**The writer chain (both links now closed).**
+
+1. **Adoption overwrote the grid level** — `modules/order/sync_engine.ts`, the legacy
+   no-genesis fallback (`sync-pass2-adopt-orphan` branch):
+   ```ts
+   const adoptedOrder = {
+       ...adoptedSlot, orderId: chainOrderId, type: chainOrder.type,
+       state: adoptedState, size: chainOrder.size,
+       price: chainOrder.price,   // <-- genesis price discarded
+       ...
+   };
+   ```
+   It also matched by price *tolerance* rather than `slotIndexForPrice` + `isSlotInRail`,
+   so it could land an order in a slot whose genesis price was far away — then cement
+   that distance.
+
+2. **Pre-broadcast substitution propagated it** — `modules/dexbot_cow_runtime.ts`, the
+   CREATE branch's `liveSlot`/`priceDrift` block:
+   ```ts
+   const effectiveOrder = (priceDrift > 0)
+       ? { ...order, price: livePrice, ... }   // planned price discarded
+       : order;
+   ```
+   The name "freshness" implied the live price was *more* correct — only safe if
+   `slot.price` were invariantly a genesis level, the exact thing nothing enforced.
+
+**Observed signature:** escalating BUYs at `0.363 → 0.565 → 0.614 → 0.739 → 0.793`
+against a ~0.31 market — each a `BUY > pivot` violation — then matched lots sold back
+at ~0.306 for roughly -61%, plus a 107-violation burst.
+
+**Provenance caveat (recorded here, not in the contract doc).** Which writer
+caused the 2026-08-30 event is **not confirmed**: the mechanism is proven real
+at HEAD, but mapping it to that event is inference from fill
+prices/timestamps plus the removed `d808c052`/`e2898e51` code. That window's
+own logs are gone (retention starts 2026-09-11), so the attribution cannot
+retroactively be tightened — treat the writer chain above as the class
+mechanism, not as a per-event timeline.

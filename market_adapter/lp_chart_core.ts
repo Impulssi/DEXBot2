@@ -1,7 +1,7 @@
 'use strict';
 
 import { toIntervalLabel } from './interval_utils.js';
-import { escapeHtml, serializeJsonForScript } from '../analysis/chart_utils.js';
+import { escapeHtml, serializeJsonForScript, uplotInlineTags } from '../analysis/chart_utils.js';
 import { fixedTo, roundTo, roundToDecimals } from '../modules/order/utils/math.js';
 
 
@@ -75,8 +75,7 @@ function generateHTML(meta: any, candles: any, amaResults: any) {
     <meta name="darkreader-lock">
     <meta name="color-scheme" content="dark">
     <title>${escapeHtml(poolLabel)} LP Price · ${escapeHtml(intervalLabel)}</title>
-    <link rel="stylesheet" href="../uplot/uPlot.min.css">
-    <script src="../uplot/uPlot.iife.min.js"></script>
+    ${uplotInlineTags()}
     <style>
         :root { color-scheme: dark; }
         * { box-sizing: border-box; margin: 0; padding: 0; }

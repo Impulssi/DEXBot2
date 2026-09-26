@@ -44,7 +44,7 @@ check_dependencies() {
         elif command -v dnf &> /dev/null; then
             sudo dnf install -y "${missing_packages[@]}"
         elif command -v pacman &> /dev/null; then
-            sudo pacman -S --noconfirm "${missing_packages[@]}"
+            sudo pacman -Syu --noconfirm "${missing_packages[@]}"
         else
             echo "Warning: Could not detect package manager. Please install manually: ${missing_packages[@]}"
             echo "  apt-get: sudo apt-get install ${missing_packages[*]}"

@@ -80,6 +80,26 @@ async function testDelayedArrowSequenceEditsAtCursor() {
     });
 }
 
+async function testTrimDefaultAndOptOut() {
+    await withMockedConsole(async ({ stdin }) => {
+        const resultPromise = readInput('Prompt: ');
+        stdin.emit('data', '  ama3  \n');
+        assert.strictEqual(await resultPromise, 'ama3', 'default trims surrounding whitespace');
+    });
+
+    await withMockedConsole(async ({ stdin }) => {
+        const resultPromise = readInput('Prompt: ', { trimInput: false });
+        stdin.emit('data', '  ama3  \n');
+        assert.strictEqual(await resultPromise, '  ama3  ', 'trimInput:false preserves surrounding whitespace');
+    });
+
+    await withMockedConsole(async ({ stdin }) => {
+        const resultPromise = readInput('Prompt: ', { trimInput: false });
+        stdin.emit('data', ' \n');
+        assert.strictEqual(await resultPromise, ' ', 'trimInput:false keeps a whitespace-only entry distinguishable from a bare Enter');
+    });
+}
+
 async function testDeleteRemovesCharacterAtCursor() {
     await withMockedConsole(async ({ stdin }) => {
         const resultPromise = readInput('Prompt: ');
@@ -99,5 +119,6 @@ async function testDeleteRemovesCharacterAtCursor() {
     await testPasswordMaskingDoesNotLeakInput();
     await testDelayedArrowSequenceEditsAtCursor();
     await testDeleteRemovesCharacterAtCursor();
+    await testTrimDefaultAndOptOut();
     console.log('readInput tests passed');
 })();

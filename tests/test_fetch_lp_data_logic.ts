@@ -95,8 +95,8 @@ function lpHit(id, ts) {
 }
 
 // The LP fetcher must go through the same runCachedWindows path as book and
-// feed: chunk files are written next to outPath and exact-reruns reuse them
-// without new Kibana queries.
+// feed: stable month-shard files are written next to outPath and exact-reruns
+// reuse them without new Kibana queries.
 async function testLpSequentialCachesAndReuses() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-lp-test-'));
     const outPath = path.join(dir, 'lp_pool_133_1h.json');

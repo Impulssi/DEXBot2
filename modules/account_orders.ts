@@ -16,7 +16,7 @@
  * 1. AccountOrders(options) - Class for per-bot order persistence
  *    Constructor options: { botKey, ordersDir?, profilesPath? } (botKey required, throws if missing)
  *    Methods:
-  *      syncMeta(botConfig), storeMasterGrid(orders, btsFeesOwed, boundaryIdx, assets, debugInputs, recentFillKeys, genesis, gapEvacStreaks, pendingFillCrawls, manualHolds)
+  *      syncMeta(botConfig), storeMasterGrid(orders, btsFeesOwed, boundaryIdx, assets, debugInputs, recentFillKeys, genesis, gapEvacStreaks, pendingFillCrawls, manualHolds, lastFillPivot)
  *      loadGrid(forceReload), loadRecentFillKeys(forceReload), loadPersistedAssets(forceReload), loadPendingFillCrawls(forceReload)
  *      loadBoundaryIdx(forceReload), loadBtsBalance(forceReload), loadBtsFeesOwed(forceReload), loadGapEvacStreaks(forceReload), loadGenesis(forceReload)
  *      clearGrid()
@@ -67,7 +67,7 @@ import { PATHS } from './paths.js';
 import AsyncLock from './order/async_lock.js';
 import { isPhantomOrder } from './order/utils/order.js';
 import * as Format from './order/format.js';
-import { ensureDir, nowIso } from './order/utils/system.js';
+import { ensureDir, nowIso, normalizeLastFillPivot } from './order/utils/system.js';
 import Logger from './order/logger.js';
 import { getErrorMessage } from './utils/errors.js';
 import { sanitizeKey } from './utils/sanitize_key.js';
@@ -335,7 +335,7 @@ class AccountOrders {
    * @param {Object|null} recentFillKeys - Optional fill key dedup snapshot for crash recovery
    * @param {Object|null} genesis - Optional frozen genesis (priceLevels etc)
    */
-  async storeMasterGrid(orders: any[] = [], btsFeesOwed: any = null, boundaryIdx: any = null, assets: any = null, debugInputs: any = null, recentFillKeys: any = null, genesis: any = null, gapEvacStreaks: any = undefined, pendingFillCrawls: any = undefined, manualHolds: any = undefined) {
+  async storeMasterGrid(orders: any[] = [], btsFeesOwed: any = null, boundaryIdx: any = null, assets: any = null, debugInputs: any = null, recentFillKeys: any = null, genesis: any = null, gapEvacStreaks: any = undefined, pendingFillCrawls: any = undefined, manualHolds: any = undefined, lastFillPivot: any = undefined) {
     // Use AsyncLock to serialize read-modify-write operations
     await this._persistenceLock.acquire(async () => {
       // Reload from disk before writing to prevent race conditions
@@ -448,6 +448,33 @@ class AccountOrders {
         }
       }
 
+      if (lastFillPivot !== undefined) {
+        // Only a fill-derived, validated-on-grid pivot survives (provenance
+        // gate: a book-derived or unvalidated heuristic is never written as
+        // if it were market truth). genesisHash binds it to the snapshot the
+        // boundary lives in: a persisted pivot from an old genesis is not
+        // valid after a grid regeneration/re-derive, and the restore helper
+        // refuses it on mismatch (same lockstep contract as pendingFillCrawls).
+        // null clears any previously stored row on every live-grid persist so
+        // a consumed pivot never resurrects; undefined (legacy callers) is a
+        // no-op; any other malformed shape is treated as an explicit clear
+        // (never store, never leave a stale row behind). Row validation is
+        // the shared normalizeLastFillPivot gate — the loader enforces the
+        // exact same shape, so the two gates cannot drift.
+        if (lastFillPivot === undefined) {
+          // Legacy no-op (backward-compatible callers), mirror gapEvacStreaks.
+        } else if (lastFillPivot === null) {
+          delete (this.data as any).lastFillPivot;
+        } else {
+          const normalized = normalizeLastFillPivot(lastFillPivot);
+          if (normalized) {
+            (this.data as any).lastFillPivot = normalized;
+          } else {
+            delete (this.data as any).lastFillPivot;
+          }
+        }
+      }
+
       const timestamp = nowIso();
       this.data.lastUpdated = timestamp;
       if (this.data.meta) this.data.meta.updatedAt = timestamp;
@@ -468,6 +495,26 @@ class AccountOrders {
     await this._persistenceLock.acquire(async () => {
       this.data = this._loadData() || emptyData();
       this.data.boundaryIdx = null;
+      this._persist();
+    });
+  }
+
+  /**
+   * Erase a persisted LAST-FILL-GUARD pivot that restoreLastFillPivot
+   * rejected (genesis mismatch / TTL expiry / off-ladder). storeMasterGrid
+   * deliberately keeps an untouched row for legacy `undefined` callers, so
+   * without this explicit erase a rejected value would re-arm the rejection
+   * on every restart. Load-time only: this reloads from disk inside the
+   * lock, discarding any unsaved in-memory mutations — safe at the
+   * loadGrid/restore call site (startup load and recovery reload, both
+   * before fills mutate state) but do NOT invoke from an arbitrary runtime
+   * path.
+   */
+  async clearPersistedLastFillPivot() {
+    await this._persistenceLock.acquire(async () => {
+      this.data = this._loadData() || emptyData();
+      delete (this.data as any).lastFillPivot;
+      this.data.lastUpdated = nowIso();
       this._persist();
     });
   }
@@ -507,6 +554,15 @@ class AccountOrders {
       return this.data.gapEvacStreaks;
     }
     return null;
+  }
+
+  loadLastFillPivot(forceReload: boolean = false) {
+    if (forceReload) {
+      this.data = this._loadData() || emptyData();
+    }
+    // Shared row gate (normalizeLastFillPivot): identical validation to the
+    // storeMasterGrid sanitizer, one shape contract for the whole ledger.
+    return normalizeLastFillPivot(this.data && (this.data as any).lastFillPivot);
   }
 
   /**
@@ -658,6 +714,10 @@ class AccountOrders {
       // are relative deltas against the deleted boundary/grid, so a rebuilt
       // generation must not inherit them (the rebuild re-anchors absolutely).
       delete (this.data as any).pendingFillCrawls;
+      // The persisted LAST-FILL-GUARD pivot belongs to the deleted snapshot's
+      // generation (its slot ids and genesis): a rebuilt grid must re-arm on
+      // a fresh fill, not inherit a pivot validated against wiped geometry.
+      delete (this.data as any).lastFillPivot;
       this.data.lastUpdated = nowIso();
       this._persist();
       return true;

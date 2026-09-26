@@ -3,6 +3,7 @@ import { getStorage } from './storage/index.js';
 import { readBotsFileSync } from './bots_file_lock.js';
 import { parseJsonWithComments } from './order/utils/system.js';
 import { createBotKey } from './account_orders.js';
+import { seedBotEntry } from './bot_defaults.js';
 import { isSameBotName } from './utils/sanitize_key.js';
 import { isPositiveNumber, isPositiveNumberOrPercent, toDecimal } from './order/utils/math.js';
 import { resolveMinCollateralIncreaseThreshold } from './cr_planner.js';
@@ -49,7 +50,9 @@ function resolveRawBotEntries(settings: any): any[] {
 }
 
 function normalizeBotEntry(entry: any, index: number = 0): any {
-    const normalized = { active: entry.active === undefined ? true : !!entry.active, ...entry };
+    // active default + raw passthrough live in modules/bot_defaults.ts
+    // (shared with the claw copy — one semantics for both).
+    const normalized = seedBotEntry(entry);
     return { ...normalized, botIndex: index, botKey: createBotKey(normalized, index) };
 }
 

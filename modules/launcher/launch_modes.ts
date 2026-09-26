@@ -2,6 +2,12 @@
 import { Config } from '../config.js';
 const CONTROL_COMMANDS = new Set(['status', 'stat', 'stop', 'delete', 'restart', 'reload', 'stop-all', 'restart-all', 'reload-all', 'shutdown']);
 
+/**
+ * Internal command word for the supervisor-spawned bot worker. Shared by the
+ * spawn site and the CLI intercept so the two cannot drift apart.
+ */
+const LAUNCHER_WORKER_COMMAND = 'worker';
+
 function findFirstPositionalArg(args: string[]): string | null {
     return args.find((arg: string) => !arg.startsWith('-') && arg !== 'claw-only' && !CONTROL_COMMANDS.has(arg)) || null;
 }
@@ -83,6 +89,19 @@ function parseUnlockArgs(argv = process.argv) {
     };
 }
 
+/**
+ * Parse the arguments of the internal supervised worker command
+ * (`dexbot worker [--dryrun] [bot]`). Reuses the launcher's flag-stripping and
+ * positional resolution so the worker honors the same flag rules as `unlock`.
+ *
+ * @param args - Arguments following the `worker` command word.
+ */
+function parseWorkerArgs(args: string[]) {
+    const dryrun = args.includes('--dryrun');
+    const positionalArgs = stripUnlockFlags(args);
+    return { dryrun, botName: findFirstPositionalArg(positionalArgs) };
+}
+
 function parsePm2Args(argv = process.argv) {
     const args = argv.slice(2);
     const headless = args.includes('--headless');
@@ -129,5 +148,5 @@ function parsePm2Args(argv = process.argv) {
     };
 }
 
-export { findFirstPositionalArg, parsePm2Args, parseUnlockArgs }
+export { parsePm2Args, parseUnlockArgs, parseWorkerArgs, LAUNCHER_WORKER_COMMAND }
 

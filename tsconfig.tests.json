@@ -15,7 +15,8 @@
     "tsBuildInfoFile": "./node_modules/.cache/tsc-tests.tsbuildinfo"
   },
   "include": [
-    "tests/**/*.ts"
+    "tests/**/*.ts",
+    "analysis/legacy/tests/**/*.ts"
   ],
   "exclude": [
     "node_modules",

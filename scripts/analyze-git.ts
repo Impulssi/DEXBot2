@@ -17,6 +17,7 @@ import { getStorage } from '../modules/storage/index.js';
 import { PATHS } from '../modules/paths.js';
 const { ensureDir } = getStorage();
 import { getErrorMessage } from '../modules/utils/errors.js';
+import { uplotInlineTags } from '../analysis/chart_utils.js';
 
 /**
  * RepoAnalyzer Class
@@ -437,8 +438,7 @@ class RepoAnalyzer {
     <meta name="darkreader-lock">
     <meta name="color-scheme" content="dark">
     <title>DEXBot2 Repository Statistics</title>
-    <link rel="stylesheet" href="../uplot/uPlot.min.css">
-    <script src="../uplot/uPlot.iife.min.js"></script>
+    ${uplotInlineTags()}
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {

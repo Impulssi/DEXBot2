@@ -28,8 +28,8 @@ function testComputeAsymmetricBoundsMetricsClampToSafeBounds() {
     });
 
     assert.strictEqual(metrics.rawAsymmetryFactor, 0.35, 'raw asymmetry should reflect the full configured cap');
-    assert.ok(Math.abs(metrics.appliedAsymmetryFactor - (1 - (1 / 1.1))) < 1e-12,
-        'applied asymmetry should be clamped to the safe bound implied by maxPrice');
+    assert.ok(Math.abs(metrics.appliedAsymmetryFactor - (1.1 - 1)) < 1e-12,
+        'applied asymmetry should be clamped to the log-symmetric safe bound (baseMaxMult - 1)');
     assert.strictEqual(metrics.maxAsymmetryFactor, 0.35, 'resolved maxAsymmetryFactor should be preserved');
 }
 
@@ -44,10 +44,10 @@ function testApplyAsymmetricBoundsUsesAppliedClamp() {
         maxAsymmetryFactor: 0.35,
     });
 
-    assert.ok(Math.abs(result.resolvedMinPrice - (50 / 1.0909090909090908)) < 1e-12,
-        'downtrend should widen the min bound with the clamped asymmetry');
+    assert.ok(Math.abs(result.resolvedMinPrice - (50 / 1.1)) < 1e-12,
+        'downtrend should shift the min bound down by the clamped 1/(1+a) factor');
     assert.ok(Math.abs(result.resolvedMaxPrice - 100) < 1e-12,
-        'downtrend should tighten the max bound exactly to center when the safe clamp is hit');
+        'downtrend should shift the max bound exactly to center when the safe clamp is hit');
 }
 
 testResolveMaxAsymmetryFactorPrefersConfiguredOrder();

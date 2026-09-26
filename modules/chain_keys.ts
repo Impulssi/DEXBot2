@@ -22,16 +22,16 @@
  * All newly written private keys use the v2 vault format.
  *
  * ===============================================================================
- * EXPORTS (23 functions + 1 error class)
+ * EXPORTS (24 functions + 1 error class)
  * ===============================================================================
  *
  * AUTHENTICATION (3 functions)
  *   1. authenticate() - Authenticate and return a derived vault secret (async)
  *      Prompts user for password, verifies vault metadata
- *      Throws MasterPasswordError on failure
+ *      Throws MasterPasswordError on failure, MasterPasswordCancelledError on Escape
  *   2. unlockWithPassword(password, accountsData) - Derive the vault secret from a password
  *      Throws MasterPasswordError if the password is incorrect
- *   3. isMasterPasswordFailure(err) - Check if an error is a master-password failure
+ *   3. isMasterPasswordFailure(err) - Check if an error is a master-password failure or cancellation
  *
  * KEY MANAGEMENT (4 functions)
  *   4. getPrivateKey(accountName, vaultSecret) - Get private key for account
@@ -53,18 +53,19 @@
  *  13. isVaultSecret(value) - Type guard for vault-secret objects
  *  14. isDaemonSigningToken(value) - Type guard for daemon signing-token objects
  *
- * STORAGE (3 functions)
+ * STORAGE (4 functions)
  *  15. loadAccounts() - Load accounts from keys.json
- *  16. saveAccounts(data) - Save accounts to keys.json
- *  17. checkKeysFileSecurity() - Verify keys.json permissions and ownership
+ *  16. hasKeySetup() - Check whether the vault has a valid account entry
+ *  17. saveAccounts(data) - Save accounts to keys.json
+ *  18. checkKeysFileSecurity() - Verify keys.json permissions and ownership
  *
  * DAEMON (6 functions)
- *  18. createDaemonSigningToken(accountName, options) - Build a credential-daemon signing token
- *  19. isDaemonReady(options) - Check if credential daemon is ready
- *  20. isDaemonResponsive(options, timeout) - Check if daemon is responsive
- *  21. waitForDaemon(maxWaitMs, options) - Wait for daemon to become ready (async)
- *  22. probeAccountInDaemon(accountName, timeout, options) - Probe daemon for account (async)
- *  23. pingDaemon(accountName, timeout, options) - Lightweight daemon health check (async)
+ *  19. createDaemonSigningToken(accountName, options) - Build a credential-daemon signing token
+ *  20. isDaemonReady(options) - Check if credential daemon is ready
+ *  21. isDaemonResponsive(options, timeout) - Check if daemon is responsive
+ *  22. waitForDaemon(maxWaitMs, options) - Wait for daemon to become ready (async)
+ *  23. probeAccountInDaemon(accountName, timeout, options) - Probe daemon for account (async)
+ *  24. pingDaemon(accountName, timeout, options) - Lightweight daemon health check (async)
  *
  * ERROR HANDLING (1 error class)
  *  - MasterPasswordError - Thrown when authentication fails
@@ -92,12 +93,16 @@
 
 
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 const require = createRequire(import.meta.url);
 
 import { path } from './path_api.js';
 import { readInput, readPassword, sleep } from './order/utils/system.js';
-import { TIMING, CREDENTIAL_PROMPTS } from './constants.js';
+import { TIMING, CREDENTIAL_PROMPTS, UPDATER } from './constants.js';
 import { PATHS } from './paths.js';
+import { CLI_COLORS } from './cli_colors.js';
+import { formatStartupNotice } from './cli_start_output.js';
+import { displayWidth, padDisplay } from './utils/text_width.js';
 
 import { getStorage } from './storage/index.js';
 import { sendSocketJsonRequest } from './socket_json_client.js';
@@ -176,6 +181,32 @@ const VAULT_DAEMON_SIGNING_TOKEN_KIND = 'dexbot-daemon-signing-token';
 const PROFILES_KEYS_FILE = Config.DEXBOT_KEYS_FILE
     ? path.resolve(Config.DEXBOT_KEYS_FILE)
     : PATHS.PROFILES.KEYS_JSON();
+const BITSHARES_ONBOARDING_FILE = path.join(PATHS.PROJECT_ROOT, 'docs', 'BITSHARES_ONBOARDING.md');
+const BITSHARES_ONBOARDING_DOC_PATH = 'docs/BITSHARES_ONBOARDING.md';
+// Derive the web link from the canonical repository metadata so a repo/branch
+// change only has to be made in modules/constants.ts.
+const BITSHARES_ONBOARDING_REMOTE_URL = `${UPDATER.REPOSITORY_URL.replace(/\.git$/, '')}/blob/${
+    UPDATER.BRANCH === 'auto' ? 'main' : UPDATER.BRANCH
+}/${BITSHARES_ONBOARDING_DOC_PATH}`;
+
+/**
+ * Pick the onboarding link to show: the copy shipped with this installation
+ * when present, otherwise the hosted document. Exported for testing.
+ */
+export function resolveOnboardingUrl(
+    localExists: boolean = storage.exists(BITSHARES_ONBOARDING_FILE),
+    localHref: string = pathToFileURL(BITSHARES_ONBOARDING_FILE).href,
+): string {
+    return localExists ? localHref : BITSHARES_ONBOARDING_REMOTE_URL;
+}
+
+function printEmptyVaultOnboardingNotice() {
+    const message = `New to DEXBot2 and BitShares? Check out:\n${resolveOnboardingUrl()}`;
+    console.log(formatStartupNotice(message, {
+        isTTY: hasProcess() && Boolean(process.stdout?.isTTY),
+        noColor: Boolean(Config.NO_COLOR),
+    }));
+}
 
 /**
  * Ensures that the profiles/keys directory exists.
@@ -471,6 +502,26 @@ function loadAccounts() {
     }
 }
 
+/**
+ * Report whether the key vault has a usable account entry.
+ * Password metadata alone is not sufficient: cancelling key setup can leave
+ * a valid-looking vault with no account key to use at runtime.
+ */
+function hasKeySetup(accountsData: any = loadAccounts()) {
+    if (!hasModernVault(accountsData)) return false;
+
+    // A vault created by cancelling key setup can contain only password
+    // metadata (salt/verifier) and no usable account key. Treat that as
+    // incomplete onboarding so `dexbot start` returns to the key manager.
+    return Object.entries(accountsData.accounts || {}).some(([accountName, account]: [string, any]) => {
+        if (!accountName.trim() || !account || typeof account.encryptedKey !== 'string') return false;
+        const parts = account.encryptedKey.split(':');
+        return parts.length === 5
+            && parts[0] === 'v2'
+            && parts.slice(1).every((part: string) => part.length > 0 && part.length % 2 === 0 && /^[0-9a-f]+$/i.test(part));
+    });
+}
+
 function setupModernVault(accountsData: any, password: any) {
     const vaultSalt = randomBytes(VAULT_SALT_BYTES);
     const vaultKey = deriveVaultKey(password, vaultSalt);
@@ -531,12 +582,34 @@ class MasterPasswordError extends Error {
 }
 
 /**
- * Check if an error is a master password authentication failure.
+ * Thrown when the user cancels an interactive master-password prompt (Escape).
+ * Kept distinct from MasterPasswordError so cancellation is never reported as a
+ * wrong-password failure, while still aborting callers that cannot continue.
+ */
+class MasterPasswordCancelledError extends Error {
+    static code = 'MASTER_PASSWORD_CANCELLED';
+    code: string;
+    constructor(message = 'Master password entry cancelled.') {
+        super(message);
+        this.name = 'MasterPasswordCancelledError';
+        this.code = MasterPasswordCancelledError.code;
+    }
+}
+
+/**
+ * Check if an error should abort an authentication-dependent flow.
+ * Covers both wrong-password failures and user cancellation.
  * @param {Error} err - Error to check
- * @returns {boolean} True if the error indicates a master password failure
+ * @returns {boolean} True if the error indicates authentication could not complete
  */
 function isMasterPasswordFailure(err: any) {
-    return !!(err && (err instanceof MasterPasswordError || err.code === MasterPasswordError.code));
+    return !!(
+        err &&
+        (err instanceof MasterPasswordError ||
+            err instanceof MasterPasswordCancelledError ||
+            err.code === MasterPasswordError.code ||
+            err.code === MasterPasswordCancelledError.code)
+    );
 }
 
 const MASTER_PASSWORD_MAX_ATTEMPTS = CREDENTIAL_PROMPTS.MAX_MASTER_PASSWORD_ATTEMPTS;
@@ -557,14 +630,17 @@ async function _promptPassword() {
     return await readPassword('Enter master password: ');
 }
 
+type VaultSecret = { kind: string; version: any; vaultKeyHex: string };
+
 /**
  * Authenticate and return a derived vault secret.
  * Prompts user interactively with limited retry attempts.
- * @returns {Promise<Object>} The verified vault secret
+ * @returns {Promise<VaultSecret>} The verified vault secret
+ * @throws {MasterPasswordCancelledError} If the user cancels with Escape
  * @throws {Error} If no master password is set
  * @throws {MasterPasswordError} If max attempts exceeded
  */
-async function authenticate() {
+async function authenticate(): Promise<VaultSecret> {
     const accountsData = loadAccounts();
     if (!hasModernVault(accountsData)) {
         if (Object.keys(accountsData.accounts || {}).length > 0) {
@@ -583,6 +659,10 @@ async function authenticate() {
                 throw new MasterPasswordError(`Incorrect master password after ${MASTER_PASSWORD_MAX_ATTEMPTS} attempts.`);
             }
             const enteredPassword = await _promptPassword();
+            if (enteredPassword === '\x1b') {
+                masterPasswordAttempts = 0;
+                throw new MasterPasswordCancelledError();
+            }
             try {
                 const secret = unlockWithPassword(enteredPassword, accountsData);
                 masterPasswordAttempts = 0;
@@ -596,7 +676,7 @@ async function authenticate() {
             console.log('Master password not correct. Please try again.');
         }
     } catch (err: any) {
-        if (err instanceof MasterPasswordError) {
+        if (err instanceof MasterPasswordError || err instanceof MasterPasswordCancelledError) {
             masterPasswordAttempts = 0;
         }
         throw err;
@@ -658,13 +738,22 @@ async function resolvePrivateKey(accountName: any, vaultSecret: any, chainClient
  * @returns {Array<string>} Array of account names
  */
 function listKeyNames(accounts: any) {
-    if (!accounts || Object.keys(accounts).length === 0) {
+    const names = accounts ? Object.keys(accounts) : [];
+    if (names.length === 0) {
         console.log('  (no accounts stored yet)');
         return [];
     }
-    console.log('Stored keys:');
-    return Object.keys(accounts).map((name: any, index: any) => {
-        console.log(`  ${index + 1}. ${name}`);
+
+    const indexWidth = Math.max(1, ...names.map((_, index: number) => String(index + 1).length));
+    const accountWidth = Math.max('Account'.length, ...names.map((name: string) => displayWidth(name)));
+    const header = `#`.padEnd(indexWidth) + '  ' + padDisplay('Account', accountWidth);
+    console.log(`  ${CLI_COLORS.yellowBold}${header}${CLI_COLORS.reset}`);
+    return names.map((name: string, index: number) => {
+        const rowIndex = String(index + 1);
+        console.log(
+            `  ${CLI_COLORS.gray}${rowIndex.padEnd(indexWidth)}${CLI_COLORS.reset}  ` +
+            `${CLI_COLORS.greenBold}${padDisplay(name, accountWidth)}${CLI_COLORS.reset}`
+        );
         return name;
     });
 }
@@ -673,7 +762,7 @@ function listKeyNames(accounts: any) {
  * Prompts the user to select an account name from the stored keys.
  * @param {Object} accounts - The accounts object.
  * @param {string} promptText - The prompt message to display.
- * @returns {Promise<string|null>} The selected account name, or null/ESC.
+ * @returns {Promise<string|null>} The selected account name, or null if cancelled/invalid.
  */
 async function selectKeyName(accounts: any, promptText: any) {
     const names = Object.keys(accounts);
@@ -683,7 +772,7 @@ async function selectKeyName(accounts: any, promptText: any) {
     }
     names.forEach((name: any, index: any) => console.log(`  ${index + 1}. ${name}`));
     const raw = (await readInput(`${promptText} [1-${names.length}]: `)).trim();
-    if (raw === '\x1b') return '\x1b';
+    if (raw === '\x1b') return null;
 
     const idx = Number(raw) - 1;
     if (Number.isNaN(idx) || idx < 0 || idx >= names.length) {
@@ -697,7 +786,8 @@ async function selectKeyName(accounts: any, promptText: any) {
  * Interactively changes the master password and re-encrypts all stored keys.
  * @param {Object} accountsData - The loaded accounts data object.
  * @param {Object|Buffer|null} currentSecret - The current derived secret.
- * @returns {Promise<Object|Buffer|null>} The new vault secret, or the old one if failed/cancelled.
+ * @returns {Promise<Object|Buffer|null>} The new vault secret, or the old one if unchanged/failed.
+ * @throws {MasterPasswordCancelledError} If the user cancels with Escape
  */
 async function changeMasterPassword(accountsData: any, currentSecret: any) {
     if (!hasModernVault(accountsData)) {
@@ -706,7 +796,7 @@ async function changeMasterPassword(accountsData: any, currentSecret: any) {
     }
 
     const oldPassword = await readPassword('Enter current master password: ');
-    if (oldPassword === '\x1b') return currentSecret;
+    if (oldPassword === '\x1b') throw new MasterPasswordCancelledError();
 
     if (!verifyCurrentPassword(oldPassword, accountsData)) {
         console.log('Incorrect master password!');
@@ -716,10 +806,10 @@ async function changeMasterPassword(accountsData: any, currentSecret: any) {
     const oldSecret = deriveModernSecretFromPassword(oldPassword, accountsData);
 
     const newPassword = await readPassword('Enter new master password:     ');
-    if (newPassword === '\x1b') return currentSecret;
+    if (newPassword === '\x1b') throw new MasterPasswordCancelledError();
 
     const confirmPassword = await readPassword('Confirm new master password:   ');
-    if (confirmPassword === '\x1b') return currentSecret;
+    if (confirmPassword === '\x1b') throw new MasterPasswordCancelledError();
 
     if (newPassword !== confirmPassword) {
         console.log('Passwords do not match!');
@@ -794,37 +884,52 @@ function saveAccounts(data: any) {
  * Provides menu for: add/modify/remove keys, test decryption,
  * change master password.
  */
-async function main() {
+async function main(): Promise<boolean> {
+    const ESC = '\x1b';
     console.log('Chain Key Manager');
     console.log('========================');
 
     let accountsData = loadAccounts();
-    let vaultSecret: { kind: string; version: any; vaultKeyHex: string; } | null = null;
+    let vaultSecret: VaultSecret | null = null;
+    let vaultReady = false;
 
     // Check if master password is set
     if (!hasModernVault(accountsData)) {
-        console.log('No master password set. Please set one:');
+        console.log(`${CLI_COLORS.boldRed}No master password set. Please set one:${CLI_COLORS.reset}`);
         const password1 = await readPassword('Enter master password:   ');
+        if (password1 === ESC) return false;
         const password2 = await readPassword('Confirm master password: ');
+        if (password2 === ESC) return false;
         if (password1 !== password2) {
             console.log('Passwords do not match!');
-            return;
+            return false;
         }
         vaultSecret = setupModernVault(accountsData, password1);
         saveAccounts(accountsData);
+        vaultReady = true;
         console.log('Master password set successfully.');
+        console.log('');
     } else {
         try {
             vaultSecret = await authenticate();
             accountsData = loadAccounts();
+            vaultReady = true;
             console.log('Authenticated successfully.');
+            console.log('');
         } catch (err: any) {
+            if (err instanceof MasterPasswordCancelledError) {
+                return false;
+            }
             if (err instanceof MasterPasswordError) {
                 console.log(getErrorMessage(err));
-                return;
+                return false;
             }
             throw err;
         }
+    }
+
+    if (Object.keys(accountsData.accounts || {}).length === 0) {
+        printEmptyVaultOnboardingNotice();
     }
 
      while (true) {
@@ -840,8 +945,7 @@ async function main() {
          const choiceRaw = await readInput('Choose an option: ');
          console.log('');
 
-         if (choiceRaw === '\x1b' || choiceRaw.trim() === '') {
-             console.log('Keymanager closed!');
+         if (choiceRaw === ESC || choiceRaw.trim() === '') {
              break;
          }
 
@@ -849,14 +953,14 @@ async function main() {
 
         if (choice === '1') {
             const accountNameRaw = await readInput('Enter account name: ');
-            if (accountNameRaw === '\x1b') continue;
+            if (accountNameRaw === ESC) continue;
             const accountName = accountNameRaw.trim();
             if (!accountName) {
                 continue;
             }
 
             const privateKeyRaw = await readPassword('Enter private key:  ');
-            if (privateKeyRaw === '\x1b') continue;
+            if (privateKeyRaw === ESC) continue;
 
             const privateKey = privateKeyRaw.replace(/\s+/g, '');
 
@@ -874,10 +978,10 @@ async function main() {
             console.log(`Account '${accountName}' added successfully.`);
         } else if (choice === '2') {
             const accountName = await selectKeyName(accountsData.accounts, 'Select key to modify');
-            if (accountName === '\x1b' || !accountName) continue;
+            if (!accountName) continue;
             
             const privateKeyRaw = await readPassword('Enter private key:   ');
-            if (privateKeyRaw === '\x1b') continue;
+            if (privateKeyRaw === ESC) continue;
             
             const privateKey = privateKeyRaw.replace(/\s+/g, '');
 
@@ -894,10 +998,11 @@ async function main() {
             console.log(`Account '${accountName}' updated successfully.`);
         } else if (choice === '3') {
             const accountName = await selectKeyName(accountsData.accounts, 'Select key to remove');
-            if (accountName === '\x1b' || !accountName) continue;
+            if (!accountName) continue;
             
-            const confirm = (await readInput(`Remove '${accountName}'? (y/n): `)).trim().toLowerCase();
-            if (confirm === '\x1b') continue;
+            const confirmRaw = await readInput(`Remove '${accountName}'? (y/n): `);
+            if (confirmRaw === ESC) continue;
+            const confirm = confirmRaw.trim().toLowerCase();
 
             if (confirm === 'y') {
                 delete accountsData.accounts[accountName];
@@ -910,7 +1015,7 @@ async function main() {
             listKeyNames(accountsData.accounts);
         } else if (choice === '5') {
             const accountName = await selectKeyName(accountsData.accounts, 'Select key to test');
-            if (accountName === '\x1b' || !accountName) continue;
+            if (!accountName) continue;
             
             try {
                 const decryptedKey = decrypt(accountsData.accounts[accountName].encryptedKey, vaultSecret);
@@ -919,14 +1024,24 @@ async function main() {
                 console.log('Decryption failed - wrong master password or corrupted data');
             }
         } else if (choice === '6') {
-            vaultSecret = await changeMasterPassword(accountsData, vaultSecret);
+            try {
+                vaultSecret = await changeMasterPassword(accountsData, vaultSecret);
+            } catch (err: any) {
+                if (err instanceof MasterPasswordCancelledError) {
+                    console.log('Cancelled.');
+                    continue;
+                }
+                throw err;
+            }
         } else if (choice === '7') {
-            console.log('Keymanager closed!');
             break;
         } else {
             console.log('Invalid choice.');
         }
     }
+
+    console.log('Keymanager closed!');
+    return vaultReady;
 }
 
 /**
@@ -1107,4 +1222,4 @@ function probeAccountInDaemon(accountName: any, timeout: any = TIMING.DAEMON_PIN
     });
 }
 
-export { validatePrivateKey, loadAccounts, saveAccounts, checkKeysFileSecurity, encrypt, decrypt, deriveVaultKey, createDaemonSigningToken, createSessionSecret, createVaultSecret, isVaultSecret, isDaemonSigningToken, unlockWithPassword, main, authenticate, getPrivateKey, resolvePrivateKey, isMasterPasswordFailure, MasterPasswordError, isDaemonReady, isDaemonResponsive, waitForDaemon, probeAccountInDaemon, pingDaemon }
+export { validatePrivateKey, loadAccounts, hasKeySetup, saveAccounts, checkKeysFileSecurity, encrypt, decrypt, deriveVaultKey, createDaemonSigningToken, createSessionSecret, createVaultSecret, isVaultSecret, isDaemonSigningToken, unlockWithPassword, main, authenticate, getPrivateKey, resolvePrivateKey, isMasterPasswordFailure, MasterPasswordError, isDaemonReady, isDaemonResponsive, waitForDaemon, probeAccountInDaemon, pingDaemon }

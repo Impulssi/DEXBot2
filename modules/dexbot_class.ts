@@ -846,10 +846,10 @@ class DEXBot {
      * Single source of truth for how many fills are processed per
      * rebalance/broadcast cycle AND how many order operations ride in one
      * on-chain broadcast transaction:
-     * - 1..gapSlots fills -> single unified batch
-     * - >gapSlots fills   -> fixed-size chunking at gapSlots
+     * - 1..gapSlots+1 fills -> single unified batch
+     * - >gapSlots+1 fills   -> fixed-size chunking at gapSlots+1
      * Oversized op batches are split into sequential broadcasts of at most
-     * gapSlots ops each (see executeChunkedWithRetryOnUncertain).
+     * gapSlots+1 ops each (see executeChunkedWithRetryOnUncertain).
      *
      * Resolution order: live `manager._gapSlots` (set at grid creation and
      * preserved across restarts) first; otherwise derived from the active
@@ -859,7 +859,8 @@ class DEXBot {
      * place; only the >= 1 floor (chunking loops must never see 0) is
      * applied here. A non-positive `_gapSlots` (e.g. the pre-grid `0`
      * default) counts as unset so the config derivation still applies.
-     * @returns {number} Positive batch size derived from gap slots
+     * The resolved slot count is then offset by +1.
+     * @returns {number} Positive batch size derived from gap slots + 1
      */
     _getGapSlotBatchSize() {
         try {
@@ -872,7 +873,7 @@ class DEXBot {
                 config: { ...cfg, gridLimits: cfg.gridLimits ?? this.config?.gridLimits },
             });
             const m = Number(resolved);
-            if (Number.isFinite(m) && m >= 1) return Math.floor(m);
+            if (Number.isFinite(m) && m >= 1) return Math.floor(m) + 1;
         } catch {}
         return 1;
     }
@@ -891,8 +892,8 @@ class DEXBot {
      * A single COW rebalance can produce more operations than fills (e.g. 4
      * fills -> 12 creates + 4 updates = 16 ops), so the fill-level batch
      * size alone does not bound transaction size. This cap splits the
-     * broadcast into sequential transactions of at most gapSlots operations
-     * each. Kept under the legacy name for call-site compatibility.
+     * broadcast into sequential transactions of at most gapSlots + 1
+     * operations each. Kept under the legacy name for call-site compatibility.
      * @returns {number} Positive maximum number of order operations per broadcast
      */
     _getMaxOpsPerBroadcast() {
@@ -1069,16 +1070,6 @@ class DEXBot {
     }
 
     /**
-     * Execute blockchain operations with appropriate strategy (single batch or pair mode).
-     * @param {Array<any>} operations - Array of operation objects
-     * @param {Array<Object>} opContexts - Array of operation context metadata (1:1 with operations)
-     * @returns {Promise<{result: Object, opContexts: Array}>} Execution result with contexts
-     */
-    async _executeOperationsWithStrategy(operations: any, opContexts: any) {
-        return cowRuntime.executeOperationsWithStrategy(this, operations, opContexts);
-    }
-
-    /**
      * Execute a batch of order operations if the rebalance result has executable actions.
      * @param {Object} rebalanceResult - COW rebalance result with actions
      * @param {string} [contextLabel='rebalance'] - Context label for logging
@@ -1140,7 +1131,7 @@ class DEXBot {
     }
 
     /**
-     * Process filled orders in gap-slot-sized batches per _getGapSlotBatchSize.
+     * Process filled orders in (gap-slot + 1)-sized batches per _getGapSlotBatchSize().
      * Each chunk triggers its own processFilledOrders → COW plan → broadcast cycle.
      *
      * @param {Array} fills - Filled order objects to process

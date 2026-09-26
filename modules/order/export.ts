@@ -13,10 +13,10 @@
  * - JSON: Sanitized bot settings (excludes private keys)
  *
  * ===============================================================================
- * TABLE OF CONTENTS (6 exported functions + internal helpers)
+ * TABLE OF CONTENTS (5 exported functions + internal helpers)
  * ===============================================================================
  *
- * PUBLIC EXPORTS (6 functions)
+ * PUBLIC EXPORTS (5 functions)
  *   1. exportBotTrades(botKey, botConfig, outputDir) - Main export function (async)
  *      Orchestrates trade extraction and writing CSV/JSON exports
  *      Returns: { success, trades_exported, csv_path, settings_path, output_dir, timestamp }
@@ -26,21 +26,16 @@
  *      FILL DETECTED blocks, links with fee information
  *      Returns: Array of trade objects with { timestamp, side, amount, price, proceeds, fee_asset, fee_amount, order_id }
  *
- *   3. writeTradesCSV(trades, outputPath) - Write trades to CSV file (async)
- *      Generates standardized CSV with proper escaping and formatting
- *      Returns: { success, count } or { success: false, error }
- *
- *   4. writeSettingsJSON(botConfig, botName, outputPath) - Write sanitized bot settings (async)
- *      Exports bot parameters and configuration (excludes private keys)
- *      Returns: { success } or { success: false, error }
- *
- *   5. parseFillLine(line) - Parse legacy fill entry from a single log line
+ *   3. parseFillLine(line) - Parse legacy fill entry from a single log line
  *      Expected format: [TIMESTAMP] [DEBUG] [FILL] side fill: size=X, price=Y, proceeds=Z [order=1.7.N]
  *      Returns: { timestamp, side, amount, price, proceeds, order_id? } or null
  *
- *   6. parseFeeLine(line) - Parse fee information from log line
+ *   4. parseFeeLine(line) - Parse fee information from log line
  *      Expected format: [TIMESTAMP] [INFO] [FEES] N maker fills @ FEE ASSET = TOTAL
  *      Returns: { timestamp, count, fee_per_fill, fee_asset, total_fee } or null
+ *
+ *   5. deriveTradeFromFillBlock(block, assetContext) - Derive a trade from a
+ *      parsed FILL DETECTED block using the available asset context.
  *
  * INTERNAL HELPERS
  *   - isoToUnixSeconds(iso) - Shared ISO-timestamp to unix-seconds conversion
@@ -58,6 +53,8 @@
  *     Reads profiles/orders/<botKey>.json for assetA/assetB ids+precisions and
  *     grid price stats. No chain access (export stays offline/browser-safe).
  *     Returns: { assetA, assetB, gridMedianPrice?, ... } or null
+ *   - writeTradesCSV(trades, outputPath) - Write the generated trade CSV
+ *   - writeSettingsJSON(botConfig, botName, outputPath) - Write sanitized settings JSON
  *
  * ===============================================================================
  *
@@ -647,5 +644,5 @@ async function exportBotTrades(botKey: any, botConfig: any, outputDir: any = './
     }
 }
 
-export { exportBotTrades, parseLogFile, parseFillLine, parseFeeLine, deriveTradeFromFillBlock, resolveExportAssetContext }
+export { exportBotTrades, parseLogFile, parseFillLine, parseFeeLine, deriveTradeFromFillBlock }
 

@@ -1,10 +1,7 @@
 #!/usr/bin/env node
 'use strict';
-import { createRequire } from 'node:module';
-const require = createRequire(import.meta.url);
-
-
 import { getStorage } from '../../modules/storage/index.js';
+import { withReadOnlyClient } from '../chain_pool.js';
 const { writeJSON } = getStorage();
 
 /**
@@ -58,7 +55,6 @@ import {
     buildTopUpdaterAccountsQuery,
     DEFAULT_CONFIG,
 } from './kibana_bot_queries.js';
-import { NODE_MANAGEMENT } from '../../modules/constants.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -283,33 +279,30 @@ function dexScore(creates: number, fills: number, _cancels: number, gridScore: n
 // ─── Account resolution ───────────────────────────────────────────────────────
 
 async function resolveNames(ids: string[]): Promise<Record<string, string>> {
-    const { createReadOnlyClient } = require('../../modules/bitshares-native');
-    const client = createReadOnlyClient({ nodes: NODE_MANAGEMENT.DEFAULT_NODES });
-
     const map: Record<string, any> = {};
     try {
-        await client.connect();
-        // BitShares db.get_objects accepts an array of IDs
-        const objects = await client.db('get_objects', [ids]);
-        for (const obj of (objects ?? [])) {
-            if (obj?.id && obj?.name) map[obj.id] = obj.name;
-        }
+        // Ephemeral read-only client over the built-in node pool (shared helper).
+        await withReadOnlyClient(async (client) => {
+            // BitShares db.get_objects accepts an array of IDs
+            const objects = await client.db('get_objects', [ids]);
+            for (const obj of (objects ?? [])) {
+                if (obj?.id && obj?.name) map[obj.id] = obj.name;
+            }
 
-        // Resolve extra asset precisions while connected
-        const toCheck = ['IOB.XRP', 'HONEST.MONEY', 'XBTSX.XRP', 'XBTSX.USDT', 'USD', 'CNY'];
-        for (const sym of toCheck) {
-            try {
-                const assets = await client.db('lookup_asset_symbols', [[sym]]);
-                const a = Array.isArray(assets) ? assets[0] : null;
-                if (a?.id && !(a.id in ASSET_PRECISION)) {
-                    (ASSET_PRECISION as Record<string, any>)[a.id] = a.precision;
-                }
-            } catch (_) {}
-        }
+            // Resolve extra asset precisions while connected
+            const toCheck = ['IOB.XRP', 'HONEST.MONEY', 'XBTSX.XRP', 'XBTSX.USDT', 'USD', 'CNY'];
+            for (const sym of toCheck) {
+                try {
+                    const assets = await client.db('lookup_asset_symbols', [[sym]]);
+                    const a = Array.isArray(assets) ? assets[0] : null;
+                    if (a?.id && !(a.id in ASSET_PRECISION)) {
+                        (ASSET_PRECISION as Record<string, any>)[a.id] = a.precision;
+                    }
+                } catch (_) {}
+            }
+        });
     } catch (e: any) {
         console.warn(`  [warn] Name resolution failed: ${e.message}`);
-    } finally {
-        try { client.disconnect(); } catch (_) {}
     }
     return map;
 }

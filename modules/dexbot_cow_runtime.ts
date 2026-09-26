@@ -15,7 +15,7 @@ const { readOpenOrdersWithMetaSafe } = chainOrdersModule as any;
 import { BroadcastUncertainError as BroadcastUncertainErrorBinding } from './dexbot_credential_client.js';
 const BroadcastUncertainError = BroadcastUncertainErrorBinding as any;
 import * as orderUtils from './order/utils/order.js';
-import { sleep } from './order/utils/system.js';
+import { sleep, setLastFillPivot } from './order/utils/system.js';
 const {
     buildCreateOrderArgs,
     buildCreateOpFingerprint,
@@ -25,6 +25,7 @@ const {
     toRailHolePlaceholder,
     buildOutsideInPairGroups,
     isOrderPlaced,
+    findLiveOrderOwnerByChainId,
     chainOrderUnchangedFromCache,
     detectCrossedBookPlan,
     collectKnownOnChainOrderIds,
@@ -492,7 +493,7 @@ async function deferUncertainBroadcastRead(bot: any, detail: string, suffix: str
         `[COW][UNCERTAIN] ${detail}; keeping pending-broadcast protection ${suffix}`,
         'warn'
     );
-    // Fix #6 (docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §2): an ambiguous/truncated chain read is
+    // Fix #6 (docs/ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md §2): an ambiguous/truncated chain read is
     // node lag, not a missing order — the broadcast already succeeded. Previously every
     // such read requested a structural resync, piling pending broadcasts (up to 14) and
     // forcing a resync mid-broadcast (the T-BTS 06:43Z thrash). The pending-broadcast
@@ -1180,6 +1181,18 @@ async function autoCancelOneUnmatchedOrphan(bot: any) {
     if (!orderId) {
         return { cancelled: false, reason: 'no-orderId' };
     }
+    // _lastUnmatchedChainOrders is a cached snapshot. A sync/reconcile may
+    // have adopted this same chain id after the snapshot was recorded, so a
+    // direct cancel here would destroy a now-live grid order. The pending
+    // broadcast gate does not cover this case.
+    const liveOwner: any = findLiveOrderOwnerByChainId(bot.manager, orderId);
+    if (liveOwner) {
+        bot.manager._lastUnmatchedChainOrders = unmatched.filter((u: any) => {
+            const id = u?.id || u?.orderId || u?.chainOrderId;
+            return id !== orderId;
+        });
+        return { cancelled: false, reason: 'now-owned', slotId: liveOwner.id };
+    }
     if (!chainOrders?.cancelOrder) {
         return { cancelled: false, reason: 'cancelOrder-unavailable' };
     }
@@ -1422,11 +1435,12 @@ function formatPartialBroadcastSummary(err: any) {
 
 /**
  * Execute a batch with retry-on-uncertain semantics, enforcing a gap-slot
- * per-broadcast operation cap (_getGapSlotBatchSize). When the batch carries
- * more operations than the cap, it is split into sequential broadcast chunks
- * of at most `maxOps` operations each, so a single on-chain transaction never
- * holds more than gapSlots order operations (the original "N fills
- * per broadcast" intent, applied at the op level rather than the fill level).
+ * per-broadcast operation cap (_getGapSlotBatchSize = gapSlots + 1). When the
+ * batch carries more operations than the cap, it is split into sequential
+ * broadcast chunks of at most `maxOps` operations each, so a single on-chain
+ * transaction never holds more than gapSlots + 1 order operations (the
+ * original "N fills per broadcast" intent, applied at the op level rather
+ * than the fill level).
  *
  * Failure isolation — no swallowed orders: if one chunk's broadcast is
  * uncertain (BroadcastUncertainError), the remaining chunks are STILL
@@ -2127,13 +2141,11 @@ function refreshLastFillPivotFromQueue(bot: any): boolean {
             }
         }
         if (!latest) return false;
-        mgr._lastFilledPrice = (latest as { price: number; type: string }).price;
-        mgr._lastFilledType = (latest as { price: number; type: string }).type;
-        if ((latest as { price: number; type: string }).type === ORDER_TYPES.BUY) {
-            mgr._lastFilledBuyPrice = (latest as { price: number; type: string }).price;
-        } else {
-            mgr._lastFilledSellPrice = (latest as { price: number; type: string }).price;
-        }
+        // Shared free writer (utils/system) — the same implementation the
+        // manager's _setLastFillPivot method delegates to and restoreLast-
+        // FillPivot uses, so the queued-fill refresh cannot write a different
+        // scalar-family shape than any other pivot writer.
+        setLastFillPivot(mgr, (latest as { price: number; type: string }).type, (latest as { price: number; type: string }).price, 'fill');
         try {
             mgr.logger?.log?.(
                 `[LAST-FILL-GUARD] Pivot refreshed from ${queue.length} pending queued fill(s): ` +
@@ -4497,6 +4509,13 @@ async function updateOrdersOnChainBatchCOWBody(
             }
             // Fall through: proceed with the current plan (bounded policy).
         }
+        // True when the plan was still valid against the master at this point.
+        // Only then can a later version change be attributed to the in-flight
+        // broadcast we are about to wait on (see the post-wait recheck). If the
+        // re-plan above already ran and fell through, re-raising the same
+        // staleness after the wait would double the structural-resync request
+        // for one event.
+        const preBroadcastWasFresh = preBroadcastGuard.canCommit;
 
         // Single-flight broadcast slot (authoritative, atomic check-and-set):
         // by this point this batch finished planning; any other batch that
@@ -4510,6 +4529,47 @@ async function updateOrdersOnChainBatchCOWBody(
         }
         bot._cowBroadcastInFlight = true;
         heldBroadcastSlot = true;
+
+        // Re-validate the plan AFTER winning the broadcast slot, but only when
+        // the plan was fresh before the wait. The version check above ran BEFORE
+        // the single-flight wait, so it cannot see a master-grid advance
+        // committed by the batch that just held the slot. Broadcasting such a
+        // plan places rails the winner already placed (the commit-time guard
+        // refuses the commit, but the duplicate orders are already on-chain and
+        // must be cancelled). The 2026-09-25 restart produced exactly this: two
+        // 4-op CREATEs of slots 203/204/205 landed ~2.4s apart, then three
+        // duplicate orders had to be cancelled. Re-plan from the fresh master
+        // instead. Release the slot first so the re-plan recursion (which uses
+        // skipBroadcastWait) does not wait on a flag this frame still holds.
+        if (preBroadcastWasFresh) {
+            const postWaitGuard = evaluateCommit(workingGrid, {
+                hasLock: false,
+                currentVersion: bot.manager._gridVersion
+            });
+            if (!postWaitGuard.canCommit) {
+                bot.manager.logger.log(
+                    `[COW] Plan went stale while waiting for an in-flight broadcast ` +
+                    `(${postWaitGuard.reason}); releasing the broadcast slot and re-planning from fresh master`,
+                    'warn'
+                );
+                bot._cowBroadcastInFlight = false;
+                heldBroadcastSlot = false;
+                const replan = await replanStaleBatch(bot, cowResult, replanDepth, postWaitGuard, seamPollIntervalMs);
+                if (replan.handled) {
+                    return replan.result;
+                }
+                // No fill context for a re-plan (or the re-plan limit was
+                // reached). The stale policy proceeds with the original plan, so
+                // re-claim the broadcast slot before shipping it.
+                if (await waitForCowBroadcastSingleFlight(bot, 'post-stale-replan')) {
+                    popPushedWorkingGrid(bot, cowResult);
+                    return { executed: false, aborted: true, reason: 'SHUTDOWN_IN_PROGRESS', hadRotation: false };
+                }
+                bot._cowBroadcastInFlight = true;
+                heldBroadcastSlot = true;
+            }
+        }
+
         await bot._ensureCredentialDaemonWritable('COW batch broadcast');
 
         bot.manager.logger.log(`[COW] Broadcasting batch with ${operations.length} operations...`, 'info');
@@ -5847,7 +5907,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
         updateOperationCount
     };
 }
-export { isLastFillGuardBlocked, resolveOnGridPivot, checkGridPriceInvariant, deriveRotationPrice, refreshLastFillPivotFromQueue, runFinalPivotGate, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, extractOperationResults, findMissingCreateResultContexts, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, clearPendingBroadcastsForSlots, popPushedWorkingGrid, buildChainOrderFingerprint, normalizeChainOrderForPendingMatch, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, shouldExecuteCreatePairMode, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, validateOperationFunds, resolveIdealSizeForValidation, validateOrderSizeForExecution, buildActionsFromPlan, buildCowResultFromPlan, restoreSkippedUpdateSlotsInWorkingGrid, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain, resolveRefillBoundaryHold, toRefillSlotIdSet, trackBoundaryHold };
+export { isLastFillGuardBlocked, resolveOnGridPivot, checkGridPriceInvariant, deriveRotationPrice, refreshLastFillPivotFromQueue, runFinalPivotGate, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, popPushedWorkingGrid, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, buildActionsFromPlan, buildCowResultFromPlan, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain, resolveRefillBoundaryHold, toRefillSlotIdSet, trackBoundaryHold };
 // Exported for regression tests (issue #23 sibling): the uncertain-broadcast
 // discard path must never drop a placement silently when master lost the slot.
 export { restoreDiscardedCreates };

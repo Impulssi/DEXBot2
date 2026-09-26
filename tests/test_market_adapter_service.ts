@@ -4323,8 +4323,8 @@ function testAppliedAsymmetryMetricsClampToSafeBounds() {
     });
 
     assert.strictEqual(metrics.rawAsymmetryFactor, 0.35, 'raw asymmetry should reflect the full configured cap');
-    assert.ok(Math.abs(metrics.appliedAsymmetryFactor - (1 - (1 / 1.1))) < 1e-12,
-        'applied asymmetry should be clamped to the safe bound implied by maxPrice');
+    assert.ok(Math.abs(metrics.appliedAsymmetryFactor - (1.1 - 1)) < 1e-12,
+        'applied asymmetry should be clamped to the log-symmetric safe bound (baseMaxMult - 1)');
     assert.strictEqual(metrics.maxAsymmetryFactor, 0.35, 'resolved maxAsymmetryFactor should be preserved');
 }
 
@@ -6045,5 +6045,6 @@ run()
         console.log('market adapter service tests passed');
     })
     .catch((err) => {
-console.error(getErrorMessage(err));
+        console.error(getErrorMessage(err));
+        process.exitCode = 1;
     });

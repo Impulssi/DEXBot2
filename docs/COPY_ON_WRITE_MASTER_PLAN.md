@@ -78,6 +78,13 @@ NORMAL → REBALANCING → BROADCASTING → _commitWorkingGrid() → NORMAL
 - Any master mutation marks the working grid stale.
 - Commit succeeds only when stale/version/delta guards all pass.
 
+### Atomic Boundary Shifts
+
+Boundary index changes during divergence correction are atomic with slot-type reassignment:
+`pendingBoundaryIdx` carries boundary changes through the COW pipeline and `manager.boundaryIdx`
+is untouched until `_commitWorkingGrid` completes. This prevents transient mismatches between
+boundary position and slot BUY/SELL roles during blockchain execution.
+
 ## Data Flow
 
 ### Normal Rebalance Flow
@@ -215,145 +222,6 @@ syncFromMaster(masterGrid, orderId, masterVersion?) {
 - Prevents stale data from being committed.
 - Avoids unnecessary aborts for individual fills.
 
-## Historical Context: Immutable Master Grid Evolution
-
-The COW architecture evolved from earlier attempts to achieve grid immutability. The three
-eras below describe design evolution over time; they are **distinct from the Build Steps**
-numbered 0–9 in the *Implementation Status* section (Build Steps track the construction
-work that produced the current code).
-
-### Era 0: Original Optimistic State (Pre-v1.0) — ❌ Removed
-- **Approach:** Direct in-memory mutation of master grid during planning.
-- **Pattern:** Modify master directly → Broadcast to blockchain → No recovery mechanism.
-- **Vulnerability:** State corruption during any failure, no isolation between planning and committed state, no rollback capability.
-- **Incident:** This approach caused the Price Jump incident — a sudden market move corrupted in-flight grid state because planning mutations were applied directly to the master grid, with no isolation or rollback.
-
-### Era 1: Frozen Master State (v1.0) — ✅ Retained as defense-in-depth
-- **Approach:** `Object.freeze()` on Maps and order objects.
-- **Implementation:** Each `_applyOrderUpdate` creates a new frozen Map via immutable-swap pattern.
-- **Advantage:** Runtime enforcement prevents accidental mutations; catches bugs that read `manager.orders` and mutate in-place.
-- **Original concern:** Performance overhead, complexity in deep-freezing nested structures.
-
-### Era 2: Copy-on-Write (v2.0 — Current) — ✅ Production-ready
-- **Approach:** Working copy during planning, atomic swap on blockchain confirmation.
-- **Pattern:** Clone → Modify working copy → Broadcast → Commit on success / Discard on failure.
-- **Advantage:** True transactional semantics; master never in intermediate state; cleaner than snapshot/rollback.
-
-The production implementation uses both Era 1 (`Object.freeze`) and Era 2 (COW) as
-complementary layers; see **Freeze + COW Hybrid** under *Architecture* above.
-
-## Implementation Status
-
-Build Steps track the construction work that produced the current code; they are distinct
-from the *Era* numbering used in *Historical Context*.
-
-### Build Step 0: Dependencies ✅
-Dependency utilities merged into `modules/order/utils/order.ts` during v0.6.0-patch.19 consolidation.
-
-### Build Step 1: Infrastructure ✅
-- Created `modules/order/working_grid.ts` — WorkingGrid class.
-- Added `COW_PERFORMANCE` thresholds to `modules/constants.ts`.
-
-### Build Step 2: Core Integration ✅
-- `performSafeRebalance()` → delegates to `_applySafeRebalanceCOW()`.
-- `_applySafeRebalanceCOW()` — creates working grid, runs planning, returns result without modifying master.
-- `WorkingGrid.buildDelta()` — delta reconciliation against working copy (`modules/order/working_grid.ts:204`, delegating to `utils/order.ts`).
-- `_commitWorkingGrid()` — atomic swap from working to master.
-
-### Build Step 3: Broadcast Integration ✅
-- `updateOrdersOnChainBatch()` — routes to COW path when `workingGrid` present.
-- `_updateOrdersOnChainBatchCOW()` — full COW broadcast with commit on success.
-- Removed legacy rollback code.
-
-### Build Step 4: Fill Handling Strategy ✅
-**Decision:** "Selective abort — continue individual fills, block full-side updates."  
-Full design is documented in the **Fill Handling Strategy** section above.
-
-### Build Step 5: Tests ✅
-- `tests/test_cow_master_plan.ts` — 11 COW core tests.
-- `tests/test_cow_commit_guards.ts` — commit guard regression tests.
-- `tests/test_cow_concurrent_fills.ts` — concurrent fill integration tests.
-- `tests/test_cow_divergence_correction.ts` — divergence correction COW tests.
-- `tests/test_cow_orchestration_fixes.ts` — COW orchestration fixes.
-- `tests/test_cow_structural_resync.ts` — structural grid resync tests.
-- `tests/test_cow_static_analysis.ts` — static analysis and invariant checks.
-- `tests/test_cow_index_mutation_detection.ts` — index mutation detection.
-- `tests/test_cow_fund_validation_precision.ts` — fund validation precision tests.
-- `tests/test_cow_set_mutation_report.ts` — set mutation report tests.
-- `tests/test_sync_lock_routing.ts` — lock routing verification tests.
-- `tests/test_working_grid.ts` — WorkingGrid unit tests.
-
-### Build Step 6: Divergence & Cache Updates ✅
-Divergence checks and cache function updates only execute when no fills are pending. See
-**Fill Handling Strategy → Divergence & Cache Checks Blocked During Rebalance**.
-
-### Build Step 7: Divergence Correction COW Migration ✅
-Migrated `applyGridDivergenceCorrections` from queue-based cancellations to full COW pattern.
-
-**Atomic Boundary Shifts (Patch 20):** Boundary index changes during divergence correction are
-now atomic with slot-type reassignment. The `pendingBoundaryIdx` variable carries boundary
-changes through the COW pipeline without touching `manager.boundaryIdx` until
-`_commitWorkingGrid` completes. This prevents temporary mismatches between boundary position
-and slot BUY/SELL roles during blockchain execution.
-
-```javascript
-// Boundary changes flow through COW pipeline atomically
-const boundarySync = syncBoundaryToFunds(manager);  // Returns { changed, newIdx }
-if (boundarySync.changed) {
-    pendingBoundaryIdx = boundarySync.newIdx;  // NOT manager.boundaryIdx!
-    // updateGridFromBlockchainSnapshot reassigns slot types in WorkingGrid
-    // manager.boundaryIdx updated atomically in _commitWorkingGrid
-}
-```
-
-**Before (Queue-Based):**
-```javascript
-// Detect divergence → Queue corrections → Execute batch → Clear queue
-// Master grid stays ACTIVE during entire process (race condition)
-ordersNeedingPriceCorrection.push({ gridOrder, chainOrderId, isSurplus: true });
-// ...later...
-await updateOrdersOnChainBatchFn({ ordersToCancel, ordersToPlace, ordersToRotate });
-```
-
-**After (COW-Based):**
-```javascript
-// Detect divergence → Create WorkingGrid → Update sizes in working copy
-// → Execute UPDATE/CANCEL/CREATE ops on chain → Commit working grid on success
-const workingGrid = new WorkingGrid(manager.orders);
-workingGrid.set(orderId, convertToSpreadPlaceholder(order)); // Surplus → virtual slot
-const actions = [{ type: COW_ACTIONS.CANCEL, id, orderId }, ...];
-const cowResult = { actions, workingGrid, ... };
-await updateOrdersOnChainBatch(cowResult); // Commit only on success
-```
-
-**Key Changes:**
-1. **Surplus orders**: `CANCEL` on-chain and virtualize in working grid.
-2. **State preservation**: `ACTIVE`/`PARTIAL` orders keep their state in working grid.
-3. **No race conditions**: master unchanged until blockchain confirms.
-4. **Unified flow**: same COW pattern as fill rebalancing.
-
-**Grid Resizing Also Migrated:** `updateGridFromBlockchainSnapshot` now returns a COW result:
-
-```javascript
-// Before: Modified master grid directly
-await Grid.updateGridFromBlockchainSnapshot(manager, 'buy'); // Direct update!
-
-// After: Returns COW result for batch execution
-const cowResult = await Grid.updateGridFromBlockchainSnapshot(manager, 'buy');
-await updateOrdersOnChainBatch(cowResult); // Execute via COW
-```
-
-### Build Step 8: Benchmarks ✅
-- 100 orders: ~0.03ms clone
-- 500 orders: ~0.05ms clone
-- 1000 orders: ~0.08ms clone
-- 5000 orders: ~0.5ms clone
-
-### Build Step 9: Cleanup ✅
-- Removed snapshot/rollback pattern; `performSafeRebalance()` now delegates to `_applySafeRebalanceCOW()`.
-- Removed duplicate `_updateOrdersOnChainBatchCOW`.
-- Removed legacy rollback references in `dexbot_class.ts`.
-
 ## Key Methods
 
 ### OrderManager (`modules/order/manager.ts`)
@@ -411,78 +279,13 @@ This architecture makes the "Metadata Reinterpretation" bug impossible by ensuri
 
 ---
 
-## Appendix A: Files
-
-### Files Created
-- `modules/order/working_grid.ts` — WorkingGrid class (COW wrapper with clone/delta/stale tracking).
-- Test files listed under **Build Step 5**.
-- *Dependency utilities consolidated into `modules/order/utils/order.ts` during v0.6.0-patch.19.*
-
-### Files Modified
-- `modules/constants.ts` — added `COW_PERFORMANCE` thresholds.
-- `modules/order/manager.ts` — added COW methods, immutable master (`Object.freeze`), version tracking.
-- `modules/dexbot_class.ts` — wired COW broadcast, removed legacy rollback.
-- `modules/order/sync_engine.ts` — uses `_applyOrderUpdate` (lock-free) for all sync paths.
-- `modules/order/grid_reconcile.ts` — uses `_applySync` (lock-free) when inside `_gridLock`.
-- `modules/order/utils/system.ts` — migrated `applyGridDivergenceCorrections` to full COW pattern.
-- `modules/order/grid.ts` — migrated `updateGridFromBlockchainSnapshot` to return COW result instead of modifying master directly.
-
-## Appendix B: Test Results
-
-```
-Core COW Tests (test_cow_master_plan.ts):
-  ✓ COW-001: Master unchanged on failure
-  ✓ COW-002: Master updated only on success
-  ✓ COW-003: Index transfer
-  ✓ COW-004: Fund recalculation
-  ✓ COW-005: Order comparison
-  ✓ COW-006: Delta building
-  ✓ COW-007: Index validation
-  ✓ COW-008: Working grid independence
-  ✓ COW-009: Empty grid handling
-  ✓ COW-010: Memory stats
-  ✓ COW-011: No spurious updates on unchanged grid
-
-Commit Guard Tests (test_cow_commit_guards.ts):
-  ✓ COW-COMMIT-001: Version mismatch rejection
-  ✓ COW-COMMIT-002: Empty delta rejection
-
-Concurrent Fill Tests (test_cow_concurrent_fills.ts):
-  ✓ COW-FILL-001: Fill during REBALANCING syncs to working grid
-  ✓ COW-FILL-002: Fill during BROADCASTING syncs to working grid
-  ✓ COW-FILL-003: Commit rejected after fill during broadcast
-  ✓ COW-FILL-004: No working grid sync during NORMAL state
-  ✓ COW-FILL-005: _cloneOrder deep-clones rawOnChain
-  ✓ COW-FILL-006: _cloneOrder handles missing rawOnChain
-  ✓ COW-FILL-007: Staleness reason includes phase context
-
-Divergence Correction Tests (test_cow_divergence_correction.ts):
-  ✓ Surplus orders are CANCELLED (not UPDATE to size=0)
-  ✓ Working grid preserves order states (ACTIVE, PARTIAL)
-  ✓ Orders within target window get size updates
-  ✓ No duplicate UPDATE/CANCEL overlap for same order
-
-Stale-Plan & Stack Discipline Tests (v1.4.8):
-  ✓ test_cow_guard_replan.ts — bounded re-plan from fresh master, boundary-budget
-    restore, push-marker contract, no double-pop on re-plan failure
-  ✓ test_cow_stale_slot_guard.ts — slot-id based stale-placement veto,
-    boundary-only semantics, rotation-UPDATE coverage
-  ✓ test_cow_commit_guards.ts — empty-action / never-pushed marker contract
-  ✓ test_uncertain_broadcast.ts — verify-before-retry per op kind, truncated-read
-    deferral, pending-broadcast protection kept on ambiguous reads
-```
-
-**Additional Checks:**
-- Unchanged grids do not emit global COW `update` actions.
-- Missing on-chain `ACTIVE` order with `orderId` appears in `filledOrders` from open-order sync.
-
-## Appendix C: Constants Added (`modules/constants.ts`)
+## Appendix: COW Constants (`modules/constants.ts`)
 
 ### COW Performance Thresholds
 - `COW_PERFORMANCE.MAX_REBALANCE_PLANNING_MS` — planning-phase duration above which a slow-plan warning is logged (100ms).
 - `COW_PERFORMANCE.GRID_MEMORY_WARNING` — working grid size (bytes) that triggers a memory warning (5,000).
 - `COW_PERFORMANCE.WORKING_GRID_BYTES_PER_ORDER` — estimated memory per order (500 bytes).
-- `COW_PERFORMANCE.MAX_OPS_PER_BROADCAST` — *removed*; the per-broadcast operation cap is now derived from the grid gap-slot count (`DEXBot._getGapSlotBatchSize`); larger batches are split into sequential broadcasts.
+- `COW_PERFORMANCE.MAX_OPS_PER_BROADCAST` — *removed*; the per-broadcast operation cap is now derived from the grid gap-slot count + 1 (`DEXBot._getGapSlotBatchSize`); larger batches are split into sequential broadcasts.
 
 ### Pipeline Timing
 - `PIPELINE_TIMING.RECOVERY_DECAY_FALLBACK_MS` — recovery decay fallback (180 seconds).
@@ -491,7 +294,7 @@ Stale-Plan & Stack Discipline Tests (v1.4.8):
 - `GRID_LIMITS.RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT` — relative threshold (%) for in-memory COW order equality checks.
 - `TIMING.LOCK_REFRESH_MIN_MS` — minimum lock refresh interval (250ms).
 
-## Appendix D: Validation Gates
+## Appendix: Validation Gates
 
 Run these tests before promotion:
 - `node dist/tests/test_engine_integration.js`

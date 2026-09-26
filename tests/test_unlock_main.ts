@@ -349,8 +349,13 @@ async function runMonolithicBgChildStartupFailureTest() {
     assert.strictEqual(state.calls.length, 1, 'background child should supervise exactly one bot process');
     assert.deepStrictEqual(
         state.calls[0].args,
-        [DEXBOT_JS, 'test'],
-        'background child should launch the shared dexbot entry point'
+        [DEXBOT_JS, 'worker'],
+        'background child should launch the shared dexbot entry point as `worker`'
+    );
+    assert.strictEqual(
+        state.calls[0].options.env.DEXBOT_LAUNCHER_WORKER,
+        '1',
+        'background child must carry the worker marker so the entry point runs the bot instead of re-entering the supervisor'
     );
     assert.strictEqual(state.calls[0].options.stdio, 'pipe', 'background child should pipe bot output into the runtime logs');
     assert.strictEqual(state.fileWrites[PATHS.PROFILES.MONOLITHIC_BOT_PID], '9999', 'background child should record the bot pid');

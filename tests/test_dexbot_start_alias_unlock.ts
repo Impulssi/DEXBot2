@@ -1,5 +1,28 @@
 process.env.DEXBOT_SKIP_PROFILE_VALIDATION = '1';
 const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+// Keep the delegation test independent of the developer's real profile state.
+// Onboarding is now owned by the unlock child; this test only guards the
+// dexbot CLI's spawn/argv/exit-status delegation contract.
+const profileRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-start-cli-'));
+const keysFile = path.join(profileRoot, 'keys.json');
+const botsFile = path.join(profileRoot, 'bots.json');
+process.env.DEXBOT_PROFILE_ROOT = profileRoot;
+process.env.DEXBOT_KEYS_FILE = keysFile;
+// Point adapter/claw state into the fixture root so paths.ts does not emit
+// migration notices for the repo's real market_adapter / claw directories.
+process.env.DEXBOT_MARKET_ADAPTER_DATA_DIR = path.join(profileRoot, 'market_adapter');
+process.env.DEXBOT_CLAW_DATA_DIR = path.join(profileRoot, 'claw', 'data');
+fs.writeFileSync(keysFile, JSON.stringify({
+    vaultVersion: 2,
+    vaultSalt: '00',
+    vaultVerifier: '00',
+    accounts: {},
+}), { mode: 0o600 });
+fs.writeFileSync(botsFile, JSON.stringify({ bots: [{}] }));
 
 console.log('Running dexbot start alias (unlock delegation) tests');
 
@@ -36,6 +59,7 @@ function restoreHooks() {
     process.argv = originalArgv;
     process.exit = originalExit;
     childProcess.spawnSync = originalSpawnSync;
+    fs.rmSync(profileRoot, { recursive: true, force: true });
 }
 
 function parseUnlockEntry(args: any[]): string | null {

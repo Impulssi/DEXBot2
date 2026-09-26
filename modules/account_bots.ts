@@ -49,12 +49,13 @@
  *       "active": true,
  *       "dryRun": false,
  *       "startPrice": "pool",      // Price for order alignment: "pool", "book", or numeric
- *       "gridPrice": null,         // Reference price for x-factor bounds (3 options):
- *                                  //   "pool" / "book" = live pair price reference
+ *       "gridPrice": "ama3",       // Reference price for x-factor bounds (default "ama3"):
  *                                  //   "ama"/"ama1".."ama4" = market adapter writes a center snapshot to
  *                                  //              profiles/orders/<botKey>.dynamicgrid.json; grid reads the effective center on reset
- *                                  //   <number> = fixed numeric reference
- *                                  //   null     = use startPrice
+ *                                  //   "pool" / "book" = live pair price reference (legacy, editor no longer offers it)
+ *                                  //   <number> = fixed numeric reference (legacy)
+ *                                  //   null     = use startPrice (legacy); also accepted: false, empty/blank,
+ *                                  //              and the "none"/"null"/"start"/"startprice"/"s"/"n"/"no"/"f"/"0" spellings
  *       "minPrice": "2x",
  *       "maxPrice": "2x",
  *       "incrementPercent": 0.5,
@@ -63,7 +64,8 @@
  *       "botFunds": { "sell": "100%", "buy": "100%" },
  *       "activeOrders": { "sell": 20, "buy": 20 },
  *       "reserveOrders": { "buy": 0, "sell": 0 },  // Edge reserves: extra live orders (buy: floor, sell: ceiling)
- *       "debtPolicy": "ignore",       // Debt policy: "ignore", "warn", or "block"
+ *       "poolRef": null,              // Optional pinned pool ID for startPrice "pool"
+ *       "debtPolicy": { ... },        // MPA/credit lending policy — docs/MPA_CREDIT_USAGE.md
  *       "min_BTS_value": 0,           // Minimum BTS value threshold for operations
  *     }
  *   ]
@@ -89,16 +91,19 @@ import { path } from './path_api.js';
 import { getStorage } from './storage/index.js';
 import { ensureProfilesDirectory, readInput, sleep } from './order/utils/system.js';
 import { setGlobalConsoleLevel, getGlobalConsoleLevel } from './order/logger.js';
-import { DEFAULT_CONFIG, GRID_LIMITS, TIMING, RANGE_QUALITY, LOG_LEVEL, UPDATER, MARKET_ADAPTER, NODE_MANAGEMENT, FILL_PROCESSING, PIPELINE_TIMING, CREDENTIAL_PROMPTS, MAINTENANCE, COW_PERFORMANCE, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, LOGGING_CONFIG, NATIVE_CLIENT, LAUNCHER } from './constants.js';
+import { GRID_LIMITS, RANGE_QUALITY, MARKET_ADAPTER, NODE_MANAGEMENT, INCREMENT_BOUNDS, buildDefaultGeneralSettings } from './constants.js';
+import { seedBotDraft, isUnsetGridPrice } from './bot_defaults.js';
 import { PATHS } from './paths.js';
 import { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } from './general_settings.js';
 import { parseJsonWithComments } from './order/utils/system.js';
-import { assertNoDuplicateBotKeys, loadSettingsFile } from './bot_settings.js';
+import { assertNoDuplicateBotKeys, loadSettingsFile, normalizeBotEntry } from './bot_settings.js';
+import { getWhitelistFlags, setWhitelistFlags, renameWhitelistEntry, removeWhitelistEntry, whitelistFile } from './market_adapter_whitelist.js';
 import { BOT_LIVE_CONFIG_KEYS } from './runtime_settings.js';
 import { mergeSettings } from './settings_merge.js';
 import { getErrorMessage } from './utils/errors.js';
 import { roundToDecimals, parseRelativeMultiplier } from './order/utils/math.js';
 import { CLI_COLORS } from './cli_colors.js';
+import { displayWidth, padDisplay } from './utils/text_width.js';
 const storage = getStorage();
 const { writeJSON } = storage;
 
@@ -160,26 +165,9 @@ function saveBotsConfig(config: any, filePath: string): void {
  * @returns {Object} The loaded settings or default settings if the file doesn't exist.
  */
 function loadGeneralSettings() {
-    const defaults = {
-        LOG_LEVEL: LOG_LEVEL,
-        GRID_LIMITS: { ...GRID_LIMITS, GRID_COMPARISON: { ...GRID_LIMITS.GRID_COMPARISON } },
-        TIMING: { ...TIMING },
-        UPDATER: { ...UPDATER },
-        MARKET_ADAPTER: { ...MARKET_ADAPTER },
-        NODE_MANAGEMENT: { ...NODE_MANAGEMENT },
-        DEFAULT_CONFIG: { ...DEFAULT_CONFIG },
-        FILL_PROCESSING: { ...FILL_PROCESSING },
-        PIPELINE_TIMING: { ...PIPELINE_TIMING },
-        CREDENTIAL_PROMPTS: { ...CREDENTIAL_PROMPTS },
-        MAINTENANCE: { ...MAINTENANCE },
-        COW_PERFORMANCE: { ...COW_PERFORMANCE },
-        INCREMENT_BOUNDS: { ...INCREMENT_BOUNDS },
-        FEE_PARAMETERS: { ...FEE_PARAMETERS },
-        API_LIMITS: { ...API_LIMITS },
-        LOGGING_CONFIG: { ...LOGGING_CONFIG },
-        NATIVE_CLIENT: { ...NATIVE_CLIENT },
-        LAUNCHER: { ...LAUNCHER },
-    };
+    // Single canonical defaults document (modules/constants.ts) — same source
+    // the first-run generator and the local-overrides merge use.
+    const defaults = buildDefaultGeneralSettings();
 
     const settings = readGeneralSettings({
         fallback: null,
@@ -196,6 +184,15 @@ function loadGeneralSettings() {
         ? configuredDeltaPercent
         : MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT;
     merged.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT = effectiveDeltaPercent;
+
+    // MARKET_ADAPTER validation for AMA_SLOPE_DELTA_THRESHOLD_PERCENT (the
+    // slope trigger factor: (value/100) x maxSlopePct). Same >0 guard so a
+    // hand-edited 0/negative/NaN can never disable the slope reset silently.
+    const configuredSlopeDeltaPercent = Number(merged.MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT);
+    const effectiveSlopeDeltaPercent = Number.isFinite(configuredSlopeDeltaPercent) && configuredSlopeDeltaPercent > 0
+        ? configuredSlopeDeltaPercent
+        : MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT;
+    merged.MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT = effectiveSlopeDeltaPercent;
 
     return merged;
 }
@@ -222,12 +219,34 @@ function listBots(bots: any[]): void {
         console.log('  (no bot entries defined yet)');
         return;
     }
-    bots.forEach((bot: any, index: number) => {
-        const name = bot.name || `<unnamed-${index + 1}>`;
-        const inactiveSuffix = bot.active === false ? ' [inactive]' : '';
-        const dryRunSuffix = bot.dryRun ? ' (dryRun)' : '';
-        console.log(`  ${index + 1}: ${name}${inactiveSuffix}${dryRunSuffix} ${bot.assetA || '?'} / ${bot.assetB || '?'}`);
-    });
+    const rows = bots.map((bot: any, index: number) => ({
+        index: String(index + 1),
+        name: bot.name || `<unnamed-${index + 1}>`,
+        account: bot.preferredAccount || '?',
+        pair: `${bot.assetA || '?'}/${bot.assetB || '?'}`,
+        inactive: bot.active === false,
+        dryRun: !!bot.dryRun
+    }));
+    const indexWidth = Math.max(1, ...rows.map(r => r.index.length));
+    const nameWidth = Math.max('Name'.length, ...rows.map(r => displayWidth(r.name)));
+    const accountWidth = Math.max('Account'.length, ...rows.map(r => displayWidth(r.account)));
+    const pairWidth = Math.max('Pair'.length, ...rows.map(r => displayWidth(r.pair)));
+    const header = [
+        '#'.padEnd(indexWidth),
+        padDisplay('Name', nameWidth),
+        padDisplay('Account', accountWidth),
+        padDisplay('Pair', pairWidth)
+    ].join('  ');
+    console.log(`  ${COLORS.yellowBold}${header}${COLORS.reset}`);
+    for (const row of rows) {
+        const flags = `${row.inactive ? ` ${COLORS.red}[inactive]${COLORS.reset}` : ''}${row.dryRun ? ` ${COLORS.yellow}(dryRun)${COLORS.reset}` : ''}`;
+        console.log(
+            `  ${COLORS.gray}${row.index.padEnd(indexWidth)}${COLORS.reset}  ` +
+            `${COLORS.green}${padDisplay(row.name, nameWidth)}${COLORS.reset}  ` +
+            `${COLORS.orange}${padDisplay(row.account, accountWidth)}${COLORS.reset}  ` +
+            `${COLORS.cyan}${padDisplay(row.pair, pairWidth)}${COLORS.reset}${flags}`
+        );
+    }
 }
 
 /**
@@ -567,6 +586,14 @@ function isDynamicPriceSource(value: any): boolean {
 }
 
 /**
+ * AMA grid-price values: the four explicit presets ama1..ama4 plus bare
+ * "ama" (the pair's default preset). Bare "ama" is a valid green value but is
+ * deliberately not listed in the prompt label. These are the ONLY values that
+ * color green — pool/book/numeric/none stay accepted, just displayed red.
+ */
+const AMA_GRID_PRICE_PATTERN = /^ama(?:[1-4])?$/;
+
+/**
  * Colors a start-price value for display: green when it is a dynamic source
  * ("pool"/"book"), red when it is a fixed numeric price (no live rescaling).
  * Used for live input feedback: turns green the moment a source keyword is typed.
@@ -580,24 +607,65 @@ function colorStartPriceValue(value: any): string {
 }
 
 /**
- * Colors a grid-price value for display: green for dynamic sources
- * ("pool"/"book"/AMA keywords), red for fixed numeric references. A null
- * gridPrice delegates to startPrice, so the "startPrice" label inherits the
- * start-price coloring.
+ * Colors a grid-price value for display: GREEN only for AMA values
+ * ("ama"/"ama1".."ama4"), RED for everything else — pool/book references,
+ * numeric values and any unset grid price (null, false, blank/whitespace, and
+ * the "none"/"s"/"no"/"f"/"start" aliases) which delegates to startPrice and is
+ * therefore labeled "startPrice", always in red: the delegation itself is the
+ * thing the editor wants replaced by an AMA preset.
  * @param {*} value - The grid price value to color.
- * @param {*} [startPrice] - The bot's current startPrice for null resolution.
  * @returns {string} ANSI-colored value string.
  */
-function colorGridPriceValue(value: any, startPrice?: any): string {
-    if (value === null || value === undefined) {
-        const label = isDynamicPriceSource(startPrice)
-            ? `${COLORS.green}startPrice${COLORS.reset}`
-            : `${COLORS.red}startPrice${COLORS.reset}`;
-        return label;
+function colorGridPriceValue(value: any): string {
+    if (isUnsetGridPrice(value)) {
+        return `${COLORS.red}startPrice${COLORS.reset}`;
     }
     const text = String(value);
-    if (isDynamicPriceSource(text)) return `${COLORS.green}${text}${COLORS.reset}`;
+    if (AMA_GRID_PRICE_PATTERN.test(text.trim().toLowerCase())) return `${COLORS.green}${text}${COLORS.reset}`;
     return `${COLORS.red}${text}${COLORS.reset}`;
+}
+
+/**
+ * True when a startPrice value selects the pair's automatically-resolved pool
+ * (the "default" pool source, as opposed to a hand-pinned poolRef).
+ * @param {*} value - A startPrice value (or any value to test).
+ * @returns {boolean}
+ */
+function isPoolStartPrice(value: any): boolean {
+    return String(value ?? '').trim().toLowerCase() === 'pool';
+}
+
+/**
+ * True when the draft's startPrice resolves to the pair's default pool and no
+ * poolRef is pinned, so the runtime auto-selects it for order alignment.
+ * Deliberately NOT keyed on gridPrice === "pool": anchoring the grid reference
+ * on the live market price is discouraged and stays red in the GridPrice
+ * field, so the Pool label must not read as a green healthy default for that
+ * case.
+ * @param {*} data - The bot draft.
+ * @returns {boolean}
+ */
+function startPriceUsesDefaultPool(data: any): boolean {
+    return isPoolStartPrice(data?.startPrice);
+}
+
+/**
+ * Colors the pool label for the editor summary. An unset poolRef does NOT
+ * mean "no pool": when startPrice is "pool" the runtime auto-selects the
+ * pair's default pool, so it reads green `default`. Otherwise the pin is
+ * inert, shown as grey `none` so it does not compete with live values (a
+ * gridPrice of "pool"/"book" is discouraged and stays red in its own field).
+ * Display only — the stored poolRef is never changed here.
+ * @param {*} data - The bot draft.
+ * @returns {string} ANSI-colored pinned pool ID, `default` (green), or `none` (grey).
+ */
+function formatPoolRefLabel(data: any): string {
+    // A pin only applies to startPrice "pool"; show it as ignored otherwise
+    // so the summary never displays a value the editor no longer asks for.
+    if (data?.poolRef && !startPriceUsesDefaultPool(data)) return `${COLORS.gray}ignored${COLORS.reset}`;
+    if (data?.poolRef) return String(data.poolRef);
+    if (startPriceUsesDefaultPool(data)) return `${COLORS.green}default${COLORS.reset}`;
+    return `${COLORS.gray}none${COLORS.reset}`;
 }
 
 /**
@@ -607,13 +675,15 @@ function colorGridPriceValue(value: any, startPrice?: any): string {
  * @param {boolean} greenWhenTrue - True when `true` is the healthy state
  *                                   (e.g. Active), false when `false` is
  *                                   healthy (e.g. DryRun off).
+ * @param {string} [offColor] - Color for the unhealthy value (default red);
+ *                              pass a warn color for flags that are optional.
  * @returns {string} ANSI-colored "true"/"false" string.
  */
-function colorBooleanFlag(value: any, greenWhenTrue: boolean): string {
+function colorBooleanFlag(value: any, greenWhenTrue: boolean, offColor: string = COLORS.red): string {
     const isTrue = !!value;
     const healthy = greenWhenTrue ? isTrue : !isTrue;
     const text = String(isTrue);
-    return healthy ? `${COLORS.green}${text}${COLORS.reset}` : `${COLORS.red}${text}${COLORS.reset}`;
+    return healthy ? `${COLORS.green}${text}${COLORS.reset}` : `${offColor}${text}${COLORS.reset}`;
 }
 
 /**
@@ -894,17 +964,41 @@ async function askNumberOrPercentage(promptText: string, defaultValue?: any): Pr
 }
 
 /**
+ * Parses a raw boolean answer.
+ * Accepted: y/yes/true/1/t → true, n/no/false/0/f → false (case-insensitive);
+ * empty input keeps the current/default value; anything else is rejected so
+ * the caller can re-prompt (the old `startsWith('y')` rule silently parsed
+ * "true" as false).
+ * @param {string} raw - Raw prompt input.
+ * @param {boolean} [defaultValue] - Value returned for empty input.
+ * @returns {{ ok: boolean, value?: boolean }} ok=false for unrecognized input.
+ */
+function parseBooleanInput(raw: any, defaultValue?: boolean): { ok: boolean; value?: boolean } {
+    const value = String(raw ?? '').trim().toLowerCase();
+    if (!value) return { ok: true, value: !!defaultValue };
+    if (value === 'y' || value === 'yes' || value === 'true' || value === '1' || value === 't') return { ok: true, value: true };
+    if (value === 'n' || value === 'no' || value === 'false' || value === '0' || value === 'f') return { ok: true, value: false };
+    return { ok: false };
+}
+
+/**
  * Prompts the user for a boolean value (Y/n).
+ * Enter keeps the current/default value; unrecognized input re-prompts with
+ * a hint instead of silently coercing. See parseBooleanInput for the exact
+ * accepted spellings.
  * @param {string} promptText - The prompt text to display.
  * @param {boolean} [defaultValue] - The default value to use if input is empty.
  * @returns {Promise<boolean|string>} The boolean value or '\x1b' if ESC.
  */
 async function askBoolean(promptText: string, defaultValue?: any): Promise<any> {
     const label = defaultValue ? 'Y/n' : 'y/N';
-    const raw = (await readInput(`${promptText} (${label}): `)).trim().toLowerCase();
-    if (raw === '\x1b') return '\x1b';
-    if (!raw) return !!defaultValue;
-    return raw.startsWith('y');
+    for (;;) {
+        const raw = (await readInput(`${promptText} (${label}): `)).trim().toLowerCase();
+        if (raw === '\x1b') return '\x1b';
+        const parsed = parseBooleanInput(raw, !!defaultValue);
+        if (parsed.ok) return parsed.value;
+        console.log('Please enter y/yes/true or n/no/false (Enter keeps the current value).');
+    }
 }
 
 /**
@@ -944,22 +1038,46 @@ async function askStartPrice(promptText: string, defaultValue?: any): Promise<an
 }
 
 /**
+ * Spellings that clear a `poolRef` pin, leaving the runtime to auto-select
+ * the pair's default pool when the price mode asks for one. `default`/`pool`/
+ * `auto` are accepted as aliases because the 3) Price summary labels the
+ * unpinned pool state `default`, so typing what the summary shows must not be
+ * rejected.
+ */
+const POOL_REF_CLEAR_INPUTS = new Set(['none', 'clear', 'off', 'no', 'default', 'pool', 'auto']);
+
+/**
+ * True when raw poolRef input is a clear/auto alias rather than a pool ID.
+ * @param {*} value - Raw or normalized user input.
+ * @returns {boolean}
+ */
+function isPoolRefClearInput(value: any): boolean {
+    return POOL_REF_CLEAR_INPUTS.has(String(value ?? '').trim().toLowerCase());
+}
+
+/**
  * Prompts the user for an optional pool ID to pin price derivation.
- * Enter a pool ID (e.g. 48 or 1.19.48) to set/change the pin, or enter
- * "none" / "clear" to remove it. Blank input keeps the current value.
+ * Enter a pool ID (e.g. 48 or 1.19.48) to set/change the pin, or one of the
+ * clear aliases ("none", "clear", or "default"/"pool"/"auto") to remove it.
+ * Blank input keeps the current value. When no pin is set, the bracketed
+ * default shows what the runtime will actually use: `default` when startPrice
+ * is "pool" (the pair's auto-selected pool), otherwise `none` (inert) — this
+ * mirrors the 3) Price summary label instead of always reading `none`.
  * @param {string} promptText - The prompt text to display.
  * @param {string|null|undefined} [currentValue] - The current poolRef value.
+ * @param {boolean} [usesDefaultPool=false] - True when startPrice is "pool",
+ *        so an unpinned value renders as `default` rather than `none`.
  * @returns {Promise<string|null|symbol>} Pool ID, null (cleared), or '\x1b' on ESC.
  */
-async function askPoolRef(promptText: string, currentValue?: string | null | undefined): Promise<any> {
+async function askPoolRef(promptText: string, currentValue?: string | null | undefined, usesDefaultPool: boolean = false): Promise<any> {
     while (true) {
-        const suffix = currentValue ? ` [${currentValue}]` : ' [none]';
-        const raw = (await readInput(`${promptText}${suffix} (none to clear): `)).trim();
+        const fallbackLabel = usesDefaultPool ? 'default' : 'none';
+        const suffix = currentValue ? ` [${currentValue}]` : ` [${fallbackLabel}]`;
+        const raw = (await readInput(`${promptText}${suffix}: `)).trim();
         if (raw === '\x1b') return '\x1b';
         if (!raw) return currentValue || null;
 
-        const lower = raw.toLowerCase();
-        if (lower === 'none' || lower === 'clear' || lower === 'off' || lower === 'no') {
+        if (isPoolRefClearInput(raw)) {
             return null;
         }
 
@@ -973,34 +1091,45 @@ async function askPoolRef(promptText: string, currentValue?: string | null | und
 }
 
 /**
- * Prompts the user for the grid price mode (pool, book, ama, numeric, or startprice).
+ * Prompts the user for the grid price mode.
+ * The label lists ama1..ama4; bare "ama" is accepted as well (green) but not
+ * listed. The live colorizer echoes AMA input green and every other value
+ * (pool/book/number/none) red — red only flags "not an AMA value", it does not
+ * reject: pool, book, numeric references, none/null (delegate to startPrice)
+ * and bare "ama" all stay accepted, exactly as before. Only input that is not
+ * a value at all is rejected, with a red error line.
  * @param {string} promptText - The prompt text to display.
- * @param {string} [defaultValue] - The default value to use if input is empty.
- * @param {*} [startPrice] - The bot's current startPrice, used to color the
- *                           "startPrice" default label when gridPrice is null.
- * @returns {Promise<string>} The grid price mode or '\x1b' if ESC.
+ * @param {string} [defaultValue] - The current value, offered as the Enter default.
+ * @returns {Promise<any>} The normalized grid-price value, the unchanged
+ *                         current value on Enter, or '\x1b' if ESC.
  */
-async function askGridPriceMode(promptText: string, defaultValue?: any, startPrice?: any): Promise<any> {
+async function askGridPriceMode(promptText: string, defaultValue?: any): Promise<any> {
     while (true) {
-        const coloredDefault = defaultValue === null || defaultValue === undefined
-            ? colorGridPriceValue(null, startPrice)
-            : colorGridPriceValue(defaultValue);
-        const raw = (await readInput(`${promptText} [${coloredDefault}]: `, {
-            colorize: (input: string) => colorGridPriceValue(input)
-        })).trim();
+        const coloredDefault = colorGridPriceValue(defaultValue ?? null);
+        const raw = await readInput(`${promptText} [${coloredDefault}]: `, {
+            colorize: (input: string) => colorGridPriceValue(input),
+            // Keep whitespace so a deactivating space can be told apart from a
+            // bare Enter that means "keep current".
+            trimInput: false
+        });
         if (raw === '\x1b') return '\x1b';
-        if (!raw) return defaultValue === undefined ? null : defaultValue;
+        // A bare Enter keeps the current value (an already-unset value is
+        // normalized to null so it is stored as delegation). Whitespace-only
+        // input is NOT a bare Enter: the live echo already previews it as red
+        // startPrice, so it must overwrite with null — otherwise the preview
+        // would promise startPrice while the old value silently survived.
+        if (raw === '') return isUnsetGridPrice(defaultValue) ? null : (defaultValue === undefined ? null : defaultValue);
 
-        const lower = raw.toLowerCase();
-        if (lower === 'none' || lower === 'null' || lower === 'start' || lower === 'startprice') return null;
+        const lower = raw.trim().toLowerCase();
+        if (isUnsetGridPrice(lower)) return null;
         if (lower === 'pool') return lower;
         if (lower === 'book') return 'book';
-        if (/^ama(?:[1-4])?$/.test(lower)) return lower;
+        if (AMA_GRID_PRICE_PATTERN.test(lower)) return lower;
 
         const num = Number(raw);
         if (Number.isFinite(num) && num > 0) return num;
 
-        console.log('Please enter: pool, book, ama, ama1..ama4, a positive number, or none/startprice.');
+        console.log(`${COLORS.red}Please enter: ama1, ama2, ama3 or ama4 — also allowed: pool, book, ama, a positive number, or none (s/start, n/no/false/0/f).${COLORS.reset}`);
     }
 }
 
@@ -1193,10 +1322,31 @@ async function ensureBotAccountId(data: any, timeoutMs = 15000, quiet = false, f
 /**
  * Interactive menu to edit bot data.
  * @param {Object} [base={}] - The initial bot data to edit.
- * @returns {Promise<Object|null>} The edited bot data or null if cancelled.
+ * @param {number} [index=0] - Position the edited bot will occupy in the
+ *   bots array (used to derive the same botKey the runtime uses for unnamed
+ *   fallback entries).
+ * @param {number} [baseIndex=index] - Position the base entry currently
+ *   occupies (differs from `index` for copies, whose source sits elsewhere).
+ * @returns {Promise<{ data: any, commitAdapter: (() => void)|null }|null>}
+ *   The edited draft plus a commit hook for staged `6) Adapter` flags — the
+ *   caller MUST run `commitAdapter()` only after its bots.json save succeeded
+ *   (so a failed save never leaves the whitelist out of sync), or null when
+ *   cancelled.
  */
-async function promptBotData(base = {}) {
+async function promptBotData(base = {}, index = 0, baseIndex = index) {
     const data = normalizeBotDraft(base);
+
+    // Market-adapter flags (6) Adapter) live in
+    // profiles/market_adapter_whitelist.json keyed by botKey — the same file
+    // the market adapter reads. Stage edits here and expose them through the
+    // commit hook so Cancel (or a failed bots.json save) discards them
+    // together with the rest of the draft.
+    const baseEntry = base && typeof base === 'object' && Object.keys(base).length > 0 ? base : null;
+    const baseBotKey = baseEntry ? String(normalizeBotEntry(baseEntry, baseIndex).botKey || '') : '';
+    let adapterStaged: { ama: boolean; dynamicWeight: boolean; asymmetricBounds: boolean } | null = null;
+    const isAmaGridPriceDraft = () => /^ama(?:[1-4])?$/.test(String(data.gridPrice ?? '').trim().toLowerCase());
+    const adapterFlags = () => adapterStaged
+        || getWhitelistFlags(baseBotKey || String(normalizeBotEntry(data, index).botKey || ''));
 
     let finished = false;
     let cancelled = false;
@@ -1205,11 +1355,11 @@ async function promptBotData(base = {}) {
     while (!finished) {
         if (showMenu) {
              console.log(`\n${COLORS.bold}--- Bot Editor: ` + (data.name || 'New Bot') + ` ---${COLORS.reset}`);
-             console.log(`${COLORS.yellowBold}1) Pair:${COLORS.reset}       ${COLORS.cyan}${data.assetA || '?'} / ${data.assetB || '?'}${COLORS.reset}`);
-             console.log(`${COLORS.yellowBold}2) Identity:${COLORS.reset}   ${COLORS.orange}Name:${COLORS.reset} ${data.name || '?'} , ${COLORS.orange}Account:${COLORS.reset} ${data.preferredAccount || '?'} , ${COLORS.orange}Active:${COLORS.reset} ${colorBooleanFlag(data.active, true)}, ${COLORS.orange}DryRun:${COLORS.reset} ${colorBooleanFlag(data.dryRun, false)}`);
-             console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}      ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}], ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${data.poolRef || 'none'}, ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice, data.startPrice)}`);
-             console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%, ${COLORS.orange}Floor:${COLORS.reset} ${data.buyFloorUSDT ?? '?'}, ${COLORS.orange}Delay:${COLORS.reset} ${data.buyDelayMinutes ?? '?'}m, ${COLORS.orange}Win:${COLORS.reset} ${data.buyWindowMode ?? '?'}${Number(data.buyDeepCount) > 0 ? `+${data.buyDeepCount}deep${(Array.isArray(data.buyDeepSizes) && data.buyDeepSizes.some((v: any) => Number(v) > 0)) ? '(manual)' : ''}` : ''}`);
-             console.log(`${COLORS.yellowBold}5) Funding:${COLORS.reset}    ${COLORS.orange}Sell:${COLORS.reset} ${colorPercentageInput(data.botFunds.sell)}, ${COLORS.orange}Buy:${COLORS.reset} ${colorPercentageInput(data.botFunds.buy)} | ${COLORS.orange}Orders:${COLORS.reset} (S:${data.activeOrders.sell}, B:${data.activeOrders.buy}) | ${COLORS.orange}Reserve:${COLORS.reset} (S:${data.reserveOrders?.sell ?? 0}, B:${data.reserveOrders?.buy ?? 0})`);
+            console.log(`${COLORS.yellowBold}1) Pair:${COLORS.reset}       ${COLORS.cyan}${data.assetA || '?'} / ${data.assetB || '?'}${COLORS.reset}`);
+            console.log(`${COLORS.yellowBold}2) Identity:${COLORS.reset}   ${COLORS.orange}Name:${COLORS.reset} ${data.name || '?'} , ${COLORS.orange}Account:${COLORS.reset} ${data.preferredAccount || '?'} , ${COLORS.orange}Active:${COLORS.reset} ${colorBooleanFlag(data.active, true)}, ${COLORS.orange}DryRun:${COLORS.reset} ${colorBooleanFlag(data.dryRun, false)}`);
+            console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}      ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}], ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${data.poolRef || 'none'}, ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice, data.startPrice)}`);
+            console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%, ${COLORS.orange}Floor:${COLORS.reset} ${data.buyFloorUSDT ?? '?'}, ${COLORS.orange}Delay:${COLORS.reset} ${data.buyDelayMinutes ?? '?'}m, ${COLORS.orange}Win:${COLORS.reset} ${data.buyWindowMode ?? '?'}${Number(data.buyDeepCount) > 0 ? `+${data.buyDeepCount}deep${(Array.isArray(data.buyDeepSizes) && data.buyDeepSizes.some((v: any) => Number(v) > 0)) ? '(manual)' : ''}` : ''}`);
+            console.log(`${COLORS.yellowBold}5) Funding:${COLORS.reset}    ${COLORS.orange}Sell:${COLORS.reset} ${colorPercentageInput(data.botFunds.sell)}, ${COLORS.orange}Buy:${COLORS.reset} ${colorPercentageInput(data.botFunds.buy)} | ${COLORS.orange}Orders:${COLORS.reset} (S:${data.activeOrders.sell}, B:${data.activeOrders.buy}) | ${COLORS.orange}Reserve:${COLORS.reset} (S:${data.reserveOrders?.sell ?? 0}, B:${data.reserveOrders?.buy ?? 0})`);
              console.log('--------------------------------------------------');
              console.log(`${COLORS.greenBold}S) Save & Exit${COLORS.reset}`);
              console.log(`${COLORS.white}C) Cancel (Discard changes)${COLORS.reset}`);
@@ -1217,7 +1367,7 @@ async function promptBotData(base = {}) {
         }
 
         const choice = (await readInput('Select section to edit or action: ', {
-            validate: (input: string) => ['1', '2', '3', '4', '5', 's', 'c'].includes(input.toLowerCase())
+            validate: (input: string) => ['1', '2', '3', '4', '5', '6', 's', 'c'].includes(input.toLowerCase())
         })).trim().toLowerCase();
 
         if (choice === '\x1b') {
@@ -1239,7 +1389,7 @@ async function promptBotData(base = {}) {
             case '2':
                 const name = await askRequiredString('Bot name', data.name);
                 if (name === '\x1b') break;
-                let prefAcc = await askRequiredString('Preferred account', data.preferredAccount);
+                let prefAcc = await askRequiredString('Blockchain account', data.preferredAccount);
                 if (prefAcc === '\x1b') break;
                 // Verify the account exists on the blockchain and stamp its ID.
                 // Re-prompt while verification fails. A 'timeout' means the
@@ -1254,7 +1404,7 @@ async function promptBotData(base = {}) {
                             ? `nodes unreachable (lookup timed out). Check your connection and try again, or press Esc to cancel.`
                             : `account '${draft.preferredAccount}' not found on the blockchain. Check the name and try again, or press Esc to cancel.`;
                         console.log(`${COLORS.red}Error: ${why}${COLORS.reset}`);
-                        const retry = await askRequiredString('Preferred account', String(draft.preferredAccount ?? ''));
+                        const retry = await askRequiredString('Blockchain account', String(draft.preferredAccount ?? ''));
                         if (retry === '\x1b') { prefAcc = retry; break; }
                         draft.preferredAccount = retry;
                     }
@@ -1277,11 +1427,17 @@ async function promptBotData(base = {}) {
                 if (minP === '\x1b') break;
                 const maxP = await askMaxPrice('maxPrice', data.maxPrice, minP);
                 if (maxP === '\x1b') break;
-                const startP = await askStartPrice('startPrice (pool, book or A/B)', data.startPrice);
+                const startP = await askStartPrice('startPrice (pool, book or price)', data.startPrice);
                 if (startP === '\x1b') break;
-                const poolR = await askPoolRef('poolRef (pinned pool ID for price source)', data.poolRef);
+                // poolRef only feeds startPrice "pool" (README: ignored for
+                // book/fixed price), so don't ask when startPrice isn't pool —
+                // an existing pin is kept dormant, not cleared, so switching
+                // back to pool restores it.
+                const poolR = isPoolStartPrice(startP)
+                    ? await askPoolRef('poolRef (pinned pool ID for price source)', data.poolRef, true)
+                    : (data.poolRef || null);
                 if (poolR === '\x1b') break;
-                const gp = await askGridPriceMode('gridPrice (pool/book/ama/number/none)', data.gridPrice, data.startPrice);
+                const gp = await askGridPriceMode('gridPrice (ama1/ama2/ama3/ama4)', data.gridPrice);
                 if (gp === '\x1b') break;
                 data.minPrice = minP;
                 data.maxPrice = maxP;
@@ -1340,9 +1496,9 @@ async function promptBotData(base = {}) {
                 if (oSell === '\x1b') break;
                 const oBuy = await askIntegerInRange('activeOrders buy count', data.activeOrders.buy, 1, 100);
                 if (oBuy === '\x1b') break;
-                const rBuy = await askIntegerInRange('reserveOrders buy floor count (0 disables)', data.reserveOrders?.buy ?? 0, 0, 20);
+                const rBuy = await askIntegerInRange('reserveOrders buy floor count (0 disables)', data.reserveOrders?.buy ?? 0, 0, 100);
                 if (rBuy === '\x1b') break;
-                const rSell = await askIntegerInRange('reserveOrders sell ceiling count (0 disables)', data.reserveOrders?.sell ?? 0, 0, 20);
+                const rSell = await askIntegerInRange('reserveOrders sell ceiling count (0 disables)', data.reserveOrders?.sell ?? 0, 0, 100);
                 if (rSell === '\x1b') break;
                 data.botFunds.sell = fSell;
                 data.botFunds.buy = fBuy;
@@ -1351,6 +1507,26 @@ async function promptBotData(base = {}) {
                 data.reserveOrders = { buy: rBuy, sell: rSell };
                 showMenu = true;
                 break;
+            case '6': {
+                // Per-bot market-adapter flags (Price = AMA pricing, Weight =
+                // dynamic weights, Range = asymmetric range scaling).
+                const flags = adapterFlags();
+                if (!isAmaGridPriceDraft()) {
+                    console.log(`${COLORS.gray}Note: these flags only take effect when gridPrice is ama/ama1..ama4 (set in 3) Price).${COLORS.reset}`);
+                }
+                const price = await askBoolean('AMA pricing (Price)', flags.ama);
+                if (price === '\x1b') break;
+                const weight = await askBoolean('Dynamic weights (Weight)', flags.dynamicWeight);
+                if (weight === '\x1b') break;
+                const range = await askBoolean('Range scaling (Range)', flags.asymmetricBounds);
+                if (range === '\x1b') break;
+                adapterStaged = { ama: price, dynamicWeight: weight, asymmetricBounds: range };
+                if (!price && (weight || range)) {
+                    console.log(`${COLORS.yellow}Note: Weight/Range only take effect while Price (AMA) is enabled.${COLORS.reset}`);
+                }
+                showMenu = true;
+                break;
+            }
             case 's':
                 // Final basic validation before saving
                 if (!data.name || !data.assetA || !data.assetB || !data.preferredAccount) {
@@ -1384,11 +1560,39 @@ async function promptBotData(base = {}) {
 
     if (cancelled) return null;
 
+    // Staged 6) Adapter flags become a commit hook instead of an immediate
+    // write: the caller runs it only after its bots.json save succeeded, so
+    // the whitelist can never end up updated by a save that was rejected
+    // (duplicate bot keys, write error). Writes are skipped when the staged
+    // flags already match what is stored — an unchanged save never creates a
+    // placeholder entry.
+    const stagedFlags = adapterStaged;
+    const commitAdapter: (() => void) | null = stagedFlags ? () => {
+        const newKey = String(normalizeBotEntry(data, index).botKey || '');
+        const needRename = !!(baseBotKey && newKey && baseBotKey !== newKey);
+        const current = getWhitelistFlags(baseBotKey || newKey);
+        const unchanged = stagedFlags.ama === current.ama
+            && stagedFlags.dynamicWeight === current.dynamicWeight
+            && stagedFlags.asymmetricBounds === current.asymmetricBounds;
+        if (needRename && !renameWhitelistEntry(baseBotKey, newKey)) {
+            console.log(`${COLORS.yellow}Adapter flags not saved — see the warning above.${COLORS.reset}`);
+            return;
+        }
+        // Unchanged flags need no write — a successful rename above already
+        // migrated the entry under the new key.
+        if (unchanged) return;
+        if (!setWhitelistFlags(newKey, stagedFlags)) {
+            console.log(`${COLORS.yellow}Warning: adapter flags not saved — could not write ${whitelistFile()}.${COLORS.reset}`);
+        } else {
+            console.log(`${COLORS.green}Adapter flags saved for '${newKey}'. Price/Weight are picked up on the adapter's next cycle; Range scaling applies after 'dexbot reset ${data.name}'.${COLORS.reset}`);
+        }
+    } : null;
+
     // Return the final data structure, preserving ALL fields from the normalized
     // draft (deep-copy of base + defaults, minus stripped runtime-managed fields).
     // A fixed whitelist here would silently drop custom overrides (logging, timing,
     // feeParams, gridLimits, poolRef, etc.) when the caller replaces the bot entry.
-    return { ...data };
+    return { data: { ...data }, commitAdapter };
 }
 
 /**
@@ -1401,13 +1605,13 @@ async function promptGeneralSettings() {
 
      while (!finished) {
           console.log(`${COLORS.bold}--- General Settings (Global) ---${COLORS.reset}`);
-          console.log(`${COLORS.yellowBold}1) Grid Health:${COLORS.reset}   ${COLORS.orange}Ratio:${COLORS.reset} ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, ${COLORS.orange}RMS:${COLORS.reset} ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}%, ${COLORS.orange}AMA Delta:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT}%`);
-          console.log(`${COLORS.yellowBold}2) Order Recovery:${COLORS.reset} ${COLORS.orange}Dust Threshold:${COLORS.reset} ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}%`);
-          const nodeCount = (settings.NODES.list || []).length;
+          console.log(`${COLORS.yellowBold}1) Grid Drift:${COLORS.reset}   ${COLORS.orange}Funds:${COLORS.reset} ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, ${COLORS.orange}RMS:${COLORS.reset} ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}% | ${COLORS.orange}AMA Δ:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT}%, ${COLORS.orange}AMA-Slope Δ:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT}%`);
           const hcIntervalMin = ((settings.NODES.healthCheck?.intervalMs || NODE_MANAGEMENT.HEALTH_CHECK_INTERVAL_MS) / 60000).toFixed(0);
+          console.log(`${COLORS.yellowBold}2) Order Maint.:${COLORS.reset} ${COLORS.orange}Dust Threshold:${COLORS.reset} ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}% | ${COLORS.orange}Health Check:${COLORS.reset} ${hcIntervalMin}min`);
+          const nodeCount = (settings.NODES.list || []).length;
           const prefNodeDisplay = settings.NODES.selection?.preferredNode || 'none';
-          console.log(`${COLORS.yellowBold}3) Node Config:${COLORS.reset} ${COLORS.orange}Nodes:${COLORS.reset} ${nodeCount}, ${COLORS.orange}HealthChk:${COLORS.reset} ${hcIntervalMin}min, ${COLORS.orange}PrefNode:${COLORS.reset} ${prefNodeDisplay}`);
-          console.log(`${COLORS.yellowBold}4) Log lvl:${COLORS.reset}      ${COLORS.orange}${settings.LOG_LEVEL}${COLORS.reset} (debug, info, warn, error)`);
+          console.log(`${COLORS.yellowBold}3) Node Config:${COLORS.reset}  ${COLORS.orange}Nodes:${COLORS.reset} ${nodeCount}, ${COLORS.orange}Preferred Node:${COLORS.reset} ${prefNodeDisplay}`);
+          console.log(`${COLORS.yellowBold}4) Log Level:${COLORS.reset}    ${COLORS.orange}${settings.LOG_LEVEL}${COLORS.reset} (debug, info, warn, error)`);
           const updaterStatus = settings.UPDATER.ACTIVE ? `${COLORS.green}ON${COLORS.reset}` : `${COLORS.red}OFF${COLORS.reset}`;
           const currentSched = parseCronToDelta(settings.UPDATER.SCHEDULE || "0 0 * * *");
           console.log(`${COLORS.yellowBold}5) Updater:${COLORS.reset}      [${updaterStatus}] ${COLORS.orange}Branch:${COLORS.reset} ${settings.UPDATER.BRANCH}, ${COLORS.orange}Interval:${COLORS.reset} ${currentSched.days}d, ${COLORS.orange}Time:${COLORS.reset} ${currentSched.time}`);
@@ -1426,20 +1630,28 @@ async function promptGeneralSettings() {
 
         switch (choice) {
             case '1':
-                const gRegen = await askNumberWithBounds('Grid Ratio Regeneration %', settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE, 0.1, 50);
+                const gRegen = await askNumberWithBounds('Grid Funds Regeneration %', settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE, 0.1, 50);
                 if (gRegen === '\x1b') break;
                 const rms = await askNumberWithBounds('RMS Divergence Threshold %', settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE, 1, 100);
                 if (rms === '\x1b') break;
-                const amaDelta = await askNumberWithBounds('AMA Delta Threshold %', settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT, 0.1, 50.0);
+                const amaDelta = await askNumberWithBounds('AMA Δ', settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT, 0.1, 50.0);
                 if (amaDelta === '\x1b') break;
+                const amaSlopeDelta = await askNumberWithBounds('AMA-Slope Δ', settings.MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT, 0.1, 100.0);
+                if (amaSlopeDelta === '\x1b') break;
                 settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE = gRegen;
                 settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE = rms;
                 settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT = amaDelta;
+                settings.MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT = amaSlopeDelta;
                 break;
             case '2':
                 const dust = await askNumberWithBounds('Partial Dust Threshold %', settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE, 0.1, 50);
                 if (dust === '\x1b') break;
                 settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE = dust;
+
+                const hcInterval = await askIntegerInRange('Health Check Interval (min)', (settings.NODES.healthCheck?.intervalMs || NODE_MANAGEMENT.HEALTH_CHECK_INTERVAL_MS) / 60000, 1, 43200);
+                if (hcInterval === '\x1b') break;
+                if (!settings.NODES.healthCheck) settings.NODES.healthCheck = {};
+                settings.NODES.healthCheck.intervalMs = hcInterval * 60000;
                 break;
             case '3':
                 settings.NODES.enabled = true;
@@ -1489,11 +1701,6 @@ async function promptGeneralSettings() {
 
                     if (editorCancelled) break;
                 }
-
-                const hcInterval = await askIntegerInRange('Health Check Interval (min)', (settings.NODES.healthCheck?.intervalMs || NODE_MANAGEMENT.HEALTH_CHECK_INTERVAL_MS) / 60000, 1, 43200);
-                if (hcInterval === '\x1b') break;
-                if (!settings.NODES.healthCheck) settings.NODES.healthCheck = {};
-                settings.NODES.healthCheck.intervalMs = hcInterval * 60000;
 
                 const prefNode = await askString('Preferred Node URL (leave empty for automatic selection)', settings.NODES.selection?.preferredNode || '');
                 if (prefNode === '\x1b') break;
@@ -1563,11 +1770,12 @@ async function main() {
             case '1': {
                 while (true) {
                     try {
-                        const entry = await promptBotData();
-                        if (!entry) break;
-                        config.bots.push(entry);
+                        const result = await promptBotData({}, config.bots.length);
+                        if (!result) break;
+                        config.bots.push(result.data);
                         saveBotsConfig(config, filePath);
-                        console.log(`\nAdded bot '${entry.name}' to ${path.basename(filePath)}.`);
+                        result.commitAdapter?.();
+                        console.log(`\nAdded bot '${result.data.name}' to ${path.basename(filePath)}.`);
                     } catch (err: any) {
                         console.log(`\n❌ Invalid input: ${getErrorMessage(err)}\n`);
                         break;
@@ -1580,10 +1788,12 @@ async function main() {
                     const idx = await selectBotIndex(config.bots, 'modify or leave (Enter/Esc)');
                     if (idx === null || idx === '\x1b') break;
                     try {
-                        const entry = await promptBotData(config.bots[idx]);
-                        if (entry) {
-                            config.bots[idx] = entry;
+                        const result = await promptBotData(config.bots[idx], idx);
+                        if (result) {
+                            config.bots[idx] = result.data;
                             saveBotsConfig(config, filePath);
+                            result.commitAdapter?.();
+                            const entry = result.data;
                             console.log(`saved settings '${entry.name}' in ${path.basename(filePath)}.\n`);
                             console.log(`Live pickup (~1min, no reload needed): ${(BOT_LIVE_CONFIG_KEYS as readonly string[]).join(' / ')}.`);
                             console.log(`Grid geometry needs 'dexbot reset ${entry.name}' (or 'dexbot reload' for everything at once); market/account changes need 'dexbot reload'.\n`);
@@ -1602,8 +1812,17 @@ async function main() {
                     const confirm = await askBoolean(`Delete '${placeholderName}'?`, false);
                     if (confirm === '\x1b') break;
                     if (confirm) {
+                        // Derive the whitelist key before splicing (createBotKey
+                        // uses the index only for unnamed fallback entries).
+                        const removedKey = String(normalizeBotEntry(config.bots[idx], idx).botKey || '');
                         const removed = config.bots.splice(idx, 1)[0];
                         saveBotsConfig(config, filePath);
+                        // Only after the bots.json save succeeded, drop the
+                        // matching whitelist entry so a deleted bot leaves no
+                        // stale flags behind (name reuse would inherit them).
+                        if (!removeWhitelistEntry(removedKey)) {
+                            console.log(`${COLORS.yellow}Warning: could not remove whitelist entry '${removedKey}' — check ${whitelistFile()}.${COLORS.reset}`);
+                        }
                         console.log(`Removed bot '${removed.name || placeholderName}' from ${path.basename(filePath)}.\n`);
                     } else {
                         console.log('\nDeletion cancelled.');
@@ -1616,11 +1835,12 @@ async function main() {
                     const idx = await selectBotIndex(config.bots, 'copy or leave (Enter/Esc)');
                     if (idx === null || idx === '\x1b') break;
                     try {
-                        const entry = await promptBotData(config.bots[idx]);
-                        if (entry) {
-                            config.bots.splice(idx + 1, 0, entry);
+                        const result = await promptBotData(config.bots[idx], idx + 1, idx);
+                        if (result) {
+                            config.bots.splice(idx + 1, 0, result.data);
                             saveBotsConfig(config, filePath);
-                            console.log(`Copied bot '${entry.name}' into ${path.basename(filePath)}.\n`);
+                            result.commitAdapter?.();
+                            console.log(`Copied bot '${result.data.name}' into ${path.basename(filePath)}.\n`);
                         }
                     } catch (err: any) {
                         console.log(`\n❌ Invalid input: ${getErrorMessage(err)}\n`);
@@ -1644,5 +1864,5 @@ async function main() {
     console.log('Botmanager closed!');
 }
 
-export { main, normalizeBotDraft, ensureBotAccountId, parseJsonWithComments, parseCronToDelta, deltaToCron }
+export { main, normalizeBotDraft, ensureBotAccountId, parseJsonWithComments, parseBooleanInput, colorGridPriceValue, formatPoolRefLabel, isPoolStartPrice, isPoolRefClearInput, loadGeneralSettings, saveGeneralSettings }
 

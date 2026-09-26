@@ -1,6 +1,6 @@
 const assert = require('assert');
 
-const { DerivativeAnalyzer } = require('../analysis/trend_detection/derivative_analyzer');
+const { DerivativeAnalyzer } = require('../derivative_analyzer');
 
 function createAnalyzer() {
     return new DerivativeAnalyzer({

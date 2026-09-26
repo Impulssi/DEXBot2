@@ -3,7 +3,7 @@
 import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { computeATRSeries } from '../../market_adapter/core/strategies/atr/calculator.js';
 import { computeVolatilityShift } from '../../market_adapter/core/strategies/volatility_shift.js';
-import { embedFunctionSources, escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
+import { embedFunctionSources, escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT, uplotInlineTags } from '../chart_utils.js';
 import { sharedChartCSS } from '../chart_css.js';
 import { Y_AXIS_SIZE, makeCursorConfig, bindHoverStateFn, wireChartEvents, zoomResetScript, sizeChartsFn } from '../chart_ui.js';
 
@@ -66,8 +66,7 @@ function generateHTML(data: any, title = 'ATR Volatility Research') {
     <meta name="color-scheme" content="dark">
     <meta name="darkreader-lock">
     <title>${escapeHtml(title)}</title>
-    <link rel="stylesheet" href="../uplot/uPlot.min.css">
-    <script src="../uplot/uPlot.iife.min.js"></script>
+    ${uplotInlineTags()}
     <style>
         ${sharedChartCSS()}
         :root { color-scheme: dark; }

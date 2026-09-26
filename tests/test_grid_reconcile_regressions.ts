@@ -59,6 +59,7 @@ async function testUnmatchedCancelReleasesFundsAndHandlesNullEntries() {
     ];
 
     let cancelCalls = 0;
+    let currentChainOrders = [...chainOpenOrders];
     const chainOrders = {
         updateOrder: async () => {},
         buildUpdateOrderOp: async () => ({
@@ -70,9 +71,12 @@ async function testUnmatchedCancelReleasesFundsAndHandlesNullEntries() {
             }
         }),
         executeBatch: async () => ({ success: true, operation_results: [] }),
-        cancelOrder: async () => { cancelCalls++; },
+        cancelOrder: async (_account, _privateKey, orderId) => {
+            cancelCalls++;
+            currentChainOrders = currentChainOrders.filter((order) => order?.id !== orderId);
+        },
         createOrder: async () => [],
-        readOpenOrders: async () => [],
+        readOpenOrders: async () => currentChainOrders,
     };
 
     await reconcileGridOrders({
@@ -99,18 +103,20 @@ async function testVerifiedAfterFailureWithEmptyRefetchDefersSync() {
     };
 
     let cancelCalls = 0;
+    let preCancelRead = true;
     const chainOrders = {
         updateOrder: async () => {},
         buildUpdateOrderOp: async () => ({ op: { op_name: 'limit_order_update', op_data: { fee: { amount: 0, asset_id: '1.3.0' } } } }),
         executeBatch: async () => ({ success: true, operation_results: [] }),
         cancelOrder: async () => {
             cancelCalls++;
+            preCancelRead = false;
             return { success: true, orderId: '1.7.11', verified: true, verifiedAfterFailure: true };
         },
         createOrder: async () => [],
         readOpenOrders: async (accountRef) => {
             assert.strictEqual(accountRef, 'acct', 'Fallback refetch should resolve the account reference');
-            return [];
+            return preCancelRead ? chainOpenOrders : [];
         },
     };
 
@@ -592,13 +598,17 @@ function makeDuplicateOrphanScenario(overrides: any = {}) {
     ];
 
     let cancelCalls = 0;
+    let currentChainOrders = [...chainOpenOrders];
     const chainOrders = {
         updateOrder: async () => {},
         buildUpdateOrderOp: async () => ({ op: { op_name: 'limit_order_update', op_data: { fee: { amount: 0, asset_id: '1.3.0' } } } }),
         executeBatch: async () => ({ success: true, operation_results: [] }),
-        cancelOrder: async () => { cancelCalls++; },
+        cancelOrder: async (_account, _privateKey, orderId) => {
+            cancelCalls++;
+            currentChainOrders = currentChainOrders.filter((order) => order?.id !== orderId);
+        },
         createOrder: async () => [],
-        readOpenOrders: async () => [],
+        readOpenOrders: async () => currentChainOrders,
         wasRecentlyOwnCancelled: () => false,
         ...overrides.chainOrders,
     };
@@ -702,6 +712,141 @@ async function testOrderGoneCancelStillReleasesFunds() {
     console.log('✅ Regression 9d passed: order-gone cancel still releases untracked funds');
 }
 
+async function testStartupRejectsChangedCancellationSnapshot() {
+    const manager = createManager({ accountTotals: { sellFree: 0, buyFree: 0 } });
+    const initial = {
+        id: '1.7.700',
+        sell_price: {
+            base: { amount: 1000000, asset_id: '1.3.1' },
+            quote: { amount: 500000, asset_id: '1.3.0' },
+        },
+        for_sale: 1000000,
+    };
+    const changed = {
+        ...initial,
+        sell_price: {
+            ...initial.sell_price,
+            quote: { amount: 600000, asset_id: '1.3.0' },
+        },
+    };
+    let cancelCalls = 0;
+    const chainOrders = {
+        updateOrder: async () => {},
+        buildUpdateOrderOp: async () => ({ op: { op_name: 'limit_order_update', op_data: { fee: { amount: 0, asset_id: '1.3.0' } } } }),
+        executeBatch: async () => ({ success: true, operation_results: [] }),
+        cancelOrder: async () => { cancelCalls++; },
+        createOrder: async () => [],
+        readOpenOrders: async () => [changed],
+    };
+
+    await reconcileGridOrders({
+        manager,
+        config: { activeOrders: { sell: 0, buy: 0 } },
+        account: 'acct',
+        privateKey: 'pk',
+        chainOrders,
+        chainOpenOrders: [initial],
+    });
+
+    assert.strictEqual(cancelCalls, 0, 'a changed pre-cancel chain snapshot must invalidate the startup plan');
+    console.log('✅ Regression 9f passed: startup cancellation revalidates the chain snapshot');
+}
+
+async function testStartupAllowsUntouchedPlanAfterEarlierCorrectionCancel() {
+    const manager = createManager({ accountTotals: { sellFree: 0, buyFree: 0 } });
+    const makeOrder = (id: string) => ({
+        id,
+        sell_price: {
+            base: { amount: 1000000, asset_id: '1.3.1' },
+            quote: { amount: 500000, asset_id: '1.3.0' },
+        },
+        for_sale: 1000000,
+    });
+    const alreadyCancelledByCorrection = makeOrder('1.7.701');
+    const untouchedPlan = makeOrder('1.7.702');
+    let cancelCalls = [];
+    let currentChainOrders = [untouchedPlan];
+    const chainOrders = {
+        updateOrder: async () => {},
+        buildUpdateOrderOp: async () => ({ op: { op_name: 'limit_order_update', op_data: { fee: { amount: 0, asset_id: '1.3.0' } } } }),
+        executeBatch: async () => ({ success: true, operation_results: [] }),
+        cancelOrder: async (_account, _privateKey, orderId) => {
+            cancelCalls.push(orderId);
+            currentChainOrders = currentChainOrders.filter((order) => order?.id !== orderId);
+        },
+        createOrder: async () => [],
+        readOpenOrders: async () => currentChainOrders,
+    };
+
+    // This is the startup shape: the correction drain already removed one
+    // order, while reconcile still receives the pre-drain Phase-1 snapshot.
+    await reconcileGridOrders({
+        manager,
+        config: { activeOrders: { sell: 0, buy: 0 } },
+        account: 'acct',
+        privateKey: 'pk',
+        chainOrders,
+        chainOpenOrders: [alreadyCancelledByCorrection, untouchedPlan],
+    });
+
+    assert.deepStrictEqual(cancelCalls, [untouchedPlan.id],
+        'the unchanged plan should still execute after an unrelated earlier cancel');
+    console.log('✅ Regression 9g passed: startup cancellation validates plans independently');
+}
+
+async function testStartupAmbiguousReadSkipsCancellations() {
+    const initial = {
+        id: '1.7.703',
+        sell_price: {
+            base: { amount: 1000000, asset_id: '1.3.1' },
+            quote: { amount: 500000, asset_id: '1.3.0' },
+        },
+        for_sale: 1000000,
+    };
+    const readCases: Array<{ name: string; read: () => Promise<any> }> = [
+        {
+            name: 'truncated',
+            read: async () => ({ orders: [initial], truncated: true }),
+        },
+        {
+            name: 'failed',
+            read: async () => { throw new Error('simulated pre-cancel read failure'); },
+        },
+    ];
+
+    for (const readCase of readCases) {
+        const manager = createManager({ accountTotals: { sellFree: 0, buyFree: 0 } });
+        let cancelCalls = 0;
+        let readCalls = 0;
+        const chainOrders = {
+            updateOrder: async () => {},
+            buildUpdateOrderOp: async () => ({ op: { op_name: 'limit_order_update', op_data: { fee: { amount: 0, asset_id: '1.3.0' } } } }),
+            executeBatch: async () => ({ success: true, operation_results: [] }),
+            cancelOrder: async () => { cancelCalls++; },
+            createOrder: async () => [],
+            readOpenOrders: async () => [initial],
+            readOpenOrdersWithMeta: async () => {
+                readCalls++;
+                return readCase.read();
+            },
+        };
+
+        await reconcileGridOrders({
+            manager,
+            config: { activeOrders: { sell: 0, buy: 0 } },
+            account: 'acct',
+            privateKey: 'pk',
+            chainOrders,
+            chainOpenOrders: [initial],
+        });
+
+        assert.ok(readCalls > 0, `${readCase.name} read path should be exercised`);
+        assert.strictEqual(cancelCalls, 0,
+            `${readCase.name} pre-cancel read must skip the stale plan`);
+    }
+    console.log('✅ Regression 9h passed: truncated and failed pre-cancel reads skip Phase 2');
+}
+
 // Regression 9e: a duplicate orphan whose cancel keeps failing must NOT loop
 // silently at info — the same orderId re-detected on a later reconcile
 // escalates to warn (rate-limited).
@@ -751,6 +896,9 @@ async function testPersistentDuplicateEscalatesToWarn() {
     await testUntrackedDuplicateStillCancelledAndReleasesFunds();
     await testOrderGoneCancelStillReleasesFunds();
     await testPersistentDuplicateEscalatesToWarn();
+    await testStartupRejectsChangedCancellationSnapshot();
+    await testStartupAllowsUntouchedPlanAfterEarlierCorrectionCancel();
+    await testStartupAmbiguousReadSkipsCancellations();
     console.log('\n✅ Startup reconcile regression tests passed!\n');
 })().catch((err) => {
     console.error('\n❌ STARTUP RECONCILE REGRESSION TEST FAILED:');

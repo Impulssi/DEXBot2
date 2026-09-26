@@ -2,7 +2,7 @@
 
 This directory contains the comprehensive technical documentation for the DEXBot2 trading bot. It is designed to guide developers from high-level architecture down to the nuances of fund accounting and state management.
 
-**Version context:** v1.6.3 (released).
+**Version context:** v1.6.7 (released).
 
 ---
 
@@ -17,7 +17,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 
 ### 📡 [Market Adapter](../market_adapter/README.md)
 *Live AMA pricing, dynamic weights, and recalc trigger orchestration.*
-- **Quick Start**: Enable AMA, generate the whitelist, and start DEXBot2
+- **Quick Start**: Enable AMA, set the per-bot adapter flags in `dexbot bot`, and start DEXBot2
 - **Settings**: Global, pair, and bot-specific adapter overrides
 - **Dynamic Weights**: How adapter signals write live weight snapshots
 - **Troubleshooting**: Common adapter startup and trigger issues
@@ -32,7 +32,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 
 ### 📈 [Analysis](../analysis/README.md)
 *Research runners, chart generators, and tuning helpers.*
-- **Trend Detection**: SMA, MACD, RSI, Hurst, Kalman, and regime analysis tools
+- **Trend Detection**: Hurst, Kalman, and regime analysis tools
 - **AMA Fitting**: Parameter fitting, comparison charts, and LP data workflows
 - **Bot Fitting**: Grid parameter sweep backtests for AMA winners
 - **TradingView Exports**: Chart export utilities for visual analysis
@@ -44,7 +44,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Purpose**: Exposes BitShares capabilities and DEXBot2 infrastructure through JSON/CLI bridges, MCP, and runtime-native skill packaging for OpenClaw and compatible runtimes (see [claw/README.md](../claw/README.md) for the full list).
 - **API Boundary**: Responsibility split between the AI decision layer and the DEXBot2 execution substrate ([AI_BOT_LIBRARY_API.md](../claw/docs/AI_BOT_LIBRARY_API.md))
 - **Tuning Reference**: Practical grid-tuning baselines ([DEXBOT2_TUNING_CHEAT_SHEET.md](../claw/docs/DEXBOT2_TUNING_CHEAT_SHEET.md))
-- **Position Management**: Health monitoring, margin planner, and dynamic weight policy
+- **Position Management**: Short-position tracking, position health monitoring (3-zone CR model), and shared CR planning via `cr_planner.ts`
 - **Skills**: Presentation-only, concept-reference, and launcher-orchestration skill packs for bitshares-guide, margin-trading, launcher-ops, and shared references
 
 ## Operational & Security
@@ -65,19 +65,19 @@ This directory contains the comprehensive technical documentation for the DEXBot
 ### 🔁 [Grid Reconciliation](GRID_RECONCILE.md)
 *How the bot re-aligns its intended grid with on-chain reality at startup.*
 - **3-Phase Plan-then-Execute**: Phase 1 pure in-memory planning under `_gridLock`, Phase 2 blockchain execution outside the lock, Phase 3 fresh re-read and stale surplus cleanup
-- **Safety Guardrails**: Fresh-grid `matchedOnGrid > 0` guard, 5× duplicate tolerance, freshly-assigned deferral, and truncated-read ambiguity handling
+- **Safety Guardrails**: Fresh-grid `matchedOnGrid > 0` guard, exact slot-price duplicate cancel, freshly-assigned deferral, and truncated-read ambiguity handling
 - **Partial Failure State**: No rollback on partial Phase 2 success; remaining mismatches caught by the next maintenance or startup cycle
 - **Lock Hierarchy**: Canonical `_syncLock`/`_gridLock` level reference and the 1.4.6 ABBA deadlock correction
 
 ### 📝 [Logging System](LOGGING.md)
 *Configuration reference for log levels, rotation, JSON output, and categories.*
 - **5 Severity Levels**: `debug`, `info`, `warn`, `error`, `critical`.
-- **Rotation**: Size-based (1GB default), auto-prune (5 files).
+- **Rotation**: Size-based (1.1GB total budget default), auto-prune (10 rotated files).
 - **JSON Output**: Structured lines for log aggregators (opt-in).
 - **Categories**: 6 independently enablable category groups.
 - **Change Detection**: Skips redundant logs (40-50% reduction).
 - **Batch Processing Logs**: Fill batching, recovery retry, and orphan-fill deduplication messages.
-- **Fill History Scans**: The `Subscriptions` logger emits `fetchFillHistoryEntries: maxPages (X) reached` at `info` level when the history scan hits its page cap — normal on busy accounts; see LOGGING.md for the `--partial-operations` diagnostic.
+- **Fill History Scans**: The `Subscriptions` logger emits `fetchFillHistoryEntries: maxPages (X) reached` at `debug` level when the history scan hits its page cap — normal on busy accounts; see LOGGING.md for the `--partial-operations` diagnostic.
 
 ### 🐳 [Docker](docker.md)
 *Container build, release images, and secure startup.*
@@ -88,8 +88,8 @@ This directory contains the comprehensive technical documentation for the DEXBot
 ### 🛠️ [Scripts](../scripts/README.md)
 *CLI maintenance and diagnostic utilities.*
 - **Update**: Safe production update via `dexbot update`
-- **Reset & Cleanup**: Log wiping, setting resets, PM2 ecosystem regeneration
-- **Analysis Helpers**: Diagnostic connection tests and health probes
+- **Reset & Cleanup**: Log/order wipes, settings resets, and market-adapter/claw state cleanup
+- **Diagnostics**: Configuration audit, grid divergence/trading analysis, and candle/pool history checks
 
 ## Reference Docs
 
@@ -97,9 +97,9 @@ This directory contains the comprehensive technical documentation for the DEXBot
 *The blueprint of the system.*
 - **Design Philosophy**: Simplicity, constant spread, minimal blockchain interaction, and closed-loop market dynamics.
 - **System Design**: High-level overview of how the bot components interact.
-- **Module Responsibilities**: Detailed breakdown of the **Manager**, **Accountant**, **Strategy**, **Grid**, **FillRuntime**, and **MaintenanceRuntime** modules.
+- **Module Responsibilities**: Detailed breakdown of the **Manager**, **Accountant**, **Strategy**, **SyncEngine**, **Grid**, **FillRuntime**, and **MaintenanceRuntime** modules.
 - **Copy-on-Write Pattern**: Safe concurrent rebalancing with isolated working grids (see [COPY_ON_WRITE_MASTER_PLAN.md](COPY_ON_WRITE_MASTER_PLAN.md))
-- **Fill Processing Pipeline**: Fixed-cap batch fill processing (1-4 fills per broadcast; documented Feb 7 29-fill scenario: ~24s)
+- **Fill Processing Pipeline**: Fixed-cap batch fill processing (`gapSlots+1` fills per broadcast; documented Feb 7 29-fill scenario: ~24s)
 - **Spread Correction**: Conservative, fund-aware maintenance of constant spread width
 - **Periodic Market Price Refresh**: Background 4-hour price updates
 - **Pipeline Safety & Diagnostics**: 5-minute timeout safeguard and health monitoring
@@ -116,6 +116,38 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Lifecycle B (Maintenance / AMA-Driven)**: Periodic path from `_performPeriodicGridChecks` → `executeMaintenanceLogic`.
 - **Cross-Cutting Invariants**: COW boundary, fund SSOT, replay-safe fills, lock ordering.
 
+### 🧩 [Copy-on-Write Master Plan](COPY_ON_WRITE_MASTER_PLAN.md)
+*COW design, phases, and state machine details.*
+- **Architecture**: Master-grid projection model and rebalance flow
+- **Lifecycle**: State machine, rebalance/fill data flows, fill handling strategy, and operational rules
+- **Safety**: Invariants and guardrails for concurrent updates
+
+### 🔒 [COW Invariants](COW_INVARIANTS.md)
+*Stable theory contract for COW pipeline.*
+- **Non-negotiable invariants**: Master immutability, commit atomicity, projection rules, accounting separation
+- **Subsystem Scope**: 13 `INV-*` prefix groups mapping each invariant to its runtime subsystem
+- **Change Policy**: Required steps for an intentional invariant change — same-PR doc update, rationale, and regression tests
+
+### 📐 [Grid-Price Invariant](GRID_PRICE_INVARIANT.md)
+*Why a slot's emitted price must equal its genesis level — and how that failed.*
+- **The invariant**: `order.price === priceForSlot(idx, genesis)`, and why range guards cannot substitute for it
+- **Failure mechanism**: Chain price overwriting slot identity, pre-broadcast substitution, untrusted fill-guard pivot
+- **Enforcement**: The six emission sites, the blocking rejection of off-grid emissions, the final pre-broadcast pivot gate, and the fail-open policy on unjudgeable inputs
+- **Out-of-bounds policy**: Hold and surface; refill in-grid slots at their genesis price
+- **Status**: Landed enforcement map, key constants, and why the removed 5% sanity gate must not be naively re-landed
+
+### 💰 [Fund Movement & Accounting](FUND_MOVEMENT_AND_ACCOUNTING.md)
+*The most critical part of the bot: safe capital management.*
+- **Single Source of Truth**: How the bot avoids double-spending and out-of-sync balances.
+- **Optimistic ChainFree**: The mechanism that allows the bot to trade with fill proceeds before they are finalized on-chain.
+- **Fill Batch Processing**: Fixed-cap batching for efficient fill processing (`1..gapSlots+1` unified, deeper queues chunked at `gapSlots+1`)
+- **Partial Order Consolidation**: Simplified, direct consolidation through grid rebuilding (no merge/split mechanics)
+- **Dust Detection & Management**: Partials below the dust threshold are cancelled on-chain immediately on detection (no delay, no timer)
+- **BTS Fee Object Structure**: `netProceeds` field for accounting precision
+- **BUY Side Sizing & Fee Accounting**: Correct fee application by order side
+- **Mixed Order Fund Validation**: Separate validation for BUY vs SELL order fund checks
+- **Fee Management**: Detailed logic for BTS fee reservations and market fee deductions.
+
 ### 📖 [Developer Guide](developer_guide.md)
 *Your daily companion for coding.*
 - **Quick Start**: How to get the development environment running.
@@ -126,9 +158,9 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Configurable startPrice & gridPrice**: Fixed numeric, pool, book-derived, or AMA keyword pricing modes
 - **Pool ID Caching**: Optimization for price derivation
 - **Order State Helper Functions**: Centralized predicate functions for state checking
-- **Signal Concepts**: Dynamic weights, regime detection, derivative signals, and market adapter integration
+- **Signal Concepts**: Dynamic weights, regime detection, and market adapter integration
 - **Debt Policy**: Native MPA and credit offer configuration and runtime rules
-- **Common Tasks**: Practical "how-to" guides for adding features or fixing bugs.
+- **Practical How-Tos**: Adding features step by step, common pitfalls to avoid, and useful debugging commands.
 - **Glossary**: Definitions of project-specific terminology (e.g., "Virtual Orders", "Rotation", "Pipeline Safety", "WorkingGrid", "COW Commit", "Dynamic Weight", "Regime Detection").
 
 ### 🔄 [Workflow](WORKFLOW.md)
@@ -136,57 +168,31 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Branching Strategy**: Explanation of the `test` → `dev` → `main` lifecycle.
 - **CI/CD Patterns**: Standards for merging and ensuring code quality across branches.
 
-### 🧮 [DEXBot vs DEXBot2 Comparison](DEXBOT_COMPARISON.md)
-*Architectural, functional, and operational comparison with the original Python DEXBot.*
-- **Scope**: Full side-by-side of technology stack, architecture, trading strategies, order management, configuration, blockchain integration, fund accounting, and concurrency safety
-- **Audience**: Developers and operators evaluating or migrating between the two projects
+### 🧪 [Test Suite](../tests/README.md)
+*Test organization, categories, and key architectural patterns tested.*
+- **Test Layout**: Directory structure, helpers, and quick-start commands
+- **Categories**: Core infrastructure, order management, COW rebalancing, fees/accounting, integration, edge cases, and more
+- **Architectural Patterns**: COW rebalancing, RMS divergence, fund invariants, and the grid-price invariant with doc cross-references
 
 ### 🧭 [Evolution Report](EVOLUTION.md)
 *Project timeline and major architecture phases.*
 - **Coverage**: Historical milestones from bootstrap through the current stable release; per-release detail lives in [CHANGELOG.md](../CHANGELOG.md)
 - **Focus**: Architecture evolution, release history, and test growth
 
+### ⏪ [Order Engine Retrospective](ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md)
+*Why the post-1.0.0 order engine kept misbehaving — synthesis plus the incident/fix ledger.*
+- **Part I — Synthesis**: root cause (uncertain broadcast), recurring bug families, meta-patterns, what actually fixed it, lessons
+- **Part II — Incident & Fix Ledger**: preserved gap-band / ladder-recenter / orphan-fill / price-first plans with `LANDED`/`REVERTED`/`SUPERSEDED` status and commit hashes
+- **Regression gate**: `npm run analysis:grid-check` (see [analysis/README.md](../analysis/README.md))
+
 ### 🗒️ [Changelog](../CHANGELOG.md)
 *Release notes and documentation history.*
 - **Scope**: Versioned notes per release
 
-### 🧩 [Copy-on-Write Master Plan](COPY_ON_WRITE_MASTER_PLAN.md)
-*COW design, phases, and state machine details.*
-- **Architecture**: Master-grid projection model and rebalance flow
-- **Lifecycle**: Implementation phases, commit boundaries, and test coverage
-- **Safety**: Invariants and guardrails for concurrent updates
-
-### 🔒 [COW Invariants](COW_INVARIANTS.md)
-*Stable theory contract for COW pipeline.*
-- **Non-negotiable invariants**: Master immutability, commit atomicity, projection rules, accounting separation
-- **Test mapping**: Links each invariant to regression tests
-- **Review checklist**: Quick-use verification for COW/accounting changes
-
-### 📐 [Grid-Price Invariant](GRID_PRICE_INVARIANT.md)
-*Why a slot's emitted price must equal its genesis level — and how that failed.*
-- **The invariant**: `order.price === priceForSlot(idx, genesis)`, and why range guards cannot substitute for it
-- **Failure mechanism**: Chain price overwriting slot identity, pre-broadcast substitution, untrusted fill-guard pivot
-- **Enforcement**: The six emission sites, the blocking rejection of off-grid emissions, and the fail-open policy on unjudgeable inputs
-- **Out-of-bounds policy**: Hold and surface; refill in-grid slots at their genesis price
-- **Status**: What is landed, what remains open, and why the removed 5% sanity gate must not be naively re-landed
-
-### 🧪 [Test Suite](../tests/README.md)
-*Test organization, categories, and key architectural patterns tested.*
-- **Test Layout**: Directory structure, helpers, and quick-start commands
-- **Categories**: Core infrastructure, order management, COW rebalancing, fees/accounting, integration, edge cases, and more
-- **Architectural Patterns**: COW rebalancing, RMS divergence, and fund invariants with doc cross-references
-
-### 💰 [Fund Movement & Accounting](FUND_MOVEMENT_AND_ACCOUNTING.md)
-*The most critical part of the bot: safe capital management.*
-- **Single Source of Truth**: How the bot avoids double-spending and out-of-sync balances.
-- **Optimistic ChainFree**: The mechanism that allows the bot to trade with fill proceeds before they are finalized on-chain.
-- **Fill Batch Processing**: Fixed-cap batching for efficient fill processing (`<=4` unified, `>4` chunked)
-- **Partial Order Consolidation**: Simplified, direct consolidation through grid rebuilding (no merge/split mechanics)
-- **Dust Detection & Management**: Partials below the dust threshold are cancelled on-chain immediately on detection (no delay, no timer)
-- **BTS Fee Object Structure**: `netProceeds` field for accounting precision
-- **BUY Side Sizing & Fee Accounting**: Correct fee application by order side
-- **Mixed Order Fund Validation**: Separate validation for BUY vs SELL order fund checks
-- **Fee Management**: Detailed logic for BTS fee reservations and market fee deductions.
+### 🧮 [DEXBot vs DEXBot2 Comparison](DEXBOT_COMPARISON.md)
+*Architectural, functional, and operational comparison with the original Python DEXBot.*
+- **Scope**: Full side-by-side of technology stack, architecture, trading strategies, order management, configuration, blockchain integration, fund accounting, and concurrency safety
+- **Audience**: Developers and operators evaluating or migrating between the two projects
 
 ---
 

@@ -103,7 +103,7 @@ function testBuildStartupDefaultsLogReflectsExplicitOnlyDynamicBase() {
 
     assert.ok(text.includes('dynamicBase=explicit-only'), 'startup defaults should document explicit-only dynamic base weights');
     assert.ok(text.includes(expectedFallback), 'startup defaults should include fallback weights');
-    assert.ok(text.includes('asymCap=35%'), 'startup defaults should include default asymmetry cap');
+    assert.ok(text.includes('asymCap=33%'), 'startup defaults should include default asymmetry cap');
 }
 
 testBuildWeightSummaryFormatsSellBuyOrder();

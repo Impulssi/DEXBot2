@@ -193,6 +193,35 @@ console.log('\n=== Grid Comparison Function Tests (By Side) ===\n');
     logTest('Unmatched orders detected by grid ID', passed, `buy=${result.buy.metric.toFixed(6)}, sell=${result.sell.metric.toFixed(6)}`);
 }
 
+// Test 9b: VIRTUAL orders are included in the divergence calculation.
+// VIRTUAL slots carry the planned reservation (funds.virtual); a persisted-vs-ideal
+// drift there must register as divergence, not be silently ignored.
+{
+    const calculated = [
+        createOrder(ORDER_TYPES.BUY, 0.90, 10, 'buy-active', ORDER_STATES.ACTIVE),
+        createOrder(ORDER_TYPES.BUY, 0.80, 20, 'buy-virtual', ORDER_STATES.VIRTUAL)
+    ];
+    const persisted = [
+        createOrder(ORDER_TYPES.BUY, 0.90, 10, 'buy-active', ORDER_STATES.ACTIVE),
+        createOrder(ORDER_TYPES.BUY, 0.80, 10, 'buy-virtual', ORDER_STATES.VIRTUAL)
+    ];
+    const result = await compareGrids(calculated, persisted);
+    // active: 0 diff; virtual: (10-20)/20 = -0.5 -> 0.25; sqrt(0.25/2) = 0.353553
+    const passed = Math.abs(result.buy.metric - 0.353553) < 0.0001 && result.sell.metric === 0;
+    logTest('VIRTUAL orders included in divergence', passed, `buy=${result.buy.metric.toFixed(6)}, sell=${result.sell.metric}`);
+}
+
+// Test 9c: a side with ONLY VIRTUAL orders still yields a metric (was silently 0
+// under the old ACTIVE-only filter).
+{
+    const calculated = [createOrder(ORDER_TYPES.SELL, 1.0, 20, 'sell-virtual', ORDER_STATES.VIRTUAL)];
+    const persisted = [createOrder(ORDER_TYPES.SELL, 1.0, 10, 'sell-virtual', ORDER_STATES.VIRTUAL)];
+    const result = await compareGrids(calculated, persisted);
+    // (10-20)/20 = -0.5 -> 0.25; sqrt(0.25/1) = 0.5
+    const passed = Math.abs(result.sell.metric - 0.5) < 0.0001 && result.buy.metric === 0;
+    logTest('VIRTUAL-only side yields a metric', passed, `sell=${result.sell.metric.toFixed(6)}, buy=${result.buy.metric}`);
+}
+
 console.log('\n=== Auto-Update Tests (By Side) ===\n');
 
 // Test 10: BUY side exceeds threshold, SELL does not - only BUY updated

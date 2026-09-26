@@ -69,7 +69,7 @@ function testGenerateHtml() {
         ]
     );
 
-    assert.ok(html.includes('uPlot.iife.min.js'));
+    assert.ok(html.includes('leeoniya/uPlot') && !html.includes('../uplot/'), 'uPlot runtime should be inlined, not referenced relatively');
     assert.ok(html.includes('price-chart'));
     assert.ok(html.includes('dev-chart'));
     assert.ok(html.includes('vol-chart'));
@@ -133,7 +133,7 @@ function testGenerateMarketLpChartUplot() {
 
     assert.strictEqual(fs.existsSync(outFile), true);
     const html = fs.readFileSync(outFile, 'utf8');
-    assert.ok(html.includes('uPlot.iife.min.js'));
+    assert.ok(html.includes('leeoniya/uPlot') && !html.includes('../uplot/'), 'uPlot runtime should be inlined, not referenced relatively');
     assert.ok(html.includes('price-chart'));
     const match = html.match(/<script>\s*(const payload =[\s\S]*?)<\/script>\s*<\/body>/);
     assert.ok(match, 'expected browser script block');

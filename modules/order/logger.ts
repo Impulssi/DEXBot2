@@ -81,7 +81,10 @@ class Logger {
      * @param {string} [category='DEXBot'] - Logger category/prefix
      * @param {Object} [options]
      * @param {boolean} [options.quiet] - Suppress console output
-     * @param {boolean} [options.quietUnderPm2=true] - Auto-quiet under PM2
+     * @param {boolean} [options.quietUnderPm2=false] - Legacy opt-in to suppress
+     *   console output under PM2. Keep this false in normal operation: under
+     *   PM2 stdout is the only sink (direct file writes are suppressed), so
+     *   auto-quieting drops every log line.
      * @param {string} [options.logFile] - Optional path to log file
      * @param {string} [options.level='info'] - Log level
      * @param {Object} [options.configOverride] - Override LOGGING_CONFIG
@@ -91,12 +94,20 @@ class Logger {
         this.category = category;
 
         const isUnderPm2 = !!Config.pm_exec_path;
-        const hasPm2Logging = !!(Config.pm_out_log_path || Config.pm_err_log_path);
-        const pm2AutoQuiet = isUnderPm2 && hasPm2Logging;
-        const quietUnderPm2 = options.quietUnderPm2 !== false;
 
         this.logFile = options.logFile || null;
-        this.quiet = options.quiet ?? (!!this.logFile || (quietUnderPm2 && pm2AutoQuiet));
+        if (options.quiet !== undefined) {
+            this.quiet = options.quiet;
+        } else if (options.quietUnderPm2 === true && isUnderPm2) {
+            // Legacy escape hatch: explicit opt-in to the old silent behaviour.
+            this.quiet = true;
+        } else {
+            // Non-PM2 runs with a logFile write to the file only, so console is
+            // quiet to avoid duplication. Under PM2 the file sink is suppressed
+            // (see _enqueueWrite) and PM2 captures stdout, so console must stay
+            // on or nothing is logged at all.
+            this.quiet = !!this.logFile && !isPm2LogCaptureActive();
+        }
         this.level = options.level || 'info';
         this.config = options.configOverride || LOGGING_CONFIG;
 
@@ -140,7 +151,7 @@ class Logger {
 
     _enqueueWrite(text: string) {
         if (!this.logFile) return;
-        if (Config.pm_out_log_path || Config.pm_err_log_path) return;
+        if (isPm2LogCaptureActive()) return;
         this._writeQueue.push(text);
         if (this._writeQueue.length >= this._maxQueueSize) {
             this._drainQueue();
@@ -621,10 +632,20 @@ function isPm2Runtime(): boolean {
     return !!Config.pm_exec_path;
 }
 
+/**
+ * True when PM2 owns the log files for this process (pm_out_log_path /
+ * pm_err_log_path present). In that case stdout/stderr are the only sink and
+ * the Logger suppresses its own file writes to avoid double-writing into the
+ * PM2-managed file.
+ */
+function isPm2LogCaptureActive(): boolean {
+    return !!(Config.pm_out_log_path || Config.pm_err_log_path);
+}
+
 function createPm2AwareLogger(category: string, options: { quietUnderPm2?: boolean } = {}) {
     return new Logger(category, options);
 }
-export { createPm2AwareLogger, isPm2Runtime, setGlobalConsoleLevel, getGlobalConsoleLevel }
+export { createPm2AwareLogger, isPm2Runtime, isPm2LogCaptureActive, setGlobalConsoleLevel, getGlobalConsoleLevel }
 export default Logger
 
 

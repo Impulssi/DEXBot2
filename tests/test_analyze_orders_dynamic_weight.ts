@@ -350,9 +350,9 @@ function testAnalyzeOrderIncludesAsymmetricBoundsFromRoot() {
     assert.ok(analysis.asymmetricBounds, 'asymmetricBounds should be computed from root-level data');
     assert.strictEqual(analysis.asymmetricBounds.trend, 'UP');
     assert.strictEqual(analysis.asymmetricBounds.appliedAsymmetryFactor, 0.04);
-    // With trend=UP, the buy side widens and sell side narrows.
+    // With trend=UP, the whole band shifts up by (1 + appliedAsymmetryFactor):
     // center=101, minPrice=101/1.55≈65.16, maxPrice=101*1.55≈156.55
-    // Asymmetry UP: resolvedMin=101/((101/65.16)*(1-0.04)), resolvedMax=101*((156.55/101)*(1+0.04))
+    // resolvedMin = 65.16 * 1.04, resolvedMax = 156.55 * 1.04
     assert.ok(Number.isFinite(analysis.asymmetricBounds.resolvedMinPrice), 'resolvedMinPrice should be finite');
     assert.ok(Number.isFinite(analysis.asymmetricBounds.resolvedMaxPrice), 'resolvedMaxPrice should be finite');
   } finally {

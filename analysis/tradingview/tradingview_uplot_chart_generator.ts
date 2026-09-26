@@ -2,7 +2,7 @@
 
 import fs from 'node:fs';
 import { MARKET_ADAPTER } from '../../modules/constants.js';
-import { escapeHtml, serializeJsonForScript, UPLOT_SHARED_SCRIPT, embedFunctionSources } from '../chart_utils.js';
+import { escapeHtml, serializeJsonForScript, UPLOT_SHARED_SCRIPT, embedFunctionSources, uplotInlineTags } from '../chart_utils.js';
 import { cursorCSS, uplotBgCSS } from '../chart_css.js';
 import { zoomResetScript } from '../chart_ui.js';
 import { normalizeCandle } from '../math_utils.js';
@@ -241,8 +241,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
     <meta name="darkreader-lock">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${escapeHtml(title)}</title>
-    <link rel="stylesheet" href="../uplot/uPlot.min.css">
-    <script src="../uplot/uPlot.iife.min.js"></script>
+    ${uplotInlineTags()}
     <style>
         * { box-sizing: border-box; }
         :root { color-scheme: dark; }
@@ -585,7 +584,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                         </span>
                     </div>
                     <div class="indicator">
-                        <label><input type="checkbox" id="ama-init-offset-toggle"> Init Offset</label>
+                        <label title="Init Offset"><input type="checkbox" id="ama-init-offset-toggle"> Offset</label>
                         <input type="range" id="ama-init-offset" min="-50" max="50" value="0" step="1" style="width:90px;vertical-align:middle" disabled>
                         <span id="ama-init-offset-val" style="font-size:11px;color:#8b949e;width:32px;display:inline-block;text-align:right">0%</span>
                     </div>
@@ -1497,7 +1496,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const maxSlopeOffset = Number(slopeCfg.maxSlopeOffset) > 0 ? Number(slopeCfg.maxSlopeOffset) : 0.5;
             const maxAsym = gridCfg && Number(gridCfg.maxAsymmetryFactor) > 0
                 ? Number(gridCfg.maxAsymmetryFactor)
-                : (Number(slopeCfg.maxAsymmetryFactor) > 0 ? Number(slopeCfg.maxAsymmetryFactor) : 0.35);
+                : (Number(slopeCfg.maxAsymmetryFactor) > 0 ? Number(slopeCfg.maxAsymmetryFactor) : 0.333);
             const inc = gridCfg && Number(gridCfg.incrementPercent) > 0 ? Number(gridCfg.incrementPercent) : null;
             const minSlots = Math.floor(Number(gridCfg && gridCfg.minScaleSlots) > 0 ? Number(gridCfg.minScaleSlots) : (Number(slopeCfg.minScaleSlots) || 0));
             // User x-range span (slider 1.2x–2.0x, default 1.55x): the only
@@ -3367,7 +3366,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         }
         makeStepper('sma-period', 1, 1, 0);
         makeStepper('vwap-bars', 1, 24, 0);
-        makeStepper('ama-er', 1, 1, 0);
+        makeStepper('ama-er', 10, 1, 0);
         makeStepper('ama-fast', 0.1, 0.1, 1);
         makeStepper('ama-slow', 1, 0.1, 1);
         document.getElementById('ama-init-offset').addEventListener('input', () => {

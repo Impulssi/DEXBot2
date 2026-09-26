@@ -1,4 +1,9 @@
 process.env.DEXBOT_SKIP_PROFILE_VALIDATION = '1';
+// Keep this test hermetic: a dev checkout can hold real market_adapter/claw
+// state, and the explicit relocation notices would otherwise pollute the
+// captured warnings asserted below.
+process.env.DEXBOT_MARKET_ADAPTER_DATA_DIR = '/tmp/dexbot-test-dexbot-daemon-ready-ma';
+process.env.DEXBOT_CLAW_DATA_DIR = '/tmp/dexbot-test-dexbot-daemon-ready-claw';
 const assert = require('assert');
 const fs = require('fs');
 const { restoreCachedModule, setCachedModule } = require('./helpers/module_cache_stub');

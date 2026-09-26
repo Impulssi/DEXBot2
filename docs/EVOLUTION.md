@@ -2,14 +2,19 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.6.3 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.6.7 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
- - **Growth Phase**: 2,227 commits over ~9 active months
+- **Growth Phase**: 2,277 commits over ~9 active months
 - **Code Maturity**: Evolution from basic utilities to a ~100,000+ LoC intelligent TypeScript system
-- **Stability**: Progression from manual testing to a suite of 294 automated test files
-- **Releases**: 107 release entries (v0.1.0 to v1.6.3)
+- **Stability**: Progression from manual testing to a suite of 297 automated test files
+- **Releases**: 139 version entries in the changelog (v0.1.0 to v1.6.7)
+
+> **Post-1.0.0 "why":** the thematic story behind the hardening releases — root cause, recurring
+> bug families, and lessons — lives in
+> [ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md](ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md).
+> This report stays chronological.
 
 ---
 
@@ -61,9 +66,61 @@ v1.4.12 completed the module transition to native ES modules (root + claw `"type
 
 ### Phase 9: Post-ESM Cleanup, Consolidation & Hardening (August 2026)
 
-The post-ESM releases consolidated state, code, and tooling while hardening the grid engine. **State & packaging** (v1.4.14–v1.4.17): all user/runtime state centralized on a resolver-derived profiles dir (`~/.config/dexbot2/profiles`) safe from re-clones, read-only prefixes, and npm wipes; divergence surplus/hole pairs became in-place order rotations; npm auto-update shipped; duplicated EC-crypto/settings/asset-resolution code collapsed; dead exports purged; analysis tooling moved under strict TypeScript. **Grid hardening** (v1.4.19–v1.4.21): COW broadcasts capped at `MAX_OPS_PER_BROADCAST` (4) with chunked retry-on-uncertain; boundary promotion and persisted-boundary restore gated against gap-floor overrun poison behind a shared sell-rail ceiling enforced at commit and restore time; spread-collapse fixed via the shared `isSlotInRail` filter; silent-failure runtime defects from a modules-wide audit fixed (NaN fund-invariant tolerance, always-flush fill store, double-decremented fill guard). **Tooling & UX** (v1.4.20–v1.4.22): live/research clip parity with centralized chart sliders and analysis outputs on the central path resolver; claw logic deduplicated with hardened error paths; browser storage adapter persists deletions; editor green/red input feedback extended to funds and prices; compile-first runtime completed — tsx removed entirely, every entry point and the test suite running compiled dist under plain node through frozen-ESM-safe seams, plus exact AMA cold-start bootstrap sizing and research tools unified onto production slope/bounds math. Post-v1.4.22 work followed the same themes: bot-fitting backtests re-modeled on the production grid lifecycle, analysis tooling consolidated onto market_adapter sources, Kibana proxy-reset hardening, and TradingView price-axis interaction. **v1.4.24** fixed native fill-gap recovery and LP pricing; **v1.4.25** freezes genesis price-slots and hardens grid orphan/self-trade/fill-guard/shutdown paths, plus whitelist scoped `--bot` overwrite and Range quality legend.
+The post-ESM releases consolidated state, packaging, and tooling while hardening the grid engine — profile state on a resolver-derived `~/.config/dexbot2` dir, in-place order rotations, npm auto-update, dead-code purge, and a compile-first runtime (tsx removed; every entry point and the test suite run compiled `dist` under plain node). Grid work capped COW broadcasts and chunked retry-on-uncertain, gated boundary promotion and persisted-restore against gap-floor poison, fixed spread-collapse via the shared `isSlotInRail` filter, and cleared silent-failure defects from a modules-wide audit. **v1.4.24** fixed native fill-gap recovery and LP pricing; **v1.4.25** froze genesis price-slots and hardened orphan/self-trade/fill-guard/shutdown paths.
 
 ---
+
+## Architecture Deep-Dive: COW & Memory Tracking
+
+Two mechanisms shaped the order engine after the browser/TypeScript era: the Copy-on-Write grid
+and the memory-only integer tracking model. The construction detail that used to live in
+`COPY_ON_WRITE_MASTER_PLAN.md` and `architecture.md` is recorded here; those docs now describe
+only the current design.
+
+### Copy-on-Write: three eras
+
+- **Era 0 — original optimistic state (pre-v1.0):** the master grid was mutated directly during
+  planning, with no isolation or rollback. A sudden market move corrupted in-flight state (the
+  "Price Jump" incident — planning mutations applied straight to the master grid).
+- **Era 1 — frozen master state (v1.0):** `Object.freeze()` on the master Map and `deepFreeze()`
+  on order objects; every `_applyOrderUpdate` creates a new frozen Map via the immutable-swap
+  pattern. Retained as defense-in-depth — it catches accidental in-place mutation of
+  `manager.orders`.
+- **Era 2 — Copy-on-Write (v2.0, current):** clone the master into a `WorkingGrid`, plan and
+  broadcast on the clone, commit atomically on blockchain success (discard on failure). True
+  transactional semantics; the master is never in an intermediate state.
+
+The production code layers Era 1 and Era 2: freeze provides runtime mutation enforcement, COW
+provides the plan → broadcast → commit/discard lifecycle.
+
+### COW construction milestones (February–April 2026)
+
+- `modules/order/working_grid.ts` (`WorkingGrid`: clone, delta, stale tracking) and
+  `COW_PERFORMANCE` thresholds added.
+- `performSafeRebalance` → `_applySafeRebalanceCOW`; `buildDelta`; `_commitWorkingGrid` atomic
+  swap.
+- COW broadcast path (`_updateOrdersOnChainBatchCOW`); legacy rollback code removed.
+- Selective-abort fill strategy: individual fills continue, full-side updates block.
+- Divergence corrections and `updateGridFromBlockchainSnapshot` migrated to the COW pattern.
+- Atomic boundary shifts (patch 20): `pendingBoundaryIdx` carries boundary changes through the
+  pipeline and applies them only at `_commitWorkingGrid`, so boundary position and slot BUY/SELL
+  roles never transiently disagree during blockchain execution.
+- Validation suites added: COW core, commit-guard, concurrent-fill, divergence-correction, and
+  stale-plan/stack-discipline tests.
+
+### Memory-only integer tracking
+
+- **Raw order cache (`rawOnChain`):** grid slots store the exact blockchain order integers
+  (satoshis); seeded from broadcast arguments on placement, updated in place on partial fills,
+  refreshed on updates/rotations.
+- **Chain-free planning:** redundant `readOpenOrders()` calls were removed from the size-update
+  and rotation builders (`_buildSizeUpdateOps()`, `_buildRotationOps()`), and the
+  `computeVirtualOpenOrders()` virtual-order computation was dropped; `buildUpdateOrderOp`
+  gained an optional `cachedOrder` and returns `finalInts`.
+- **Result:** batch updates and rotations run without blockchain fetches; only placements and
+  recovery syncs query the chain (~10–20× faster high-frequency operations).
+- **Self-healing:** a failed memory-driven transaction triggers a full state-recovery sync so the
+  internal ledger stays consistent with the chain.
 
 ## Technical Challenges & Solutions
 
@@ -86,42 +143,33 @@ Evolved from a basic README to a comprehensive framework (50+ docs entries, 80%+
 
 ## Post-1.0.0 Status
 
-**Completed**: browser-safe core (140+ files, portable abstractions, pure-JS crypto); credit/MPA runtime (multi-asset collateral, oversize deal splitting); storage-adapter I/O centralization; self-healing (structural resync, subscription watchdog, bot/daemon broadcast-deadlock recovery); Kibana-driven trade PnL analytics; multi-round AMA refits; documented subsystem invariants; bot identity enforcement; credit-only mode; Docker support; npm package with lockfile sync; hardened grid order engine (COW pipeline, zero-amount prevention, fill batching, dust detection, spread correction).
+**Completed**: browser-safe core; credit/MPA runtime; storage-adapter I/O centralization; self-healing recovery; Kibana PnL analytics; credit-only mode; Docker support; npm package. For the grid order engine arc specifically (COW pipeline, orphan/self-trade/fill-guard hardening, invariants) see [ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md](ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md) §R4.
 
 **Planned**: backtesting engine (historical candle replay via exchange abstraction); injectable interfaces at call boundaries; SQLite persistence + Zod validation at the blockchain boundary; Telegram bot (**not yet implemented**) — owner-gated monitoring (`/status`, `/orders`, `/grid`, `/balance`) and opt-in+confirm gated control (`/start`, `/stop`, `/pause`); DEXBot is the only writer, private keys never reach the module (`TELEGRAM` block + `DEXBOT_TELEGRAM_TOKEN` env).
 
 ## Version History
 
-Compact, era-level view; per-release commit detail lives in [CHANGELOG.md](../CHANGELOG.md).
+Compact, era-level view. Per-release detail lives in [CHANGELOG.md](../CHANGELOG.md); the thematic post-1.0.0 story in [ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md](ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md).
 
 | Era | Commits | Theme |
 |-----|--------:|-------|
 | v0.1.0 → v0.6.0 | 1,217 | Foundation → COW architecture, strategy/sync engine, credential daemon, AMA prototype, credit/MPA runtime |
-| v0.6.0 → v1.0.0 | 309 | Zero-dependency & TS migration, native BitShares, fill detection overhaul, first stable release |
-| v1.0.0 → v1.1.0 | 85 | Post-stable hardening, PnL analytics, auto-update, broadcast deadlock fixes |
-| v1.1.0 → v1.3.3 | 114 | AMA refits, credit-only mode, COW recovery hardening, runtime extraction |
-| v1.3.3 → v1.4.8 | 74 | CJS→ESM completion, concurrency correction, uncertain-broadcast safety, truncated-read ambiguity |
-| v1.4.8 → v1.4.13 | 45 | Native ESM runtime, broadcast serialization, onboarding |
-| v1.4.13 → v1.4.19 | 36 | Profile-state centralization, code consolidation, per-broadcast op cap |
-| v1.4.19 → v1.4.20 | 5 | Grid boundary promotion hardening, recovery poison gate, analysis output centralization |
-| v1.4.20 → v1.4.21 | 15 | Runtime audit fixes, claw dedup hardening, boundary ceiling alignment, editor color feedback |
-| v1.4.21 → v1.4.22 | 4 | tsx removal completion (dist-only runtime + tests), exact AMA bootstrap sizing, research-tool production parity |
-| v1.4.22 → v1.4.23 | 12 | Even geometric AMA ladder, BTS fee-carve fix, sub-1x price-bound rejection, tradingview axis restore, doc realignment |
-| v1.4.23 → v1.4.24 | 3 | Native fill gap recovery with eager coalesced retry, LP collateral offer-first pricing |
-| v1.4.24 → v1.4.25 | 26 | Genesis-frozen price-slots, self-trade & fill-guard hardening, orphan & gap-band fixes, trigger/shutdown hardening, bot poll, grid monotonicity gate, whitelist scoped overwrite, Range legend |
-| v1.4.25 → v1.5.0 | 13 | Credit overview CLI + whitelist-scoped CR on shared pricing math, one-step TradingView chart, daemon-safe reload, offline account-ID cache, case-insensitive bot identity, stale-pivot guard fix, partial-surplus rotation clamp, adapter ownership centralization, op-77 bot discovery split |
-| v1.5.0 → v1.5.1 | 11 | Gap-evacuation guard allowance + rail-typed holes, persisted streaks with cancel-only teeth, vacated-rail refill, adoption/accounting/duplicate-guard hardening |
-| v1.5.1 → v1.5.2 | 10 | Sync rejection handling across pass-1/pass-2 adoption, crossing-guard candidate sharing, empty-read confirmation, broadcast-price CREATE validation, stamped gap-evacuation re-proof, credit whole-account display + expiry, offline export fill-block derivation |
-| v1.5.2 → v1.5.3 | 6 | Boundary ownership hardening (fund-driven sync removal, guard-skipped refill hold), COW broadcast/reconcile dedup, TradingView bot-grid range highlight, createOrder unknown-id materialize-or-error, curve-comparison docs |
-| v1.5.3 → v1.6.0 | 37 | Node-failure strike ledger and broadcast-deferred fill rebalancing, trust-chain free-balance heal with deferred-drain tolerance, bidirectional grid-regeneration trigger, TradingView order overlay and chart pref namespacing, credit short-offer id display, live-config pickup (issue #27), reserve ladder anchored at resolved bounds + live-grid rail edges with single-source ordering and exact-size activation, owed-crawl persistence across refused broadcasts/restarts + hold-aware reload-safe lifecycle, fill-anchored boundary recovery + poisoned persisted-boundary erase, startup rail gate + static-center crawl fold, all `*-deferred` holds non-blocking + hold metrics surfaced, opt-in MPA price-feed charts + range-aware shared candle cache, range-band span parity on grid-less charts, orange range zone widened to 1.40x, docs reserve-ladder sweep, reserve-deficit targeted-sync trigger with window-exclusion counting, matched-surplus startup excess planning, shelf-order guards across reserve classification/placement/startup cancels/size recalc (issue #27 follow-ups), unified Kibana candle cache on runCachedWindows with fetch retry budgets, genuine-coverage LP window reuse, feed volume/AMA timeframe alignment, TradingView monthly candles/stat badges/rigid pan/volume toggle/feed affordance, credit full offer id + empty-pair Curr. CR hiding, live-config onboarding note |
-| v1.6.0 → v1.6.1 | 3 | Never-run-stale hardening (level-triggered deferred-fill retry, stale-totals fill parking, out-of-spread watchdog, region-end fan-out, one-sided spread honesty), whitelist range-scaling opt-in defaults, live-save vs reset vs reload docs + power-law paper restructure |
-| v1.6.1 → v1.6.2 | 6 | Grid-price invariant + resync escalation, gap-slot batch sizing, shard candle cache + chart fixes, recovery stranding tolerance, fill-counter hygiene, dead-node prune + trace single-sourcing, obsolete-doc removal |
-| v1.6.2 → v1.6.3 | 3 | Correction-queue staleness guard (validate queued price corrections against live slot), grid-checker price epochs across repriced order lifetimes, final pre-broadcast pivot gate (re-check built ops when a fill queued after the freeze moved the pivot) |
+| v0.6.0 → v1.0.0 | 309 | Zero-dependency & TS migration, native BitShares, fill-detection overhaul, first stable release |
+| v1.0.0 → v1.3.3 | 199 | Post-stable hardening, PnL analytics, auto-update, broadcast-deadlock fixes, AMA refits, credit-only mode, COW recovery hardening, runtime extraction |
+| v1.3.3 → v1.4.13 | 119 | CJS→ESM completion, concurrency correction, uncertain-broadcast & truncated-read safety, native ESM runtime, broadcast serialization, onboarding |
+| v1.4.13 → v1.4.25 | 101 | Profile-state centralization, consolidation, per-broadcast op cap, grid boundary/recovery hardening, tsx removal, genesis-frozen price-slots, self-trade & orphan fixes |
+| v1.4.25 → v1.5.3 | 40 | Credit overview + whitelist-scoped CR, TradingView tooling, daemon-safe reload, gap-evacuation/rail-hole hardening, sync adoption hardening, boundary ownership |
+| v1.5.3 → v1.6.0 | 37 | Node-failure ledger, grid regeneration, reserve ladder, live-config pickup, owed-crawl persistence, fill-anchored boundary recovery, TradingView overlay |
+| v1.6.0 → v1.6.3 | 12 | Never-run-stale hardening, whitelist range-scaling opt-in, grid-price invariant, shard candle cache, correction-queue staleness, final pre-broadcast pivot gate |
+| v1.6.3 → v1.6.4 | 18 | Fund-driven spread correction, gapSlots+1 batch cap, VIRTUAL RMS divergence, sync-lock log fix, invariant-doc contract, analysis shared modules, window-aware profitability annualisation, portable chart exports, range-threshold restore, dead-code purge, doc consolidation |
+| v1.6.4 → v1.6.5 | 15 | Editor-managed whitelist flags + legacy generator removal, centralized bot defaults/settings docs, log-symmetric range-scaling tilt, AMA gridPrice default + unset → startPrice normalization, Pool default/warn-color cues, Grid Health AMA-slope Δ knob, dynamic-weight chart CLI, update dist-freshness self-heal, launcher worker rename, RMS log tagging |
+| v1.6.5 → v1.6.6 | 13 | Stale-cancellation guard hardening (live ownership, per-plan startup revalidation, COW orphan protection, settlement safety), editor label/menu realignment + colored bot list, grouped CLI help, poolRef aliases + startPrice priority, legacy SMA/MACD/RSI analyzer archived, run-relative candle-cache migration dropped, update dist-freshness tsconfig-exclude fix |
+| v1.6.6 → v1.6.7 | 10 | Native session/fill-channel recovery (dead-but-open forced reconnect, stale api_id self-heal, COW stale-plan recheck) + clean-process ecosystem regen, `dexbot start` onboarding redirect, key-manager cancellation + empty-vault onboarding link, LAST-FILL-GUARD pivot persistence (provenance-gated snapshot mirror, genesis-bound + TTL + on-grid restore with the boundary, centralized writer, generation invalidation mirroring the owed-crawl ledger), PM2 log-capture restore + `pm2-logrotate` enablement, correction-drain budget + broadcast-region timer/fill deferral (bounded `_gridLock` hold, backlog alarm, stale-flag-safe maintenance deferral, defer bound tied to the watchdog, per-group create yield) |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: September 15, 2026
-**Total Commits**: 2,228
-**Date Range**: December 2, 2025 – September 15, 2026
+**Last Updated**: September 26, 2026
+**Total Commits**: 2,287
+**Date Range**: December 2, 2025 – September 26, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

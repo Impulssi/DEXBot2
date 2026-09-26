@@ -13,7 +13,7 @@ Reconciliation aligns the bot's model with on-chain reality. It runs at startup 
 
 ### Why Not Cancel Everything
 
-- No atomic cancel+create on BitShares — `cancel_order` cancels the full order; there is no partial size reduction
+- No atomic cancel+create on BitShares — `limit_order_cancel` cancels the full order; there is no partial size reduction
 - A full teardown leaves the bot unable to trade during the rebuild window
 
 ---
@@ -22,7 +22,7 @@ Reconciliation aligns the bot's model with on-chain reality. It runs at startup 
 
 The reconcile runs from [`recalculateGrid`](../modules/order/grid.ts) during startup full-resync. **There is no per-attempt wall-clock race around the reconcile itself** — an outer timeout would fire mid-batch and orphan in-flight broadcasts (the duplicate-accumulation death spiral). The reconcile is bounded only by the 10-minute total resync safety net, and every internal chain read follows the shared guarded-read standard.
 
-Phase 1 does all reasoning in memory under `_gridLock` (fast); Phases 2 and 3 execute outside the lock — holding a lock across RPC calls would block fills, sync, and divergence checks for hundreds of milliseconds each. All execution operations in Phases 2–3 re-acquire `_gridLock` individually (via `synchronizeWithChain` / per-op guards) so the lock is held briefly per operation, never for an entire phase.
+Phase 1 does all reasoning in memory under `_gridLock` (fast); Phases 2 and 3 execute outside that planning lock — holding it across RPC calls would block fills, sync, and divergence checks. Phase 2 holds the broadcasting single-flight marker, while the sync/apply paths it invokes follow the canonical lock hierarchy. No planning-phase grid lock spans a network operation.
 
 Phase 2 and 3 both respect the `dryRun` flag: when true, no on-chain mutations are attempted — plans are logged but not executed.
 
@@ -38,7 +38,7 @@ Phase 2 and 3 both respect the `dryRun` flag: when true, no on-chain mutations a
 │  • Sanitize phantom orders (ACTIVE/PARTIAL with  │
 │    orderId absent on-chain → VIRTUAL, skip);     │
 │    defer freshly-assigned orderIds, ghost pass   │
-│  • Detect suspected duplicates (within 5× tol) → │
+│  • Detect suspected duplicates (exact price) →   │
 │    queue for Phase 2 cancel                      │
 │  • Match unmatched chain orders to virtual slots │
 │    → plan updates                                │
@@ -52,8 +52,8 @@ Phase 2 and 3 both respect the `dryRun` flag: when true, no on-chain mutations a
 ┌──────────────────────────────────────────────────┐
 │  PHASE 2: Execution (outside _gridLock)          │
 │                                                  │
-│  1. Cancellations — duplicates, edge releases,   │
-│     excess chain orders                          │
+│  1. Cancellations — revalidate each plan against │
+│     live ownership, geometry, and chain state    │
 │  2. Updates — batch (3 retries), then sequential │
 │     fallback with per-failure recovery sync      │
 │  3. Creates — outside-in pairing (outermost grid │
@@ -78,14 +78,14 @@ Phase 2 and 3 both respect the `dryRun` flag: when true, no on-chain mutations a
 
 ### Phase 1 — Pure Planning Under `_gridLock`
 
-**`grid_reconcile.ts:208-375`**
+**Source:** `reconcileGridOrders()` Phase 1 in `grid_reconcile.ts`.
 
 1. **Phantom order sanitization** (lines 216-245): For each `isOrderPlaced()` order whose `orderId` is not in the chain snapshot, reset it to VIRTUAL with `skipAccounting` to prevent fund inflation. Two absence-decision guards make this safe:
    - **Freshly-assigned deferral** (lines 226-235): an `orderId` assigned within `TIMING.SYNC_LOCK_TIMEOUT_MS` (via `manager._orderIdAssignedAt`) may be an in-flight create/adopt whose broadcast has not landed or is not yet visible to a lagging/truncated read — virtualizing it and re-creating would duplicate a real live order (the reconcile-timeout death-spiral root cause). It is skipped (deferred) rather than virtualized.
    - **Ghost heuristic** (line 229): an order with `size <= 0` && `PARTIAL` (a known filled ghost) still passes through so known fills get cleaned up.
    - Virtualization always uses `{ skipAccounting: true }` so startup cleanup never inflates `ChainFree`.
 
-2. **Duplicate detection** (lines 258-331): For each unmatched chain order, find the nearest active same-side grid order. If `priceDiff ≤ tolerance × 5`, flag it as a suspected duplicate and queue for a Phase 2 cancel (never cancelled under lock). Tolerance is computed from price impact via `calculatePriceTolerance`: capped at `PRICE_TOLERANCE_MAX_PERCENT` (1%) with a `PRICE_TOLERANCE_MIN_ABSOLUTE` (0.0001) floor. Duplicate IDs are removed from the unmatched set so they aren't also paired for updates/creates.
+2. **Duplicate detection** (lines 258-331): For each unmatched chain order, find the nearest active same-side grid order. If its price equals that grid order's slot price exactly (`priceSlotEqual` at the asset precision), flag it as a suspected duplicate and queue for a Phase 2 cancel (never cancelled under lock). Non-equal neighbours are only logged with nearest-same-side diagnostics and continue into per-side reconciliation. Duplicate IDs are removed from the unmatched set so they aren't also paired for updates/creates.
 
 3. **Per-side reconciliation** via `_reconcileStartupSide(planOnly=true)` (lines 343-372):
    - Count `matchedOnGrid` (active grid orders with `orderId`)
@@ -101,29 +101,52 @@ Returns `{ plannedCreates, plannedUpdates, plannedCancels, chainSellCount, chain
 
 ### Phase 2 — Blockchain Execution Outside Lock
 
-**`grid_reconcile.ts:376-500`**
+**Source:** `reconcileGridOrders()` Phase 2 in `grid_reconcile.ts`.
 
-Each sub-phase releases `_gridLock` before starting and re-acquires it per operation (through `synchronizeWithChain` in individual helpers). No single long-held lock blocks fills, sync, or divergence checks — but each operation still runs under the lock for consistency.
+Phase 1 releases `_gridLock` before network I/O. Phase 2 runs under the
+broadcasting single-flight marker so a fill-driven COW rebalance cannot plan the
+same slots concurrently; individual sync/apply paths follow the canonical lock
+hierarchy. No planning-phase `_gridLock` is held across RPC calls.
 
-**Cancellations** (lines 384-411): Execute `plannedCancels`. Each `_cancelChainOrder` acquires `_gridLock` internally. This covers duplicate cancels, edge-release cancels, and excess-order cancels.
+**Cancellations — v1.6.6 stale-plan guard:** Before submitting any
+`plannedCancels`, reconcile performs one guarded pre-cancel read and builds a
+per-order signature (type, price, size) from both the Phase-1 and current
+snapshots. For every plan, `_startupCancelPlanStillCurrent()` requires:
 
-**Updates** (lines 413-485):
+- the target chain order still exists with its exact Phase-1 signature;
+- a matched plan still owns the same chain order in the same live grid slot;
+- planned type, slot price, boundary, and gap geometry still match; and
+- an originally unmatched surplus is still not owned by any live slot.
+
+Validation is per-plan: an earlier cancellation or unrelated order change does
+not invalidate an otherwise untouched plan. A truncated or failed pre-cancel
+read skips all cancellation submissions. A complete empty read is authoritative
+but likewise causes no plans to execute because no target remains present.
+This closes stale-cancellation replays without requiring the whole book to
+remain unchanged.
+
+Surplus settlement uses the same live-ownership decision. Only an order that is
+still untracked and signature-unchanged reaches `_cancelChainOrder`; a now-owned
+or geometry-changed order is skipped rather than released from the stale
+snapshot.
+
+**Updates:**
 - Batch via `_executeStartupUpdateBatch` when `supportsBatchUpdate` is available
 - Retry up to 3× (`maxBatchAttempts = 3`)
 - On each failure: `_recoverStartupSyncFailure()` re-fetches open orders from chain (guarded read) and re-syncs `manager` state via `manager.syncFromOpenOrders()`, then `_refreshStartupUpdatePlans()` rebuilds plans against the fresh chain state
-- If retries exhausted or batch helpers are unavailable → `_executeStartupSequentialUpdateFallback()` one-by-one with per-failure recovery
+- If retries are exhausted or batch helpers are unavailable → `_executeStartupSequentialUpdateFallback()` one-by-one with per-failure recovery
 
-**Creates** (lines 487-500): `_executePlannedStartupCreates` runs with the outside-in pair grouping — grouped from the outermost grid slots toward the center, BUY descending / SELL ascending, so the most price-critical orders are placed first. BitShares DEX batch-create operations are used where supported. Every created chain ID is captured into `phase2CreatedOrderIds` so Phase 3 cannot later cancel the freshly-created orders.
+**Creates:** `_executePlannedStartupCreates` groups the outermost grid slots toward the center (BUY descending / SELL ascending), so the most price-critical orders are placed first. BitShares DEX batch-create operations are used where supported. Every created chain ID is captured into `phase2CreatedOrderIds` so Phase 3 cannot later cancel the freshly-created orders.
 
 ### Phase 3 — Fresh Re-read, Adoption, Stale Surplus Cleanup
 
-**`grid_reconcile.ts:502-641`** (guarded by `if (!dryRun)` at line 504)
+**Source:** Phase 3 in `reconcileGridOrders()` (guarded by `if (!dryRun)`).
 
-1. **Guarded fresh re-read** (lines 512-516): `readOpenOrdersGuarded` re-fetches all open orders. On a truncated/empty read it returns early (defers), keeping the pre-Phase-2 counts for the summary log — a capped window omits exactly the freshest Phase-2 creates.
+1. **Guarded fresh re-read:** `readOpenOrdersGuarded` re-fetches all open orders. A truncated result returns `null` and Phase 3 defers, keeping the pre-Phase-2 counts for the summary log; a capped window omits exactly the freshest Phase-2 creates.
 
-2. **Adopt uncertain-landed creates** (lines 533-578): For any fresh chain order not matching a grid `orderId` and not created by a slot, it attempts targeted slot adoption — matching a VIRTUAL slot by type+price+size (within tolerance) and registering it via `_applySync(..., 'createOrder')` with the create-fee deduction. Full `syncFromOpenOrders` is deliberately **not** used here (its pass-1 virtualizes ACTIVE slots missing from the snapshot, and a lagging read right after the Phase-2 broadcast would destroy the confirmed grid). If adoption fails, the ID is still protected from surplus-cancel; the next sync loop's orphan adoption registers it.
+2. **Adopt uncertain-landed creates:** For any fresh chain order not matching a grid `orderId` and not created by a slot, it attempts targeted slot adoption — matching a VIRTUAL slot by type+price+size (within tolerance) and registering it via `_applySync(..., 'createOrder')` with the create-fee deduction. Full `syncFromOpenOrders` is deliberately **not** used here (its pass-1 virtualizes ACTIVE slots missing from the snapshot, and a lagging read right after the Phase-2 broadcast would destroy the confirmed grid). If adoption fails, the ID is still protected from surplus-cancel; the next sync loop's orphan adoption registers it.
 
-3. **Stale surplus cancellation** (lines 579-625): Per side, count orders exceeding `targetCount` that no grid slot holds via `orderId` (including the phase-2 created IDs). Cancel only these untracked surplus orders, sorted by chain ID for determinism. This catches orphans lost during grid reinitialization — on-chain orders with no corresponding grid slot.
+3. **Stale surplus cancellation:** Per side, count orders exceeding `targetCount` that no grid slot holds via `orderId` (including the Phase-2 created IDs). Cancel only these untracked surplus orders, sorted by chain ID for determinism. This catches orphans lost during grid reinitialization — on-chain orders with no corresponding grid slot.
 
 ### Partial Failure State
 
@@ -132,8 +155,8 @@ If Phase 2 partially succeeds (some cancels, some creates fail), there is no rol
 ### Timeouts and Read Coverage
 
 - **No per-attempt race** around the reconcile itself — the 1.4.8 change removed it to avoid orphaning mid-batch broadcasts (see the [`recalculateGrid`](../modules/order/grid.ts) call site in `modules/order/grid.ts`).
-- The whole resync is bounded by a **10-minute total timeout** (`PIPELINE_TIMING.TIMEOUT_MS * 2` at `grid.ts:1184`), applied via `Promise.race` at `grid.ts:1279`.
-- Every internal chain read goes through `readOpenOrdersGuarded` (`chain_orders.ts:610`) with the 30s / 3-retry / node-failover standard, and empty/truncated reads are treated as **ambiguous** — never as authoritative absence.
+- The whole resync is bounded by a **10-minute total timeout** (`PIPELINE_TIMING.TIMEOUT_MS * 2`) and applied with `Promise.race` in `recalculateGrid()`.
+- Every internal chain read goes through `readOpenOrdersGuarded` with the 30s / 3-retry / node-failover standard. Truncated reads are always ambiguous and return `null`; empty reads are ambiguous only when a caller explicitly sets `deferEmpty: true`. Phase-2 cancellation uses the default empty-aware policy, then validates each plan against the fresh per-order signature before any mutation.
 
 ---
 
@@ -141,7 +164,7 @@ If Phase 2 partially succeeds (some cancels, some creates fail), there is no rol
 
 ### Fresh Grid Guard (`matchedOnGrid > 0`)
 
-**`grid_reconcile_internal.ts:1600`**
+**`_reconcileStartupSide()` in `grid_reconcile_internal.ts`**
 
 When a brand-new grid is generated, every slot is VIRTUAL — `matchedOnGrid = 0`. Without a guard, every on-chain order appears "unmatched" and would be cancelled as excess:
 
@@ -155,27 +178,25 @@ When `matchedOnGrid === 0` AND scaling up (`neededSlots > 0`), excess cancellati
 
 ### Grid-Edge Lock
 
-**`grid_reconcile_internal.ts:244`** — `_isGridEdgeFullyActive` detects when the grid boundary is fully active (all slots on-chain) before cancelling excess orders.
+**`_isGridEdgeFullyActive()` in `grid_reconcile_internal.ts`** detects when the grid boundary is fully active (all slots on-chain) before cancelling excess orders.
 
-When all outermost orders of a side are ACTIVE with `orderId`, all balance is committed to the edges. Cancel the **largest** order among the update candidates (`_cancelLargestOrder`, line 314) to free maximum funds with minimum operations, since the DEX does not expose partial-reduce in one operation. The cancelled slot gets a replacement create.
+When all outermost orders of a side are ACTIVE with `orderId`, all balance is committed to the edges. Cancel the **largest** order among the update candidates (`_cancelLargestOrder()`) to free maximum funds with minimum operations, since the DEX does not expose partial-reduce in one operation. The cancelled slot gets a replacement create.
 
-Detection (`_isGridEdgeFullyActive`, line 244): sort orders by price (BUY descending, SELL ascending), and check the outermost ones are all `isOrderPlaced()`.
+Detection sorts orders by price (BUY descending, SELL ascending) and checks that the outermost ones are all `isOrderPlaced()`.
 
-### Duplicate Tolerance (5× Multiplier)
+### Duplicate Cancellation
 
-**`grid_reconcile.ts:246-311`**
+**`reconcileGridOrders()` in `grid_reconcile.ts`**
 
-`SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER = 5`. An unmatched chain order within 5× price tolerance of an active same-type grid slot is a suspected duplicate → queued for Phase 2 cancellation (not cancelled under lock). The base tolerance comes from `calculatePriceTolerance`, which estimates the maximum acceptable price deviation for the order's size and the grid's price step.
+An unmatched chain order whose price equals an active same-type grid slot's price — exact slot-price equality via `priceSlotEqual` at the asset precision — is a **suspected duplicate** → queued for Phase 2 cancellation (not cancelled under lock). Non-equal neighbours are only logged with nearest-same-side diagnostics, never cancelled here. The earlier fuzzy `SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER` (5× `calculatePriceTolerance`) was removed.
 
 ### Batch Update Failure Recovery
 
-**`grid_reconcile.ts:393-465`**
-
-Up to 3 batch attempts. Each failure triggers a recovery sync + plan refresh. If all plans are empty → resolved early. After 3× → sequential fallback with per-plan recovery (each individual failure triggers a recovery sync + queue refresh).
+Up to 3 batch attempts (`maxBatchAttempts = 3`). Each failure triggers a recovery sync + plan refresh. If all plans are empty → resolved early. After 3× → sequential fallback with per-plan recovery (each individual failure triggers a recovery sync + queue refresh).
 
 ### Phantom Orders via Reconcile
 
-**`grid_reconcile.ts:211-244`** — Reconcile's role in the defense-in-depth: during Phase 1, any ACTIVE/PARTIAL order whose `orderId` is not found on-chain is reset to VIRTUAL with `skipAccounting`. The freshly-assigned deferral protects in-flight broadcasts, and the ghost heuristic lets known fills pass. See [`developer_guide.md`](developer_guide.md#phantom-orders-prevention-defense-in-depth) for the full 3-layer defense.
+Reconcile's role in the defense-in-depth: during Phase 1, any ACTIVE/PARTIAL order whose `orderId` is not found on-chain is reset to VIRTUAL with `skipAccounting`. The freshly-assigned deferral protects in-flight broadcasts, and the ghost heuristic lets known fills pass. See [`developer_guide.md`](developer_guide.md#phantom-orders-prevention-defense-in-depth) for the full 3-layer defense.
 
 ### Shelf Orders (Fork-Kept Manual Orders)
 
@@ -187,15 +208,19 @@ Live on-chain orders with non-slot-N ids below the rail (e.g. `deep-*` manuals k
 
 ### COW Interaction
 
-Reconcile Phase 1 runs under `_gridLock` with no side effects on the frozen master Map. The working grid is not involved — reconcile is a startup operation that runs before the COW pipeline is active. See [`COPY_ON_WRITE_MASTER_PLAN.md`](COPY_ON_WRITE_MASTER_PLAN.md#safety-guardrails) and [`COW_INVARIANTS.md`](COW_INVARIANTS.md#reconcile-grid_reconcilemd) for COW rules.
+Reconcile Phase 1 runs under `_gridLock` with no side effects on the frozen master Map. The working grid is not involved — reconcile is a startup operation that runs before the COW pipeline is active. See [`COPY_ON_WRITE_MASTER_PLAN.md`](COPY_ON_WRITE_MASTER_PLAN.md#safety-guardrails) and [`COW_INVARIANTS.md`](COW_INVARIANTS.md#reconcile) for COW rules.
+
+### Slot-Price Invariant at the Reconcile Emission Sites
+
+Three of the six guarded emission sites are reconcile sites (`RECONCILE-CREATE`, `RECONCILE-UPDATE`, `STARTUP-CREATE` in `grid_reconcile_internal.ts`): every op reconcile emits is checked against the slot's genesis level and an off-grid emission is skipped, not broadcast — see [`GRID_PRICE_INVARIANT.md`](GRID_PRICE_INVARIANT.md). The coupling is bidirectional: the invariant guard's persistent-rejection escalation and the deferred-hold escalation both exit through the same structural resync (debounced reload → full reset) described here, and a full reset's update-first reconcile emits the rail's genesis level, so the guard does not block its own resolution.
 
 ### Truncated-Read Ambiguity (since 1.4.8)
 
-Every chain read feeding an absence/surplus decision goes through `readOpenOrdersGuarded` (`chain_orders.ts:610`) and treats an empty or truncated snapshot as **unreadable** — never as "nothing landed" or "nothing to cancel":
+Every chain read feeding an absence/surplus decision goes through `readOpenOrdersGuarded`. A truncated snapshot is always unreadable. An empty snapshot is also unreadable at callers that set `deferEmpty: true`; the Phase-2 cancellation pre-read intentionally accepts a complete empty result, executes no plan, and leaves all remaining state for the normal reconcile paths:
 
-- `_recoverSyncFromChain` (`grid_reconcile_internal.ts:592`) — plus its three recovery sites in `_createOrderFromGrid` / `_cancelChainOrder` — defers on empty/truncated reads (`deferEmpty: true`). A pass-1 phantom cleanup would otherwise virtualize live slots from a partial window.
-- `_adoptPossiblyLandedCreate` (`grid_reconcile_internal.ts:932`) defers to an uncertain outcome on truncated reads, and the startup group batch uncertain verification follows the same rule.
-- Phase 3 final refresh (`grid_reconcile.ts:512`) skips adoption/surplus-cancel on a truncated read, keeping the pre-phase-2 counts for the summary log.
+- `_recoverSyncFromChain()` — plus its recovery sites in `_createOrderFromGrid` / `_cancelChainOrder` — defers on empty/truncated reads (`deferEmpty: true`). A pass-1 phantom cleanup would otherwise virtualize live slots from a partial window.
+- `_adoptPossiblyLandedCreate()` defers to an uncertain outcome on truncated reads, and the startup group batch uncertain verification follows the same rule.
+- Phase 3 final refresh skips adoption/surplus-cancel on a truncated read, keeping the pre-phase-2 counts for the summary log.
 - Adoption paths (`_adoptPossiblyLandedCreate`, grouping path, reconcile adoption loop) apply the create-fee deduction via `_applySync` for accounting parity.
 
 The underlying rule is `INV-BROADCAST-004`: a capped `get_full_accounts` window omits the freshest orders (fresh creates sort last), so absence can never be authoritative on a truncated read.
@@ -204,7 +229,7 @@ The underlying rule is `INV-BROADCAST-004`: a capped `get_full_accounts` window 
 
 ## Lock Hierarchy
 
-**`manager.ts:474-489`** — canonical reference in [`developer_guide.md`](developer_guide.md#lock-ordering-for-deadlock-prevention).
+**`manager.ts` lock declaration** — canonical reference in [`developer_guide.md`](developer_guide.md#lock-ordering-for-deadlock-prevention).
 
 ```
 Level 0: _fillProcessingLock    Level 1: _divergenceLock
@@ -230,11 +255,10 @@ Commit `e64db685` replaced 6 single-value boolean state fields with refcounts/st
 
 | Constant | Value | File | Role |
 |----------|-------|------|------|
-| `SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER` | `5` | `grid_reconcile.ts:20` | Amplifies base tolerance for duplicate detection |
-| `maxBatchAttempts` | `3` | `grid_reconcile.ts:415` | Update-batch retry limit |
-| `PRICE_TOLERANCE_MAX_PERCENT` | `0.01` (1%) | `constants.ts:452` | Cap on price tolerance |
-| `PRICE_TOLERANCE_MIN_ABSOLUTE` | `0.0001` | `constants.ts:456` | Floor for price tolerance |
-| `PIPELINE_TIMING.TIMEOUT_MS` | `300000` (5min) | `constants.ts:800` | Base pipeline timing; resync uses 2× (10 min) |
+| `maxBatchAttempts` | `3` | `grid_reconcile.ts` | Update-batch retry limit |
+| `PRICE_TOLERANCE_MAX_PERCENT` | `0.01` (1%) | `constants.ts::GRID_LIMITS` | Cap on price tolerance |
+| `PRICE_TOLERANCE_MIN_ABSOLUTE` | `0.0001` | `constants.ts::GRID_LIMITS` | Floor for price tolerance |
+| `PIPELINE_TIMING.TIMEOUT_MS` | `300000` (5min) | `constants.ts::PIPELINE_TIMING` | Base pipeline timing; resync uses 2× (10 min) |
 
 ---
 
@@ -243,7 +267,7 @@ Commit `e64db685` replaced 6 single-value boolean state fields with refcounts/st
 | Test File | Coverage |
 |-----------|----------|
 | `tests/test_grid_reconcile.ts` | 8: grid detection, largest-order cancel, ordering |
-| `tests/test_grid_reconcile_regressions.ts` | 6: unmatched-cancel guard, verifiedAfterFailure, slot-mapped skip, storeGrid await, `matchedOnGrid` guard, Phase 3 surplus; plus 1.4.8 regression 1b (empty refetch after verified cancel defers) |
+| `tests/test_grid_reconcile_regressions.ts` | 16 startup scenarios: fund/fund-lock behavior, verified-after-failure, slot/skip cases, `matchedOnGrid`, Phase-3 surplus, phantom deferral, duplicate ownership and settlement, persistent-duplicate escalation, changed-plan rejection, per-plan independence, and truncated/failed pre-cancel reads |
 | `tests/test_resync_duplicate_race.ts` | Phase 3 duplicate race |
 | `tests/test_resync_balance_fix.ts` | Fund reuse during Phase 3 |
 | `tests/test_resync_invariants.ts` | Fund invariant suppression during transient resync |
@@ -260,10 +284,10 @@ Commit `e64db685` replaced 6 single-value boolean state fields with refcounts/st
 
 | File | Role |
 |------|------|
-| `modules/order/grid_reconcile.ts` | Public API + 3-phase orchestrator (642 lines) |
-| `modules/order/grid_reconcile_internal.ts` | Internal helpers — `_reconcileStartupSide`, grid detection, recovery, uncertainty (1675 lines) |
+| `modules/order/grid_reconcile.ts` | Public API + 3-phase orchestrator, including per-plan Phase-2 cancellation validation |
+| `modules/order/grid_reconcile_internal.ts` | Internal helpers — `_reconcileStartupSide`, grid detection, recovery, uncertainty |
 | `modules/order/manager.ts` | Lock hierarchy definition, `_applyOrderUpdate`, phantom guard, `reconcileGrid` entry, COW integration |
-| `modules/order/async_lock.ts` | AsyncLock engine with ALS re-entrancy (424 lines) |
+| `modules/order/async_lock.ts` | AsyncLock engine with ALS re-entrancy |
 | `modules/order/sync_engine.ts` | Blockchain sync pipeline |
 | `modules/order/grid.ts` | Grid creation, `recalculateGrid` (full resync) calls reconcile |
 | `modules/chain_orders.ts` | `readOpenOrdersGuarded` / guarded read infrastructure |

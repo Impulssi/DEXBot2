@@ -19,7 +19,7 @@
 // ===============================================================================
 
 
-import { persistGridSnapshot, deepFreeze, cloneMap, withBlockchainRetry } from './utils/system.js';
+import { persistGridSnapshot, deepFreeze, cloneMap, withBlockchainRetry, setLastFillPivot, resetLastFillPivot } from './utils/system.js';
 import { withTimeout } from './utils/timeout.js';
 import { WorkingGrid } from './working_grid.js';
 import Logger from './logger.js';
@@ -33,7 +33,6 @@ import {
     ORDER_TYPES,
     ORDER_STATES,
     REBALANCE_STATES,
-    DEFAULT_CONFIG,
     TIMING,
     LOG_LEVEL,
     PIPELINE_TIMING,
@@ -41,6 +40,7 @@ import {
     COW_ACTIONS,
     GRID_LIMITS
 } from '../constants.js';
+import { seedBotRuntimeConfig } from '../bot_defaults.js';
 import {
     getMinOrderSize,
     computeChainFundTotals,
@@ -537,7 +537,6 @@ class OrderManager {
     _divergenceLock: any;
     _gridLock: any;
     _fundLock: any;
-    _recentlyRotatedOrderIds: Set<any>;
     _gridSidesUpdated: Set<any>;
     _pauseFundRecalc: number;
     _pauseFundRecalcWatchdog: ReturnType<typeof setTimeout> | null;
@@ -567,6 +566,7 @@ class OrderManager {
     _lastFilledPrice: number | null;
     _lastFilledType: string | null;
     _lastFilledAt: number;
+    lastFillPivotSource: 'fill' | 'book' | null;
     _deferredRebalanceAt: number;
     _lastHeldPlanSignature: any;
     _heldPlanSuppressionCount: number;
@@ -574,10 +574,6 @@ class OrderManager {
     _lastBoundaryHoldResyncAt: number;
     _gapEvacStreaks: Map<string, number>;
     _gapEvacCancelQueued: Set<string>;
-    // anchor fields removed
-    // Note: dedupe lives inside the anchor object (`_seenKeys`), not here.
-    // Kept for backwards compat if external code checks existence; not used.
-
     _metrics: any;
     private _currentWorkingGridStack: any[];
     _cowEngine: any;
@@ -588,7 +584,7 @@ class OrderManager {
      * @param {Object} [config] - Configuration overrides
      */
     constructor(config: Record<string, any> = {}) {
-        this.config = { ...DEFAULT_CONFIG, ...config };
+        this.config = seedBotRuntimeConfig(config);
         this.marketName = this.config.market || (this.config.assetA && this.config.assetB ? `${this.config.assetA}/${this.config.assetB}` : null);
         const logFile = config.logFile || undefined;
         const loggingConfig = this.config.logging;
@@ -671,7 +667,6 @@ class OrderManager {
         });
         this._fundLock = new AsyncLock({ timeout: 30000 });
 
-        this._recentlyRotatedOrderIds = new Set();
         this._gridSidesUpdated = new Set();
         this._pauseFundRecalc = 0;
         this._pauseFundRecalcWatchdog = null;
@@ -707,6 +702,10 @@ class OrderManager {
         this._lastFilledPrice = null;
         this._lastFilledType = null;
         this._lastFilledAt = 0;
+        // Pivot provenance for the LAST-FILL-GUARD persist/restore contract:
+        // 'fill' = armed by a real fill (persist-eligible), 'book' = armed by
+        // the startup book seed (heuristic, in-memory only), null = unarmed.
+        this.lastFillPivotSource = null;
         this._deferredRebalanceAt = 0;
         this._lastHeldPlanSignature = null;
         this._heldPlanSuppressionCount = 0;
@@ -837,17 +836,6 @@ class OrderManager {
     }
 
     /**
-     * Whether the owning bot has begun shutting down. Mirrors the
-     * bot-level `_shuttingDown` flag (set via setShuttingDown() from
-     * DEXBot._shutdownImpl) so manager-level wait loops can bail out
-     * instead of proceeding with broadcasts after shutdown completed.
-     * @returns {boolean}
-     */
-    isShuttingDown() {
-        return this._shuttingDown === true;
-    }
-
-    /**
      * @param {boolean} value
      * @returns {void}
      */
@@ -866,8 +854,8 @@ class OrderManager {
     _clearStaleBroadcastFlag() {
         if (this._broadcastingFlag > 0 && this._broadcastingStartedAt > 0) {
             const elapsed = Date.now() - this._broadcastingStartedAt;
-            if (elapsed > 120000) {
-                this.logger?.log?.('[BROADCAST] Auto-clearing stale broadcast flag after 120s', 'warn');
+            if (elapsed > TIMING.BROADCAST_STALE_CLEAR_MS) {
+                this.logger?.log?.(`[BROADCAST] Auto-clearing stale broadcast flag after ${Math.round(TIMING.BROADCAST_STALE_CLEAR_MS / 1000)}s`, 'warn');
                 // Hard-reset to 0 (not decrement) — this is a safety valve for
                 // a hung broadcast where stopBroadcasting() was never called.
                 // The caller is released from the refcount contract.
@@ -1449,6 +1437,22 @@ class OrderManager {
         return true;
     }
 
+    /**
+     * Number of distinct live orders currently shadow-locked.
+     *
+     * shadowOrderIds is keyed by BOTH slot id and chain order id (aliases of
+     * the same order), so `shadowOrderIds.size` roughly double-counts. Count
+     * the slot-id keys that still map to a live grid order instead.
+     * @returns {number}
+     */
+    getActiveShadowLockCount(): number {
+        let count = 0;
+        for (const id of this.shadowOrderIds.keys()) {
+            if (this.orders.has(id)) count++;
+        }
+        return count;
+    }
+
     _cleanExpiredLocks() {
         const now = Date.now();
         for (const [id, expiresAt] of this.shadowOrderIds) {
@@ -2005,7 +2009,7 @@ class OrderManager {
     }
 
     /**
-     * Observability (fix #4, docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §2): emit the live
+     * Observability (fix #4, docs/ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md §2): emit the live
      * boundary whenever roles are (re)assigned, so a silent boundary crawl that
      * re-rolls slots into the wrong rail is diagnosable in real time. Debug-level
      * only; no behavioral effect.
@@ -2036,6 +2040,60 @@ class OrderManager {
     }
 
     /**
+     * Single writer for the LAST-FILL-GUARD pivot scalar
+     * family(_lastFilledPrice/_lastFilledType/_lastFilledAt/lastFillPivotSource
+     * + the _lastFilledBuyPrice/_lastFilledSellPrice per-side mirror).
+     *
+     * Thin instance wrapper: the implementation lives in setLastFillPivot
+     * (utils/system.ts, shared free function with the legacy-stub fallback
+     * built in) so cow_runtime's queued-fill refresh and restoreLastFillPivot
+     * write the exact same scalar family through one implementation.
+     *
+     * Centralizing the write is what makes the persist/restore contract
+     * enforceable: only a pivot written with provenance 'fill' (a real fill
+     * at a real price) is persist-eligible; a 'book' pivot (seeded from
+     * max-resting-buy / min-resting-sell at startup, not market truth) stays
+     * in-memory only. The provenance flag and the value can never drift
+     * apart.
+     *
+     * Best-effort mirror persistence: the pivot rides the next grid-persist
+     * flush (persistGridSnapshot reads lastFillPivotSource), so a fill that
+     * armed the guard is durable across restarts without a dedicated disk
+     * write on the hot path.
+     *
+     * @param {string} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+     * @param {number} price - Pivot price (finite, > 0; validated by callers)
+     * @param {string} provenance - 'fill' (persist-eligible) or 'book' (seed heuristic)
+     * @param {number} [atMs] - Fill timestamp to preserve (defaults to now)
+     * @returns {boolean} True when the pivot was written
+     */
+    _setLastFillPivot(type: any, price: number, provenance: 'fill' | 'book', atMs?: number): boolean {
+        return setLastFillPivot(this, type, price, provenance, atMs);
+    }
+
+    /**
+     * Reset the LAST-FILL-GUARD pivot to cold state, clearing the whole
+     * scalar family (per-side mirrors included): leaves seedLastFilledPricesFromBook's
+     * early-return check honest after a grid rebuild, so the
+     * startup book seed can arm again instead of being silently suppressed
+     * by stale per-side mirrors. Delegates to resetLastFillPivot
+     * (utils/system.ts) — the free function stays for non-instance callers
+     * (cow runtime tests, recovery paths carrying a bare manager).
+     *
+     * Used whenever the pivot's generation is invalidated: grid rebuild,
+     * rejected-snapshot reset, any path that re-anchors the boundary outside
+     * the fill flow. Must not touch disk (marks nothing dirty — the pivot is
+     * a live-grid invariant, the persist pipeline clears the row on the next
+     * flush by passing null).
+     *
+     * @param {string} reason - Log/debug label
+     * @returns {boolean} True when an armed pivot was cleared
+     */
+    _resetLastFillPivot(reason: string = 'unspecified'): boolean {
+        return resetLastFillPivot(this, reason);
+    }
+
+    /**
      * Record last filled price for the single-pivot guard: when armed, BOTH
      * sides are gated against the most recent fill price (BUY blocked above
      * pivot*(1-halfInc), SELL blocked below pivot*(1+halfInc); see
@@ -2062,11 +2120,7 @@ class OrderManager {
                 } catch { price = null; }
             }
             if (!Number.isFinite(price as number) || (price as number) <= 0) continue;
-            this._lastFilledPrice = price as number;
-            this._lastFilledType = f.type;
-            if (f.type === ORDER_TYPES.BUY) this._lastFilledBuyPrice = price as number;
-            else if (f.type === ORDER_TYPES.SELL) this._lastFilledSellPrice = price as number;
-            this._lastFilledAt = Date.now();
+            this._setLastFillPivot(f.type, price as number, 'fill');
             recorded++;
             lastKind = (f as any)?.isPartial === true ? 'partial' : ((f as any)?.isPartial === false ? 'full' : 'unknown');
             lastPriceSrc = priceSrc;
@@ -2124,16 +2178,17 @@ class OrderManager {
             if (maxBuy != null && this._lastFilledBuyPrice == null) this._lastFilledBuyPrice = maxBuy;
             if (minSell != null && this._lastFilledSellPrice == null) this._lastFilledSellPrice = minSell;
             if (this._lastFilledPrice == null) {
-                if (maxBuy != null && minSell != null) this._lastFilledPrice = (maxBuy + minSell) / 2;
-                else if (maxBuy != null) this._lastFilledPrice = maxBuy;
-                else if (minSell != null) this._lastFilledPrice = minSell;
-            }
-            if (this._lastFilledType == null) {
                 if (maxBuy != null && minSell != null) {
-                    // Seed is ambiguous (no real fill yet) — leave type null so guard stays disabled until first fill
-                    this._lastFilledType = null;
-                } else if (maxBuy != null) this._lastFilledType = ORDER_TYPES.BUY;
-                else if (minSell != null) this._lastFilledType = ORDER_TYPES.SELL;
+                    // Midpoint of a two-sided book: best-effort pricing hint
+                    // only (the guard stays cold without a type, so the value
+                    // is never read as an armed pivot). No provenance write —
+                    // _lastFilledType stays null.
+                    this._lastFilledPrice = (maxBuy + minSell) / 2;
+                } else if (maxBuy != null) {
+                    this._setLastFillPivot(ORDER_TYPES.BUY, maxBuy, 'book');
+                } else if (minSell != null) {
+                    this._setLastFillPivot(ORDER_TYPES.SELL, minSell, 'book');
+                }
             }
             if (maxBuy != null || minSell != null) {
                 try { this.logger?.log?.(`[LAST-FILL-GUARD] Seeded from book: lastBuy=${maxBuy} lastSell=${minSell} lastPrice=${this._lastFilledPrice} lastType=${this._lastFilledType}`, 'info'); } catch {}

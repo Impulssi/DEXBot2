@@ -207,5 +207,5 @@ function buildTopUpdaterAccountsQuery(lookbackHours: number, topN: number = 200,
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
-export { DEFAULT_CONFIG, kibanaSearch, buildOrderPriceQuery, buildTopSellerAccountsQuery, buildTopCancellerAccountsQuery, buildTopFilledAccountsQuery, buildTopUpdaterAccountsQuery, OP_LIMIT_ORDER_UPDATE }
+export { DEFAULT_CONFIG, kibanaSearch, buildOrderPriceQuery, buildTopSellerAccountsQuery, buildTopCancellerAccountsQuery, buildTopFilledAccountsQuery, buildTopUpdaterAccountsQuery }
 

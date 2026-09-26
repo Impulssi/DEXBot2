@@ -6,7 +6,7 @@
  * Exports a single Accountant class that manages all fund accounting operations.
  *
  * ===============================================================================
- * TABLE OF CONTENTS - Accountant Class (18 methods)
+ * TABLE OF CONTENTS - Accountant Class (17 methods)
  * ===============================================================================
  *
  * CORE INITIALIZATION & RECALCULATION (2 methods)
@@ -37,14 +37,11 @@
  *   14. deductBtsFees(requestedSide) - Deduct BTS fees using adjustTotalBalance with deferral strategy (async)
  *   15. _deductFeesFromProceeds(assetSymbol, rawAmount, isMaker) - Deduct fees from fill proceeds (internal)
  *
- * FILL BALANCE TRACKING (1 method)
- *   16. recordFillBalances(paysAsset, paysAmount, receivesAsset, receivesAmount, context) - Record fill proceeds (async)
- *
  * FILL PROCESSING (1 method)
- *   17. processFillAccounting(fillOp, fillKey, persistenceMode) - Process fund impact of order fill (atomically updates accountTotals)
+ *   16. processFillAccounting(fillOp, fillKey, persistenceMode) - Process fund impact of order fill (atomically updates accountTotals)
  *
  * RECOVERY & VALIDATION (1 method)
- *   18. resetRecoveryState() - Reset recovery backoff and state
+ *   17. resetRecoveryState() - Reset recovery backoff and state
  *
  * ===============================================================================
  * FUND STRUCTURE (managed by Accountant)
@@ -1375,38 +1372,9 @@ class Accountant {
     }
 
     /**
-     * Record a fill in the optimistic total balances.
-     * PUBLIC API: Acquires _fundLock.
-     * @param {string} paysAsset - Asset symbol or ID the bot paid
-     * @param {number} paysAmount - Amount the bot paid
-     * @param {string} receivesAsset - Asset symbol or ID the bot received
-     * @param {number} receivesAmount - Amount the bot received
-     * @param {string} [context='fill'] - Label for logging
-     * @returns {Promise<void>}
-     */
-    async recordFillBalances(paysAsset: any, paysAmount: any, _receivesAsset: any, receivesAmount: any, context: any = 'fill') {
-        return await this.manager._fundLock.acquire(async () => {
-            const mgr = this.manager;
-            const assetA = mgr.config.assetA;
-
-            // Determine orientation
-            if (paysAsset === assetA) {
-                // Bot paid assetA (Selling assetA, buying assetB)
-                this._adjustTotalBalanceLocked(ORDER_TYPES.SELL, -paysAmount, `${context}-pays`);
-                this._adjustTotalBalanceLocked(ORDER_TYPES.BUY, receivesAmount, `${context}-receives`);
-            } else {
-                // Bot paid assetB (Buying assetA, selling assetB)
-                this._adjustTotalBalanceLocked(ORDER_TYPES.BUY, -paysAmount, `${context}-pays`);
-                this._adjustTotalBalanceLocked(ORDER_TYPES.SELL, receivesAmount, `${context}-receives`);
-            }
-        });
-    }
-
-
-    /**
      * PRIVATE: Must be called while holding _fundLock.
      * Body of adjustTotalBalance; takes the lock externally for clean
-     * nesting in callers that already hold the lock (e.g. recordFillBalances).
+     * nesting in callers that already hold the lock.
      */
     _adjustTotalBalanceLocked(orderType: any, delta: any, operation: any) {
         const mgr = this.manager;

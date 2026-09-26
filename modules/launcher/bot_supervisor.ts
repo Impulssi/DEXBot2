@@ -1084,5 +1084,5 @@ function createBotSupervisor({
     };
 }
 
-export { createBotSupervisor, SOCKET_PATH, parseCronExpression, getNextCronDate, forwardSignal, isPidAlive, waitForPidExit, readProcArgs, readProcCwd, normalizeProcScriptArg, scriptPathForRoot, candidateRuntimeScriptPaths, pidMatchesScriptCandidates, isNodeProcessWithExactScript, readMarketAdapterLockPid, stopMarketAdapterFromLock, usesAmaGridPrice, waitForChildSpawn, getChildRSS, formatUptime }
+export { createBotSupervisor, SOCKET_PATH, parseCronExpression, getNextCronDate, forwardSignal, isPidAlive, waitForPidExit, candidateRuntimeScriptPaths, pidMatchesScriptCandidates, isNodeProcessWithExactScript, readMarketAdapterLockPid, stopMarketAdapterFromLock, usesAmaGridPrice, waitForChildSpawn, formatUptime }
 

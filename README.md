@@ -65,8 +65,8 @@ Install Git:
 sudo apt-get update
 sudo apt-get install git
 
-# Arch/Manjaro
-sudo pacman -S git
+# Arch/Manjaro/CachyOS
+sudo pacman -Syu git
 
 # Fedora/RHEL
 sudo dnf install git
@@ -122,6 +122,10 @@ npm install
 npm link
 ```
 
+If `npm link` fails with `EACCES` or `dexbot` isn't found afterwards, see the
+[first-run troubleshooting](docs/BITSHARES_ONBOARDING.md#troubleshooting-first-run-mistakes)
+section in the onboarding guide.
+
 ### Where your data lives
 
 Both installs use the same CLI and store all user state — keys, `bots.json`, logs — in `~/.config/dexbot2/profiles` (Windows: `%USERPROFILE%\.config\dexbot2\profiles`). State lives outside the repo/package tree, so it survives reinstalls and `npm update -g`. A source checkout that already contains a populated `profiles/` directory keeps using it. Override the location with `DEXBOT_PROFILE_ROOT` (see the [developer guide](docs/developer_guide.md)).
@@ -165,25 +169,30 @@ Keep the default settings first, and tune these:
    (super-mountain); the default `{ "sell": 1.0, "buy": 1.0 }` suits most
    setups.
 
-4. **Set `gridPrice` to `"ama"`** — so the market adapter can center the grid
-   on AMA. Pick a specific preset if desired: `"ama1"` is the fastest,
-   `"ama4"` the slowest, and `"ama"` uses the pair's default preset.
+4. **Enable AMA** — new bots anchor on `gridPrice: "ama3"`, but the market
+   adapter only goes live once its per-bot `Price` flag is on. Open
+   `dexbot bot` → `2) Modify bot` → pick the bot → `6) Adapter` and set the
+   flags:
 
-5. **Generate the market-adapter whitelist:**
+   - `Price` — **on for AMA bots**; without it the adapter only dry-runs
+   - `Weight` — dynamic buy/sell weights (opt-in)
+   - `Range` — AMA-slope range scaling (opt-in)
 
-   ```bash
-   dexbot white
-   ```
+   To change how closely the grid center tracks the market, set `gridPrice`
+   in `3) Price` to `"ama1"`–`"ama4"`: `"ama1"` reacts fastest, `"ama4"`
+   slowest and steadiest (higher numbers smooth more), or `"ama"` for the
+   pair's default preset.
 
-   This writes `market_adapter_whitelist.json` in the profiles directory. New AMA bots get AMA
-   live writes only; dynamic weights and range scaling are disabled by default. Use
-   `dexbot white --dynamic-weight` or `dexbot white --asymmetric-bounds` to opt
-   newly generated entries into those features; existing entries are preserved.
-   To overwrite an existing bot, include `--bot <botKey>` with the desired flags.
+   The flags are stored per bot in `market_adapter_whitelist.json` in the
+   profiles directory and can be changed any time from the same editor
+   section. Boolean prompts accept `y`/`yes`/`true` and `n`/`no`/`false`;
+   Enter keeps the current value.
 
-6. **Start DEXBot2** with `dexbot start`.
+5. **Start DEXBot2** with `dexbot start`. If setup is incomplete, `start`
+   automatically opens `dexbot key` when no usable account key is configured,
+   or `dexbot bot` when a valid key exists but no bot is configured.
 
-7. **Tune `minPrice` / `maxPrice`** around the market's volatility range. Once
+6. **Tune `minPrice` / `maxPrice`** around the market's volatility range. Once
    AMA is active, tighten them around the maximum expected market volatility
    instead of using an unnecessarily wide range.
 
@@ -195,39 +204,106 @@ Configuration options from `dexbot bot`, stored in `bots.json` in the profiles d
 
 <details><summary><mark>Full parameter reference (click to expand)</mark></summary>
 
+Grouped exactly as the bot editor shows them (`dexbot bot` → `2) Modify bot` → pick the bot):
+
+**`1) Pair`**
+
 | Parameter | Type | Description |
 | :--- | :--- | :--- |
 | **`assetA`** | string | Base asset |
 | **`assetB`** | string | Quote asset |
+
+**`2) Identity`**
+
+| Parameter | Type | Description |
+| :--- | :--- | :--- |
 | **`name`** | string | Friendly name for logging and CLI selection |
-| **`active`** | boolean | `false` to keep config without running |
-| **`dryRun`** | boolean | Simulate orders without broadcasting |
 | **`preferredAccount`** | string | BitShares account name for trading |
-| **`startPrice`** | num \| str | Initial price and adapter source. Default `"pool"` uses the liquidity-pool price; `"book"` uses the live order book mid price (best bid/ask); a number uses a fixed anchor. |
-| **`poolRef`** | string \| null | Optional pinned pool ID for `startPrice: "pool"`. Overrides pool discovery with a direct fetch (e.g. `"1.19.48"` or `"48"`). Useful when the trading pair has no native pool. Default `null`. |
-| **`minPrice`** | num \| str | Lower bound. Default `"2x"` means `gridPrice / 2` when AMA is active, otherwise `startPrice / 2`. |
-| **`maxPrice`** | num \| str | Upper bound. Default `"2x"` means `gridPrice * 2` when AMA is active, otherwise `startPrice * 2`. |
-| **`gridPrice`** | num \| str \| null | Grid reference. Use `"ama"` for the recommended AMA center (`"ama"` picks the pair's default preset; `"ama1"`–`"ama4"` pin fastest to slowest); `null` falls back to `startPrice`; numeric values use that fixed value. |
-| **`incrementPercent`** | number | Geometric step between orders. Default `0.5` = 0.5%. |
-| **`targetSpreadPercent`** | number | Width of the empty spread zone between buy and sell orders. Default `2` = 2%. Profit per completed cycle ≈ `spread - increment - fees`. |
-| **`weightDistribution`** | object | Advanced sizing control per side. Range `-1` to `2`: `-1` = super-valley, `0` = valley, `0.5` = neutral, `1` = mountain (default), `2` = super-mountain. Higher weight = more funds in orders near the market price; lower weight = more funds shifted toward the grid edge. Default `{ Sell: 1.0, Buy: 1.0 }`; leave unchanged for normal setup. |
-| **`botFunds`** | object | Capital: `{ Sell: "100%", Buy: 100% }`. Numbers or percentage strings |
-| **`activeOrders`** | object | Target active orders per side: `{ S: 20, B: 20 }` |
-| **`reserveOrders`** | object | Edge-pinned insurance orders resting live outside the active window, to catch fat fingers: `{ S: 0, B: 0 }` |
+| **`active`** | boolean | Default `true`. `false` keeps the config without running it |
+| **`dryRun`** | boolean | Default `false`. Simulate orders without broadcasting |
+
+**`3) Price`**
+
+| Parameter | Type | Description |
+| :--- | :--- | :--- |
+| **`minPrice`** | num \| str | `Range` lower bound. Default `"2x"` means `gridPrice / 2` when AMA is active, otherwise `startPrice / 2` |
+| **`maxPrice`** | num \| str | `Range` upper bound. Default `"2x"` means `gridPrice * 2` when AMA is active, otherwise `startPrice * 2` |
+| **`startPrice`** | num \| str | `Start` — initial price and adapter source. Default `"pool"` uses the liquidity-pool price; `"book"` uses the live order book mid price (best bid/ask); a number uses a fixed anchor |
+| **`poolRef`** | string \| null | `Pool` — optional pinned pool ID for `startPrice: "pool"`. Overrides pool discovery with a direct fetch (e.g. `"1.19.48"` or `"48"`). Useful when the trading pair has no native pool. Ignored when `startPrice` is `"book"` or a number — `startPrice` is the master source. Default `null`; in the editor, `none`/`clear` (or the aliases `default`/`pool`/`auto`) clears the pin |
+| **`gridPrice`** | num \| str \| null | `GridPrice` — grid reference for the x-factor bounds. Use `"ama"` for the recommended AMA center (`"ama"` picks the pair's default preset; `"ama1"`–`"ama4"` pin fastest to slowest; default `"ama3"`); `null` falls back to `startPrice`; numeric values use that fixed value |
+
+**`4) Grid`**
+
+| Parameter | Type | Description |
+| :--- | :--- | :--- |
+| **`weightDistribution`** | object | `Weights` — advanced sizing control per side. Range `-1` to `2`: `-1` = super-valley, `0` = valley, `0.5` = neutral, `1` = mountain (default), `2` = super-mountain. Higher weight = more funds in orders near the market price; lower weight = more funds shifted toward the grid edge. Default `{ sell: 1, buy: 1 }`; leave unchanged for normal setup |
+| **`incrementPercent`** | number | `Increment` — geometric step between orders. Default `0.5` = 0.5% |
+| **`targetSpreadPercent`** | number | `Spread` — width of the empty spread zone between buy and sell orders. Default `2` = 2%.<br>Profit per completed cycle ≈ `spread - increment - fees`. Must be at least 2.1 × `incrementPercent` |
+
+**`5) Inventory`**
+
+| Parameter | Type | Description |
+| :--- | :--- | :--- |
+| **`botFunds`** | object | `Sell`/`Buy` — capital allocation: `{ sell: "100%", buy: "100%" }`. Numbers or percentage strings |
+| **`activeOrders`** | object | `MarketOrder` — target active orders per side, counted closest to the market: `{ sell: 20, buy: 20 }` |
+| **`reserveOrders`** | object | `EdgeOrder` — edge-pinned insurance orders resting live outside the active window, to catch fat fingers: `{ buy: 0, sell: 0 }` (`buy` pins the grid floor, `sell` the grid ceiling; `0` disables per side) |
+
+**`6) Adapter`**
+
+These three booleans are stored per bot in `market_adapter_whitelist.json`, **not** in `bots.json`:
+
+| Flag | Description |
+| :--- | :--- |
+| `ama` (Price) | AMA pricing and live adapter writes. Turn on for AMA bots; without it the adapter only dry-runs |
+| `dynamicWeight` (Weight) | Dynamic buy/sell weights (opt-in; only takes effect while Price is on) |
+| `asymmetricBounds` (Range) | AMA-slope range scaling (opt-in; only takes effect while Price is on) |
 
 </details>
 
-### General Options (Global)
+### General Settings (Global)
 
-Global settings via `dexbot bot`, stored in `general.settings.json` in the profiles directory:
+General settings via `dexbot bot`, stored in `general.settings.json` in the profiles directory:
 
-<details><summary><mark>Global settings reference (click to expand)</mark></summary>
+<details><summary><mark>General settings reference (click to expand)</mark></summary>
 
-- **Grid Health**: Grid Ratio Regeneration % (default `3%`), RMS Divergence Threshold % (default `14.3%`), AMA Delta Threshold % (default `1%`)
-- **Order Recovery**: Partial Dust Threshold % (default `5%`), Dust Cancel Delay (default `30s`, `-1` = off, `0` = instant)
-- **Node Configuration**: Node List (10 default public BitShares nodes), Health Check Interval (default `240 min`), Preferred Node (default `none`)
-- **Log Level**: `debug`, `info`, `warn`, `error`, `critical`. Fine-grained category control via `LOGGING_CONFIG` (see [Logging](docs/LOGGING.md))
-- **Updater**: Active (default `OFF`), Branch (`auto`/`main`/`dev`/`test`), Interval (default `1 day`), Time (default `00:00`)
+Grouped exactly as `dexbot bot` → `6) General settings` shows them:
+
+**`1) Grid Drift`**
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| Grid Funds Regeneration % | `3` | `Funds` — recalculates grid size when spare funds reach this % of a side's allocation (or the tracked grid overshoots allocation by this %) |
+| RMS Divergence Threshold % | `14.3` | `RMS` — triggers a grid reset when the calculated grid diverges from on-chain state; `0` disables (JSON only) |
+| AMA Δ Threshold % | `1` | `AMA Δ` — % move in the AMA center price that triggers a grid reset |
+| AMA-Slope Δ Threshold % | `8` | `AMA-Slope Δ` — slope-delta trigger as a percentage of max AMA slope |
+
+**`2) Order Maint.`**
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| Partial Dust Threshold % | `5` | `Dust Threshold` — orders below this % of their ideal size are treated as dust and rotated (cancelled and re-placed at proper size) to keep the grid symmetric |
+| Health Check Interval (min) | `240` | `Health Check` — how often nodes are health-checked (stored as milliseconds) |
+
+**`3) Node Config`**
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| Node List | 7 public BitShares nodes | `Nodes` — sub-editor: `A` add, `R` remove (at least one must remain), `D` done |
+| Preferred Node | `none` | Pin one node URL; empty = automatic latency-based selection with failover |
+
+**`4) Log Level`**
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| Log Level | `info` | `debug`, `info`, `warn`, `error`. `critical` is only accepted by editing `general.settings.json` directly. Fine-grained category control via `LOGGING_CONFIG` (see [Logging](docs/LOGGING.md)) |
+
+**`5) Updater`**
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| Active | `OFF` | Enables the automated updater (editor shows `[ON/OFF]`) |
+| Branch | `auto` | `main`, `dev`, `test`, or `auto` (detected current branch) |
+| Schedule | `1` at `00:00` | Cron schedule (`Interval` days, `Time` HH:mm, 24h) |
 
 </details>
 
@@ -253,22 +329,22 @@ First-run details and common mistakes are covered in the [BitShares Onboarding T
 
 ```bash
 dexbot key                 # Master password/keyring
-dexbot bot                 # Interactive bot configurator
-dexbot white               # AMA whitelist; dynamic weights and range scaling off by default
+dexbot bot                 # Interactive bot configurator (adapter flags: 2) Modify bot → 6) Adapter)
 
 dexbot reset {all|<bot>}   # Regenerate grid
 dexbot disable {all|<bot>} # Disable bot in config
 dexbot enable {all|<bot>}  # Enable bot in config
 
 dexbot stat                # Runtime status (unlock or PM2)
-dexbot order [<bot>]       # Analyze order grids
-dexbot order --export      # Export as HTML to analysis/charts/
+dexbot order [<bot>]       # Analyze order grids (--export → HTML to analysis/charts/)
 dexbot tv <bot|pool|A/B>   # TradingView 1h chart with AMA overlay (default: 3 months)
 dexbot credit [<bot>]      # Live summed MPA + borrowed-credit positions per asset per bot
+dexbot export <bot>        # Export trades + settings (CSV/JSON) for analysis/
 
 dexbot update              # Update DEXBot2
-dexbot clear               # Clear log files
+dexbot clear               # Clear log files (also clear-orders, clear-market-adapter, clear-all)
 dexbot default             # Reset settings to defaults
+dexbot help                # Grouped command reference
 ```
 
 ## 🎯 PM2 Process Management
@@ -313,12 +389,12 @@ Logs are written to `logs/` in the profiles directory in all modes: the monolith
 - **[Docs Index](docs/README.md)** - Main documentation hub
 - **[Architecture](docs/architecture.md)** - System design, fill processing pipeline, and testing strategy
 - **[Lifecycle](docs/LIFECYCLE.md)** - End-to-end walkthrough: startup, fill-driven, and AMA-driven flows with diagrams
-- **[Evolution Report](docs/EVOLUTION.md)** - Project timeline, architecture phases, and release history
+- **[Copy-on-Write Plan](docs/COPY_ON_WRITE_MASTER_PLAN.md)** - Copy-on-Write grid architecture
+- **[Fund Movement & Accounting](docs/FUND_MOVEMENT_AND_ACCOUNTING.md)** - Fund accounting, grid topology, and rotation mechanics
+- **[Claw API Boundary](claw/docs/AI_BOT_LIBRARY_API.md)** - Responsibility split between the AI layer and the DEXBot2 execution layer
 - **[Developer Guide](docs/developer_guide.md)** - Development guide, environment variables, examples, and glossary
 - **[Workflow](docs/WORKFLOW.md)** - Project workflow and contribution guide
-- **[Fund Movement & Accounting](docs/FUND_MOVEMENT_AND_ACCOUNTING.md)** - Fund accounting, grid topology, and rotation mechanics
-- **[Copy-on-Write Plan](docs/COPY_ON_WRITE_MASTER_PLAN.md)** - Copy-on-Write grid architecture
-- **[Claw API Boundary](claw/docs/AI_BOT_LIBRARY_API.md)** - Responsibility split between the AI layer and the DEXBot2 execution layer
+- **[Evolution Report](docs/EVOLUTION.md)** - Project timeline, architecture phases, and release history
 
 ## 🤝 Contributing
 

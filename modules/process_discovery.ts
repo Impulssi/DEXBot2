@@ -238,7 +238,7 @@ export class NullProcessDiscovery implements ProcessDiscovery {
     listAllPids(): number[] { return []; }
 }
 
-export class FallbackProcessDiscovery extends NullProcessDiscovery {
+class FallbackProcessDiscovery extends NullProcessDiscovery {
     isAlive(pid: number): boolean {
         if (!Number.isInteger(pid) || pid <= 0) return false;
         try {

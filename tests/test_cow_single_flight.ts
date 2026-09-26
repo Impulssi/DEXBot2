@@ -462,11 +462,110 @@ async function testEarlyReturnDoesNotClearAnotherBatchSlot() {
     console.log('✓ COW-SINGLE-FLIGHT-004 passed');
 }
 
+async function testPostWaitStalenessTriggersReplan() {
+    console.log('\n[COW-SINGLE-FLIGHT-005] a plan that goes stale during the pre-broadcast wait is re-planned, not re-broadcast...');
+    const { bot, manager, logEntries } = makeBot();
+
+    const originalBuildCreate = chainOrders.buildCreateOrderOp;
+    const originalExecuteBatch = chainOrders.executeBatch;
+
+    let broadcastCalls = 0;
+    let releaseFirst: (() => void) | null = null;
+    const firstBlocked = new Promise((resolve) => { releaseFirst = resolve as any; });
+    let replanCalls = 0;
+
+    // The winning batch advances the master version on commit. The deferred
+    // batch passed its pre-broadcast guard BEFORE this commit, so only the
+    // post-wait recheck can see that its plan is now stale.
+    manager._commitWorkingGrid = async () => { manager._gridVersion++; return true; };
+    // Re-planning from the fresh master finds the rails already placed: no
+    // executable actions, so the stale plan must be skipped, not shipped.
+    (manager as any).performSafeRebalance = async () => {
+        replanCalls++;
+        const wg = new WorkingGrid(manager.orders, { baseVersion: manager._gridVersion ?? 0 });
+        return { actions: [], workingGrid: wg, workingBoundary: 0, aborted: false };
+    };
+
+    // The slow (deferred) batch blocks in build so the fast batch can pass the
+    // entry check and claim the broadcast slot first.
+    let buildCalls = 0;
+    chainOrders.buildCreateOrderOp = async (_account, amountToSell, sellAssetId, minToReceive, receiveAssetId) => {
+        buildCalls++;
+        if (buildCalls === 1) {
+            await new Promise((r) => setTimeout(r, 150));
+        }
+        return {
+            op: {
+                op_name: 'limit_order_create',
+                op_data: {
+                    amount_to_sell: { amount: amountToSell, asset_id: sellAssetId },
+                    min_to_receive: { amount: minToReceive, asset_id: receiveAssetId }
+                }
+            },
+            finalInts: { sell: amountToSell, receive: minToReceive, sellAssetId, receiveAssetId }
+        };
+    };
+
+    chainOrders.executeBatch = async (_account, _key, ops) => {
+        broadcastCalls++;
+        if (broadcastCalls === 1) {
+            await firstBlocked;
+        }
+        return {
+            success: true,
+            operation_results: ops.map(() => [1, `1.7.57353010${broadcastCalls}`])
+        };
+    };
+
+    try {
+        const slow = makeCreateAction(bot, 'slot-sf-005-slow');
+        const fast = makeCreateAction(bot, 'slot-sf-005-fast');
+        // The deferred batch is fill-driven, so a stale plan can be re-planned.
+        (slow.cowResult as any).fills = [{ orderId: '1.7.1' }];
+
+        // Slow passes the ENTRY check (flag still clear) then blocks in build.
+        const pSlow = bot._updateOrdersOnChainBatchCOW(slow.cowResult);
+        await new Promise((r) => setTimeout(r, 30));
+        // Fast also passes the entry check, plans, and claims the slot.
+        const pFast = bot._updateOrdersOnChainBatchCOW(fast.cowResult);
+
+        const deadline = Date.now() + 10000;
+        while (broadcastCalls < 1 && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 10));
+        }
+        assert.strictEqual(broadcastCalls, 1, 'only the fast batch may be broadcasting');
+        assert.strictEqual(bot._cowBroadcastInFlight, true, 'the fast batch must hold the broadcast slot');
+
+        // Let slow finish building and reach the pre-broadcast single-flight wait.
+        await new Promise((r) => setTimeout(r, 250));
+        assert.strictEqual(broadcastCalls, 1, 'the slow batch must defer at pre-broadcast while the fast batch is in flight');
+
+        // Release fast: it commits (advancing the master version) and clears the slot.
+        releaseFirst!();
+        const [, slowResult] = await Promise.all([pFast, pSlow]);
+
+        assert.strictEqual(broadcastCalls, 1,
+            'the stale deferred plan must NOT be broadcast a second time (would duplicate on-chain orders)');
+        assert.strictEqual(slowResult.executed, false, 'the stale deferred batch must not execute');
+        assert.strictEqual(slowResult.skippedStalePlan, true, 'the stale deferred batch must skip after a fresh re-plan');
+        assert.strictEqual(replanCalls, 1, 'the stale deferred batch must re-plan exactly once from the fresh master');
+        const staleLog = logEntries.find((l) => l.msg.includes('went stale while waiting for an in-flight broadcast'));
+        assert.ok(staleLog, 'post-wait staleness log must be emitted');
+        assert.strictEqual(bot._cowBroadcastInFlight, false, 'the broadcast slot must be released');
+    } finally {
+        releaseFirst?.();
+        chainOrders.buildCreateOrderOp = originalBuildCreate;
+        chainOrders.executeBatch = originalExecuteBatch;
+    }
+    console.log('✓ COW-SINGLE-FLIGHT-005 passed');
+}
+
 async function main() {
     await testSingleFlightDefersSecondBroadcast();
     await testFlagClearedOnFailedBroadcast();
     await testPreBroadcastRaceRecheck();
     await testEarlyReturnDoesNotClearAnotherBatchSlot();
+    await testPostWaitStalenessTriggersReplan();
     testsComplete = true;
     console.log('\n✓ All COW single-flight tests passed!');
 }

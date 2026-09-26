@@ -159,7 +159,7 @@ async function testSideDecisionSkipsOnBadPrice() {
 }
 
 async function testCommittedFallbackSkipsOnBadPrice() {
-    console.log('\n[SGP-6] committed-inventory fallback returns null when both hold but price missing');
+    console.log('\n[SGP-6] zero free funds skips — committed inventory is not recycled');
     const mgr = {
         funds: {
             available: { buy: 0, sell: 0 },
@@ -171,17 +171,17 @@ async function testCommittedFallbackSkipsOnBadPrice() {
     } as any;
     const lines: string[] = [];
     const logMgr = { ...mgr, logger: { log: (m: string) => lines.push(m) } };
-    const both = determineOrderSideByFunds(logMgr, NaN);
-    assert.strictEqual(both.side, null, `both-committed + no price must skip, got ${both.side}`);
-    // The skip reason must name the real cause (price unavailable), not the
-    // generic "no committed inventory" line — postmortem readability.
-    assert.ok(/market price unavailable/i.test(both.reason), `reason must carry price cause, got: ${both.reason}`);
-    assert.ok(lines.some((l) => /market price unavailable/i.test(l)), 'skip log must carry price cause');
-    // Single-side committed still resolves.
+    const both = determineOrderSideByFunds(logMgr, 1);
+    // PURE FUND-DRIVEN: committed inventory resting in orders is never recycled
+    // to fund a correction; a zero free balance skips and the caller refreshes
+    // account totals + open orders instead.
+    assert.strictEqual(both.side, null, `zero free funds must skip even with committed inventory, got ${both.side}`);
+    assert.ok(/insufficient free funds/i.test(both.reason), `reason must name insufficient free funds, got: ${both.reason}`);
+    assert.ok(lines.some((l) => /insufficient free funds/i.test(l)), 'skip log must carry the cause');
     const onlyBuy = determineOrderSideByFunds({
         ...mgr, funds: { available: { buy: 0, sell: 0 }, committed: { chain: { buy: 100, sell: 0 } } },
-    } as any, NaN);
-    assert.strictEqual(onlyBuy.side, ORDER_TYPES.BUY);
+    } as any, 1);
+    assert.strictEqual(onlyBuy.side, null, 'single-side committed inventory must not be recycled either');
     console.log('✓ SGP-6 passed');
 }
 
@@ -196,6 +196,16 @@ async function testFillPivotLogLine() {
         _lastFilledType: null,
         _lastFilledBuyPrice: null,
         _lastFilledSellPrice: null,
+        _lastFilledAt: 0,
+        lastFillPivotSource: null,
+        _setLastFillPivot: function (type: any, price: number, provenance: any) {
+            this._lastFilledPrice = price;
+            this._lastFilledType = type;
+            this._lastFilledAt = Date.now();
+            this.lastFillPivotSource = provenance;
+            if (type === ORDER_TYPES.BUY) this._lastFilledBuyPrice = price;
+            else this._lastFilledSellPrice = price;
+        },
     };
     const record = OrderManager.prototype.recordLastFilledPrices;
     // Partial fill with direct price.

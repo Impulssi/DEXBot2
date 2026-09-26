@@ -499,7 +499,7 @@ async function runTests() {
             assert(Math.abs(manager._lastGridPricingContext.rangeScalingFactor - 0.07) < 1e-12, 'debug pricing should expose the applied range-scaling factor');
             assert.strictEqual(manager._lastGridPricingContext.rangeScaling, undefined, 'debug pricing should avoid duplicating nested range-scaling diagnostics');
             assert.strictEqual(manager._lastGridPricingContext.amaSnapshot, undefined, 'debug pricing should not persist market adapter diagnostics');
-            assert(Math.abs(manager.config.minPrice - 591.3978494623656) < 1e-9, 'AMA gridPrice should use the persisted center price plus range scaling');
+            assert(Math.abs(manager.config.minPrice - 588.5) < 1e-9, 'AMA gridPrice should use the persisted center price plus range scaling');
             assert.strictEqual(manager.config.maxPrice, 2354, 'AMA gridPrice should use the persisted center price plus range scaling');
         } finally {
             safeUnlink(amaFile)
@@ -639,11 +639,12 @@ async function runTests() {
 
             // With trend=UP and appliedAsymmetryFactor=0.08:
             //   center=1000, minP=1000/2=500, maxP=1000*2=2000
-            //   resolvedMinP = 1000 / ((1000/500) * (1 - 0.08)) = 1000 / (2 * 0.92) = 543.478...
-            //   resolvedMaxP = 1000 * ((2000/1000) * (1 + 0.08)) = 1000 * (2 * 1.08) = 2160
+            //   scale = 1 + 0.08 = 1.08 (both bounds shift up together)
+            //   resolvedMinP = 500 * 1.08 = 540
+            //   resolvedMaxP = 2000 * 1.08 = 2160
             assert(manager.orders.size > 0, 'initializeGrid should succeed with root-level asymmetricBounds');
-            assert(Math.abs(manager.config.minPrice - 543.4782608695652) < 1e-9,
-                'minPrice should be widened (UP trend) from root-level asymmetricBounds');
+            assert(Math.abs(manager.config.minPrice - 540) < 1e-9,
+                'minPrice should be shifted up (UP trend) from root-level asymmetricBounds');
             assert(Math.abs(manager.config.maxPrice - 2160) < 1e-9,
                 'maxPrice should be narrowed (UP trend) from root-level asymmetricBounds');
             assert(Math.abs(manager._lastGridPricingContext.rangeScalingFactor - 0.08) < 1e-12,
@@ -676,9 +677,9 @@ async function runTests() {
         });
         _resetBothWhitelistCaches();
         // Persisted factor exceeds the geometric safe limit of the rebuild
-        // geometry: DOWN trend with maxPrice '2x' caps the applied factor at
-        // 1 - 1/2 = 0.5. The canonical applyAsymmetricBounds path must clamp
-        // it instead of applying the raw persisted 0.6 to both sides.
+        // geometry: DOWN trend with maxPrice '1.5x' caps the applied factor at
+        // baseMaxMult - 1 = 0.5. The canonical applyAsymmetricBounds path must
+        // clamp it instead of applying the raw persisted 0.6 to both sides.
         writeJSON(amaFile, {
             centerPrice: 1000,
             amaCenterPrice: 1000,
@@ -702,7 +703,7 @@ async function runTests() {
                 startPrice: 100,
                 gridPrice: 'ama',
                 minPrice: '2x',
-                maxPrice: '2x',
+                maxPrice: '1.5x',
                 incrementPercent: 1,
                 targetSpreadPercent: 2,
                 weightDistribution: { buy: 0.5, sell: 0.5 },
@@ -718,8 +719,9 @@ async function runTests() {
 
             await FreshGrid.initializeGrid(manager);
 
-            // Clamped factor 0.5 widens min to 1000 / (2 * (1 + 0.5)) = 333.33...
-            // (the old inline copy applied 0.6 and produced 312.5).
+            // Clamped factor 0.5 shifts min DOWN by 1/(1+0.5):
+            // 1000 / 2 / 1.5 = 333.33... (the old inline copy applied 0.6
+            // and produced 312.5 under the prior tighten formula).
             assert(manager.orders.size > 0, 'initializeGrid should succeed with over-limit root-level factor');
             assert(Math.abs(manager._lastGridPricingContext.rangeScalingFactor - 0.5) < 1e-12,
                 'root-level range-scaling factor should be clamped by the canonical safe limit');
@@ -754,9 +756,10 @@ async function runTests() {
             }
         });
         _resetBothWhitelistCaches();
-        // DOWN trend: the upper bound tightens toward center. With a near upper
-        // bound (1.5x) the old model collapses max to 1050, below the 10-level
-        // floor (1.01^10 * 1000 ≈ 1104.62). The guard must hold max above it.
+        // DOWN trend: the band shifts down toward trend, pulling the upper
+        // bound toward center. With a near upper bound (1.35x) max moves to
+        // 1350 / 1.3 ≈ 1038.46, below the 10-level floor
+        // (1.01^10 * 1000 ≈ 1104.62). The guard must hold max above it.
         writeJSON(amaFile, {
             centerPrice: 1000,
             amaCenterPrice: 1000,
@@ -780,7 +783,7 @@ async function runTests() {
                 startPrice: 100,
                 gridPrice: 'ama',
                 minPrice: '2x',
-                maxPrice: '1.5x',
+                maxPrice: '1.35x',
                 incrementPercent: 1,
                 targetSpreadPercent: 2,
                 weightDistribution: { buy: 0.5, sell: 0.5 },
@@ -796,12 +799,12 @@ async function runTests() {
 
             await FreshGrid.initializeGrid(manager);
 
-            // minPrice widened DOWN: 1000 / (2 * (1 + 0.3)) = 384.615
+            // minPrice shifts DOWN: 1000 / 2 / 1.3 = 384.615
             assert(manager.orders.size > 0, 'initializeGrid should succeed with the narrowing-side guard');
             assert(Math.abs(manager.config.minPrice - 384.6153846153846) < 1e-9,
                 'minPrice should be widened (DOWN) by the asymmetric bounds');
             assert(Math.abs(manager.config.maxPrice - 1104.6221254112045) < 1e-9,
-                'maxPrice should be held at the minimum-slots floor, not collapsed to 1050');
+                'maxPrice should be held at the minimum-slots floor, not collapsed to 1038.46');
         } finally {
             safeUnlink(amaFile)
             if (originalWhitelist == null) {

@@ -8,7 +8,7 @@ import { ORDER_TYPES, TIMING } from './constants.js';
 import * as Format from './order/format.js';
 import * as grid from './order/grid.js';
 import { convertToSpreadPlaceholder, parseChainOrder, isNonBlockingUnmatchedOrder } from './order/utils/order.js';
-import { restoreGapEvacStreaks, applyPersistedPendingCrawls } from './order/utils/system.js';
+import { restoreGapEvacStreaks, applyPersistedPendingCrawls, resetLastFillPivot } from './order/utils/system.js';
 import { blockchainToFloat, calculateGapSlots, validatePersistedBoundary, isTransientInBandRejection } from './order/utils/math.js';
 import { hasExecutableActions } from './order/utils/validate.js';
 import { getErrorMessage } from './utils/errors.js';
@@ -681,6 +681,16 @@ async function rejectCorruptedGridSnapshot(bot: any, context: any) {
     // wiped the persisted copy; drop the in-memory record (marks the grid
     // dirty so the wipe reaches disk on the next flush too).
     (bot.manager as any)._clearPendingFillCrawls?.('grid snapshot rejected');
+    // The LAST-FILL-GUARD pivot was armed against the rejected generation's
+    // geometry: drop it so the rebuild re-arms on a fresh fill instead of
+    // vetoing placements against a boundary that no longer exists.
+    try {
+        if (typeof (bot.manager as any)._resetLastFillPivot === 'function') {
+            (bot.manager as any)._resetLastFillPivot('grid snapshot rejected');
+        } else {
+            resetLastFillPivot(bot.manager, 'grid snapshot rejected');
+        }
+    } catch {}
     return true;
 }
 
@@ -739,5 +749,5 @@ async function targetedOrderRepair(bot: any, orderIds: any) {
     }
 }
 
-export { persistAndRecoverIfNeeded, getRecentFillKeysSnapshot, triggerStateRecoverySync, abortFlowIfIllegalState, handleBatchHardAbort, applyRecoverableGridUpdates, recoverExplicitStaleOrders, recoverBatchSizeDrift, extractSizeDriftOrderIds, recoverFromPersistedGrid, rejectCorruptedGridSnapshot, targetedOrderRepair, _schedulePostRecoveryRebalance as schedulePostRecoveryRebalance }
+export { persistAndRecoverIfNeeded, getRecentFillKeysSnapshot, triggerStateRecoverySync, abortFlowIfIllegalState, handleBatchHardAbort, applyRecoverableGridUpdates, recoverExplicitStaleOrders, recoverBatchSizeDrift, recoverFromPersistedGrid, rejectCorruptedGridSnapshot, targetedOrderRepair, _schedulePostRecoveryRebalance as schedulePostRecoveryRebalance }
 

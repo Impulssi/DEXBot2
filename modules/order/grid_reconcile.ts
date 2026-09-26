@@ -12,13 +12,56 @@ import { ORDER_TYPES, ORDER_STATES, TIMING } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
 import { getAssetFeesSafe, priceSlotEqual } from './utils/math.js';
 import {
-    isOrderPlaced, parseChainOrder, isOrderOnChain,
+    isOrderPlaced, parseChainOrder, isOrderOnChain, findLiveOrderOwnerByChainId,
     chainOrderMatchesSlotWithTolerance,
     duplicateOrphanLogInfo, resolveReserveCount,
 } from './utils/order.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
 
+function _startupChainSnapshotSignature(orders: any[], manager: any): Map<string, string> {
+    const signature = new Map<string, string>();
+    for (const raw of Array.isArray(orders) ? orders : []) {
+        if (!raw?.id) continue;
+        const parsed = parseChainOrder(raw, manager.assets);
+        if (!parsed) continue;
+        signature.set(String(raw.id), `${parsed.type}|${parsed.price}|${parsed.size}`);
+    }
+    return signature;
+}
+
+/**
+ * Validate a Phase-1 startup cancellation immediately before Phase 2.
+ * The plan is only safe if its specific chain order is still unchanged and
+ * the live grid still has the same ownership/role that justified the
+ * cancellation. Other orders may have legitimately changed since planning.
+ */
+function _startupCancelPlanStillCurrent(
+    plan: any,
+    manager: any,
+    initialChainSignature: Map<string, string>,
+    currentChainSignature: Map<string, string>
+): boolean {
+    const chainOrderId = String(plan?.chainOrderId || '');
+    if (!chainOrderId || !currentChainSignature.has(chainOrderId)) return false;
+    if (currentChainSignature.get(chainOrderId) !== initialChainSignature.get(chainOrderId)) return false;
+
+    if (plan.gridOrderId) {
+        if (plan.boundaryIdx !== undefined && (
+            plan.boundaryIdx !== manager?.boundaryIdx || plan.gapSlots !== manager?._gapSlots
+        )) return false;
+        const slot = manager?.orders instanceof Map ? manager.orders.get(plan.gridOrderId) : null;
+        if (!slot || !isOrderOnChain(slot) || slot.orderId !== plan.chainOrderId) return false;
+        if (plan.orderType && slot.type !== plan.orderType) return false;
+        if (plan.gridOrder && Number.isFinite(Number(plan.gridOrder.price))
+            && Number(slot.price) !== Number(plan.gridOrder.price)) return false;
+        return true;
+    }
+
+    // An originally unmatched plan is safe only while the chain order is still
+    // untracked. If it has since been adopted into any live slot, skip it.
+    return !findLiveOrderOwnerByChainId(manager, plan.chainOrderId);
+}
 
 /**
  * Returns { resumed: boolean, matchedCount: number }.
@@ -401,32 +444,83 @@ export async function reconcileGridOrders({
         const { plannedCreates, plannedUpdates, plannedCancels, chainSellCount, chainBuyCount } = phase1Result;
 
         // Execute planned cancellations (duplicates, edge, excess) outside lock.
-        // Each _cancelChainOrder call acquires _gridLock internally via synchronizeWithChain.
+        // Re-read immediately before the first cancellation: Phase 1 is pure
+        // planning and releases _gridLock, so the ownership/role snapshot that
+        // justified a cancel can become stale before any broadcast is sent.
+        const phase2CancellationPlanIds = new Set<string>();
         if (!dryRun && plannedCancels.length > 0) {
-            logger?.log?.(`Startup: Executing ${plannedCancels.length} queued cancellations (Phase 2)`, 'info');
+            // An empty, non-truncated read is intentionally authoritative here:
+            // every plan is an explicit cancel target, so [] safely skips all
+            // plans. We do not use deferEmpty because this is not a retry probe.
             for (const cancelPlan of plannedCancels) {
-                try {
-                    await _cancelChainOrder({
-                        chainOrders,
-                        account,
-                        privateKey,
-                        manager,
-                        chainOrderId: cancelPlan.chainOrderId,
-                        dryRun,
-                        chainOrderObj: cancelPlan.chainOrderObj,
-                        releaseUntrackedFunds: cancelPlan.releaseUntrackedFunds,
-                    });
+                if (cancelPlan?.chainOrderId) phase2CancellationPlanIds.add(String(cancelPlan.chainOrderId));
+            }
+            const initialChainSignature = _startupChainSnapshotSignature(chainOpenOrders || [], manager);
+            let currentChainSignature: Map<string, string> | null = null;
+            try {
+                const currentChainOrders = await readOpenOrdersGuarded(chainOrders, account, {
+                    log: (message: string, level: any) => logger?.log?.(message, level),
+                    label: 'STARTUP-PHASE2-CANCEL',
+                });
+                if (currentChainOrders === null) {
                     logger?.log?.(
-                        `Startup: Cancelled queued order ${cancelPlan.chainOrderId} (Phase 2)`,
-                        'info'
+                        `Startup: Skipping ${plannedCancels.length} stale cancellation plan(s): ` +
+                        `the pre-cancel chain read was ambiguous or truncated`,
+                        'warn'
                     );
-                } catch (cancelErr: any) {
-                    logger?.log?.(
-                        `Startup: Failed to cancel queued order ${cancelPlan.chainOrderId}: ${getErrorMessage(cancelErr)}. ` +
-                        `The order stays live: the relocation/create phases will skip any placement ` +
-                        `that would cross it (STARTUP-CROSS-GUARD) and re-align on the next cycle.`,
-                        'error'
-                    );
+                } else {
+                    currentChainSignature = _startupChainSnapshotSignature(currentChainOrders, manager);
+                }
+            } catch (readErr: any) {
+                logger?.log?.(
+                    `Startup: Skipping ${plannedCancels.length} stale cancellation plan(s): ` +
+                    `pre-cancel chain read failed (${getErrorMessage(readErr)})`,
+                    'warn'
+                );
+            }
+
+            if (currentChainSignature) {
+                logger?.log?.(`Startup: Executing ${plannedCancels.length} queued cancellations (Phase 2)`, 'info');
+                // The chain signature is intentionally read once for the loop,
+                // not once per broadcast. If an earlier plan cancels, the next
+                // order-gone handling covers that intra-loop drift safely.
+                for (const cancelPlan of plannedCancels) {
+                    try {
+                        const submitted = await _cancelChainOrder({
+                            chainOrders,
+                            account,
+                            privateKey,
+                            manager,
+                            chainOrderId: cancelPlan.chainOrderId,
+                            dryRun,
+                            chainOrderObj: cancelPlan.chainOrderObj,
+                            releaseUntrackedFunds: cancelPlan.releaseUntrackedFunds,
+                            shouldCancel: () => _startupCancelPlanStillCurrent(
+                                cancelPlan,
+                                manager,
+                                initialChainSignature,
+                                currentChainSignature as Map<string, string>
+                            ),
+                        });
+                        if (!submitted) {
+                            logger?.log?.(
+                                `Startup: Skipping stale planned cancellation ${cancelPlan.chainOrderId} (ownership, role, geometry, or chain snapshot changed)`,
+                                'warn'
+                            );
+                            continue;
+                        }
+                        logger?.log?.(
+                            `Startup: Cancelled queued order ${cancelPlan.chainOrderId} (Phase 2)`,
+                            'info'
+                        );
+                    } catch (cancelErr: any) {
+                        logger?.log?.(
+                            `Startup: Failed to cancel queued order ${cancelPlan.chainOrderId}: ${getErrorMessage(cancelErr)}. ` +
+                            `The order stays live: the relocation/create phases will skip any placement ` +
+                            `that would cross it (STARTUP-CROSS-GUARD) and re-align on the next cycle.`,
+                            'error'
+                        );
+                    }
                 }
             }
         }
@@ -602,6 +696,11 @@ export async function reconcileGridOrders({
                             gridOrderIds.add(co.id);
                         }
                     }
+                    const queuedCancellationIds = new Set(
+                        (Array.isArray(manager.ordersNeedingPriceCorrection) ? manager.ordersNeedingPriceCorrection : [])
+                            .filter((entry: any) => entry?.chainOrderId && (entry?.cancelOnly === true || entry?.isSurplus === true))
+                            .map((entry: any) => String(entry.chainOrderId))
+                    );
                     const staleSurplusCancels: Array<{ chainOrderObj: any; sideLabel: string }> = [];
                     for (const side of [ORDER_TYPES.SELL, ORDER_TYPES.BUY]) {
                         const targetCount = side === ORDER_TYPES.SELL ? targetSell : targetBuy;
@@ -614,9 +713,17 @@ export async function reconcileGridOrders({
                                 (a.chain.id || '').localeCompare(b.chain.id || '')
                             );
                             let cancelLimit = sideOrders.length - targetCount;
+                            // Protected candidates do not consume cancelLimit;
+                            // selection therefore moves to the next eligible
+                            // sorted order instead of the pre-guard candidate.
                             for (const so of sideOrders) {
                                 if (cancelLimit <= 0) break;
-                                if (!gridOrderIds.has(so.chain.id)) {
+                                const recentlyCancelled = typeof chainOrders.wasRecentlyOwnCancelled === 'function'
+                                    && chainOrders.wasRecentlyOwnCancelled(so.chain.id);
+                                if (!gridOrderIds.has(so.chain.id)
+                                    && !queuedCancellationIds.has(String(so.chain.id))
+                                    && !phase2CancellationPlanIds.has(String(so.chain.id))
+                                    && !recentlyCancelled) {
                                     staleSurplusCancels.push({ chainOrderObj: so.chain, sideLabel });
                                     cancelLimit--;
                                 }

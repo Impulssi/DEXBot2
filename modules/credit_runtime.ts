@@ -34,7 +34,6 @@ import {
     borrowAmountForCollateral as sharedBorrowAmountForCollateral,
     collateralValueFromOfferPrice as sharedCollateralValueFromOfferPrice,
     creditDealFee as sharedCreditDealFee,
-    creditPriceOrientation as sharedCreditPriceOrientation,
     dailyOfferFeeRate as sharedDailyOfferFeeRate,
     extractOfferConversionRate as sharedExtractOfferConversionRate,
     normalizeCollateralMap,
@@ -331,12 +330,6 @@ class CreditRuntime {
 
     _positionKey(debtAssetId: any, collateralAssetId: any): string {
         return `${debtAssetId}:${collateralAssetId}`;
-    }
-
-    _findLendingItemByType(type: any): any {
-        const dp = this.debtPolicy;
-        if (!Array.isArray(dp?.lending)) return null;
-        return dp.lending.find((item: any) => item.type === type) || null;
     }
 
     async _findLendingItemForAsset(assetId: any, typeFilter: any): Promise<any> {
@@ -935,15 +928,6 @@ class CreditRuntime {
                 delete this.state.positions[key];
             }
         }
-    }
-
-    _creditPriceOrientation(collateralPrice: any, debtAsset: any, collateralAsset: any): string {
-        return sharedCreditPriceOrientation(
-            String(collateralPrice?.base?.asset_id || ''),
-            String(collateralPrice?.quote?.asset_id || ''),
-            String(debtAsset?.id || ''),
-            String(collateralAsset?.id || ''),
-        );
     }
 
     _precisionOfPair(debtAsset: any, collateralAsset: any): (assetId: string) => number | null {

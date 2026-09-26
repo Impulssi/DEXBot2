@@ -5,7 +5,7 @@ import { GRAPHENE_CHAIN_ID, GRAPHENE_ADDRESS_PREFIX } from './serial/chain_const
 import { NATIVE_CLIENT } from '../constants.js';
 import { getErrorMessage } from '../utils/errors.js';
 
-const { CHAIN } = NATIVE_CLIENT;
+const { CHAIN, TRANSPORT } = NATIVE_CLIENT;
 
 
 class ChainConfigError extends Error {
@@ -18,6 +18,20 @@ class ChainConfigError extends Error {
 
 function toRpcMethodName(method: string): string {
     return String(method).replace(/([A-Z])/g, (_: string, ch: string) => `_${ch.toLowerCase()}`);
+}
+
+/**
+ * True when an RPC error means the api_id we sent is not registered on the
+ * current websocket login session. bitshares-core returns:
+ *   Execution error: Assert Exception: _local_apis.size() > api_id:
+ * A cached api id can outlive its session when a reconnect swaps the socket
+ * without a status 'closed' event, or when the node drops the login session
+ * server-side; the id then points past the new session's _local_apis map.
+ */
+function isStaleApiIdError(err: any): boolean {
+    const message = err && err.message ? String(err.message) : String(err ?? '');
+    if (!message) return false;
+    return message.includes('_local_apis') || (message.includes('api_id') && message.includes('Assert Exception'));
 }
 
 interface ChainClientConfig {
@@ -38,6 +52,49 @@ interface ChainConfig {
     coreAsset: string;
 }
 
+/**
+ * Outcome of a forced-reconnect request.
+ * - `issued`      a fresh teardown/reconnect was started by this call.
+ * - `coalesced`   a forced reconnect was already issued within the cooldown (by
+ *                 this or another escalation source); nothing was torn down
+ *                 again, but a recovery attempt is in flight/recent.
+ * - `unavailable` no live socket to tear down, so no recovery attempt exists.
+ */
+export type ForcedReconnectOutcome = 'issued' | 'coalesced' | 'unavailable';
+
+/**
+ * Build the per-client forced-reconnect gate shared by the main and read-only
+ * clients, and transitively by the stale-api window and the subscriptions
+ * fill-channel watchdog. One cooldown per client stops a wedged session from
+ * stacking concurrent reconnects; the outcome lets a caller distinguish a
+ * genuinely new teardown from one coalesced onto another source's, so
+ * escalation accounting is not starved when the cooldown is already spent.
+ */
+function createForcedReconnectGate(transport: any): (reason?: string) => ForcedReconnectOutcome {
+    const cooldownMs = Number.isFinite(TRANSPORT.FORCED_RECONNECT_COOLDOWN_MS)
+        ? Math.max(0, TRANSPORT.FORCED_RECONNECT_COOLDOWN_MS)
+        : 30000;
+    let lastForcedReconnectAt = 0;
+    return function forceReconnect(reason: string = 'forced'): ForcedReconnectOutcome {
+        const now = Date.now();
+        // Coalesce is checked before connectivity: immediately after a teardown
+        // the socket is null while the reconnect is in flight, and that must
+        // still read as `coalesced`, not `unavailable`.
+        if (now - lastForcedReconnectAt < cooldownMs) return 'coalesced';
+        // No live socket: there is nothing to tear down, so this is not a
+        // recovery attempt. Reporting it as `issued` would let callers count a
+        // no-op as a cycle and burn the cooldown.
+        if (typeof transport?.isConnected === 'function' && !transport.isConnected()) return 'unavailable';
+        lastForcedReconnectAt = now;
+        try {
+            transport.forceReconnect(reason);
+        } catch (_: any) {
+            // Keep the stamp: a throwing recovery must not become a tight loop.
+        }
+        return 'issued';
+    };
+}
+
 function createChainClient(config: ChainClientConfig = {}) {
     const {
         nodes = [],
@@ -53,9 +110,7 @@ function createChainClient(config: ChainClientConfig = {}) {
 
     const wrappedOnStatusChange = (status: string, nodeUrl: string | null) => {
         if (status === 'closed') {
-            _dbApiId = null;
-            _historyApiId = null;
-            _broadcastApiId = null;
+            resetApiIds();
             _chainConfig = null;
         }
         if (onStatusChange) onStatusChange(status, nodeUrl);
@@ -80,8 +135,31 @@ function createChainClient(config: ChainClientConfig = {}) {
     let _historyApiId: number | null = null;
     let _broadcastApiId: number | null = null;
     let _chainConfig: ChainConfig | null = null;
+
+    function resetApiIds(): void {
+        _dbApiId = null;
+        _historyApiId = null;
+        _broadcastApiId = null;
+    }
     let _loginPromise: Promise<ChainConfig | undefined> | null = null;
     let _apiLimitGetAccountHistory: number | null = null;
+    // Escalation state for a login session that keeps rejecting cached api ids.
+    // A single stale error is handled in place (re-register + retry once); a
+    // sustained run means the session is wedged and only a fresh socket (on a
+    // different node) clears it.
+    let _staleApiErrorCount = 0;
+    let _staleApiWindowStartedAt = 0;
+    // Shared forced-reconnect debounce. Both escalation sources — the stale
+    // api_id window below and the subscriptions fill-channel watchdog — call
+    // forceReconnect(), so the cooldown lives here, once per client, instead of
+    // being duplicated (and independently tuned) at each call site. A wedged
+    // session trips both counters in the same tick; without this they would
+    // stack two reconnects on top of each other.
+    //
+    // Public entry point for higher layers (subscriptions watchdog) to recover
+    // a session that is nominally connected but rejecting every call.
+    // @returns the {@link ForcedReconnectOutcome} of the request.
+    const forceReconnect = createForcedReconnectGate(transport);
     if (Array.isArray(nodes) && nodes.length > 0) {
         transport._setNodes(nodes);
     }
@@ -90,6 +168,16 @@ function createChainClient(config: ChainClientConfig = {}) {
         if (_loginPromise) return _loginPromise;
 
         _loginPromise = (async () => {
+            // validateNode() runs login() on every (re)connect. A new websocket
+            // session starts with an empty _local_apis map, so api ids cached
+            // from the previous session are no longer addressable — the node
+            // rejects them with "Assert Exception: _local_apis.size() > api_id".
+            // Drop them so every accessor re-registers against this session.
+            resetApiIds();
+            // A fresh login session is a clean slate for the stale-id escalation.
+            _staleApiErrorCount = 0;
+            _staleApiWindowStartedAt = 0;
+
             const result = await transport.call('call', [1, 'login', ['', '']]);
             if (!result) {
                 throw new ConnectionError('Login error');
@@ -159,25 +247,91 @@ function createChainClient(config: ChainClientConfig = {}) {
         return apiId;
     }
 
-    async function dbCall(method: string, args?: any[]): Promise<any> {
-        if (_dbApiId == null) {
-            _dbApiId = await registerApi('database');
+    /**
+     * Invoke a login_api-registered RPC namespace, transparently recovering
+     * from a stale api id. If the node rejects the call because the id is not
+     * registered on the current session, drop the cached id, re-register the
+     * namespace on this session, and retry once. This is what keeps the fill
+     * history channel alive across a node failover without a process restart.
+     */
+    async function callWithApiRecovery(
+        apiName: string,
+        method: string,
+        args: any[],
+        getApiId: () => number | null,
+        setApiId: (id: number | null) => void,
+    ): Promise<any> {
+        let apiId = getApiId();
+        if (apiId == null) {
+            apiId = await registerApi(apiName);
+            setApiId(apiId);
         }
-        return transport.call('call', [_dbApiId, toRpcMethodName(method), args || []]);
+        try {
+            return await transport.call('call', [apiId, method, args]);
+        } catch (err: any) {
+            if (!isStaleApiIdError(err)) throw err;
+            noteStaleApiError(apiName);
+            setApiId(null);
+            const freshId = await registerApi(apiName);
+            setApiId(freshId);
+            return transport.call('call', [freshId, method, args]);
+        }
+    }
+
+    /**
+     * Record a stale-api error and escalate to a forced reconnect when the
+     * session keeps rejecting ids. Counting is windowed: a rare stale id (the
+     * normal reconnect-race case) never trips the escalation, while a session
+     * that fails every call trips it within a few RPCs. The forced reconnect
+     * marks the active node failed, so the transport prefers another node.
+     */
+    function noteStaleApiError(apiName: string): void {
+        const now = Date.now();
+        const windowMs = Number.isFinite(TRANSPORT.STALE_API_WINDOW_MS) ? TRANSPORT.STALE_API_WINDOW_MS : 60000;
+        const threshold = Number.isFinite(TRANSPORT.STALE_API_FORCE_RECONNECT_AFTER)
+            ? TRANSPORT.STALE_API_FORCE_RECONNECT_AFTER
+            : 3;
+        if (now - _staleApiWindowStartedAt > windowMs) {
+            _staleApiWindowStartedAt = now;
+            _staleApiErrorCount = 0;
+        }
+        _staleApiErrorCount++;
+        if (_staleApiErrorCount < threshold) return;
+        _staleApiErrorCount = 0;
+        _staleApiWindowStartedAt = now;
+        // Go through the local wrapper so this escalation shares the one
+        // per-client cooldown with the subscriptions watchdog.
+        forceReconnect(`repeated stale api_id for ${apiName} (${threshold}x)`);
+    }
+
+    async function dbCall(method: string, args?: any[]): Promise<any> {
+        return callWithApiRecovery(
+            'database',
+            toRpcMethodName(method),
+            args || [],
+            () => _dbApiId,
+            (id) => { _dbApiId = id; },
+        );
     }
 
     async function historyCall(method: string, args?: any[]): Promise<any> {
-        if (_historyApiId == null) {
-            _historyApiId = await registerApi('history');
-        }
-        return transport.call('call', [_historyApiId, toRpcMethodName(method), args || []]);
+        return callWithApiRecovery(
+            'history',
+            toRpcMethodName(method),
+            args || [],
+            () => _historyApiId,
+            (id) => { _historyApiId = id; },
+        );
     }
 
     async function broadcastCall(method: string, args?: any[]): Promise<any> {
-        if (_broadcastApiId == null) {
-            _broadcastApiId = await registerApi('network_broadcast');
-        }
-        return transport.call('call', [_broadcastApiId, method, args || []]);
+        return callWithApiRecovery(
+            'network_broadcast',
+            method,
+            args || [],
+            () => _broadcastApiId,
+            (id) => { _broadcastApiId = id; },
+        );
     }
 
     async function broadcastTx(signedTx: any): Promise<any> {
@@ -194,9 +348,7 @@ function createChainClient(config: ChainClientConfig = {}) {
     }
 
     function disconnect(): void {
-        _dbApiId = null;
-        _historyApiId = null;
-        _broadcastApiId = null;
+        resetApiIds();
         _chainConfig = null;
         transport.disconnect();
     }
@@ -255,6 +407,7 @@ function createChainClient(config: ChainClientConfig = {}) {
         transport,
         connect,
         disconnect,
+        forceReconnect,
         setNodes,
         getNodes,
         getStatus,
@@ -289,6 +442,9 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
     let _dbApiId: number | null = null;
     let _historyApiId: number | null = null;
     let _recoverPromise: Promise<void> | null = null;
+    // Windowed escalation for a read channel whose session keeps rejecting ids.
+    let _staleApiErrorCount = 0;
+    let _staleApiWindowStartedAt = 0;
 
     function resetApiIds(): void {
         _dbApiId = null;
@@ -302,6 +458,10 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
             if (status === 'closed') resetApiIds();
         },
     });
+    // Shared forced-reconnect debounce for the read channel, mirroring the main
+    // client: one cooldown and one outcome for every forced reconnect raised on
+    // this client (stale api_id escalation today).
+    const forceReconnect = createForcedReconnectGate(transport);
 
     async function connect(servers?: string[]): Promise<void> {
         const effectiveNodes = Array.isArray(servers) && servers.length > 0
@@ -360,22 +520,77 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
         transport.disconnect();
     }
 
-    async function db(method: string, args?: any[]): Promise<any> {
-        if (_dbApiId == null) {
+    /**
+     * Invoke a read-only RPC namespace, recovering from a stale api id by
+     * re-registering on the current session and retrying once. Mirrors the
+     * main client's callWithApiRecovery so a missed 'closed' event cannot
+     * permanently wedge the read channel.
+     */
+    async function callWithRecovery(
+        method: string,
+        args: any[],
+        getApiId: () => number | null,
+        setApiId: (id: number | null) => void,
+    ): Promise<any> {
+        if (getApiId() == null) {
             await recoverApis();
             const err = await validateChain();
             if (err) throw err;
         }
-        return transport.call('call', [_dbApiId, toRpcMethodName(method), args || []]);
+        const apiId = getApiId();
+        try {
+            return await transport.call('call', [apiId, method, args]);
+        } catch (err: any) {
+            if (!isStaleApiIdError(err)) throw err;
+            noteStaleApiError();
+            setApiId(null);
+            await recoverApis();
+            const freshId = getApiId();
+            if (freshId == null) throw err;
+            return transport.call('call', [freshId, method, args]);
+        }
+    }
+
+    /**
+     * Windowed stale-id escalation for the read channel. Mirrors the main
+     * client: a rare reconnect-race stale id recovers in place, a sustained
+     * run forces a fresh connection on another node.
+     */
+    function noteStaleApiError(): void {
+        const now = Date.now();
+        const windowMs = Number.isFinite(TRANSPORT.STALE_API_WINDOW_MS) ? TRANSPORT.STALE_API_WINDOW_MS : 60000;
+        const threshold = Number.isFinite(TRANSPORT.STALE_API_FORCE_RECONNECT_AFTER)
+            ? TRANSPORT.STALE_API_FORCE_RECONNECT_AFTER
+            : 3;
+        if (now - _staleApiWindowStartedAt > windowMs) {
+            _staleApiWindowStartedAt = now;
+            _staleApiErrorCount = 0;
+        }
+        _staleApiErrorCount++;
+        if (_staleApiErrorCount < threshold) return;
+        _staleApiErrorCount = 0;
+        _staleApiWindowStartedAt = now;
+        // Route through the shared wrapper so both stale-id escalations on this
+        // client obey one cooldown.
+        forceReconnect(`repeated stale api_id on read channel (${threshold}x)`);
+    }
+
+    async function db(method: string, args?: any[]): Promise<any> {
+        return callWithRecovery(
+            toRpcMethodName(method),
+            args || [],
+            () => _dbApiId,
+            (id) => { _dbApiId = id; },
+        );
     }
 
     async function history(method: string, args?: any[]): Promise<any> {
-        if (_historyApiId == null) {
-            await recoverApis();
-            const err = await validateChain();
-            if (err) throw err;
-        }
-        return transport.call('call', [_historyApiId, toRpcMethodName(method), args || []]);
+        return callWithRecovery(
+            toRpcMethodName(method),
+            args || [],
+            () => _historyApiId,
+            (id) => { _historyApiId = id; },
+        );
     }
 
     function setNodes(servers: string[]): void {
@@ -389,6 +604,7 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
     return {
         connect,
         disconnect,
+        forceReconnect,
         db,
         history,
         setNodes,

@@ -63,6 +63,11 @@ On top of this blend, **Hurst Exponent** and **Permutation Entropy** act as a re
 ## Quick Start
 
 ```bash
+# One-step (recommended): same fetch pipeline as `dexbot tv` — bot, pool, or pair
+dexbot dw <bot-key>
+dexbot dw 133 --month 6
+dexbot dw TOKENA/TOKENB --month 1
+
 # From JSON candle file
 node dist/analysis/analyze_dynamic_weight.js \
   --file market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
@@ -77,6 +82,8 @@ node dist/analysis/analyze_dynamic_weight.js \
 
 Output: `analysis/charts/dynamic_weight_chart.html` (open in browser)
 
+`dexbot dw` writes an auto-named chart instead: `analysis/charts/dw_<bot|pool_<id>|<a>_<b>>_1h_<N>m.html`.
+
 **Note**: Hurst requires 256 bars and PE requires 58 bars before their regime signals become active. The first portion of the chart will show the full weight without regime gating.
 
 ## CLI Flags
@@ -90,6 +97,7 @@ Output: `analysis/charts/dynamic_weight_chart.html` (open in browser)
 | `--alpha` | `0.5` | Initial α blend (0 = pure Kalman, 1 = pure AMA) |
 | `--dw` | `0.50` | Initial displacement weight (0 = pure velocity, 1 = full displacement) |
 | `--lb` | `9` | Initial lookback bars (1-32) for AMA slope calculation |
+| `--ema` | `0` | Initial AMA input EMA span in bars (0 = off, 0-32) |
 | `--gain` | `1.0` | Initial gain multiplier |
 | `--clip` | `10` | Initial clip percentile |
 | `--quiet` | `false` | Suppress console output |
@@ -107,6 +115,7 @@ All panels share aligned vertical time grid lines, and the bottom output panel s
 
 ### Panel 2 — AMA Slope Input (14%)
 - **Orange line**: AMA3 slope percentage
+- **Gray dashed line**: raw (unfiltered) slope — the reference when the `ema` knob > 0
 - Shows the directional strength of the slow KAMA's trend movement
 - Values outside the clip threshold are flattened before entering the offset formula
 - Background shading mirrors the output signal direction
@@ -159,6 +168,7 @@ All panels share aligned vertical time grid lines, and the bottom output panel s
 |------|-------|---------|---------|
 | **nz%** | 0–1 | 0.00 | Neutral zone: dead-band below which offset is forced to 0 |
 | **lb** | 1–32 | 9 | Logarithmic. Lookback bars for AMA slope calculation |
+| **ema** | 0–32 | 0 | AMA input EMA span in bars (0 = off). Low-pass filters the AMA before the slope is taken; the gray dashed Raw‰ line shows the unfiltered slope for comparison |
 | **amaS%** | 0.06–0.12 | 0.09 | Logarithmic. Gear ratio for average per-bar AMA slope saturation |
 | **kalS%** | 0.5–1.5 | 1.0 | Logarithmic. Gear ratio for Kalman composite saturation |
 | **clip%** | 0–55 | 10 | Percentile clip: filters extreme inputs (0 = off) |
@@ -172,7 +182,7 @@ All panels share aligned vertical time grid lines, and the bottom output panel s
 
 ## Copy / Paste Parameters
 
-The **copy** button serializes all knob values (α, dw, kf, kfd, dsp, kdt, kfs, cf, lb, amaS%, kalS%, th%, gain, clip%, nz%, regi) to JSON and writes them to both the clipboard and `localStorage`.
+The **copy** button serializes all knob values (α, dw, kf, kfd, dsp, kdt, kfs, cf, lb, ema, amaS%, kalS%, th%, gain, clip%, nz%, regi) to JSON and writes them to both the clipboard and `localStorage`.
 
 The **paste** button first checks `localStorage` for parameters from a previous copy in the same browser session. If none found, it prompts for Ctrl+V input. A confirmation popup shows the parsed values before applying them. Click **Apply** to set the knobs, **Cancel** or press **Escape** to dismiss.
 
@@ -182,7 +192,7 @@ The **paste** button first checks `localStorage` for parameters from a previous 
 
 ### AMA slope
 
-Taking the slope of the AMA produces a signal that is already noise-filtered at the source — a near-zero slope genuinely means sideways, not oscillation that happened to average out. The neutral zone (`nz%` knob) dead-bands any remaining micro-slope residuals, which is all the additional filtering the slope channel needs.
+Taking the slope of the AMA produces a signal that is already noise-filtered at the source — a near-zero slope genuinely means sideways, not oscillation that happened to average out. The neutral zone (`nz%` knob) dead-bands any remaining micro-slope residuals. When that is still too jumpy, the optional `ema` knob low-pass filters the AMA input itself before the slope is taken (0 = off keeps the raw input).
 
 ### Kalman filter
 
@@ -277,6 +287,7 @@ The lookup table can be customized per-market or per-bot (see [Custom Configurat
 ## Formulas
 
 ### AMA Offset
+With `ema` > 0, `AMA_now` / `AMA_lb_bars_ago` below are read from the EMA-filtered AMA input instead of the raw AMA series (everything else identical):
 ```
 amaSlope% = ((AMA_now − AMA_lb_bars_ago) / AMA_lb_bars_ago × 100) / lb
 amaClip = clamp(amaSlope%, ±clipThreshold)    // percentile-based clip
@@ -354,6 +365,27 @@ Number of bars to look back when computing AMA slope:
 
 AMA slope is normalized to an average percent per bar, not the cumulative move across the full lookback. Lower values = more noise, faster reaction. Higher values = smoother signals, more lag without adding gain just because the measurement window is longer.
 
+### ema (AMA input EMA span)
+Optional low-pass EMA over the AMA values before the slope is taken (span in bars, α = 2/(span+1), `0` = off). Because differencing and an EMA are both linear filters, they commute — smoothing the AMA input produces exactly the smoothed slope series, modulo the seeding transient.
+
+| `ema` | noise reduction* | added lag | verdict |
+|---|---|---|---|
+| 0 | 1× (off) | 0 bars | default, current behavior |
+| 4 | ~2× | ~+1.5 bars | light |
+| 9 (= lb) | ~3× | ~+4 bars | sweet spot |
+| 16 | ~4× | ~+7.5 bars | heavy but usable |
+| 32 | ~5.7× | ~+15.5 bars | upper-bound demo, too laggy to trade |
+
+\* standard-deviation reduction for white-ish noise ≈ `sqrt(span)`; lag ≈ `(span-1)/2` bars (EMA group delay) on top of the slope window's `(lb-1)/2`.
+
+Measured on ~8.7k hourly bars with the default AMA profile (`lb = 9`): the slow AMA's slope is dominated by low-frequency moves rather than white noise, so the `sqrt(span)` rule overstates the standard-deviation gain — `ema = 9` cut slope std only ~3% but trimmed the largest peaks ~22% and zero-crossings 86 → 74; `ema = 32` cut std ~11%, peaks ~48%, crossings 86 → 44, with a measured lag of ~3 bars at span 9 (theory 4). On this input the knob acts mainly as a peak-trimmer and sign-flip reducer, not as a general noise killer.
+
+Effects while tuning:
+- Zero-crossings get rarer, so the `cf` latch matters less and the `nz%` dead-band sits on a smooth curve instead of on noise.
+- |slope| peaks shrink, so the same `amaS%` reaches full offset strength less often — expect to lower `amaS%` (or raise `gain`) to restore output amplitude. The `clip%` percentile pool is rebuilt from the filtered input, which partially self-compensates.
+- Keep total lag in mind: ~`lb/2 + ema/2` bars before the slope reflects a move; at defaults that is ~8 bars (~8 h on the 1 h chart).
+- Panel 2 plots the smoothed slope (orange) over the raw slope (gray dashed) so the noise/lag trade-off is directly visible.
+
 ### regi (regime sensitivity)
 - 0 = regime multiplier is always 1.0 (Hurst+PE ignored)
 - 1 = default table values used as-is
@@ -383,6 +415,7 @@ The 3×3 regime multiplier table can be customized per-market or per-bot (defaul
 Candle Data
 ├── AMA3 (slow KAMA, erPeriod=781)
 │   ├── calculateAMA() → AMA3 values per bar  [price panel overlay]
+│   ├── `ema` knob (0 = off) → EMA-filtered AMA input  [research chart only]
 │   ├── computeAmaSlopeWeights() → slope%
 │   └── Percentile clip → amaClip → amaOff
 │

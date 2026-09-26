@@ -22,7 +22,7 @@ DEXBot2 is a grid trading bot for the BitShares blockchain. It maintains a geome
 DEXBot2 prioritizes **simplicity and operational efficiency** over complex partial-handling mechanics:
 
 1. **Constant Spread**: The spread zone width remains fixed at `targetSpreadPercent`, eliminating dynamic inflation triggers.
-2. **Direct Consolidation**: Dust partials are absorbed into the next grid rebuild cycle, not handled by complex merge/split logic.
+2. **Immediate Dust Cancellation**: Sub-threshold partials are cancelled on-chain as soon as detection runs; surviving non-dust partials are handled by ordinary fund-driven rebalancing without complex merge/split logic.
 3. **Minimal Blockchain Interaction**: Fund-driven rebalancing occurs once per fill batch, not per-partial. Grid generation uses only available funds—no forced allocations.
 4. **Closed-Loop Market Dynamics**: The boundary-crawl mechanism naturally handles price movement and fill flows without special-case logic.
 5. **Powerful Maintenance Tools**: Periodic grid regeneration, recovery retries, and fund invariant verification keep the system healthy over long operations.
@@ -56,10 +56,10 @@ graph TB
         MASTERGRID[Master Grid - immutable/frozen<br/>slot-id, price, size, state<br/>orderId, blockchain, grid, proceeds]
         TWOPASS[SyncEngine<br/>2-pass: grid-to-chain then chain-to-grid<br/>match orderId, detect partials, flag stale]
         FUNDS["Accounting - SSOT for funds<br/>available, virtual, committed<br/>btsFeesOwed<br/>Avail = max 0 ChainFree minus Virtual minus Fees"]
-        TARGET[Strategy Engine<br/>calculateTargetGrid<br/>boundary-crawl pivot<br/>partial-fill consolidation, rotation]
+        TARGET[Strategy Engine<br/>calculateTargetGrid<br/>boundary-crawl pivot<br/>partial correction, rotation]
         WORKGRID[WorkingGrid - COW copy<br/>all mutations here only<br/>commit to Master on confirmation]
         FILLQUEUE[Fill Queue<br/>AsyncLock + dedup 5-60 min]
-        BATCHER[Fixed-Cap Batcher<br/>queue within cap: unified batch<br/>queue above cap: chunk at cap size<br/>default cap: 4]
+        BATCHER[Fixed-Cap Batcher<br/>queue within cap: unified batch<br/>queue above cap: chunk at cap size<br/>cap = gapSlots + 1]
     end
 
     subgraph "OUTPUTS"
@@ -107,7 +107,7 @@ graph TB
 | **Immutability** | Master Grid is frozen; all changes go through a disposable WorkingGrid (Copy-on-Write) |
 | **Single Source of Truth** | Accounting engine owns all fund data; everything reads from it |
 | **Event-driven + Polling** | Fill Events (real-time) and Open-Order polling feed the same queue |
-| **Fixed-Cap Batching** | Deterministic batching with hard cap per broadcast (default 4 fills) |
+| **Fixed-Cap Batching** | Deterministic batching with hard cap per broadcast (cap = gapSlots + 1 fills) |
 | **Persistence** | Grid snapshot written after every confirmed blockchain commit |
 
 ---
@@ -377,13 +377,13 @@ The fill pipeline handles incoming filled orders efficiently through fixed-cap b
                       ↓
 ┌─────────────────────────────────────────────────────────────┐
 │             processFilledOrders() - Entry Point             │
-│    Use gap-slot batch size for deterministic batching   │
-│      Rules: <=gapSlots unified, >gapSlots chunked      │
+│    Use gap-slot batch size (gapSlots+1) for deterministic batching   │
+│      Rules: <=gapSlots+1 unified, >gapSlots+1 chunked      │
 └─────────────────────┬───────────────────────────────────────┘
                       ↓
 ┌─────────────────────────────────────────────────────────────┐
-│            Pop Batch (up to gapSlots)                     │
-│        Takes N fills from queue head (N = 1..gapSlots)     │
+│            Pop Batch (up to gapSlots+1)                     │
+│        Takes N fills from queue head (N = 1..gapSlots+1)     │
 │   Example: pops [fill1, fill2, fill3] for batch processing  │
 └─────────────────────┬───────────────────────────────────────┘
                       ↓
@@ -418,9 +418,9 @@ The fill pipeline handles incoming filled orders efficiently through fixed-cap b
 
 ### Key Properties
 
-- **Gap-Slot Batch Sizing**: Batch size is deterministic, derived from the grid gap-slot count (`DEXBot._getGapSlotBatchSize`)
-  - 1..gapSlots awaiting: single unified batch (one rebalance/broadcast cycle)
-  - more than gapSlots awaiting: repeated chunks of gapSlots (last chunk may be smaller)
+- **Gap-Slot Batch Sizing**: Batch size is deterministic, derived from the grid gap-slot count + 1 (`DEXBot._getGapSlotBatchSize`)
+  - 1..gapSlots+1 awaiting: single unified batch (one rebalance/broadcast cycle)
+  - more than gapSlots+1 awaiting: repeated chunks of gapSlots+1 (last chunk may be smaller)
 
 - **Single Rebalance Cycle**: All fills in batch processed in ONE rebalance
   - No "split across cycles" delays
@@ -443,7 +443,7 @@ The fill pipeline handles incoming filled orders efficiently through fixed-cap b
 
 Scenario source: 29-fill burst during the Feb 7 market crash, modeled at
 roughly 3 seconds per broadcast; see
-[`FUND_MOVEMENT_AND_ACCOUNTING.md`](FUND_MOVEMENT_AND_ACCOUNTING.md#14-fill-batch-processing--cache-fund-timeline).
+[`FUND_MOVEMENT_AND_ACCOUNTING.md`](FUND_MOVEMENT_AND_ACCOUNTING.md#15-fill-batch-processing--timeline).
 
 | Metric | Legacy (1-at-a-time) | Fixed-Cap Batching | Improvement |
 |--------|---------------------|-------------------|-------------|
@@ -464,26 +464,31 @@ Instead of complex partial handling, spread corrections are **conservative and f
 - Target spread width stays **constant** at `targetSpreadPercent`
 - Corrections scale with **actual available funds**, not arbitrary slot budgets
 - No dynamic spread inflation based on partial consolidation flags
-- Edge-first surplus selection ensures stable rotation candidates
+- Safe window-contiguous candidate ordering (with an edge-first fallback) prevents cross-side placement
 
 ### Algorithm
 
-**Location**: `modules/order/strategy.ts::calculateTargetGrid()`
+**Location**: `modules/order/grid.ts::prepareSpreadCorrectionOrders()`, selected by
+`modules/order/grid.ts::determineOrderSideByFunds()`.
 
-The simplified approach prioritizes fund availability over aggressive corrections:
+The correction path is fund-only and never manufactures budget by shrinking a resting order:
 
 ```
-1. Detect that spread is wider than targetSpreadPercent
-2. Calculate how many edge slots are missing
-3. Attempt to place new edge orders with available funds
-4. If insufficient funds for all edges:
-   - Create what's affordable with available funds
-   - Log shortfall (smooth over next rebalance cycle)
-5. If a dust partial exists in the correction window:
-   - Mark for consolidation in next grid rebuild
-   - Don't create complex merge/split side effects
-6. Maintain constant target spread—no inflation based on partial flags
+1. Detect that the live window is wider than targetSpreadPercent.
+2. Select up to `outOfSpread` eligible holes in safe window/gap order.
+3. If the funded edge holds a non-dust PARTIAL, optionally top it up, but only
+   when `ideal - current` is positive and free funds can cover the increase.
+4. Create replacements from free available/chainFree funds; contiguous gap-slot
+   promotion may extend the window while preserving MIN_SPREAD_ORDERS and the
+   opposite placed rail.
+5. If free funds cannot cover every target, place/top up the affordable prefix,
+   stop without shrinking inventory, and log the fund-constrained remainder.
+6. If neither side has free funds, skip correction and let the maintenance
+   runtime refresh balances and open orders rather than recycle stale inventory.
 ```
+
+Detected dust partials never enter this path: `cancelDustOrders()` cancels them
+on-chain immediately, and the five-minute health check is only a restart safety net.
 
 ### Fund-Safe Constraints
 
@@ -491,19 +496,21 @@ Spread corrections respect these hard limits:
 
 ```javascript
 // In modules/constants.ts (GRID_LIMITS)
-MIN_SPREAD_ORDERS: 2,           // Always maintain minimum gap
+MIN_SPREAD_ORDERS: 2,           // Preserve the minimum empty gap reserve
 
-// Spread width itself stays user-configured (`targetSpreadPercent`) — fixed, no inflation.
-// Correction count has no separate slot cap; it is bounded by the funds check below.
+// `outOfSpread` supplies the requested slot count. Execution is bounded by
+// safe candidate selection, healthy minimum sizes, and actual free funds.
+const availableFund = Math.max(0, Math.min(
+    manager.funds.available[side],
+    manager.accountTotals[side === 'buy' ? 'buyFree' : 'sellFree']
+));
 
-// Each correction order must be healthy
-const minHealthySize = calculateMinOrderSize(side);
-const affordableOrderCount = Math.floor(availableFunds / minHealthySize);
-const correctionOrders = Math.min(missingSlots, affordableOrderCount);
+// Each target is created or topped up only while remainingBudget covers it.
+// No resting ACTIVE/PARTIAL order is shrunk to fund the correction.
 ```
 
 **Benefits**:
-- ✅ No "double-dust" fragmentation
+- ✅ No inventory recycling from stale-size snapshots
 - ✅ Constant, predictable spread width
 - ✅ Funds always respected (no forced allocation)
 - ✅ Natural smoothing over multiple rebalance cycles
@@ -591,12 +598,11 @@ if (mgr.outOfSpread) {
 ### After (Numeric Distance)
 
 ```javascript
-// New approach: distance in steps
-mgr.outOfSpread = 3;  // 3 steps beyond target spread
+// New approach: requested missing slots derived from the live geometry
+mgr.outOfSpread = 3;  // three slots beyond the target spread
 
-// Use distance in correction logic
-const spreadDistance = mgr.outOfSpread;
-const replacementSlots = Math.min(spreadDistance, MAX_CORRECTION_SLOTS);
+// The grid engine bounds actual work by eligible candidates, MIN_SPREAD_ORDERS,
+// healthy sizes, and available free funds. There is no MAX_CORRECTION_SLOTS cap.
 ```
 
 **Benefit**: Enables scaled corrections based on actual severity.
@@ -706,7 +712,7 @@ stateDiagram-v2
 
     note right of PARTIAL
         Partially filled on-chain
-        Waiting for consolidation
+        Dust is cancelled immediately; non-dust is corrected in rebalance
     end note
 ```
 
@@ -881,7 +887,7 @@ sequenceDiagram
     Strat-->>Mgr: target grid
     Mgr->>Mgr: Apply rotations via WorkingGrid
     Mgr->>Acct: Deduct BTS fees during recalculateFunds
-    Mgr->>Mgr: Consolidate dust partials
+    Mgr->>Mgr: Cancel detected dust partials immediately
 ```
 
 ### 2. Order Rotation (Crawl Mechanism)
@@ -916,7 +922,7 @@ graph TB
     START[Grid Update Triggered] --> CALC[Calculate Ideal Grid<br/>Based on current funds]
     CALC --> RELOAD[Force Reload Persisted Grid<br/>Ensure fresh blockchain state]
     RELOAD --> COMPARE[Compare to Persisted Grid]
-    COMPARE --> RMS[Calculate RMS Divergence<br/>For PARTIAL orders only]
+    COMPARE --> RMS[Calculate RMS Divergence<br/>ACTIVE + VIRTUAL orders per side]
 
     RMS --> CHECK{RMS > Threshold?}
     CHECK -->|Yes| UPDATE[Update Grid Sizes<br/>Trigger rebalance]
@@ -1043,34 +1049,23 @@ graph LR
 
 The system has been optimized to use a "memory-driven" model for order updates, eliminating redundant blockchain API calls during normal operation.
 
-### Key Changes
+### How it works
 
-**1. Raw Order Cache (`rawOnChain`)**
-- Grid slots now store exact blockchain order representations (integers/satoshis) in a `rawOnChain` cache
-- **Birth**: Cache populated immediately after successful order placement using broadcasted arguments
-- **Partial Fills**: Cache updated in-place via integer subtraction (subtracting filled satoshis from `for_sale`)
-- **Updates/Rotations**: Cache refreshed with adjusted integers returned by build process
-
-**2. Eliminated Redundant API Calls**
-- Removed all `readOpenOrders()` calls from `_buildSizeUpdateOps()` and `_buildRotationOps()`
-- Removed `computeVirtualOpenOrders()` logic that was redundantly fetching entire account state
-- The bot now trusts its internal state, backed by real-time fill listener, to build transactions
-
-**3. Refactored `buildUpdateOrderOp()`**
-- Updated to support optional `cachedOrder` parameter
-- Allows callers to bypass blockchain queries if they have raw state in memory
-- Returns `finalInts` along with operation data for local tracking
-
-**4. Self-Healing Resilience**
-- Maintains "State Recovery Sync" fallback
-- If a memory-driven transaction fails, bot catches error and performs a full refresh
-- Ensures internal ledger stays synchronized with BitShares blockchain
+- **Raw order cache (`rawOnChain`):** each grid slot stores the exact blockchain order integers
+  (satoshis) — seeded from broadcast arguments on placement, updated in place on partial fills,
+  and refreshed on updates/rotations.
+- **Chain-free planning:** size updates and rotations build their operations from the cache;
+  only placements and recovery syncs query the blockchain.
+- **`buildUpdateOrderOp(cachedOrder?)`:** accepts an optional cached order and returns
+  `finalInts` alongside the operation for local tracking.
+- **Self-healing:** a failed memory-driven transaction triggers a full state-recovery sync so the
+  internal ledger stays consistent with the chain.
 
 ### Benefits
 - **Faster reaction time**: No waiting for blockchain queries during order updates
 - **Reduced API load**: Fewer fetches, less network congestion
 - **Mathematical precision**: Integer-based tracking prevents float precision errors
-  - *See [FUND_MOVEMENT_AND_ACCOUNTING.md § 5.5](FUND_MOVEMENT_AND_ACCOUNTING.md#55-precision--quantization-patch-14) for quantization utilities and best practices*
+  - *See [FUND_MOVEMENT_AND_ACCOUNTING.md § 5.5](FUND_MOVEMENT_AND_ACCOUNTING.md#55-precision--quantization) for quantization utilities and best practices*
 - **Fallback safety**: Automatic recovery if memory state becomes inconsistent
 
 ### Performance Impact
@@ -1166,8 +1161,6 @@ graph LR
     B -->|Real-world Scenarios| B3["Fills/FEE Tests"]
 
     C -->|Dynamic Weight| C1["dynamic_weight"]
-    C -->|Derivative Trap| C2["derivative_signal"]
-    C -->|Momentum Gate| C3["momentum_gate"]
 
     D -->|CR Planner| D1["cr_planner"]
     D -->|Credit Runtime| D2["credit_runtime"]
@@ -1200,13 +1193,12 @@ node dist/tests/test_dexbot_credit_wiring.js
 - ✅ Edge cases covered (zero funds, max orders, etc.)
 - ✅ Concurrent operations tested with locks
 - ✅ State transitions validated end-to-end
-- ✅ Signal pipelines tested (dynamic weight, derivative traps)
+- ✅ Signal pipelines tested (dynamic weight)
 - ✅ Credit/debt runtime tested (CR planner, MPA wiring)
 
 **Test Suite Evolution:**
 - 50+ test cases for signal intelligence and credit runtime
 - Dynamic weight override and market adapter signal gate tests
-- Derivative momentum gate and signal trap regression tests
 - Credit/debt tests with CR planner and MPA wiring validation
 
 ### Testing Best Practices
@@ -1334,8 +1326,7 @@ The strategy engine has been significantly strengthened with improvements to fun
 **2. Dust Partial Handling**
 - Improved dust detection algorithm prevents false positives
 - Detects dust as `< 5% of ideal order size`
-- Dust partials are absorbed into the next grid rebuild cycle (no merge/split mechanics)
-- **Auto-Cancellation**: `_cancelDustOrders()` cancels dust partials on-chain immediately on detection — no delay, no timer maps, no retry budgets. Cancel is attempted post-fill (inside fill lock) and every 5-min health check (safety net).
+- **Immediate Cancellation**: `_cancelDustOrders()` cancels dust partials on-chain when detection runs — no delay, timer map, or consolidation cycle. Detection runs after fills/sync, and a 5-minute health check is the restart safety net.
 
 **3. Strict Order Size Constraints**
 - Orders validated to not exceed available funds

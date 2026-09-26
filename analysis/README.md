@@ -21,18 +21,16 @@ Tools that inspect DEXBot trading behavior and the market data it operates on. O
 | Tool | Ask this when… | One-line command |
 |------|----------------|------------------|
 | [`trade_profitability.ts`](#trade-profitability-analyzer-trade_profitabilityts) | "Is my bot making money?" — PnL, R-multiples, drawdown | `npm run analysis:trade-pnl -- <account-id>` |
-| [`grid_correction_check.ts`](#grid-correction-check-grid_correction_checkts) | "Is my grid placing orders monotonically?" — sell/buy price inversion detector | `npm run analysis:grid-check -- --bot-key <bot-key>` |
+| [`grid_correction_check.ts`](#last-fill-guard-check-grid_correction_checkts) | "Are fills respecting the pivot ± half-increment guard?" | `npm run analysis:grid-check -- --bot-key <bot-key>` |
 | [`analyze_risk_profile.ts`](#risk-profile-analyzer-analyze_risk_profilets) | "How wide should my Safe Range clamps be?" | `node dist/analysis/analyze_risk_profile.js --bot-key <bot-key>` |
 | [`analyze_trade_heatmap.ts`](#trade-heatmap-analyze_trade_heatmapts) | "Where did trade volume cluster vs the AMA?" | `node dist/analysis/analyze_trade_heatmap.js --bot-key <bot-key>` |
 | [`tradingview/analyze_tradingview.ts`](#tradingview-chart-tradingviewanalyze_tradingviewts) | "Just give me a candle chart" | `dexbot tv <bot-key>` |
-| [`analyze_dynamic_weight.ts`](#dynamic-weight-research-analyze_dynamic_weightts) | "Are buy/sell weights tuned for this regime?" | `node dist/analysis/analyze_dynamic_weight.js --bot-key <bot-key>` |
+| [`analyze_dynamic_weight.ts`](#dynamic-weight-research-analyze_dynamic_weightts) | "Are buy/sell weights tuned for this regime?" | `dexbot dw <bot-key>` |
 | [`analyze_volatility.ts`](#volatility-analyze_volatilityts) | "Both weights clipped too hard / not enough?" | `node dist/analysis/analyze_volatility.js --bot-key <bot-key>` |
 | [`analyze_regime.ts`](#supporting-sub-signals) | "Is the trend/chaos gate too aggressive?" | `node dist/analysis/analyze_regime.js --bot-key <bot-key>` |
 | [`analyze_kalman.ts`](#supporting-sub-signals) | "Is Kalman's contribution to the blend right?" | `node dist/analysis/analyze_kalman.js --bot-key <bot-key>` |
 | [`ama_fitting/`](#ama-fitting) | "Which AMA preset fits this market?" | `node dist/analysis/ama_fitting/optimizer_high_resolution.js --data <lp-file>` |
 | [`bot_fitting/`](#bot-fitting) | "What spread / increment / ratio for my grid?" | `node dist/analysis/bot_fitting/backtest_ama_sweep.js --data <lp-file>` |
-
-> `analyze_derivatives.ts` (SMA / MACD / RSI derivative layer, uses `derivative_chart_generator.ts`) is a legacy tool surfaced via `npm run analysis:derivatives` — kept for reference.
 
 > `<account-id>` = a BitShares `1.2.x` account ID or name. `<bot-key>` = a key from `profiles/bots.json`. `<lp-file>` = a JSON file under `market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json`.
 
@@ -134,6 +132,8 @@ Fetches `fill_order` operations for a BitShares account from Kibana within a spe
 
 **Pipeline:** Kibana fill query → on-chain asset precision resolution → buy/sell classification → chronological matching (sequential LIFO by default) → per-pair summary + optional per-match detail.
 
+**Account resolution:** an account name (or a bare `1.2.x` ID) is resolved through the shared `account_resolver.ts` helper. When the name matches a bot in `profiles/bots.json`, the resolved ID is stamped onto that entry as `accountId`, so later runs resolve offline; `--refresh-account` forces a fresh lookup.
+
 ```bash
 # Account by ID, last 7 days (default)
 node dist/analysis/trade_profitability.js 1.2.123456
@@ -162,9 +162,7 @@ node dist/analysis/trade_profitability.js 1.2.123456 \
 | `--end <iso>` | — | End time |
 | `--hours <n>` | `168` (7d) | Lookback hours (alternative to start/end) |
 | `--asset <id>` | all | Filter to one base asset ID |
-| `--lookup` | off | Legacy (no-op): account names always resolve automatically |
 | `--refresh-account` | off | Force re-resolution and update the stored `accountId` |
-| `--node <url>` | first healthy from built-in pool (10 nodes) | BitShares node for account + asset resolution |
 | `--csv <file>` | — | Export chronologically sorted trade list |
 | `--json <file>` | — | Export full analysis with per-pair PnL data |
 | `--match-mode <mode>` | `sequential` | Matching mode: `sequential` (LIFO, default) or `fifo` |
@@ -177,8 +175,8 @@ node dist/analysis/trade_profitability.js 1.2.123456 \
 **Asset precision handling:**
 
 1. Assets listed in the static `ASSETS` table (BTS, TWENTIX, XBTSX.*, HONEST.*, IOB.*, etc.) resolve instantly.
-2. Unknown assets are resolved on-chain via `get_assets` when `--node` is provided, with results cached at runtime.
-3. If no `--node` is given and an asset is unknown, the fill is **skipped** with a warning (no abort).
+2. Unknown assets are resolved on-chain via `get_assets` against the built-in node pool, with results cached at runtime.
+3. If resolution fails or an asset is not found on chain, the affected fills are **skipped** with a warning (no abort).
 
 **PnL methodology:**
 
@@ -206,9 +204,10 @@ node dist/analysis/trade_profitability.js 1.2.123456 \
 | `Expectancy (gross)` | How much one trade is expected to earn before fees. Positive = edge exists. The `R` version normalises this by the average loss size (reports in R-multiples instead of BTS). The `net` version subtracts fees. |
 | `Median R` | The middle R-multiple value (half of trades are above, half below). `>1R` / `>2R` = % of trades that earned more than 1× or 2× the average loss. `<-1R` = % that lost more than 1× the average loss. |
 | `PnL distribution` | Median, P25, P75, Best, Worst — the centre, spread, and extremes of per-trade return %. Not annualised, just per cycle. |
-| `Sharpe (ann)` | How consistent your daily net PnL is per unit of volatility. Dimensionful (based on absolute daily PnL, not % returns) — use for ranking your own runs, not comparing across account sizes. |
-| `Sortino (ann)` | Same method but only penalises days where you lost money (downside volatility). Higher than the Sharpe is normal; a big gap means most volatility came from winning days. |
-| `Max Drawdown` | Largest peak-to-trough equity decline as a % of the peak. How bad things got. |
+| `Sharpe (ann)` | The window's net PnL per unit of volatility, annualised (`mean/std × √periods-per-year`). Binned daily for ≥ 3-day windows, hourly below; every period counts, flat ones as 0 PnL. Shown as `value ± estimation error [bin, n, confidence]` — short windows are low confidence, and only same-bin runs are comparable. Dimensionful (absolute PnL, not % returns). |
+| `Sortino (ann)` | As Sharpe, but only losing periods feed the downside deviation. `∞` means the window had no losing periods. |
+| `Projected net PnL` | Scored-window net PnL scaled linearly to a year (`÷ scored days × 365`) — same whole-period basis as Sharpe/Sortino, so a trailing partial period is excluded from both. A projection, not a forecast. |
+| `Max Drawdown` | Largest peak-to-trough decline of the realised-PnL curve, in quote units (with the same decline as a % of peak cumulative profit). Realised only — open inventory isn't marked. |
 | `Max Recovery Time` | Longest time (in days) from the deepest point of a drawdown back to a new equity high. |
 | `Max Consecutive W/L` | Longest streak of winning or losing round-trips. Grouped by sell order, so one order covering multiple buy lots counts as one result. Grid bots naturally cluster wins during trends — streaks of 100-200 are not alarming. |
 | `Avg hold time` | Average time (hours) between buying an asset and selling it. |
@@ -216,16 +215,16 @@ node dist/analysis/trade_profitability.js 1.2.123456 \
 | `Sell orders filled` | Number of distinct sell orders that were filled in the period. |
 | `Partial fills/order` | How many buy lots each sell order consumed (mean, median, max). For a grid bot: 2.0 median means half the orders clear 2 grid levels; 18 max means one big sweep. |
 | `One-shot orders` | % of orders that matched exactly 1 buy lot. Low % = your grid is thick enough that orders routinely cover multiple levels. |
-| `Fills/day` | Average matched lots per calendar day. Raw activity speed. |
-| `Avg vol/day` | Average daily trading volume in the quote asset. |
+| `Fills/day` | Average matched lots per scored day, on the same whole-period basis as the ratios above. Raw activity speed. |
+| `Avg vol/day` | Average daily trading volume in the quote asset over that same scored window. |
 
 </details>
 
-### Grid Correction Check (`grid_correction_check.ts`)
+### LAST-FILL-GUARD Check (`grid_correction_check.ts`)
 
-Validates grid discipline from the same Kibana fill pipeline as `trade_profitability.ts`: two consecutive same-direction fills on a pair must be monotonic — sell prices rising, buy prices falling (equal is OK). An inversion means the bot placed an order below its own previous sell (or above its own previous buy), e.g. an orphaned order filling outside grid accounting. Used as the external regression gate for the orphan-fix plans in `docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md`.
+Validates LAST-FILL-GUARD discipline from the same Kibana fill pipeline as `trade_profitability.ts`. For a previous fill at price `x` and grid increment `i`, the next order must satisfy `BUY < x × (1 − i/2/100)` and `SELL > x × (1 + i/2/100)`, regardless of the previous fill's side. A violation is a buy or sell fill inside the prohibited half-increment band around its pivot.
 
-**Pipeline:** Kibana `fill_order` query (paginated `search_after`) → on-chain asset precision resolution → buy/sell classification → chronological sort → per-order/price-epoch aggregation (partial fills at one price collapsed to weighted-average; repriced order lifetimes kept separate) → consecutive same-direction pair comparison → violation report with daily histogram.
+**Pipeline:** Kibana `fill_order` query (paginated `search_after`) → on-chain asset precision resolution → buy/sell classification → chronological sort → per-order/price-epoch aggregation (partial fills at one price collapsed to weighted-average; repriced order lifetimes kept separate) → consecutive pivot-band comparison → violation report with daily histogram.
 
 ```bash
 # Per-order aggregated check (default), last 7 days
@@ -237,8 +236,8 @@ npm run analysis:grid-check -- --bot-key <bot-key> --hours 720 --json out.json -
 # Raw fill granularity instead of per-order aggregation
 npm run analysis:grid-check -- --bot-key <bot-key> --per-fill --hours 168
 
-# Forgive small adverse moves within 0.1%
-npm run analysis:grid-check -- --bot-key <bot-key> --hours 168 --tolerance 0.1
+# Override the bot's configured grid increment
+npm run analysis:grid-check -- --bot-key <bot-key> --hours 168 --increment 0.5
 ```
 
 Exit code `0` = pass, `2` = violations found, `1` = fatal error. Bot keys resolve via `profiles/bots.json` (`--list-bots` to enumerate); the account defaults to the bot's stored `accountId` when present (no chain lookup — the ID is auto-saved next to `preferredAccount` after the first successful name resolution, re-verified with `--refresh-account`), otherwise `preferredAccount` is resolved on-chain, and can be overridden with `--account <1.2.x|name>`.
@@ -251,19 +250,18 @@ Exit code `0` = pass, `2` = violations found, `1` = fatal error. Bot keys resolv
 | `--hours <n>` | `168` | Lookback hours from now |
 | `--start <iso>` / `--end <iso>` | — | Absolute time window |
 | `--account <id>` | bot `preferredAccount` | Override account ID or name |
-| `--lookup` | off | Legacy (no-op): account names always resolve via BitShares node when no stored ID exists |
 | `--refresh-account` | off | Force re-resolution of `preferredAccount` and update the stored `accountId` when it changed |
-| `--node <url>` | first built-in node | Node for account/asset resolution |
+| `--increment <pct>` | bot config / `0.5` | Grid increment used to derive the half-increment guard band |
 | `--per-fill` | off | Check at fill granularity instead of per-order aggregated |
 | `--include-cross-pair` | off | Also check consecutive fills across different pairs |
-| `--tolerance <pct>` | `0` | Adverse price move (%) forgiven before flagging |
+| `--tolerance <pct>` | — | Deprecated compatibility alias for `--increment`; its value is doubled and a warning is emitted |
 | `--json <file>` / `--csv <file>` | — | Export violations |
-| `--verbose` | off | Print the full trade sequence |
+| `--verbose` | off | Print the fetched trade sequence before checking |
 | `--list-bots` | — | List available bot keys and exit |
 
 </details>
 
-**Notes:** strict sat-level comparison is the ground truth (`--tolerance` only forgives small inversions); partial fills at one price are collapsed to a weighted-average price in the default mode, but fills after a native order repricing are kept in separate price epochs so updated orders are not mixed together.
+**Notes:** this is an offline approximation of decision-time placement. Batch-placed orders can share an earlier pivot, and the tool does not model the runtime spread-correction bypass. In the default mode, partial fills at one price are collapsed to a weighted average while fills from separate native order repricing epochs remain independent.
 
 ## Charts & Visualization
 
@@ -336,6 +334,13 @@ Two weight-tuning paths feed into the market adapter:
 Interactive 4-panel chart for the asymmetric path: AMA slope plus Kalman confirmation, gated by Hurst Exponent and Permutation Entropy. Use this when tuning buy/sell weight bias, AMA slope offset behavior, and regime damping.
 
 ```bash
+# Recommended one-step (advanced): bot, pool, or pair — fetches candles and renders,
+# same pipeline as `dexbot tv`, default 3 months
+dexbot dw <bot-key>
+dexbot dw 133 --month 6
+dexbot dw TOKENA/TOKENB --month 1
+
+# Direct analyzer (own candle files, research knobs --alpha/--gain/--dw/--lb/--clip)
 node dist/analysis/analyze_dynamic_weight.js --bot-key <bot-key>
 
 # From LP candle file with custom parameters
@@ -387,7 +392,6 @@ Shared analyzers and chart renderers for the dynamic-weight signal path. Core en
 **Research docs:**
 - [README.md](trend_detection/README.md) — directory overview and module index
 - [DYNAMIC_WEIGHT_RESEARCH.md](trend_detection/DYNAMIC_WEIGHT_RESEARCH.md) — AMA+Kalman blend with Hurst/PE regime gating, formula reference, knob guide
-- [SIGNAL_DOCUMENTATION.md](trend_detection/SIGNAL_DOCUMENTATION.md) — legacy SMA/MACD/RSI derivative signal layer
 
 <details><summary>Modules (click to expand)</summary>
 
@@ -485,7 +489,12 @@ Details: [bot_fitting/README.md](bot_fitting/README.md)
 | `price_sources.ts` | Unified candle source abstraction (`json`, `market_adapter`) |
 | `chart_utils.ts` | Shared chart rendering utilities |
 | `math_utils.ts` | Shared math utilities |
-| `bot_key_utils.ts` | Bot-key resolution and candle file lookup |
+| `bot_key_utils.ts` | Bot-key resolution, candle file lookup, `accountId` persistence (`persistBotAccountId`) |
+| `account_resolver.ts` | Account resolution for all tools: `preferredAccount` / `--account` → `1.2.x`, stamping the result into `profiles/bots.json` |
+| `chain_pool.ts` | Ephemeral read-only chain client over the built-in node pool (account + asset lookups) |
+| `fills_source.ts` | Shared `fill_order` Kibana fetch/query and the static asset-precision table + on-chain cache |
+
+On-chain account and asset lookups in the fill-based tools go through `account_resolver.ts` / `fills_source.ts` (both built on `chain_pool.ts`): tool scripts must not open their own read-only clients or carry their own node list. The batch backfill `resolve_bot_accounts.ts` is the exception — it reuses the production chain client over one connection.
 
 ## npm Script Shortcuts
 
@@ -496,7 +505,6 @@ These npm scripts wrap common analysis runners:
 | `npm run analysis:tradingview` | `node dist/analysis/tradingview/analyze_tradingview.js` |
 | `npm run analysis:trade-pnl` | `node dist/analysis/trade_profitability.js` |
 | `npm run analysis:grid-check` | `node dist/analysis/grid_correction_check.js` |
-| `npm run analysis:derivatives` | `node dist/analysis/analyze_derivatives.js` (legacy SMA/MACD/RSI layer, reference only) |
 | `npm run ama:chart:lp-local` | `node dist/analysis/ama_fitting/generate_unified_comparison_chart.js` (chart also auto-generated by optimizer) |
 
 All accept `--` forwarded flags.
@@ -508,7 +516,7 @@ npm run analysis:tradingview -- --source market_adapter --bot-key <bot-key>
 # Trade PnL
 npm run analysis:trade-pnl -- 1.2.123456 --hours 720
 
-# Grid correction check (monotonicity regression gate)
+# LAST-FILL-GUARD check
 npm run analysis:grid-check -- --bot-key <bot-key> --hours 168
 
 # File-based
@@ -519,5 +527,5 @@ npm run ama:chart:lp-local -- --data market_adapter/data/lp/<pair>/lp_pool_<id>_
 ## Related Docs
 
 - [Market Adapter](../market_adapter/README.md) — live AMA pricing, grid triggers, dynamic weights, and recalc triggers
-- [Consolidated Orphan-Fix Summary](../docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md) — orphan/gap-band root-cause plans; `grid_correction_check` is their regression gate
+- [Order Engine Retrospective](../docs/ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md) — orphan/gap-band root-cause plans; `grid_correction_check` is their regression gate
 - [DEXBot2 Tuning Cheat Sheet](../claw/docs/DEXBOT2_TUNING_CHEAT_SHEET.md) — grid tuning reference for live bots

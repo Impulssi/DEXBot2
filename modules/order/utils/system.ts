@@ -52,7 +52,7 @@ const require = createRequire(import.meta.url);
 import { path } from '../../path_api.js';
 import { getStorage } from '../../storage/index.js';
 const storage = getStorage();
-import { API_LIMITS, ORDER_TYPES, ORDER_STATES, COW_ACTIONS, FEE_PARAMETERS, BTS_PRECISION, PIPELINE_TIMING, NATIVE_CLIENT } from '../../constants.js';
+import { API_LIMITS, ORDER_TYPES, ORDER_STATES, COW_ACTIONS, FEE_PARAMETERS, BTS_PRECISION, PIPELINE_TIMING, NATIVE_CLIENT, GRID_LIMITS } from '../../constants.js';
 import { PATHS } from '../../paths.js';
 import { toFiniteNumber, isValidNumber } from '../format.js';
 import * as MathUtils from './math.js';
@@ -63,6 +63,38 @@ import { getErrorMessage } from '../../utils/errors.js';
 import { withTimeout } from './timeout.js';
 const { ensureDir, readJSON } = storage;
 const systemLogger = new Logger('System');
+
+/**
+ * Lazily-bound ladder validator: resolveOnGridPivot from the COW runtime,
+ * imported on first use (not at module top level). utils/system.ts Must not
+ * statically import dexbot_cow_runtime (the runtime is a startup-graph
+ * heavyweight and the static edge would pull the whole COW engine into
+ * everything that touches persistence helpers); the runtime CAN statically
+ * import utils/system (it already does), so this edge stays one-directional
+ * and cycle-free in practice.
+ *
+ * Shared on purpose (centralization): one ladder-validation implementation
+ * — the increment fallback chain (manager.config → DEFAULT_CONFIG) and the
+ * one-increment drift refusal — serves both the live guard's per-probe
+ * validation and the persisted-pivot restore. The restorer must never
+ * accept a pivot value the runtime would itself refuse per probe.
+ *
+ * @param {Object} manager - OrderManager instance
+ * @param {number} price - Candidate pivot price
+ * @returns {Object|null} {price, slotIdx, snapped, nearestDrift} or null
+ */
+function cowRuntimeLadderValidator(manager: any, price: number): { price: number; slotIdx: number | null; snapped: boolean; nearestDrift: number | null } | null {
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { resolveOnGridPivot } = require('../../dexbot_cow_runtime');
+        const validated = resolveOnGridPivot(manager, price);
+        if (!validated || validated.price == null || validated.idx == null) return null;
+        return { price: validated.price, slotIdx: validated.idx, snapped: !!validated.snapped, nearestDrift: validated.nearestDrift };
+    } catch (e: any) {
+        systemLogger.warn(`restoreLastFillPivot: ladder validator unavailable (${getErrorMessage(e)})`);
+        return null;
+    }
+}
 
 function _debugLogAndNull(method: any, symA: any, symB: any) {
     return (err: any) => {
@@ -416,7 +448,7 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
  * asset with the deepest markets, so almost every listed asset has a price
  * path against it even when no direct market exists for an exotic pair.
  */
-export const DEFAULT_PRICE_BRIDGES = ['BTS'];
+const DEFAULT_PRICE_BRIDGES = ['BTS'];
 
 function isPositiveRate(value: any): value is number {
     return typeof value === 'number' && Number.isFinite(value) && value > 0;
@@ -492,7 +524,7 @@ export async function derivePriceWithBridges(BitShares: any, symA: string, symB:
  * @param {string} shareAssetRef - Share asset symbol or reference
  * @returns {Promise<Object|null>} Object with {shareAsset, pool} or null if not found
  */
-export async function resolveLiquidityPoolByShareAsset(BitShares: any, shareAssetRef: string): Promise<any> {
+async function resolveLiquidityPoolByShareAsset(BitShares: any, shareAssetRef: string): Promise<any> {
     if (!BitShares?.db || typeof BitShares.db.get_liquidity_pools_by_share_asset !== 'function') {
         return null;
     }
@@ -909,7 +941,7 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
                 .slice(-500)
                 .map((e: any) => ({ slotId: e.slotId, side: e.side, ts: Number(e.ts) }))
             : undefined;
-        // Manual-cancel holds (restart resilience): Map -> plain array;
+        // Manual-cancel holds (fork restart resilience): Map -> plain array;
         // empty map persists as cleared so released holds never resurrect.
         // Non-Map (legacy callers without the field) passes undefined so
         // storeMasterGrid leaves any previously stored holds untouched.
@@ -917,6 +949,11 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
         const manualHolds = (manager as any).manualHolds instanceof Map
             ? serializeHolds(manager)
             : undefined;
+        // LAST-FILL-GUARD pivot (upstream v1.6.7 restart resilience): only a
+        // fill-provenanced pivot is persisted (book seeds pass null = explicit
+        // clear); rides the SAME snapshot as manualHolds (fork keeps position
+        // 10, upstream's payload lands at 11).
+        const lastFillPivot = buildLastFillPivotPayload(manager);
         await accountOrders.storeMasterGrid(
             orders,
             btsFeesOwed,
@@ -932,7 +969,8 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
             genesis,
             gapEvacStreaks,
             pendingFillCrawls,
-            manualHolds
+            manualHolds,
+            lastFillPivot
         );
         return true;
     } catch (e: any) {
@@ -984,6 +1022,234 @@ export function restoreManualHolds(manager: any, persisted: any): number {
     if (!manager) return 0;
     const { restoreManualHolds: restore } = require('../manual_hold.js');
     return restore(manager, persisted);
+}
+
+/**
+ * Build the persist payload for the LAST-FILL-GUARD pivot, or null when there
+ * is nothing durable to write.
+ *
+ * Source-of-truth contract (single ledger): the manager's in-memory pivot is
+ * authoritative during runtime; the disk row is a mirror that follows the
+ * grid snapshot, so it invalidates whenever the snapshot does:
+ * - Only a 'fill'-provenance pivot is eligible — a book-seeded pivot is a
+ *   heuristic, not market truth, and must not fossilize into the snapshot.
+ * - The row carries the CURRENT live genesis hash, so a restore that sees a
+ *   different (re-derived/regenerated) genesis refuses it (a pivot from an
+ *   old generation is not valid after a grid regeneration).
+ * - A pivot without a live genesis is not persistable: null always clears,
+ *   so an expired generation never leaves a stale row behind on disk.
+ *
+ * @param {Object} manager - OrderManager instance
+ * @returns {Object|null} {price, type, fillsAt, genesisHash} or null to clear
+ */
+function buildLastFillPivotPayload(manager: any): { price: number; type: string; fillsAt: number; genesisHash: string } | null {
+    const price = Number(manager?._lastFilledPrice);
+    const type = manager?._lastFilledType;
+    if ((manager as any)?.lastFillPivotSource !== 'fill') return null;
+    if (!Number.isFinite(price) || price <= 0) return null;
+    if (type !== ORDER_TYPES.BUY && type !== ORDER_TYPES.SELL) return null;
+    const fillsAt = Number(manager._lastFilledAt);
+    if (!Number.isFinite(fillsAt)) return null;
+    const genesisHash = manager?._genesis?.priceLevelsHash;
+    if (typeof genesisHash !== 'string' || genesisHash.length === 0) return null;
+    return { price, type, fillsAt, genesisHash };
+}
+
+/**
+ * Normalize a persisted LAST-FILL-GUARD pivot row (shared by the
+ * AccountOrders sanitizer/loader and the payload builder's row contract).
+ *
+ * Returns the row normalized to {price:number, type, fillsAt:number,
+ * genesisHash} when every field passes its gate, null otherwise:
+ * - finite price > 0
+ * - type is ORDER_TYPES.BUY or ORDER_TYPES.SELL
+ * - finite fillsAt > 0
+ * - non-empty string genesisHash
+ *
+ * @param {any} row - Raw candidate row
+ * @returns {Object|null} Normalized row or null
+ */
+export function normalizeLastFillPivot(row: any): { price: number; type: string; fillsAt: number; genesisHash: string } | null {
+    if (!row || typeof row !== 'object') return null;
+    const price = Number(row.price);
+    const type = row.type;
+    const fillsAt = Number(row.fillsAt);
+    const genesisHash = row.genesisHash;
+    if (!Number.isFinite(price) || price <= 0) return null;
+    if (type !== ORDER_TYPES.BUY && type !== ORDER_TYPES.SELL) return null;
+    if (!Number.isFinite(fillsAt) || fillsAt <= 0) return null;
+    if (typeof genesisHash !== 'string' || genesisHash.length === 0) return null;
+    return { price, type, fillsAt, genesisHash };
+}
+
+/**
+ * Write the LAST-FILL-GUARD pivot scalar family in one place (free
+ * implementation shared by the manager method, cow_runtime's queued-fill
+ * refresh, and restoreLastFillPivot).
+ *
+ * Writes _lastFilledPrice, _lastFilledType, _lastFilledAt,
+ * lastFillPivotSource and the per-side mirror (_lastFilledBuyPrice or
+ * _lastFilledSellPrice). `atMs` lets restoreLastFillPivot preserve the
+ * persisted fill timestamp (otherwise every restart would re-stamp "now"
+ * and the TTL would degrade to "time since last restart"); ordinary fill
+ * calls omit it and take Date.now().
+ *
+ * @param {Object} manager - OrderManager instance (or legacy stub)
+ * @param {string} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+ * @param {number} price - Pivot price (finite, > 0)
+ * @param {string} provenance - 'fill' (persist-eligible) or 'book' (seed heuristic)
+ * @param {number} [atMs] - Fill timestamp to preserve (defaults to now)
+ * @returns {boolean} True when the pivot was written
+ */
+export function setLastFillPivot(manager: any, type: any, price: any, provenance: 'fill' | 'book', atMs?: number): boolean {
+    if (!manager) return false;
+    if (type !== ORDER_TYPES.BUY && type !== ORDER_TYPES.SELL) return false;
+    const p = Number(price);
+    if (!Number.isFinite(p) || p <= 0) return false;
+    const now = Number.isFinite(Number(atMs)) && Number(atMs) > 0 ? Number(atMs) : Date.now();
+    manager._lastFilledPrice = p;
+    manager._lastFilledType = type;
+    manager._lastFilledAt = now;
+    manager.lastFillPivotSource = provenance;
+    if (type === ORDER_TYPES.BUY) manager._lastFilledBuyPrice = p;
+    else manager._lastFilledSellPrice = p;
+    return true;
+}
+
+/**
+ * Clear the manager's LAST-FILL-GUARD pivot to cold state — the FULL scalar
+ * family, per-side mirrors included. Clearing only the primary fields would
+ * leave seedLastFilledPricesFromBook's early-return (both mirrors set)
+ * silently suppressing the startup book seed after every grid rebuild — the
+ * exact cold window the persist/restore feature exists to close.
+ *
+ * Used whenever the pivot's generation is invalidated: grid rebuild via
+ * initializeGrid, rejected snapshot reset, and any path that re-anchors the
+ * boundary outside the fill flow. The guard re-arms on the next real fill
+ * (or via the startup book seed), never against a boundary that no longer
+ * exists. Must not touch disk: the pivot is a live-grid invariant, and the
+ * persist pipeline clears the stored row on the next flush by passing null.
+ *
+ * @param {Object} manager - OrderManager instance
+ * @param {string} reason - Log/debug label
+ * @returns {boolean} True when an armed pivot was cleared
+ */
+export function resetLastFillPivot(manager: any, reason: string = 'unspecified'): boolean {
+    if (!manager) return false;
+    const wasArmed = manager._lastFilledPrice != null && manager._lastFilledType != null;
+    manager._lastFilledPrice = null;
+    manager._lastFilledType = null;
+    manager._lastFilledAt = 0;
+    manager.lastFillPivotSource = null;
+    manager._lastFilledBuyPrice = null;
+    manager._lastFilledSellPrice = null;
+    if (wasArmed) {
+        try {
+            manager.logger?.log?.(`[LAST-FILL-GUARD] Pivot cleared (${reason}); guard re-arms on the next fill`, 'info');
+        } catch { /* logging is best-effort */ }
+    }
+    return wasArmed;
+}
+
+/**
+ * Restore the persisted LAST-FILL-GUARD pivot into the manager.
+ *
+ * MUST run with the boundary (after loadGrid has applied the persisted
+ * genesis + re-typed the grid, before the first reconcile/broadcast) so the
+ * guard is never armed against a geometry the snapshot does not describe.
+ *
+ * Validation chain (fail → no-op, never arm on a poisoned value):
+ * 1. Shape: normalizeLastFillPivot re-validates the row (shared gate).
+ * 2. TTL: a pivot older than GRID_LIMITS.LAST_FILL_PIVOT_TTL_MS expires
+ *    instead of vetoing legitimate placements after long downtime (the
+ *    pivot is a "latest fill" fact, not a permanent ratchet). Expired rows
+ *    are dead rows: the shared drop path (clearPersistedLastFillPivot
+ *    under the bot's persistence lock, best-effort) erases them so a later
+ *    validation failure cannot leave a half-invalid row armed.
+ * 3. Genesis binding: a row whose genesisHash differs from the manager's
+ *    current genesis belongs to a dead generation — dropped through the
+ *    same shared drop path (erased from disk so it cannot re-arm on the
+ *    next restart).
+ * 4. On-grid check reuses the runtime's own ladder validator
+ *    (resolveOnGridPivot in dexbot_cow_runtime, safe to import from here —
+ *    utils/system never imports it otherwise, so no cycle). One
+ *    implementation for both the live guard and the restore path, same
+ *    increment fallback chain. On success the snapped ladder level is
+ *    restored — the guard's own convention — never the raw persisted
+ *    float, and the ORIGINAL fillsAt is preserved through
+ *    setLastFillPivot's atMs so the TTL keeps meaning "age of the last
+ *    fill", not "time since this restart".
+ *
+ * @param {Object} manager - OrderManager instance
+ * @param {Object|null} persisted - {price, type, fillsAt, genesisHash} from loadLastFillPivot
+ * @param {Object} [options]
+ * @param {number} [options.now] - Injectable clock (tests)
+ * @returns {boolean} True when the guard was re-armed from the snapshot
+ */
+export function restoreLastFillPivot(manager: any, persisted: any, options: { now?: number } = {}): boolean {
+    if (!manager || !persisted || typeof persisted !== 'object') return false;
+    const row = normalizeLastFillPivot(persisted);
+    if (!row) return false;
+
+    // Shared drop path for every "this row is dead" verdict: erase the
+    // persisted row best-effort so a rejected value can never re-arm the
+    // same rejection on the next restart (storeMasterGrid deliberately
+    // keeps untouched rows for legacy `undefined` callers, so without the
+    // erase the verdict has no TTL guarantee across restarts either).
+    const dropPersistedRow = () => {
+        try {
+            const acct = manager.accountOrders;
+            if (acct && typeof acct.clearPersistedLastFillPivot === 'function') {
+                void acct.clearPersistedLastFillPivot();
+            }
+        } catch { /* best-effort */ }
+    };
+
+    // TTL first: an expired pivot is dropped, not re-armed.
+    const now = Number.isFinite(options?.now) ? Number(options.now) : Date.now();
+    if (now - row.fillsAt > Number(GRID_LIMITS.LAST_FILL_PIVOT_TTL_MS)) {
+        manager.logger?.log?.(
+            `[LAST-FILL-GUARD] Persisted pivot expired (age ${Math.round((now - row.fillsAt) / 1000)}s > TTL ${Math.round(Number(GRID_LIMITS.LAST_FILL_PIVOT_TTL_MS) / 1000)}s) — guard re-arms on the next fill`,
+            'info'
+        );
+        dropPersistedRow();
+        return false;
+    }
+
+    // Genesis binding: a persisted pivot from another genesis is not valid
+    // after a regeneration/re-derive. Drop the row so it cannot resurrect,
+    // and let the startup book seed take over.
+    const liveHash = manager._genesis?.priceLevelsHash;
+    if (typeof liveHash !== 'string' || liveHash.length === 0 || liveHash !== row.genesisHash) {
+        manager.logger?.log?.(
+            `[LAST-FILL-GUARD] Persisted pivot genesis mismatch (stored ${row.genesisHash} vs live ${liveHash ?? 'none'}) — dropping (grid regenerated); book seed will arm instead`,
+            'warn'
+        );
+        dropPersistedRow();
+        return false;
+    }
+
+    // On-grid validation through the runtime's own ladder validator — the
+    // exact same one-increment drift rule, snap, and off-grid refusal the
+    // live guard applies per probe. Import is safe: utils/system.ts does not
+    // otherwise import the cow runtime, and the runtime's own module top
+    // level already imports utils/system (sleep, then the pivot helpers),
+    // so this adds no new edge to the graph.
+    try {
+        const validated = cowRuntimeLadderValidator(manager, row.price);
+        if (!validated) return false;
+        // Arm through the shared writer, preserving the persisted timestamp.
+        setLastFillPivot(manager, row.type, validated.price, 'fill', row.fillsAt);
+        manager.logger?.log?.(
+            `[LAST-FILL-GUARD] Restored persisted pivot ${validated.price}(${row.type})` +
+            `${validated.slotIdx != null ? ` slot=${validated.slotIdx}` : ''}` +
+            `${validated.snapped ? ' (snapped)' : ''} age=${Math.round((now - row.fillsAt) / 1000)}s from snapshot`,
+            'info'
+        );
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 /**
@@ -1498,9 +1764,12 @@ export function sleep(ms: number): Promise<void> {
  * @param {boolean} [options.hideEchoBack=false] - Hide input echo (for passwords)
  * @param {string} [options.mask=''] - Character to display instead of input
  * @param {Function} [options.colorize] - Live colorizer applied to the typed input on redraw
- * @returns {Promise<string>} Trimmed user input
+ * @param {boolean} [options.trimInput=true] - Trim surrounding whitespace before
+ *        resolving; pass false when the caller must tell a bare Enter from a
+ *        whitespace-only entry (the live echo already distinguishes them)
+ * @returns {Promise<string>} User input (trimmed unless trimInput=false)
  */
-export function readInput(prompt: string, options: { hideEchoBack?: boolean; mask?: string; validate?: (input: string) => boolean; colorize?: (input: string) => string } = {}): Promise<string> {
+export function readInput(prompt: string, options: { hideEchoBack?: boolean; mask?: string; validate?: (input: string) => boolean; colorize?: (input: string) => string; trimInput?: boolean } = {}): Promise<string> {
     return new Promise((resolve: any) => {
         const stdin = runtime.stdin!; const stdout = runtime.stdout;
         const ESC_SEQUENCE_TIMEOUT_MS = 150;
@@ -1562,7 +1831,7 @@ export function readInput(prompt: string, options: { hideEchoBack?: boolean; mas
         }
 
         function handleChar(ch: any) {
-            if (ch === '\r' || ch === '\n' || ch === '\u0004') { cleanup(); stdout.write('\n'); return resolve(input.trim()); }
+            if (ch === '\r' || ch === '\n' || ch === '\u0004') { cleanup(); stdout.write('\n'); return resolve(options.trimInput === false ? input : input.trim()); }
             if (ch === '\u0003') { cleanup(); stdout.write('\r\x1b[K\n'); runtime.exit(0); }
 
             // Backspace

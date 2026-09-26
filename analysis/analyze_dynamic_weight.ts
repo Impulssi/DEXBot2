@@ -22,7 +22,7 @@ import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
 import { computeAmaSlopeWeights, createAmaSlopeClipTracker } from '../market_adapter/core/strategies/ama_slope_model.js';
 import { MARKET_ADAPTER } from '../modules/constants.js';
 import { PATHS } from '../modules/paths.js';
-import { writeChartFile } from './chart_utils.js';
+import { writeChartFile, toFileUrl } from './chart_utils.js';
 import { getCandleClose } from './math_utils.js';
 import { resolveSource, listAvailableBots, type SourceConfig } from './resolve_source.js';
 
@@ -56,6 +56,7 @@ function parseArgs() {
     const config: {
         source: { type: string; config: SourceConfig };
         chartFile: string;
+        title: string | null;
         alpha: any;
         gain: any;
         dispWeight: any;
@@ -64,9 +65,11 @@ function parseArgs() {
         listBots: boolean;
         lookbackBars?: number;
         dispScaleMinPct?: number;
+        amaEmaSpan?: number;
     } = {
         source: { type: 'market_adapter', config: { botKey: '' } },
         chartFile: path.join(PATHS.ANALYSIS.CHARTS_DIR, 'dynamic_weight_chart.html'),
+        title: null,
         alpha: MARKET_ADAPTER.DYNAMIC_WEIGHT_ALPHA,
         gain: MARKET_ADAPTER.DYNAMIC_WEIGHT_GAIN,
         dispWeight: MARKET_ADAPTER.DYNAMIC_WEIGHT_DW,
@@ -84,10 +87,12 @@ function parseArgs() {
             config.source.type = 'json';
         }
         else if (arg === '--chart') config.chartFile = args[++i];
+        else if (arg === '--title') config.title = args[++i] ?? null;
         else if (arg === '--alpha') config.alpha = parseFloat(args[++i]);
         else if (arg === '--gain') config.gain = parseFloat(args[++i]);
         else if (arg === '--dw') config.dispWeight = parseFloat(args[++i]);
         else if (arg === '--lb') config.lookbackBars = parseInt(args[++i], 10);
+        else if (arg === '--ema') config.amaEmaSpan = parseInt(args[++i], 10);
         else if (arg === '--clip') config.clipPct = parseFloat(args[++i]);
         else if (arg === '--list-bots') config.listBots = true;
         else if (arg === '--quiet') config.quiet = true;
@@ -201,6 +206,7 @@ async function main() {
                 ...AMA_WEIGHT_CONFIG,
                 lookbackBars: config.lookbackBars ?? AMA_WEIGHT_CONFIG.lookbackBars,
             },
+            amaEmaSpan: config.amaEmaSpan,
             alpha: config.alpha,
             gain: config.gain,
             dispWeight: config.dispWeight,
@@ -223,11 +229,11 @@ async function main() {
                 amaNeutralZonePct:      MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_NEUTRAL_ZONE_PCT,
                 dispScaleMinPct:        MARKET_ADAPTER.DYNAMIC_WEIGHT_DISP_SCALE_MIN_PCT,
             },
-        }, 'Dynamic Weight Research Tool');
+        }, config.title || 'Dynamic Weight Research Tool');
 
         writeChartFile(config.chartFile, html);
 
-        if (!config.quiet) console.log(`[DynamicWeight] ✓ Chart saved to ${config.chartFile}`);
+        if (!config.quiet) console.log(`\n[DynamicWeight] ✓ Chart saved. Open chart: (${toFileUrl(config.chartFile)})`);
     } catch (err: unknown) {
         console.error(`[DynamicWeight] Error: ${(err as any)?.message ?? err}`);
         process.exit(1);

@@ -300,8 +300,19 @@ function computeRelocationNotices(profilesDir: string, projectRoot: string): str
     return notices;
 }
 
-for (const notice of computeRelocationNotices(PROFILES_DIR, PROJECT_ROOT)) {
-    console.warn(notice);
+/**
+ * Print notices from the launcher after it knows whether onboarding is
+ * needed. Callers that already computed the launcher's effective layout may
+ * pass explicit paths (used by tests) instead of the module-level defaults.
+ */
+function printRelocationNotices(
+    profilesDir: string = PROFILES_DIR,
+    projectRoot: string = PROJECT_ROOT,
+    warn: (message: string) => void = (message) => console.warn(message),
+): void {
+    for (const notice of computeRelocationNotices(profilesDir, projectRoot)) {
+        warn(notice);
+    }
 }
 
 const PATHS = {
@@ -360,7 +371,7 @@ function getRecalculateTriggerFile(botKey: string): string {
   return path.join(PATHS.PROFILES_DIR, `recalculate.${botKey}.trigger`);
 }
 
-export { PATHS, HOME_PROFILES_DIR, HOME_CONFIG_DIR, getHomeConfigDir, getHomeProfilesDir, resolveProfilesDir, resolveMarketAdapterDirs, resolveClawDirs, resolveAnalysisDirs, isGlobalNpmPackageDir, getNodeBlacklistFile, getNodeHealthCacheFile, getRecalculateTriggerFile, computeRelocationNotices }
+export { PATHS, HOME_PROFILES_DIR, HOME_CONFIG_DIR, getHomeConfigDir, getHomeProfilesDir, resolveProfilesDir, resolveMarketAdapterDirs, resolveClawDirs, resolveAnalysisDirs, isGlobalNpmPackageDir, getNodeBlacklistFile, getNodeHealthCacheFile, getRecalculateTriggerFile, computeRelocationNotices, printRelocationNotices }
 
 // Live getters for CJS require() interop (ESM cache not invalidated via require.cache)
 try {

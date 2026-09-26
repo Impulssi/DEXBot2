@@ -4,7 +4,7 @@ const assert = require('assert');
 const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
-const { GRID_LIMITS } = require('../../modules/constants');
+const { GRID_LIMITS, DEFAULT_CONFIG } = require('../../modules/constants');
 
 const {
   createBotKey,
@@ -608,8 +608,25 @@ async function testGeometryPatchKeepsTriggerByDefault() {
   await fs.access(result.triggerPath);
 }
 
+async function testNormalizeBotEntriesDelegatesToSharedSeeder() {
+  console.log(' - Testing normalizeBotEntries delegates to shared bot defaults...');
+  const entries = await normalizeBotEntries([
+    { name: 'missing-active' },
+    { name: 'null-active', active: null },
+    { name: 'false-active', active: false },
+  ]);
+  assert.strictEqual(entries[0].active, DEFAULT_CONFIG.active,
+    'missing active → DEFAULT_CONFIG.active (shared seeder, was hardcoded true)');
+  assert.strictEqual(entries[1].active, null,
+    'present null passes through raw (claw used to coerce to false — unified in Phase 3)');
+  assert.strictEqual(entries[2].active, false, 'active:false preserved');
+  assert.strictEqual(entries[0].botIndex, 0, 'index stamped');
+  assert.ok(entries[0].botKey, 'botKey generated');
+}
+
 async function main() {
   await testNormalizeAcceptsAssetIdAliases();
+  await testNormalizeBotEntriesDelegatesToSharedSeeder();
   testCreateBotKeyFallsBackToAssetIds();
   await testMatchBotIdentifierHandlesIdOnlyBots();
   await testAtomicWriteFailsFastWhenLockCannotBeAcquired();

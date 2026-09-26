@@ -79,7 +79,7 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 
 | Term | Meaning |
 |------|---------|
-| **Gap-Slot Batch Fill Processing** | Groups fills using the grid gap-slot count as batch size (`DEXBot._getGapSlotBatchSize`): `<= gapSlots` uses one unified batch; `> gapSlots` chunks at gapSlots. In the documented 29-fill Feb 7 crash scenario, this reduces the estimated divergence window from ~90s to ~24s; see [`FUND_MOVEMENT_AND_ACCOUNTING.md`](FUND_MOVEMENT_AND_ACCOUNTING.md#15-fill-batch-processing--timeline). |
+| **Gap-Slot Batch Fill Processing** | Groups fills using the grid gap-slot count + 1 as batch size (`DEXBot._getGapSlotBatchSize`): `<= gapSlots + 1` uses one unified batch; `> gapSlots + 1` chunks at `gapSlots + 1`. In the documented 29-fill Feb 7 crash scenario, this reduces the estimated divergence window from ~90s to ~24s; see [`FUND_MOVEMENT_AND_ACCOUNTING.md`](FUND_MOVEMENT_AND_ACCOUNTING.md#15-fill-batch-processing--timeline). |
 | **Recovery Retry System** | Count+time-based retry mechanism with periodic reset. Replaces one-shot `_recoveryAttempted` flag. Max 5 attempts per episode with 60s minimum interval between retries. |
 | **Orphan-Fill Deduplication** | Map+TTL-based tracking of stale-cleaned order IDs to prevent double-crediting. Delayed orphan fill events are still blocked by checking `_staleCleanedOrderIds`. |
 
@@ -129,8 +129,6 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 | **Kalman Confirmation** | Kalman-filtered trend signal blended with AMA slope for smoother weight transitions |
 | **Symmetric Shift** | Volatility-driven downward weight penalty applied equally to both sides (ATR-based) |
 | **Asymmetric Offset** | Directional weight shift (buy-heavy or sell-heavy) driven by AMA/Kalman trend |
-| **Derivative Signal** | SMA/MACD/RSI-based entry bias and momentum gate for optional strategy filtering |
-| **Momentum Gate** | N-bar commitment tracking that confirms derivative signals before acting |
 | **GridPrice** | Price anchor for grid math; can be numeric, `"pool"`, `"book"`, or AMA keyword (`"ama"`, `"ama1"`–`"ama4"`) |
 
 ### Grid Concepts
@@ -165,14 +163,14 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 | Term | Meaning |
 |------|---------|
 | **Rotation** | Moving an order from one price level to another |
-| **Consolidation** | Absorbing dust partials into the next grid rebuild cycle. All slots are treated uniformly—no side-specific flags or bonuses. |
+| **Consolidation** | Absorbing surviving non-dust partials into ordinary fund-driven rebalancing. Detected dust is cancelled immediately and never waits for a rebuild. |
 | **Rebalancing** | Adjusting order sizes based on current funds |
 | **Global Side Capping** | Scaling order sizes when insufficient funds |
 | **Atomic Check-and-Deduct** | Verify funds + deduct in single operation |
 | **Divergence Detection** | Comparing ideal grid vs. persisted grid |
 | **Invariant Verification** | Checking fund accounting consistency |
-| **Batch Processing** | Grouping multiple fills into a single rebalance cycle instead of one-at-a-time. Gap-slot sizing: `<= gapSlots` unified, otherwise chunked at gapSlots. |
-| **Gap-Slot Batch Sizing** | Deterministic chunking model with the grid gap-slot count as the per-broadcast bound. Keeps throughput high while avoiding tier-lookup complexity. |
+| **Batch Processing** | Grouping multiple fills into a single rebalance cycle instead of one-at-a-time. Gap-slot sizing: `<= gapSlots + 1` unified, otherwise chunked at `gapSlots + 1`. |
+| **Gap-Slot Batch Sizing** | Deterministic chunking model with the grid gap-slot count + 1 as the per-broadcast bound. Keeps throughput high while avoiding tier-lookup complexity. |
 | **Stale-Order Recovery** | Fast-path recovery for single-operation batches that encounter stale orders on-chain. Executes cleanup without full state sync. |
 | **Orphan-Fill Prevention** | Deduplication mechanism that prevents double-crediting fills from stale-cleaned orders using timestamp-based ID tracking (TTL pruning). |
 
@@ -277,7 +275,7 @@ const correctedPrice = quantizeFloat(derivedPrice, 8);
 const normalized = normalizeInt(currentSizeInt, assetPrecision);
 ```
 
-**See [FUND_MOVEMENT_AND_ACCOUNTING.md § 5.5](FUND_MOVEMENT_AND_ACCOUNTING.md#55-precision--quantization-patch-14) for complete quantization guide and edge case handling.**
+**See [FUND_MOVEMENT_AND_ACCOUNTING.md § 5.5](FUND_MOVEMENT_AND_ACCOUNTING.md#55-precision--quantization) for complete quantization guide and edge case handling.**
 
 ---
 
@@ -620,7 +618,7 @@ const minHealthySize = getMinOrderSize(ORDER_TYPES.BUY, assets, 1.0);
 if (isOrderHealthy(order, minHealthySize)) {
     // Order is valid for placement/rotation
 } else {
-    // Order is dust - consolidate or skip
+    // Order is dust - skip it here; cancelDustOrders() handles it on-chain
 }
 ```
 
@@ -737,7 +735,7 @@ _verifyFundInvariants(...)
 - Process filled orders
 - Identify shortages and surpluses
 - Execute order rotations
-- Handle partial order consolidation
+- Handle surviving non-dust partials during rebalance
 
 **Critical Methods**:
 ```javascript
@@ -1211,8 +1209,6 @@ Located in `tests/` (with `helpers/` subdirectory):
 - `test_bts_fee_logic.ts` - BTS fee deduction and settlement
 - `test_market_adapter_signal_gates.ts` - Market adapter signal validation
 - `test_dynamic_weight_override_wiring.ts` - Dynamic weight config wiring
-- `test_derivative_signal_trap_regression.ts` - Derivative signal trap tests
-- `test_derivative_momentum_gate.ts` - Momentum gate tests
 - `test_cr_planner.ts` - Collateral ratio planner tests
 - `test_dexbot_credit_wiring.ts` - Credit runtime integration tests
 - `test_credential_daemon.ts` / `test_credential_session_cache.ts` - Credential security tests
@@ -1559,6 +1555,7 @@ console.log('Locked?', manager.isOrderLocked(order.id));
 - `modules/node_manager.ts` - Multi-node health checking and failover
 - `modules/fund_registry.ts` - Shared-account fund registry with cross-bot invariants
 - `modules/settings_merge.ts` - Consolidated settings merge (single source of truth)
+- `modules/bot_defaults.ts` - Central bot-defaults seeder (draft/entry/runtime-config modes); single source for how `DEFAULT_CONFIG` is applied
 - `modules/chain_orders.ts` - Blockchain order operations
 - `modules/account_orders.ts` - Account order queries
 

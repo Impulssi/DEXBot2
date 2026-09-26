@@ -10,26 +10,39 @@ const { ensureDir } = getStorage();
  * Chart utilities for analysis HTML generators.
  */
 
-// Runtime assets every generated chart references as ../uplot/* relative to
-// its own directory (charts live in <root>/charts, assets in <root>/uplot).
-const UPLOT_RUNTIME_FILES = ['uPlot.iife.min.js', 'uPlot.min.css'];
+// Vendored uPlot runtime assets are inlined directly into every generated chart
+// (see uplotInlineTags below), so each chart is a single self-contained file
+// that renders anywhere: no DEXBot2 install, no sibling uplot/ dir, no CDN, no
+// network. The vendored originals always live with the code under the analysis
+// assets dir.
+let _uplotRuntime: { css: string; js: string } | null = null;
+
+function getUplotRuntime() {
+    if (!_uplotRuntime) {
+        const dir = PATHS.ANALYSIS.ASSETS_DIR;
+        _uplotRuntime = {
+            css: fs.readFileSync(path.join(dir, 'uPlot.min.css'), 'utf8'),
+            js: fs.readFileSync(path.join(dir, 'uPlot.iife.min.js'), 'utf8'),
+        };
+    }
+    return _uplotRuntime;
+}
 
 /**
- * Generated HTML loads uPlot from a sibling `uplot/` dir next to the charts
- * dir. In a source checkout that dir is the vendored original; anywhere else
- * (relocated analysis root under npm/home profiles, or a custom --chart path)
- * materialize a copy so the relative refs keep resolving.
+ * Inline <style>/<script> tags carrying the vendored uPlot runtime. Embedding
+ * the source (not a relative <script src>) makes a chart portable: it keeps
+ * rendering after being copied, mailed, or reopened on a machine without a
+ * DEXBot2 installation. The inline script must be the first script that runs,
+ * placed before any chart-initialization code, since uPlot must exist first.
+ * Both the minified JS (no `</script>`) and CSS (no `</style>`) are safe to
+ * embed verbatim.
  */
-function ensureSiblingUplotAssets(chartDir: any) {
-    const targetDir = path.join(path.dirname(path.resolve(chartDir)), 'uplot');
-    const sourceDir = PATHS.ANALYSIS.ASSETS_DIR;
-    if (targetDir === path.resolve(sourceDir)) return;
-    if (UPLOT_RUNTIME_FILES.every((f) => fs.existsSync(path.join(targetDir, f)))) return;
-    if (!fs.existsSync(sourceDir)) return;
-    fs.mkdirSync(targetDir, { recursive: true });
-    for (const f of UPLOT_RUNTIME_FILES) {
-        fs.copyFileSync(path.join(sourceDir, f), path.join(targetDir, f));
-    }
+function uplotInlineTags({ css = true, js = true } = {}) {
+    const { css: cssCode, js: jsCode } = getUplotRuntime();
+    const parts: string[] = [];
+    if (css && cssCode) parts.push(`<style>\n${cssCode}\n</style>`);
+    if (js && jsCode) parts.push(`<script>\n${jsCode}\n</script>`);
+    return parts.join('\n    ');
 }
 
 
@@ -58,9 +71,9 @@ function toFileUrl(filePath: any): string {
     return `file://${path.resolve(String(filePath))}`;
 }
 
-function writeChartFile(filePath: any, html: any) {    const chartDir = path.dirname(filePath);
+function writeChartFile(filePath: any, html: any) {
+    const chartDir = path.dirname(filePath);
     if (!fs.existsSync(chartDir)) ensureDir(chartDir);
-    ensureSiblingUplotAssets(chartDir);
     // Atomic write (tmp + rename, matching the production storage adapter
     // pattern) so a crash mid-write can never leave a truncated chart file.
     const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 10)}.tmp`;
@@ -193,5 +206,5 @@ function bindPan(chart) {
 }
 `;
 
-export { escapeHtml, serializeJsonForScript, toEpochSeconds, writeChartFile, toFileUrl, embedFunctionSources, UPLOT_SHARED_SCRIPT }
+export { escapeHtml, serializeJsonForScript, toEpochSeconds, writeChartFile, toFileUrl, embedFunctionSources, UPLOT_SHARED_SCRIPT, uplotInlineTags }
 

@@ -105,6 +105,24 @@ async function runTests() {
         assert.strictEqual(synchronized, true, 'shortfall should synchronize from chain truth');
         assert.strictEqual(orders.get('slot-1').orderId, '1.7.9001', 'sync should restore the live order into the grid');
 
+    // Pure fund-driven spread correction: when it finds no free funds it sets
+    // _spreadFundsExhausted; the next tick's targeted-sync gate must refresh
+    // account totals + open orders from that flag (the only fallback).
+    console.log(' - Testing funds-exhausted spread fallback trigger...');
+    {
+        const makeBot = (exhausted: boolean) => ({
+            config: { dryRun: false, activeOrders: { buy: 0, sell: 0 } },
+            manager: { checkFundDriftAfterFills: () => ({ isValid: true, reason: 'ok' }) },
+            _spreadFundsExhausted: exhausted,
+        });
+        const reason = MaintenanceRuntime.getTargetedSyncReason(makeBot(true));
+        assert(reason, 'funds-exhausted flag must produce a targeted sync reason');
+        assert(/spread correction had no free funds/.test(reason.reason),
+            `reason must name the funds-exhausted cause, got: ${reason.reason}`);
+        assert.strictEqual(MaintenanceRuntime.getTargetedSyncReason(makeBot(false)), null,
+            'cleared flag must not trigger a refresh');
+    }
+
     console.log('✓ Targeted drift reconcile tests passed!');
 }
 

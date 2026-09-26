@@ -10,6 +10,7 @@ import { ensureDir } from '../../modules/order/utils/system.js';
 import { PATHS } from '../../modules/paths.js';
 import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
+import { uplotInlineTags } from '../chart_utils.js';
 
 /**
  * LAMBDA vs SLOW ANALYSIS
@@ -186,9 +187,6 @@ function generateChartHtml(results: any, metricCache: any, fixEr: any, fixFast: 
     const cacheSlow = metricCache.map((m: any) => m.slow);
     const cacheMove = metricCache.map((m: any) => m.movement);
 
-    const uplotCode = fs.readFileSync(path.join(PATHS.ANALYSIS.ASSETS_DIR, 'uPlot.iife.min.js'), 'utf8');
-    const uplotCSS = fs.readFileSync(path.join(PATHS.ANALYSIS.ASSETS_DIR, 'uPlot.min.css'), 'utf8');
-
     const amaAnnotations = [
         { label: 'AMA1', lambda: 0.0031, slow: 62.1, color: '#ef5350' },
         { label: 'AMA2', lambda: 0.0025, slow: 72.0, color: '#fb8c00' },
@@ -203,7 +201,6 @@ function generateChartHtml(results: any, metricCache: any, fixEr: any, fixFast: 
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>λ → Slow — ER=${fixEr} Fast=${fixFast}</title>
 <style>
-  ${uplotCSS}
   body { font-family: system-ui, sans-serif; margin: 20px; background: #1e1e2e; color: #cdd6f4; }
   h1 { font-size: 16px; margin: 0 0 2px 0; }
   .subtitle { color: #a6adc8; font-size: 12px; margin-bottom: 12px; }
@@ -231,7 +228,7 @@ function generateChartHtml(results: any, metricCache: any, fixEr: any, fixFast: 
 ${amaAnnotations.map(a => `<span class="legend-item"><span class="legend-dot" style="background:${a.color}"></span> ${a.label}</span>`).join('\n')}
   </div>
 </div>
-<script>${uplotCode}</script>
+${uplotInlineTags()}
 <script>
 (function() {
   const xs = ${JSON.stringify(xs)};

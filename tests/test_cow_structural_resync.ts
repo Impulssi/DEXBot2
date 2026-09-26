@@ -222,7 +222,7 @@ async function runTests() {
         assert.strictEqual(
             requestGridResetCalls[0].options && requestGridResetCalls[0].options.refreshCenterPrice,
             false,
-            'Reset must include refreshCenterPrice:false — a structural resync is state repair, not a re-anchor (docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md §2 fix #1: silent re-anchoring during recovery orphaned live orders)'
+            'Reset must include refreshCenterPrice:false — a structural resync is state repair, not a re-anchor (docs/ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md §2 fix #1: silent re-anchoring during recovery orphaned live orders)'
         );
 
         assert.strictEqual(manager._recoveryState.attemptCount, 0, 'Recovery attempt count must be reset after structural resync');

@@ -203,7 +203,7 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 
 ## Notes
 
-- The chart uses vendored `uPlot` from `analysis/uplot/` in the generated HTML (no CDN dependency).
+- The chart embeds the vendored `uPlot` runtime inline (no CDN, no sibling `uplot/` dir, no DEXBot2 install needed). Each export is a single self-contained HTML file that renders anywhere, even after being copied or mailed to a machine without DEXBot2.
 - The displayed indicators are computed from the 1h base candles and then sampled onto the selected timeframe.
 - The current volume-weighted overlay is a rolling `VWMA`, not a session-reset VWAP.
 - SMA is disabled by default.
@@ -219,7 +219,7 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 - Horizontal rays (local drawing tool): `Alt+click` the price pane to drop a white 3px ray from the click point to the right edge with its price tagged just left of the price axis; grab a ray to drag it (price and time anchor both move). Hold `Ctrl` while dragging to magnetize onto the time-nearest candle's close (price and time lock together). The RAY panel (bottom-left) adds an exact-value input, per-ray delete, and clear-all. Rays persist per chart in `localStorage` and survive pair flips (stored in normal-mode units, shown converted).
 - Indicator, timeframe, scale, and overlay-visibility changes are persisted in browser `localStorage` per pool/pair chart (`dexbot2-tradingview-uplot-v3:<pool>:<A>_<B>:<baseSecs|base>`); cursor sync between the price/volume panes uses a separate constant key.
 - The price axis defaults to log base `10`, with a toolbar switch for `Log` / `Linear`.
-- If you regenerate the HTML and then open it later, no CDN access is needed — `uPlot` is loaded from the vendored local copy at `analysis/uplot/`.
+- If you regenerate the HTML and then open it later, no CDN access is needed — the `uPlot` library (JS + CSS) is inlined into the file itself, so it renders fully offline and is independent of where the file lives on disk.
 
 ## Typical Workflow
 

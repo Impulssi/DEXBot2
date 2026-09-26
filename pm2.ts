@@ -94,13 +94,14 @@ import { createPasswordBootstrapServer } from './modules/launcher/credential_boo
 import { parsePm2Args } from './modules/launcher/launch_modes.js';
 import { setupGracefulShutdown } from './modules/graceful_shutdown.js';
 import { UPDATER, TIMING } from './modules/constants.js';
-import { PATHS } from './modules/paths.js';
+import { PATHS, printRelocationNotices } from './modules/paths.js';
 import { buildRuntimeScriptPath } from './modules/launcher/runtime_entry.js';
 import { Config } from './modules/config.js';
 import { waitForConnected } from './modules/bitshares_client.js';
 import * as readline from 'node:readline';
 import { getErrorMessage } from './modules/utils/errors.js';
 import { isSameBotName } from './modules/utils/sanitize_key.js';
+import { muteChainLogs } from './modules/utils/chain_logs.js';
 import { CLI_COLORS } from './modules/cli_colors.js';
 import { getStorage } from './modules/storage/index.js';
 import { usesAmaGridPrice } from './modules/dexbot_maintenance_runtime.js';
@@ -465,24 +466,14 @@ async function main({ botNameFilter = null, clawOnly = false, headless = false, 
     console.log();
 
     if (!clawOnly) {
-        // Step 0: Wait for BitShares connection (suppress BitShares client logs)
+        // Step 0: Wait for BitShares connection. The native chain stack
+        // ([Transport]/[NodeManager]/[bitshares_client]) logs straight to
+        // console regardless of setSuppressConnectionLog, so mute those
+        // prefixed lines process-wide to keep the launcher banner and the
+        // connection confirmation as the only startup output.
+        muteChainLogs();
 
-        // Suppress BitShares console output during connection
-        const originalLog = console.log;
-        try {
-            console.log = (...args) => {
-                // Only suppress BitShares-specific messages
-                const msg = args.join(' ');
-                if (!msg.includes('bitshares_client') && !msg.includes('modules/')) {
-                    originalLog(...args);
-                }
-            };
-
-            await waitForConnected(TIMING.CONNECTION_TIMEOUT_MS);
-        } finally {
-            // Always restore console output, even if waitForConnected throws
-            console.log = originalLog;
-        }
+        await waitForConnected(TIMING.CONNECTION_TIMEOUT_MS);
 
         console.log(pm2Success('Connected to BitShares'));
     } else {
@@ -494,6 +485,9 @@ async function main({ botNameFilter = null, clawOnly = false, headless = false, 
         console.error(pm2Error('PM2 is not installed'));
         await installPM2();
     }
+
+    // Step 1b: Make sure PM2 rotates its captured logs
+    await ensurePm2Logrotate();
 
     // Step 2: Ensure credential daemon availability
     try {
@@ -627,6 +621,84 @@ async function startManagedRuntimePM2({ apps, bootstrap }: { apps?: any; bootstr
     }
 
     await startManagedAppsPM2(apps);
+}
+
+/**
+ * Run a raw `pm2` command and capture its output verbatim. Used for module
+ * management (`jlist`, `install`, `set`) whose verbs are not part of the
+ * process-control whitelist in execPM2Command.
+ * @param {string[]} args - PM2 arguments.
+ * @param {Object} [options] - Execution options.
+ * @param {number} [options.timeoutMs=0] - Kill the child after this many ms (0 = no limit).
+ * @returns {Promise<{code: number, stdout: string, stderr: string}>} Command result.
+ */
+function runPm2Raw(args: string[], { timeoutMs = 0 }: { timeoutMs?: number } = {}) {
+    return new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+        const child = spawn('pm2', args, {
+            cwd: PATHS.PROJECT_ROOT,
+            env: buildScopedChildEnv(),
+            stdio: ['ignore', 'pipe', 'pipe'],
+            shell: process.platform === 'win32',
+        });
+        let stdout = '';
+        let stderr = '';
+        let settled = false;
+        let timer: any = null;
+        if (timeoutMs > 0) {
+            timer = setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                child.kill();
+                reject(new Error(`pm2 ${args[0]} timed out after ${timeoutMs}ms`));
+            }, timeoutMs);
+        }
+        const finish = (fn: () => void) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            fn();
+        };
+        child.stdout.on('data', (data: any) => { stdout += data.toString(); });
+        child.stderr.on('data', (data: any) => { stderr += data.toString(); });
+        child.on('error', (err: any) => finish(() => reject(err)));
+        child.on('close', (code: any) => finish(() => resolve({ code: code ?? 0, stdout, stderr })));
+    });
+}
+
+/**
+ * Best-effort enablement of `pm2-logrotate`. PM2 core does not rotate logs —
+ * the per-app `max_size` option is ignored without this module — so a
+ * long-running fleet would grow `profiles/logs/*.log` without bound. Never
+ * blocks or fails startup.
+ * @returns {Promise<void>}
+ */
+async function ensurePm2Logrotate() {
+    try {
+        const list = await runPm2Raw(['jlist'], { timeoutMs: 15000 });
+        if (list.code !== 0) return;
+
+        let installed = false;
+        try {
+            const parsed = JSON.parse(list.stdout || '[]');
+            installed = Array.isArray(parsed) && parsed.some((app: any) => app && app.name === 'pm2-logrotate');
+        } catch (err: any) {
+            installed = false;
+        }
+        if (installed) return;
+
+        const install = await runPm2Raw(['install', 'pm2-logrotate'], { timeoutMs: 120000 });
+        if (install.code !== 0) {
+            const detail = (install.stderr || install.stdout || '').trim() || 'pm2 install failed';
+            console.warn(pm2Error(`PM2 log rotation not enabled: ${detail}`));
+            return;
+        }
+        await runPm2Raw(['set', 'pm2-logrotate:max_size', '100M'], { timeoutMs: 15000 });
+        await runPm2Raw(['set', 'pm2-logrotate:retain', '10'], { timeoutMs: 15000 });
+        await runPm2Raw(['set', 'pm2-logrotate:compress', 'true'], { timeoutMs: 15000 });
+        console.log('Enabled PM2 log rotation (pm2-logrotate: 100M files, retain 10, compressed).');
+    } catch (err: any) {
+        console.warn(`PM2 log rotation not enabled: ${getErrorMessage(err)}`);
+    }
 }
 
 /**
@@ -1017,6 +1089,9 @@ const isPm2DirectRun = !!process.argv[1] && (
     path.basename(process.argv[1]).replace(/\.js$/, '') === 'pm2'
 );
 if (isPm2DirectRun) {
+    // `dexbot pm2` delegates here without printing relocation notices, so the
+    // child owns them: emit once for every pm2 invocation, before dispatch.
+    printRelocationNotices();
     // Parse command line arguments
     const { command, target, clawOnly, headless, passwordFile } = parsePm2Args(process.argv);
 

@@ -131,23 +131,23 @@ assert.deepStrictEqual(
 const expectedDexbotPath = path.join(__dirname, '..', 'dexbot.js');
 assert.deepStrictEqual(
     unlock.buildDexbotStartArgs('AAA-BBB'),
-    [expectedDexbotPath, 'test', 'AAA-BBB'],
+    [expectedDexbotPath, 'worker', 'AAA-BBB'],
     'launcher should append the requested bot name'
 );
 assert.deepStrictEqual(
     unlock.buildDexbotStartArgs(null),
-    [expectedDexbotPath, 'test'],
+    [expectedDexbotPath, 'worker'],
     'launcher should omit the bot arg when starting all bots'
 );
 assert.deepStrictEqual(
     unlock.buildDexbotStartArgs('AAA-BBB', true),
-    [expectedDexbotPath, 'drystart', 'AAA-BBB'],
-    'launcher should pass drystart when dryrun is true'
+    [expectedDexbotPath, 'worker', '--dryrun', 'AAA-BBB'],
+    'launcher should pass --dryrun when dryrun is true'
 );
 assert.deepStrictEqual(
     unlock.buildDexbotStartArgs(null, true),
-    [expectedDexbotPath, 'drystart'],
-    'launcher should pass drystart with no bot name'
+    [expectedDexbotPath, 'worker', '--dryrun'],
+    'launcher should pass --dryrun with no bot name'
 );
 assert.strictEqual(
     buildRuntimeScriptPath(path.join(__dirname, '..'), ['dexbot']),

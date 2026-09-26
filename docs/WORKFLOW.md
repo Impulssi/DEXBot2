@@ -238,28 +238,33 @@ the canonical name is preferred in scripts and docs.
 
 | Command (canonical) | Aliases | Purpose |
 |---------|---------|---------|
-| `dexbot test <bot>` | — | Test-run a single bot (one-shot, live trading) |
+| `dexbot test <bot>` | — | Run a single bot in live mode (one-shot; not a dry run) |
 | `dexbot drystart <bot>` | — | Same as `test` but forces dry-run execution |
-| `dexbot reset <bot>` | — | Trigger a grid reset (applies live or on next start) |
+| `dexbot reset <bot>` | — | Trigger a grid reset (applies live or on next start; `reset all` for all) |
 | `dexbot default` | `defaults` | Reset settings to defaults (deletes generated settings files) |
 | `dexbot disable <bot>` | — | Mark a bot inactive in config (`disable all` for all) |
 | `dexbot enable <bot>` | — | Mark a bot active in config (`enable all` for all) |
-| `dexbot key` | `key` | Launch the chain key helper (`modules/chain_keys.ts`) |
-| `dexbot bot` | `bot` | Launch the interactive bot configurator |
+| `dexbot key` | `keys` | Launch the chain key helper (`modules/chain_keys.ts`) |
+| `dexbot bot` | `bots` | Launch the interactive bot configurator |
 | `dexbot pm2` | — | Start all active bots via PM2 |
 | `dexbot update` | — | Update DEXBot2 from the repository and restart active bots |
 | `dexbot export <bot>` | — | Export bot trades/settings to CSV/JSON for local analysis/ |
-| `dexbot order` | `orders` | Analyze persisted order grids (spread, increment, funds) |
+| `dexbot order` | `orders` | Analyze persisted order grids (spread, increment, funds); `--export` for HTML |
 | `dexbot order [<bot>]` | — | Analyze only the specified bot's order grid |
 | `dexbot credit` | — | Live summed MPA + borrowed-credit positions per asset per bot (`[<bot>]`) |
-| `dexbot status` | `stat` | Unified runtime health — daemon, adapter, bots |
+| `dexbot tv <target>` | — | TradingView 1h chart for `<bot|pool-id|AssetA/AssetB>` over `--month N` (default 3) |
+| `dexbot dw <target>` | — | Dynamic-weight research chart: same targets/flags as `tv` |
+| `dexbot status` | `stat`, `stats` | Unified runtime health — daemon, adapter, bots |
 | `dexbot start` | `unlock` | Run credential daemon + bot (equivalent to running the `unlock` runtime, `dist/unlock.js`) |
-| `dexbot stop` / `dexbot start` | `stp`, `stopall` | Stop/start the monolithic runtime (unlock mode) |
+| `dexbot stop` | `stp`, `stopall` | Stop the monolithic runtime (unlock mode) |
 | `dexbot reload` | `reloadall` | Reload the monolithic runtime without touching the credential daemon (unlock mode) |
 | `dexbot restart` | `restartall` | Restart the monolithic runtime (unlock mode, re-unlocks credential daemon) |
 | `dexbot delete` | — | Shut down and clean up the monolithic runtime (unlock mode) |
-| `dexbot whitelist` | `white` | Generate market adapter whitelist from AMA bot configs |
 | `dexbot clear` | — | Remove all log files from the logs directory (`<profiles>/logs`) |
+| `dexbot clear-orders` | — | Remove all persisted order files (`<profiles>/orders`) |
+| `dexbot clear-market-adapter` | — | Remove market adapter data, state, and logs |
+| `dexbot clear-all` | — | Remove orders, logs, market adapter, and claw files (all of the above) |
+| `dexbot help` | — | Print the full CLI reference (grouped by Runtime/Trading/Config/Analysis/Files) |
 
 ## NPM Scripts for Branch Synchronization
 

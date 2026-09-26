@@ -151,5 +151,5 @@ function isPrivatePathSecure(filePath: string, options: PrivatePathOptions = {})
     }
 }
 
-export { DEFAULT_READY_BASENAME, DEFAULT_RUNTIME_DIR_NAME, DEFAULT_SOCKET_BASENAME, assertPrivatePathSecurity, ensureCredentialRuntimeDirSync, getCredentialReadyFilePath, getCredentialRuntimeDir, getCredentialSocketPath, getCurrentUid, isUsableRuntimeBaseDir, isPrivatePathSecure }
+export { assertPrivatePathSecurity, ensureCredentialRuntimeDirSync, getCredentialReadyFilePath, getCredentialRuntimeDir, getCredentialSocketPath, isPrivatePathSecure }
 

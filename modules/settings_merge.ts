@@ -121,6 +121,32 @@ function applyNodesToNodeManagement(nodes: any, nm: Record<string, any>): void {
 }
 
 /**
+ * Build the NODES view object from a NODE_MANAGEMENT-style section — the ONE
+ * place that maps NODE_MANAGEMENT constants to the NODES consumer shape.
+ * Shared by mergeSettings post-processing and buildDefaultGeneralSettings
+ * (modules/constants.ts) so the runtime merge and the default settings
+ * document can never drift. Passthrough of unmapped raw.NODES sub-keys stays
+ * with the merge below; this only builds the base view.
+ */
+function buildNodesView(nm: Record<string, any>): Record<string, any> {
+    return {
+        enabled: nm.DEFAULT_ENABLED,
+        list: nm.DEFAULT_NODES,
+        healthCheck: {
+            enabled: true,
+            intervalMs: nm.HEALTH_CHECK_INTERVAL_MS,
+            timeoutMs: nm.HEALTH_CHECK_TIMEOUT_MS,
+            maxPingMs: nm.MAX_PING_MS,
+            blacklistThreshold: nm.BLACKLIST_THRESHOLD,
+        },
+        selection: {
+            strategy: nm.SELECTION_STRATEGY,
+            preferredNode: null,
+        },
+    };
+}
+
+/**
  * Merge user settings with code defaults using per-section strategies.
  *
  * @param raw      - Raw user settings object (from general.settings.json)
@@ -203,22 +229,7 @@ function mergeSettings(raw: any, defaults: Record<string, any>): Record<string, 
         }
 
         // Step 2: Build NODES output object from merged NODE_MANAGEMENT
-        const nm = result.NODE_MANAGEMENT;
-        const nodesConfig: any = {
-            enabled: nm.DEFAULT_ENABLED,
-            list: nm.DEFAULT_NODES,
-            healthCheck: {
-                enabled: true,
-                intervalMs: nm.HEALTH_CHECK_INTERVAL_MS,
-                timeoutMs: nm.HEALTH_CHECK_TIMEOUT_MS,
-                maxPingMs: nm.MAX_PING_MS,
-                blacklistThreshold: nm.BLACKLIST_THRESHOLD,
-            },
-            selection: {
-                strategy: nm.SELECTION_STRATEGY,
-                preferredNode: null,
-            },
-        };
+        const nodesConfig = buildNodesView(result.NODE_MANAGEMENT);
 
         // Step 3: Passthrough unmapped top-level keys from raw.NODES
         if (raw.NODES && typeof raw.NODES === 'object') {
@@ -271,5 +282,5 @@ function mergeSettings(raw: any, defaults: Record<string, any>): Record<string, 
     return result;
 }
 
-export { deepMerge, mergeSettings, MERGE_STRATEGIES }
+export { deepMerge, mergeSettings, buildNodesView, MERGE_STRATEGIES }
 

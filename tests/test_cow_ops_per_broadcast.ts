@@ -2,7 +2,7 @@
  * tests/test_cow_ops_per_broadcast.ts
  *
  * Verifies the gap-slot-derived per-broadcast operation cap enforced by
- * executeChunkedWithRetryOnUncertain (batch size = manager._gapSlots):
+ * executeChunkedWithRetryOnUncertain (batch size = manager._gapSlots + 1):
  *   1. Batches at or below the cap broadcast as a single transaction.
  *   2. Batches above the cap are split into sequential broadcast chunks of at
  *      most `maxOps` operations each; the merged result preserves the
@@ -45,7 +45,7 @@ const chainOrders = defineEsmMockAbs(chainOrdersPath, [
     executeBatch: (...args: any[]) => executeBatchImpl(...args),
 });
 
-const DEFAULT_MAX_OPS = 4; // gap-slot batch size mirrored in makeBot via manager._gapSlots
+const DEFAULT_MAX_OPS = 4; // effective per-broadcast cap; makeBot derives _gapSlots = cap - 1
 
 function makeOps(n: number) {
     const operations = [];
@@ -80,7 +80,9 @@ function makeBot(opts: { maxOps?: number } = {}) {
         incrementPercent: 0.5
     });
     bot.manager = {
-        _gapSlots: opts.maxOps ?? DEFAULT_MAX_OPS,
+        // Effective cap = _gapSlots + 1 (the +1 offset under test); invert it
+        // so `maxOps` still names the byte-for-byte broadcast chunk size.
+        _gapSlots: (opts.maxOps ?? DEFAULT_MAX_OPS) - 1,
         assets: {
             assetA: { id: '1.3.0', precision: 8, symbol: 'BTS' },
             assetB: { id: '1.3.121', precision: 5, symbol: 'USD' }
@@ -219,7 +221,7 @@ async function testConfigOverride() {
         logger: { log: () => {}, logFundsStatus: () => {} },
         _pendingBroadcasts: new Map(),
     };
-    assert.strictEqual(bot._getMaxOpsPerBroadcast(), 2, 'must follow manager gap slots');
+    assert.strictEqual(bot._getMaxOpsPerBroadcast(), 3, 'must follow manager gap slots (+1 offset)');
     console.log('✓ OPSCAP-005 passed');
 }
 
@@ -245,8 +247,9 @@ async function testNonNumericCapFallsBackToMin() {
     // Strict check against the config-derived expectation (same inputs the
     // accessor feeds calculateGapSlots: bot config, since manager.config is unset).
     const { calculateGapSlots } = require('../modules/order/utils/math');
-    const expectedDerived = Math.max(1, Math.floor(Number(calculateGapSlots(
-        bot.config.incrementPercent, bot.config.targetSpreadPercent, bot.config.gridLimits))));
+    const derived = Math.floor(Number(calculateGapSlots(
+        bot.config.incrementPercent, bot.config.targetSpreadPercent, bot.config.gridLimits)));
+    const expectedDerived = Number.isFinite(derived) && derived >= 1 ? derived + 1 : 1;
     assert.strictEqual(bot._getMaxOpsPerBroadcast(), expectedDerived,
         'invalid gap slots must derive exactly from config');
 

@@ -3,7 +3,7 @@
 import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { computeDynamicWeightSeries } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
 import { computeAbsolutePercentileThreshold } from '../../market_adapter/core/signals/kalman_velocity_smoothing.js';
-import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT } from '../chart_utils.js';
+import { escapeHtml, serializeJsonForScript, toEpochSeconds, UPLOT_SHARED_SCRIPT, uplotInlineTags } from '../chart_utils.js';
 import { sharedChartCSS } from '../chart_css.js';
 import { Y_AXIS_SIZE, makeCursorConfig, bindHoverStateFn, wireChartEvents, zoomResetScript, sizeChartsFn } from '../chart_ui.js';
 
@@ -94,8 +94,7 @@ function generateHTML(data: any, title = 'Kalman Trajectory Analysis') {
 <head>
     <meta charset="UTF-8">
     <title>${escapeHtml(title)}</title>
-    <link rel="stylesheet" href="../uplot/uPlot.min.css">
-    <script src="../uplot/uPlot.iife.min.js"></script>
+    ${uplotInlineTags()}
     <style>
         ${sharedChartCSS()}
         #price-panel  { flex: 0 0 55%; min-height: 0; position: relative; border-bottom: 1px solid #30363d; }

@@ -28,7 +28,7 @@
  *   2. _cloneGrid(source) - Clone grid Map (internal)
  *   3. _cloneOrder(order) - Clone single order object with metadata cloning (internal)
  *
- * GRID OPERATIONS (6 methods)
+ * GRID OPERATIONS (5 methods)
  *   4. get(id) - Get order by ID
  *   5. set(id, order) - Set order and mark as modified
  *   6. delete(id) - Delete order and mark as modified
@@ -47,17 +47,17 @@
  *   14. getIndexes() - Get lazy-computed price/type/state indexes
  *
  * MODIFICATION TRACKING (1 method)
- *   14. isModified() - Check if any modifications made
+ *   15. isModified() - Check if any modifications made
  *
  * SYNCHRONIZATION (1 method)
- *   17. syncFromMaster(masterGrid, orderId, masterVersion) - Sync specific order from master
+ *   16. syncFromMaster(masterGrid, orderId, masterVersion) - Sync specific order from master
  *       Used when fills arrive during rebalancing
  *
- * STALENESS & DIAGNOSTICS (3 methods)
- *   18. markStale(reason) - Mark working grid as stale (version mismatch)
- *   19. isStale() - Check if grid is stale
- *   20. getStaleReason() - Get reason for staleness
- *   21. getMemoryStats() - Get memory usage estimate
+ * STALENESS & DIAGNOSTICS (4 methods)
+ *   17. markStale(reason) - Mark working grid as stale (version mismatch)
+ *   18. isStale() - Check if grid is stale
+ *   19. getStaleReason() - Get reason for staleness
+ *   20. getMemoryStats() - Get memory usage estimate
  *
  * ===============================================================================
  *
@@ -74,7 +74,6 @@
 
 
 import { buildDelta, buildIndexes } from './utils/order.js';
-import { parseSlotIndex } from './utils/slot.js';
 import { COW_PERFORMANCE } from '../constants.js';
 class WorkingGrid {
     grid: Map<string, any>;
@@ -194,24 +193,6 @@ class WorkingGrid {
             this._indexes = buildIndexes(this.grid);
         }
         return this._indexes;
-    }
-
-    /**
-     * Return slots sorted by slot-N (parseSlotIndex), price as tie-break.
-     * Mandated for strategy/validate deterministic ordering per determinism plan.
-     */
-    getOrderedSlots(): any[] {
-        const slots = Array.from(this.grid.values());
-        return slots.sort((a: any, b: any) => {
-            const pa = parseSlotIndex(a?.id);
-            const pb = parseSlotIndex(b?.id);
-            const aOk = pa !== null && Number.isFinite(pa);
-            const bOk = pb !== null && Number.isFinite(pb);
-            if (aOk && bOk) return (pa as number) - (pb as number);
-            if (aOk) return -1;
-            if (bOk) return 1;
-            return Number(a?.price) - Number(b?.price);
-        });
     }
 
     /**

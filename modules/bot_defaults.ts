@@ -1,0 +1,174 @@
+/**
+ * Central bot-defaults seeder — the single place that knows how
+ * `DEFAULT_CONFIG` values are applied to bot data. Three modes:
+ *
+ *  * seedBotDraft          — `normalizeBotDraft` (editor new/edit seed): fills
+ *                            every DEFAULT_CONFIG key except the excluded
+ *                            pair/funds keys; preserves nulls and partial
+ *                            objects so already-seeded entries stay byte-stable.
+ *  * seedBotEntry          — `normalizeBotEntry` (runtime load): only the
+ *                            `active` default; validation relies on most keys
+ *                            being ABSENT, so entry seeding stays minimal.
+ *  * seedBotRuntimeConfig  — `OrderManager` config: fills absent DEFAULT_CONFIG
+ *                            keys with deep clones (never aliases the global
+ *                            default) and passes provided values through
+ *                            verbatim with `{ ...DEFAULT_CONFIG, ...config }`
+ *                            semantics (key order included).
+ *
+ * Mode rules are pinned by tests/test_bot_defaults_characterization.ts and
+ * tests/test_bot_defaults_parity.ts — update them together with this file.
+ */
+
+import { DEFAULT_CONFIG } from './constants.js';
+
+export interface SeedOptions {
+    /** Defaults source; omit to use the merged DEFAULT_CONFIG. */
+    defaults?: Record<string, any>;
+}
+
+/**
+ * DEFAULT_CONFIG keys the draft seed must NEVER add. Seeding these would change
+ * persisted bots.json bytes for existing bots and pre-satisfy
+ * `validateBotEntry`'s required-key check (assetA/assetB), hiding genuine
+ * configuration mistakes from the validator.
+ */
+export const DRAFT_EXCLUDED_KEYS = ['assetA', 'assetB', 'creditOnly', 'min_BTS_value'];
+
+/**
+ * Draft seed order — kept identical to the historical if-chain so a freshly
+ * created bot's JSON key order does not change. Together with
+ * DRAFT_EXCLUDED_KEYS this must cover EVERY DEFAULT_CONFIG key; the parity test
+ * fails when a new DEFAULT_CONFIG key is added without classifying it here.
+ */
+export const DRAFT_SEED_ORDER = [
+    'weightDistribution', 'botFunds', 'activeOrders', 'reserveOrders',
+    'active', 'dryRun', 'minPrice', 'maxPrice', 'incrementPercent',
+    'targetSpreadPercent', 'startPrice', 'gridPrice',
+];
+
+/** Fields with no meaning since the grid-price offset was removed; stripped from drafts. */
+export const LEGACY_DRAFT_KEYS = ['gridPriceOffsetPct', 'gridPriceOffsetClampToBounds'];
+
+/**
+ * Spellings that mean "no explicit grid price" — delegate to startPrice.
+ * `none`/`null`/`start`/`startprice` are the editor's documented aliases;
+ * `n`/`no`/`false`/`0`/`f` are the boolean-style deactivating answers accepted
+ * elsewhere in the editor, `s` is shorthand for `startPrice`, and the boolean
+ * `false` covers a hand-edited `gridPrice: false`.
+ */
+export const GRID_PRICE_UNSET_INPUTS = new Set(['none', 'null', 'start', 'startprice', 's', 'n', 'no', 'false', '0', 'f']);
+
+/**
+ * True when a grid-price value carries no reference and must degrade to the
+ * startPrice fallback. Keeps `null`/`undefined`/`false`, empty/whitespace
+ * strings, and the aliases above equivalent so the editor display, the prompt
+ * parser, and the draft seeder all agree (the runtime already falls back on
+ * anything non-numeric/non-AMA).
+ * @param {*} value - Candidate grid-price value.
+ * @returns {boolean}
+ */
+export function isUnsetGridPrice(value: any): boolean {
+    if (value === null || value === undefined || value === false) return true;
+    if (typeof value === 'string') {
+        const text = value.trim().toLowerCase();
+        return text === '' || GRID_PRICE_UNSET_INPUTS.has(text);
+    }
+    return false;
+}
+
+function clone<T>(value: T): T {
+    if (value === null || typeof value !== 'object') return value;
+    return JSON.parse(JSON.stringify(value));
+}
+
+/** Numbers migrate to `{ buy, sell: 0 }` (floored, clamped at 0); anything
+ *  that is not a plain object becomes the default; plain objects — including
+ *  partial ones — are kept verbatim. */
+function seedReserveOrders(value: any, def: any): any {
+    if (typeof value === 'number') {
+        return { buy: Math.max(0, Math.floor(value)), sell: 0 };
+    }
+    if (value === undefined || value === null || typeof value !== 'object' || Array.isArray(value)) {
+        return clone(def);
+    }
+    return value;
+}
+
+/**
+ * Editor draft seed (formerly the `normalizeBotDraft` if-chain in
+ * modules/account_bots.ts). Deep-clones the input, then applies defaults:
+ *
+ *  * count objects (`weightDistribution`/`botFunds`/`activeOrders`): falsy
+ *    input → default clone; truthy input (including partials) kept verbatim —
+ *    never deep-filled;
+ *  * `reserveOrders`: number migration / invalid → default (see seedReserveOrders);
+ *  * `startPrice`: undefined → `default || 'pool'` (falsy defaults fall back);
+ *  * `gridPrice`: undefined → `DEFAULT_CONFIG.gridPrice` ("ama3" today),
+ *    falling back to null only when the default itself is null (Phase 2:
+ *    was a hardcoded null that ignored DEFAULT_CONFIG.gridPrice overrides);
+ *  * other scalars: filled only when `=== undefined` — explicit nulls survive.
+ */
+export function seedBotDraft(base?: Record<string, any> | null, options: SeedOptions = {}): Record<string, any> {
+    const defaults: Record<string, any> = options.defaults ?? DEFAULT_CONFIG;
+    const data: Record<string, any> = JSON.parse(JSON.stringify(base ?? {}));
+    for (const key of DRAFT_SEED_ORDER) {
+        const def = defaults[key];
+        if (key === 'reserveOrders') {
+            data.reserveOrders = seedReserveOrders(data.reserveOrders, def);
+        } else if (key === 'startPrice') {
+            if (data.startPrice === undefined) data.startPrice = def || 'pool';
+        } else if (key === 'gridPrice') {
+            // Unset spellings (false, "no", "none", ...) normalize to null so a
+            // hand-edited gridPrice can never linger as a value the runtime only
+            // silently degrades to startPrice.
+            const gp = data.gridPrice === undefined ? def : data.gridPrice;
+            data.gridPrice = isUnsetGridPrice(gp) ? null : gp;
+        } else if (def !== null && typeof def === 'object') {
+            if (!data[key]) data[key] = clone(def);
+        } else if (data[key] === undefined) {
+            data[key] = def;
+        }
+    }
+    for (const key of LEGACY_DRAFT_KEYS) delete data[key];
+    return data;
+}
+
+/**
+ * Runtime entry default (formerly duplicated in `modules/bot_settings.ts` and
+ * `claw/modules/dexbot_profiles.ts`). Only `active` is defaulted:
+ *
+ *  * missing/undefined → DEFAULT_CONFIG.active (the historical copy hardcoded
+ *    `true`; sourcing it makes a DEFAULT_CONFIG.active override take effect);
+ *  * present values pass through RAW — the spread deliberately wins, matching
+ *    the `active !== false` convention used by every consumer (a present
+ *    `null`/`0` stays `null`/`0` and classifies as active).
+ *
+ * No other DEFAULT_CONFIG key may be seeded here: `validateBotEntry` treats
+ * missing keys as mistakes (assetA/assetB must be genuinely absent when
+ * unconfigured).
+ */
+export function seedBotEntry<T extends Record<string, any>>(entry: T, options: SeedOptions = {}): T {
+    const defaults: Record<string, any> = options.defaults ?? DEFAULT_CONFIG;
+    return { active: entry.active === undefined ? defaults.active : entry.active, ...entry } as T;
+}
+
+/**
+ * Runtime config seed (formerly `{ ...DEFAULT_CONFIG, ...config }` in the
+ * OrderManager constructor). Produces exactly the spread result — same key
+ * order, provided values passed through by reference, explicit-undefined
+ * values winning — except that ABSENT defaults are deep CLONES, so mutating
+ * `manager.config.botFunds` can no longer corrupt the global DEFAULT_CONFIG
+ * (the historical shallow spread aliased every nested default object).
+ */
+export function seedBotRuntimeConfig(config: Record<string, any> = {}, options: SeedOptions = {}): Record<string, any> {
+    const defaults: Record<string, any> = options.defaults ?? DEFAULT_CONFIG;
+    const configKeys = new Set(Object.keys(config));
+    const out: Record<string, any> = {};
+    for (const key of Object.keys(defaults)) {
+        out[key] = configKeys.has(key) ? config[key] : clone(defaults[key]);
+    }
+    for (const key of configKeys) {
+        if (!(key in out)) out[key] = config[key];
+    }
+    return out;
+}

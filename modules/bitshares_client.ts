@@ -108,6 +108,29 @@ let _resolvers: any = null;
 // the result and force a disconnect if the generation has moved on.
 let _connectGeneration = 0;
 
+/**
+ * Whether a transport-reported node failure should count as a persistent strike
+ * in the NodeManager ledger.
+ *
+ * Everything does EXCEPT 'forced-reconnect'. A forced reconnect is a
+ * session-level recovery attempt, not evidence the node is bad: the transport
+ * already deprioritizes that node in memory (failedNodes) for the next connect,
+ * and that deprioritization is self-clearing once any node connects. Strikes, by
+ * contrast, survive restarts and are only cleared by consecutive successful
+ * health probes 4h apart — so a false positive costs a healthy node 24h of the
+ * rotation. A node that only had a server-side login-session swap (the
+ * 2026-09-25 incident) is perfectly healthy, yet 3 forced reconnects 30s apart
+ * used to blacklist it.
+ *
+ * The fill-channel watchdog escalates to a real strike ('fill-channel-
+ * unrecoverable') once recovery has demonstrably failed, so genuinely bad nodes
+ * are still blacklisted — on the stronger evidence of repeated FAILED recovery
+ * rather than mere attempts.
+ */
+export function shouldCountNodeStrike(source?: string): boolean {
+    return source !== 'forced-reconnect';
+}
+
 function ensureInitialized() {
     if (_initialized) return;
     _initialized = true;
@@ -116,6 +139,12 @@ function ensureInitialized() {
     // Single sink for every node-failure path (live transport + signing/builder
     // fee fetch) so strike counting and blacklisting cannot diverge.
     const reportNodeFailureToManager = (nodeUrl: string, errorMessage?: string, source?: string): void => {
+        // A forced reconnect is a session-level RECOVERY ATTEMPT, not evidence
+        // that the node is bad — see shouldCountNodeStrike above. The transport's
+        // own in-memory deprioritization still applies, so the reconnect rotates
+        // away from a wedged node regardless; only the persistent strike is
+        // withheld, and the fill-channel watchdog issues it if recovery fails.
+        if (!shouldCountNodeStrike(source)) return;
         if (nodeManager) {
             nodeManager.reportNodeFailure(nodeUrl, errorMessage, source);
         }

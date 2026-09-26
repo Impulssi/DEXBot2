@@ -2,8 +2,8 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
-const { DerivativeAnalyzer } = require('../analysis/trend_detection/derivative_analyzer');
-const { createSource } = require('../analysis/price_sources');
+const { DerivativeAnalyzer } = require('../derivative_analyzer');
+const { createSource } = require('../../price_sources');
 
 function createAnalyzer() {
     return new DerivativeAnalyzer({
@@ -28,7 +28,7 @@ function createAnalyzer() {
 }
 
 async function testHistoricalBullTrapExit() {
-    const dataPath = path.join(__dirname, '..', 'market_adapter', 'data', 'lp', 'iob_xrp_bts', 'lp_pool_133_1h.json');
+    const dataPath = path.join(__dirname, '..', '..', '..', 'market_adapter', 'data', 'lp', 'iob_xrp_bts', 'lp_pool_133_1h.json');
     if (!fs.existsSync(dataPath)) {
         console.log('  SKIP: historical data file not found (gitignored; not available in CI/clean checkout)');
         console.log(`  expected at: ${dataPath}`);

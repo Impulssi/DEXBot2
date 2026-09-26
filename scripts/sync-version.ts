@@ -72,25 +72,6 @@ const targets: Target[] = [
     },
   },
   {
-    file: 'analysis/ama_fitting/package.json',
-    update(content, version) {
-      const json = JSON.parse(content);
-      if (json.version === version) return null;
-      json.version = version;
-      return JSON.stringify(json, null, 2) + '\n';
-    },
-  },
-  {
-    file: 'analysis/ama_fitting/package-lock.json',
-    update(content, version) {
-      const json = JSON.parse(content);
-      if (json.version === version && json.packages?.['']?.version === version) return null;
-      json.version = version;
-      if (json.packages?.['']) json.packages[''].version = version;
-      return JSON.stringify(json, null, 2) + '\n';
-    },
-  },
-  {
     file: 'analysis/trend_detection/package.json',
     update(content, version) {
       const json = JSON.parse(content);

@@ -132,6 +132,7 @@ class AsyncLock {
     private _holding: boolean;
     private _syncPrologue: boolean;
     private _generation: number;
+    private _heldSince: number;
     private _defaultTimeout: number | null;
     private _onContention: (() => void) | null;
     private readonly _lockId: symbol;
@@ -143,6 +144,7 @@ class AsyncLock {
         this._holding = false;
         this._syncPrologue = false;
         this._generation = 0;
+        this._heldSince = 0;
         this._defaultTimeout = options.timeout || null;
         this._onContention = options.onContention || null;
         this._lockId = Symbol('AsyncLock');
@@ -275,6 +277,7 @@ class AsyncLock {
 
         const generation = ++this._generation;
         this._holding = true;
+        this._heldSince = Date.now();
 
         try {
             // Execute the callback (guaranteed to be alone)
@@ -290,6 +293,7 @@ class AsyncLock {
             // be using it). The stale callback exits silently.
             if (generation === this._generation) {
                 this._locked = false;
+                this._heldSince = 0;
                 this._processQueue();
             } else if (this._orphaned) {
                 // Stale callback finishing after forceRelease. The
@@ -300,6 +304,7 @@ class AsyncLock {
                 // finishes, blocking any new acquirer.
                 this._orphaned = false;
                 this._locked = false;
+                this._heldSince = 0;
                 this._processQueue();
             }
             // After a callback completes, if there are still queued items
@@ -311,6 +316,16 @@ class AsyncLock {
                 this._onContention();
             }
         }
+    }
+
+    /**
+     * Duration the lock has been held by its current callback.
+     * Returns 0 when the lock is not held. Observability only: callers use
+     * this to detect an over-long critical section, not to preempt it.
+     * @returns {number} Milliseconds since the callback began, or 0
+     */
+    heldForMs(): number {
+        return this._locked && this._heldSince ? Date.now() - this._heldSince : 0;
     }
 
     /**
@@ -403,6 +418,7 @@ class AsyncLock {
             this._orphaned = true;
         } else {
             this._locked = false;
+            this._heldSince = 0;
         }
         return count;
     }

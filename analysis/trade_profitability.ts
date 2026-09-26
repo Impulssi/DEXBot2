@@ -3,11 +3,16 @@
 
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import * as KC from '../market_adapter/core/kibana_client.js';
-import * as C from '../modules/constants.js';
-import { findBotKeyByAccountRef, getStoredBotAccountId, persistBotAccountId } from './bot_key_utils.js';
-
-const { kibanaSearch, DEFAULT_CONFIG: BASE_CONFIG } = KC;
+import { resolveAccountRef } from './account_resolver.js';
+import {
+    BTS_ID,
+    assetPrec as getPrec,
+    assetSymbol,
+    fetchAllFills,
+    resolveAssetPrecisions,
+    toReal,
+    FillRecord,
+} from './fills_source.js';
 
 /**
  * TRADE PROFITABILITY ANALYZER
@@ -23,105 +28,16 @@ const { kibanaSearch, DEFAULT_CONFIG: BASE_CONFIG } = KC;
  *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --asset 1.3.113
  *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --csv trades.csv
  *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --json results.json
- *   node dist/analysis/trade_profitability.js "account-name" --lookup
+ *   node dist/analysis/trade_profitability.js "account-name" --hours 168
  *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --trades
  *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --match-mode fifo
  */
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const OP_FILL_ORDER = 4;
-const BTS_ID = '1.3.0';
 let BLOCKCHAIN_FEE_PER_FILL = 0.09652; // BTS — flat blockchain operation fee (not market fee); override with --fee-per-order
 
-interface AssetInfo {
-    symbol: string;
-    precision: number;
-}
-
-const ASSETS: Record<string, AssetInfo> = {
-    '1.3.0':    { symbol: 'BTS',          precision: 5 },
-    '1.3.118':  { symbol: 'GBP',          precision: 4 },
-    '1.3.119':  { symbol: 'JPY',          precision: 2 },
-    '1.3.120':  { symbol: 'EUR',          precision: 4 },
-    '1.3.1325': { symbol: 'RUBLE',        precision: 5 },
-    '1.3.2512': { symbol: 'EVRAZ',        precision: 4 },
-    '1.3.3291': { symbol: 'TWENTIX',      precision: 5 },
-    '1.3.4099': { symbol: 'XBTSX.STH',    precision: 6 },
-    '1.3.4156': { symbol: 'XBTSX.DOGE',   precision: 5 },
-    '1.3.4157': { symbol: 'XBTSX.BTC',    precision: 8 },
-    '1.3.4159': { symbol: 'XBTSX.LTC',    precision: 8 },
-    '1.3.4176': { symbol: 'XBTSX.DASH',   precision: 8 },
-    '1.3.4274': { symbol: 'XBTSX.BCH',    precision: 8 },
-    '1.3.4760': { symbol: 'XBTSX.ETH',    precision: 7 },
-    '1.3.5537': { symbol: 'IOB.XRP',      precision: 4 },
-    '1.3.5541': { symbol: 'XBTSX.BNB',    precision: 7 },
-    '1.3.5589': { symbol: 'XBTSX.USDT',   precision: 6 },
-    '1.3.5641': { symbol: 'HONEST.CNY',   precision: 4 },
-    '1.3.5649': { symbol: 'HONEST.USD',   precision: 4 },
-    '1.3.5650': { symbol: 'HONEST.BTC',   precision: 8 },
-    '1.3.5659': { symbol: 'HONEST.ETH',   precision: 6 },
-    '1.3.5870': { symbol: 'XBTSX.FIL',    precision: 6 },
-    '1.3.5887': { symbol: 'XBTSX.RUB',    precision: 4 },
-    '1.3.5902': { symbol: 'XBTSX.USDC',   precision: 6 },
-    '1.3.6013': { symbol: 'XBTSX.HIVE',   precision: 6 },
-    '1.3.6124': { symbol: 'XBTSX.AVAX',   precision: 6 },
-    '1.3.6139': { symbol: 'XBTSX.XAUT',   precision: 6 },
-    '1.3.6166': { symbol: 'XBTSX.MATIC',  precision: 5 },
-    '1.3.6241': { symbol: 'XBTSX.ETC',    precision: 7 },
-    '1.3.6268': { symbol: 'BTWTY.EOS',    precision: 4 },
-    '1.3.6301': { symbol: 'HONEST.MONEY', precision: 8 },
-    '1.3.6304': { symbol: 'HONEST.ADA',   precision: 8 },
-    '1.3.6305': { symbol: 'HONEST.DOT',   precision: 8 },
-    '1.3.6309': { symbol: 'HONEST.ATOM',  precision: 8 },
-    '1.3.6311': { symbol: 'HONEST.ALGO',  precision: 8 },
-    '1.3.6312': { symbol: 'HONEST.FIL',   precision: 8 },
-    '1.3.6313': { symbol: 'HONEST.EOS',   precision: 8 },
-    '1.3.6315': { symbol: 'HONEST.EUR',   precision: 4 },
-    '1.3.6316': { symbol: 'HONEST.GBP',   precision: 4 },
-    '1.3.6317': { symbol: 'HONEST.JPY',   precision: 4 },
-    '1.3.6444': { symbol: 'IOB.XLM',      precision: 4 },
-    '1.3.6573': { symbol: 'XBTSX.DAI',    precision: 6 },
-    '1.3.6620': { symbol: 'XBTSX.A',      precision: 6 },
-    '1.3.6627': { symbol: 'XBTSX.LINK',   precision: 6 },
-};
-const resolvedPrecisions: Record<string, number> = {};
-
-function assetSymbol(id: string): string {
-    return ASSETS[id]?.symbol ?? id;
-}
-function assetPrec(id: string): number | undefined {
-    return ASSETS[id]?.precision ?? resolvedPrecisions[id];
-}
-function getPrec(id: string): number | undefined {
-    return assetPrec(id);
-}
-
-function toReal(amount: number, assetId: string): number {
-    const p = getPrec(assetId);
-    if (p === undefined) return NaN;
-    return amount / Math.pow(10, p);
-}
-
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-interface AssetAmount {
-    amount: number;
-    asset_id: string;
-}
-
-interface FillRecord {
-    time: string;
-    blockNum: number;
-    opNum: number;
-    orderId: string;
-    accountId: string;
-    pays: AssetAmount;
-    receives: AssetAmount;
-    fee: AssetAmount;
-    isMaker: boolean;
-    sort: any[];
-}
 
 interface TradeFill {
     time: string;
@@ -202,9 +118,7 @@ Options:
   --end <iso>            End time (ISO 8601)
   --hours <n>            Lookback hours from now (alternative to --start/--end)
   --asset <assetId>      Filter to one base asset (e.g. 1.3.113 for bitUSD)
-  --lookup               Legacy (no-op): account names always resolve automatically
   --refresh-account      Force re-resolution and update the stored accountId
-  --node <url>           BitShares node URL (default: first healthy from built-in pool)
   --csv <file>           Export trade list as CSV
   --json <file>          Export full analysis as JSON
   --trades               Show per-order PnL detail (hidden by default)
@@ -216,7 +130,7 @@ Options:
 Examples:
   node dist/analysis/trade_profitability.js 1.2.123456 --hours 720
   node dist/analysis/trade_profitability.js 1.2.123456 --start 2025-01-01 --end 2025-06-01
-  node dist/analysis/trade_profitability.js "my-bot-account" --lookup --hours 168
+  node dist/analysis/trade_profitability.js "my-bot-account" --hours 168
   node dist/analysis/trade_profitability.js 1.2.123456 --hours 720 --asset 1.3.113 --csv trades.csv
   node dist/analysis/trade_profitability.js 1.2.123456 --hours 720 --match-mode sequential`);
 }
@@ -234,9 +148,7 @@ function parseArgs() {
         start: null,
         end: null,
         asset: null,
-        lookup: false,
         refreshAccount: false,
-        node: C.NODE_MANAGEMENT.DEFAULT_NODES[0],
         csv: null,
         json: null,
         matchMode: 'sequential',
@@ -251,9 +163,7 @@ function parseArgs() {
             case '--start':        opts.start    = args[++i]; break;
             case '--end':          opts.end      = args[++i]; break;
             case '--asset':        opts.asset    = args[++i]; break;
-            case '--lookup':       opts.lookup   = true; break;
             case '--refresh-account': opts.refreshAccount = true; break;
-            case '--node':         opts.node     = args[++i]; break;
             case '--csv':          opts.csv      = args[++i]; break;
             case '--json':         opts.json     = args[++i]; break;
             case '--trades':         opts.showPnlDetail  = true; break;
@@ -279,150 +189,6 @@ function parseArgs() {
     }
 
     return opts;
-}
-
-// ─── Account name resolution ─────────────────────────────────────────────────
-
-async function resolveAccountId(name: string, nodeUrl: string): Promise<string | null> {
-    const { createReadOnlyClient } = await import('../modules/bitshares-native/index.js');
-    const client = createReadOnlyClient({ nodes: [nodeUrl] });
-    // Suppress transport INFO logs during ephemeral connection:
-    // bitshares-native transport logger (new Logger('Transport')) writes
-    // "[timestamp] [INFO] [Transport] ..." — silence by raising log level.
-    const prevLevel = process.env.LOG_LEVEL;
-    process.env.LOG_LEVEL = 'warn';
-    try {
-        await client.connect();
-        const accounts = await client.db('lookup_account_names', [[name]]);
-        if (Array.isArray(accounts) && accounts[0]?.id) {
-            return accounts[0].id;
-        }
-        return null;
-    } catch (e: any) {
-        console.warn(`  [warn] Account resolution failed: ${e.message}`);
-        return null;
-    } finally {
-        try { client.disconnect(); } catch (_) {}
-        process.env.LOG_LEVEL = prevLevel;
-    }
-}
-
-// ─── On-chain asset precision resolution ────────────────────────────────────
-
-/**
- * Collects all unique non-BTS asset IDs from fills, resolves unknown
- * precisions from the blockchain, and populates the runtime cache.
- */
-async function resolveAssetPrecisions(fills: FillRecord[], nodeUrl: string | null): Promise<void> {
-    const unknownIds = new Set<string>();
-    for (const f of fills) {
-        for (const id of [f.pays.asset_id, f.receives.asset_id, f.fee.asset_id]) {
-            if (id !== BTS_ID && !(id in ASSETS) && !(id in resolvedPrecisions)) {
-                unknownIds.add(id);
-            }
-        }
-    }
-    if (unknownIds.size === 0 || !nodeUrl) return;
-
-    const ids = [...unknownIds];
-    console.log(`  Resolving ${ids.length} unknown asset(s) from blockchain...`);
-
-    const { createReadOnlyClient } = await import('../modules/bitshares-native/index.js');
-    const client = createReadOnlyClient({ nodes: [nodeUrl] });
-    try {
-        await client.connect();
-        const assets = await client.db('get_assets', [ids]);
-        if (Array.isArray(assets)) {
-            for (const asset of assets) {
-                if (asset?.id && asset.precision != null) {
-                    resolvedPrecisions[asset.id] = asset.precision;
-                    console.log(`    ${asset.id} → ${asset.symbol || '?'} (precision ${asset.precision})`);
-                }
-            }
-        }
-        const missing = ids.filter(id => !(id in resolvedPrecisions));
-        if (missing.length > 0) {
-            console.warn(`  [warn] ${missing.length} asset(s) not found on chain: ${missing.join(', ')}. Fills referencing them will be skipped.`);
-        }
-    } catch (e: any) {
-        console.warn(`  [warn] Asset resolution failed: ${e.message}. Fills with unknown assets will be skipped.`);
-    } finally {
-        try { client.disconnect(); } catch (_) {}
-    }
-}
-
-// ─── Kibana Query ────────────────────────────────────────────────────────────
-
-function buildFillQuery(accountId: string, gte: string, lte: string, size: number) {
-    return {
-        size,
-        track_total_hits: false,
-        _source: [
-            'block_data.block_time',
-            'block_data.block_num',
-            'operation_id_num',
-            'operation_history.op_object.pays',
-            'operation_history.op_object.receives',
-            'operation_history.op_object.fee',
-            'operation_history.op_object.order_id',
-            'operation_history.op_object.account_id',
-            'operation_history.op_object.is_maker',
-        ],
-        query: {
-            bool: {
-                filter: [
-                    { term: { operation_type: OP_FILL_ORDER } },
-                    { term: { 'operation_history.op_object.account_id.keyword': accountId } },
-                    { range: { 'block_data.block_time': { gte, lte } } },
-                ],
-            },
-        },
-        sort: [
-            { 'block_data.block_time': { order: 'asc' } },
-            { operation_id_num: { order: 'asc' } },
-        ],
-    };
-}
-
-async function fetchAllFills(config: any, accountId: string, gte: string, lte: string): Promise<FillRecord[]> {
-    const pageSize = 10000;
-    const fills: FillRecord[] = [];
-    let searchAfter: any[] | null = null;
-    const cfg = { ...BASE_CONFIG, timeout: 60000, ...config };
-
-    while (true) {
-        const query = buildFillQuery(accountId, gte, lte, pageSize);
-        if (searchAfter) (query as any).search_after = searchAfter;
-
-        const result: any = await kibanaSearch(cfg, query);
-        const hits = result?.hits?.hits ?? [];
-        if (!hits.length) break;
-
-        for (const hit of hits) {
-            const src = hit?._source;
-            const op = src?.operation_history?.op_object;
-            if (!op || !op.pays || !op.receives) continue;
-
-            fills.push({
-                time: src.block_data?.block_time ?? '',
-                blockNum: src.block_data?.block_num ?? 0,
-                opNum: Number(src.operation_id_num ?? 0),
-                orderId: op.order_id ?? '',
-                accountId: op.account_id ?? '',
-                pays: { amount: Number(op.pays.amount ?? 0), asset_id: op.pays.asset_id ?? '' },
-                receives: { amount: Number(op.receives.amount ?? 0), asset_id: op.receives.asset_id ?? '' },
-                fee: { amount: Number(op.fee?.amount ?? 0), asset_id: op.fee?.asset_id ?? '' },
-                isMaker: op.is_maker ?? false,
-                sort: hit.sort,
-            });
-        }
-
-        if (hits.length < pageSize) break;
-        searchAfter = hits[hits.length - 1].sort;
-        if (!Array.isArray(searchAfter)) break;
-    }
-
-    return fills;
 }
 
 // ─── Fill Classification ─────────────────────────────────────────────────────
@@ -829,6 +595,12 @@ function printPnlDetail(pairs: PairAnalysis[]) {
 
 // ─── Performance Metrics ──────────────────────────────────────────────────────
 
+interface WindowRange {
+    /** The analysis window actually queried — drives annualisation. */
+    startMs: number;
+    endMs: number;
+}
+
 interface TradingMetrics {
     totalLots: number;
     winRate: number;
@@ -840,8 +612,22 @@ interface TradingMetrics {
     expectancyPct: number;
     expectancyR: number;
     netExpectancyBts: number;
-    dailyPnlRatio: number;
-    dailyDownsideRatio: number;
+    // Risk-adjusted ratios annualised from the analysis window (see
+    // --hours/--start/--end). Binned 1d for windows >= 3 days, else 1h; every
+    // period in the window is zero-filled so flat periods count as 0 PnL and
+    // the window scales cleanly to a year. Only whole periods are scored: a
+    // trailing partial period is excluded from ratios AND projection alike,
+    // so both share the same denominator.
+    sharpeAnn: number;          // NaN when undefined (no dispersion / < 2 periods)
+    sortinoAnn: number;         // Infinity when the window has no losing periods
+    sharpeAnnSE: number;        // standard error of sharpeAnn (estimation uncertainty)
+    periodLabel: string;        // '1h' | '1d'
+    periodCount: number;        // whole periods scored, including zero-PnL ones
+    periodSpanDays: number;     // queried window length
+    scoredSpanDays: number;     // whole-period span actually scored (nPeriods × bin)
+    annualFactor: number;       // sqrt(periods per year)
+    projectedNetPnlPerDay: number;
+    projectedNetPnlAnn: number;
     maxConsecWins: number;
     maxConsecLosses: number;
     avgHoldHours: number;
@@ -849,6 +635,7 @@ interface TradingMetrics {
     bestTradePct: number;
     worstTradePct: number;
     mddPct: number;
+    mddAbsBts: number;
     mddHadStablePeak: boolean;
     isOngoingRecovery: boolean;
     currentDrawdownDays: number;
@@ -882,7 +669,7 @@ function percentile(sorted: number[], p: number): number {
     return sorted[f] * (c - k) + sorted[c] * (k - f);
 }
 
-function computeMetrics(pair: PairAnalysis): TradingMetrics {
+function computeMetrics(pair: PairAnalysis, window?: WindowRange): TradingMetrics {
     const pnls = pair.realizedPnls;
     const total = pnls.length;
     if (total === 0) {
@@ -891,11 +678,15 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
             avgWin: 0, avgLoss: 0, avgWinLossRatio: 0,
             expectancyBts: 0, expectancyPct: 0, expectancyR: 0,
             netExpectancyBts: 0,
-            dailyPnlRatio: 0, dailyDownsideRatio: 0,
+            sharpeAnn: NaN, sortinoAnn: NaN, sharpeAnnSE: NaN,
+            periodLabel: '—', periodCount: 0, periodSpanDays: 0, scoredSpanDays: 0,
+            annualFactor: 0,
+            projectedNetPnlPerDay: 0, projectedNetPnlAnn: 0,
             maxConsecWins: 0, maxConsecLosses: 0,
             avgHoldHours: 0, limitOrderRatio: 0,
             bestTradePct: 0, worstTradePct: 0,
             mddPct: 0,
+            mddAbsBts: 0,
             mddHadStablePeak: false,
             isOngoingRecovery: false,
             currentDrawdownDays: 0,
@@ -937,29 +728,91 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
 
     const netExpectancyBts = pair.totalRealizedPnlNet / total;
 
-    // Daily-binned net PnL for mean/std ratio (dimensionful — not a Sharpe ratio)
-    const dayBuckets: Record<string, number> = {};
+    // ─── Risk-adjusted ratios (window-aware annualisation) ────────────────
+    // Bin the window's net PnL into calendar periods and annualise with the
+    // matching periods-per-year. Every period in the window is represented
+    // (zero-filled): flat periods must count as 0 PnL, otherwise a bot that
+    // trades a few days a week is scored as if it traded every day, and the
+    // window cannot be scaled honestly to a year.
+    const HOUR_MS = 3600_000;
+    const DAY_MS = 86_400_000;
+    const times = pnls.map(r => Date.parse(r.exitTime)).filter(t => Number.isFinite(t));
+    const firstMs = window?.startMs ?? (times.length > 0 ? Math.min(...times) : 0);
+    const lastMs = window?.endMs ?? (times.length > 0 ? Math.max(...times) : firstMs + DAY_MS);
+    const spanMs = Math.max(lastMs - firstMs, window ? HOUR_MS : DAY_MS);
+    const periodSpanDays = spanMs / DAY_MS;
+    // Daily buckets need a handful of observations before a daily std means
+    // anything; shorter windows fall back to hourly bins so they still
+    // annualise instead of dividing by a one-sample std.
+    const useHourly = periodSpanDays < 3;
+    const periodMs = useHourly ? HOUR_MS : DAY_MS;
+    const periodsPerYear = useHourly ? 8760 : 365;
+    const periodLabel = useHourly ? '1h' : '1d';
+
+    // Score only whole periods: a trailing partial period (window not an exact
+    // multiple of the bin) would otherwise be a deflated observation. It is
+    // excluded from ratios, projection AND activity rates alike, so every
+    // window-derived metric shares one basis. Bins are aligned to the window
+    // start, so an exact-multiple window scores everything.
+    const nPeriods = Math.max(1, Math.floor(spanMs / periodMs));
+    const scoredSpanDays = nPeriods * periodMs / DAY_MS;
+    const scoredEndMs = firstMs + nPeriods * periodMs;
+    const exactWindow = spanMs === nPeriods * periodMs;
+    // A fill belongs to the scored window if it falls inside the whole
+    // periods. On an exact-multiple window the end boundary is inclusive (the
+    // ES range query includes `lte`); with a partial tail that boundary fill
+    // is trailing and excluded along with the rest of the tail.
+    const inScoredWindow = (t: number) =>
+        Number.isFinite(t) && t >= firstMs
+        && (t < scoredEndMs || (exactWindow && t === scoredEndMs));
+    const periodPnl = new Array<number>(nPeriods).fill(0);
+    let scoredFillCount = 0;
     for (const r of pnls) {
-        const day = r.exitTime.slice(0, 10);
-        dayBuckets[day] = (dayBuckets[day] || 0) + r.pnlNet;
+        const t = Date.parse(r.exitTime);
+        if (!inScoredWindow(t)) continue;
+        let idx = Math.floor((t - firstMs) / periodMs);
+        if (idx === nPeriods) idx = nPeriods - 1; // inclusive end boundary
+        periodPnl[idx] += r.pnlNet;
+        scoredFillCount++;
     }
-    const dailyRets = Object.values(dayBuckets);
-    const nDays = dailyRets.length;
 
-    const meanDailyRet = nDays > 0 ? dailyRets.reduce((s, v) => s + v, 0) / nDays : 0;
-    const dailyVar = nDays > 0
-        ? dailyRets.reduce((s, v) => s + (v - meanDailyRet) ** 2, 0) / nDays
+    const meanPeriod = periodPnl.reduce((s, v) => s + v, 0) / nPeriods;
+    // Sample variance (n-1): the window is a sample, not the whole population.
+    const periodVar = nPeriods > 1
+        ? periodPnl.reduce((s, v) => s + (v - meanPeriod) ** 2, 0) / (nPeriods - 1)
         : 0;
-    const dailyStd = Math.sqrt(dailyVar);
-    const annFactor = Math.sqrt(365);
-    const dailyPnlRatio = dailyStd > 0 ? (meanDailyRet / dailyStd) * annFactor : 0;
+    const periodStd = Math.sqrt(periodVar);
+    const annualFactor = Math.sqrt(periodsPerYear);
+    const sharpeAnn = periodStd > 0 ? (meanPeriod / periodStd) * annualFactor : NaN;
 
-    // Downside deviation uses only negative returns; same N denominator
-    const downsideVar = nDays > 0
-        ? dailyRets.reduce((s, v) => s + (v < 0 ? v * v : 0), 0) / nDays
+    // Estimation uncertainty of the annualised Sharpe (Lo 2002, i.i.d. returns).
+    const srPerPeriod = periodStd > 0 ? meanPeriod / periodStd : NaN;
+    const sharpeAnnSE = nPeriods > 1 && Number.isFinite(srPerPeriod)
+        ? Math.sqrt((1 + 0.5 * srPerPeriod * srPerPeriod) / nPeriods) * annualFactor
+        : NaN;
+
+    // Target downside deviation (MAR = 0), sample denominator (n-1) to match
+    // the Sharpe convention above — the two ratios stay internally
+    // comparable (many textbook Sortinos divide by N; we deliberately
+    // don't mix conventions). With no losing periods Sortino is undefined —
+    // reporting 0 would read as "terrible", the opposite of truth.
+    const downsideVar = nPeriods > 1
+        ? periodPnl.reduce((s, v) => s + (v < 0 ? v * v : 0), 0) / (nPeriods - 1)
         : 0;
     const downsideStd = Math.sqrt(downsideVar);
-    const dailyDownsideRatio = downsideStd > 0 ? (meanDailyRet / downsideStd) * annFactor : 0;
+    const sortinoAnn = nPeriods < 2
+        ? NaN
+        : (downsideStd > 0
+            ? (meanPeriod / downsideStd) * annualFactor
+            : (meanPeriod > 0 ? Infinity : NaN));
+
+    // "This window repeated all year" — linear projection of the scored
+    // window's net PnL. Uses the same whole-period basis as the ratios
+    // above (not the raw window total), so Sharpe and projection can never
+    // disagree about what the window contains.
+    const scoredPnl = periodPnl.reduce((s, v) => s + v, 0);
+    const projectedNetPnlPerDay = scoredPnl / scoredSpanDays;
+    const projectedNetPnlAnn = projectedNetPnlPerDay * 365;
 
     // Fills-per-order distribution (grouped by sell order)
     const fillCounts: number[] = [];
@@ -980,8 +833,13 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
     const oneShotOrderRatio = sellOrdersFilled > 0
         ? fillCounts.filter(c => c === 1).length / sellOrdersFilled
         : 0;
-    const fillsPerDay = nDays > 0 ? total / nDays : 0;
-    const avgVolumePerDay = nDays > 0 ? (pair.totalBuyQuote + pair.totalSellQuote) / nDays : 0;
+    // Activity rates share the scored whole-period basis: numerator and
+    // denominator both cover exactly the lots/fills the ratios scored. A fill
+    // with an unparseable timestamp has no period, so it is excluded here too.
+    const scoredNotional = [...pair.buys, ...pair.sells]
+        .reduce((s, f) => s + (inScoredWindow(Date.parse(f.time)) ? f.quoteAmount : 0), 0);
+    const fillsPerDay = scoredSpanDays > 0 ? scoredFillCount / scoredSpanDays : 0;
+    const avgVolumePerDay = scoredSpanDays > 0 ? scoredNotional / scoredSpanDays : 0;
 
     // Avg hold duration
     let totalHours = 0;
@@ -1023,7 +881,7 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
     const chronological = [...pnls].sort((a, b) =>
         new Date(a.exitTime).getTime() - new Date(b.exitTime).getTime()
     );
-    let equity = 0, peak = 0, mddPct = 0;
+    let equity = 0, peak = 0, mddPct = 0, mddAbsBts = 0;
     let maxRecoveryDays = 0;
     let isOngoingRecovery = false;
     let currentDrawdownDays = 0;
@@ -1067,6 +925,8 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
             }
             const dd = (equity - peak) / peak;
             if (dd < mddPct) mddPct = dd;
+            const ddAbs = peak - equity;
+            if (ddAbs > mddAbsBts) mddAbsBts = ddAbs;
         }
 
         if (peak > 0 && !hadStablePeak) {
@@ -1090,6 +950,7 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
         mddPct *= 100;
     } else {
         mddPct = hasPrePeakEquity ? prePeakMinEquity : 0;
+        mddAbsBts = 0;
     }
 
     // Payoff distribution stats
@@ -1121,8 +982,16 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
         expectancyPct,
         expectancyR,
         netExpectancyBts,
-        dailyPnlRatio,
-        dailyDownsideRatio,
+        sharpeAnn,
+        sortinoAnn,
+        sharpeAnnSE,
+        periodLabel,
+        periodCount: nPeriods,
+        periodSpanDays,
+        scoredSpanDays,
+        annualFactor,
+        projectedNetPnlPerDay,
+        projectedNetPnlAnn,
         feeDragPct,
         maxConsecWins: maxW,
         maxConsecLosses: maxL,
@@ -1131,6 +1000,7 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
         bestTradePct,
         worstTradePct,
         mddPct,
+        mddAbsBts,
         mddHadStablePeak: hadStablePeak,
         isOngoingRecovery,
         currentDrawdownDays,
@@ -1152,11 +1022,11 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
     };
 }
 
-function printMetrics(pairs: PairAnalysis[]) {
+function printMetrics(pairs: PairAnalysis[], window?: WindowRange) {
     for (const pair of pairs) {
         if (pair.realizedPnls.length === 0) continue;
 
-        const m = computeMetrics(pair);
+        const m = computeMetrics(pair, window);
         const pairLabel = `${fmtAsset(pair.baseAsset)}/${fmtAsset(pair.quoteAsset)}`;
 
         console.log('');
@@ -1185,13 +1055,24 @@ function printMetrics(pairs: PairAnalysis[]) {
         console.log(`  P25 / P75:            ${fmtPct(m.p25PnlPct)} / ${fmtPct(m.p75PnlPct)}`);
         console.log(`  Best / Worst Trade:   ${fmtPct(m.bestTradePct)} / ${fmtPct(m.worstTradePct)}`);
         console.log('');
-        // Risk-adjusted (dimensionful — based on absolute daily PnL, not % returns)
-        console.log(`  Sharpe (ann):         ${m.dailyPnlRatio.toFixed(2)}`);
-        console.log(`  Sortino (ann):        ${m.dailyDownsideRatio.toFixed(2)}`);
+        // Risk-adjusted — annualised from the analysis window, zero-filled bins
+        const ratioStr = (v: number) => Number.isFinite(v) ? v.toFixed(2) : (v === Infinity ? '∞' : 'n/a');
+        const seStr = Number.isFinite(m.sharpeAnnSE) ? ` ± ${m.sharpeAnnSE.toFixed(2)}` : '';
+        const confidence = m.periodSpanDays < 30 ? 'low confidence' : 'ok';
+        console.log(`  Sharpe (ann):         ${ratioStr(m.sharpeAnn)}${seStr}   [${m.periodLabel} bins, n=${m.periodCount}, ${confidence}]`);
+        const sortinoNote = m.sortinoAnn === Infinity ? '   (no losing periods)' : '';
+        console.log(`  Sortino (ann):        ${ratioStr(m.sortinoAnn)}${sortinoNote}`);
+        if (m.periodLabel === '1h') {
+            console.log(`    ⚠ window < 3 days: hourly bins over an unrepresentative sample — treat the annualised ratios as indicative only and never rank them against 1d-binned runs`);
+        }
+        const spanStr = m.scoredSpanDays < m.periodSpanDays - 1e-9
+            ? `${m.scoredSpanDays.toFixed(1)}d scored of ${m.periodSpanDays.toFixed(1)}d window`
+            : `${m.periodSpanDays.toFixed(1)}d`;
+        console.log(`  Projected net PnL:    ${fmt(m.projectedNetPnlAnn, 2)} ${qSymbol}/yr   (${fmt(m.projectedNetPnlPerDay, 2)}/day over ${spanStr})`);
         console.log('');
         // Tail risk
         if (m.mddHadStablePeak) {
-            console.log(`  Max Drawdown:         ${fmtPct(m.mddPct)}`);
+            console.log(`  Max Drawdown:         ${fmt(m.mddAbsBts, 4)} ${qSymbol} (${fmtPct(m.mddPct)} of peak cumulative profit)`);
         } else {
             console.log(`  Min Equity:            ${fmt(m.mddPct, 4)} ${fmtAsset(pair.quoteAsset)}`);
         }
@@ -1334,36 +1215,17 @@ async function run() {
     let accountId = opts.accountId;
 
     if (!/^1\.2\.\d+$/.test(String(accountId))) {
-        // Background resolution: the Kibana query below filters on the 1.2.x
-        // account_id field, so a name must always resolve first (a raw name
-        // would silently return zero fills).
-        // Stored ID first: when the name belongs to a bot in profiles/bots.json
-        // and its stamped accountId still matches, no chain lookup is needed.
-        let matchedKey: string | null = null;
-        let stored: string | null = null;
-        try {
-            const match = findBotKeyByAccountRef(accountId);
-            if (match) {
-                matchedKey = match.botKey;
-                stored = getStoredBotAccountId(match.botKey, accountId);
-            }
-        } catch (_) {
-            // bots.json issues must never break resolution; fall through to chain.
+        // The Kibana query below filters on the 1.2.x account_id field, so a
+        // name must always resolve first (a raw name would silently return
+        // zero fills). Shared resolver: reuses a stored accountId from
+        // profiles/bots.json when one matches the name and stamps the result
+        // back onto the bot entry on a fresh lookup.
+        const resolved = await resolveAccountRef(accountId, { refresh: opts.refreshAccount });
+        if (!resolved.accountId) {
+            console.error(`  Could not resolve "${accountId}" to an account ID`);
+            process.exit(1);
         }
-        if (stored && !opts.refreshAccount) {
-            console.log(`  Using stored accountId ${stored} from profiles/bots.json (no lookup needed; pass --refresh-account to re-verify)`);
-            accountId = stored;
-        } else {
-            const resolved = await resolveAccountId(accountId, opts.node);
-            if (!resolved) {
-                console.error(`  Could not resolve "${accountId}" to an account ID`);
-                process.exit(1);
-            }
-            accountId = resolved;
-            if (matchedKey && persistBotAccountId(matchedKey, resolved)) {
-                console.log(`  Stored accountId ${resolved} in profiles/bots.json`);
-            }
-        }
+        accountId = resolved.accountId;
     }
 
     // Build time range
@@ -1393,7 +1255,7 @@ async function run() {
     }
 
     // Resolve unknown asset precisions from blockchain
-    await resolveAssetPrecisions(fills, opts.node);
+    await resolveAssetPrecisions(fills);
 
     // Classify fills
     const { trades, pairs } = classifyFills(fills, opts.asset);
@@ -1451,7 +1313,7 @@ async function run() {
         printPnlDetail(analyses);
     }
 
-    printMetrics(analyses);
+    printMetrics(analyses, { startMs: Date.parse(gte), endMs: Date.parse(lte) });
 
     if (opts.csv) {
         exportCsv(analyses, opts.csv);

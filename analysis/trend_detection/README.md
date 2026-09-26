@@ -1,11 +1,10 @@
 # Trend Detection
 
-This folder contains the chart generators, derivative signal layer, and re-export shims used by the analysis runners. The canonical AMA, Kalman, Hurst, and Permutation Entropy implementations live in `market_adapter/core/` (see below); the legacy SMA/MACD/RSI derivative signal layer is in `derivative_analyzer.ts`.
+This folder contains the chart generators and re-export shims used by the analysis runners. The canonical AMA, Kalman, Hurst, and Permutation Entropy implementations live in `market_adapter/core/` (see below).
 
 ## Docs
 
 - [DYNAMIC_WEIGHT_RESEARCH.md](DYNAMIC_WEIGHT_RESEARCH.md) - dynamic weight research notes for the Kalman/Hurst/PE blend
-- [SIGNAL_DOCUMENTATION.md](SIGNAL_DOCUMENTATION.md) - derivative signal layer documentation
 
 ## Live Counterpart
 
@@ -13,7 +12,6 @@ This folder contains the chart generators, derivative signal layer, and re-expor
 
 ## Modules
 
-- `derivative_analyzer.ts`
 - `dynamic_weight_chart_generator.ts`
 - `kalman_chart_generator.ts`
 - `regime_chart_generator.ts`

@@ -288,6 +288,32 @@ The failure path is consistent regardless of whether the daemon or the
 interactive password prompt handled the authentication, making the output
 predictable for monitoring and alerting.
 
+### Cancelling the key manager (Escape ≠ wrong password)
+
+Pressing **Escape** at any interactive key-manager prompt is an explicit
+*cancellation*, never a failed authentication. The contract:
+
+- `authenticate()` throws `MasterPasswordCancelledError` on Escape
+  (`modules/chain_keys.ts`). `isMasterPasswordFailure()` recognizes
+  cancellation alongside a genuinely wrong password, so every abort path
+  (`key_store`, `chain_orders`, `credential_daemon`, `dexbot_class`, `dexbot`)
+  handles it without reporting it as an authentication failure.
+- `main()` returns whether a **usable vault** exists, routes every close through
+  one message, keeps submenu Escape local to the operation, and
+  `selectKeyName()` returns `null` on cancel. `dexbot.ts` honors that return
+  value and surfaces a cancellation message during first-run setup.
+- **Setup completeness is a usable account entry, not password metadata.**
+  `hasKeySetup()` requires a valid `v2` encrypted key, so `dexbot start` routes
+  back into onboarding instead of launching with a vault that cannot sign
+  (`selectStartOnboardingCommand(hasKeySetup, botCount)`: no usable key → `key`;
+  key but no bot definitions → `bot`; otherwise launch).
+- Non-interactive launches never block on a prompt: `--headless` / `--dryrun`
+  with incomplete configuration fail fast with a message. Programmatic
+  `unlock.main()` callers (tests, embeds) get no onboarding at all.
+
+Cancellation leaves no secret material behind: it is a read-only abort of the
+prompt, and the 3-attempt cap applies only to real password attempts.
+
 ---
 
 ## 6. Startup Path — Daemon-First, Interactive Fallback

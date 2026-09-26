@@ -123,6 +123,24 @@ export function withPoolRef(
   };
 }
 
+/**
+ * Resolve the price-derivation mode from a startPrice value. `startPrice` is
+ * the master price source: a string mode ("pool"/"book") governs it, while a
+ * non-string value (numeric/undefined) falls back to the supplied mode
+ * (default "auto"). Keeping this separate lets the grid call site pass
+ * startPrice's own mode, so a pinned `poolRef` can never override
+ * `startPrice: "book"`.
+ * @param {*} startPrice - The configured startPrice value.
+ * @param {string} [fallback='auto'] - Mode when startPrice is not a string.
+ * @returns {string} Lowercased mode.
+ */
+export function resolveStartPriceMode(startPrice: any, fallback: string = 'auto'): string {
+  if (typeof startPrice === 'string' && startPrice.trim()) {
+    return startPrice.trim().toLowerCase();
+  }
+  return fallback;
+}
+
 export async function derivePriceWithPoolRef(
   BitShares: any,
   symA: string,

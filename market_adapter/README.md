@@ -21,13 +21,13 @@ The live signal layer for AMA-priced bots. It reads candles, computes the AMA ce
 
 | If you want to… | Read this | Key command |
 |-----------------|-----------|-------------|
-| Enable AMA pricing for a bot | [Quick Start](#quick-start) | `dexbot white` |
+| Enable AMA pricing for a bot | [Quick Start](#quick-start) | `dexbot bot` → `2) Modify bot` → `6) Adapter` |
 | Change how often the grid rebuilds | [Trigger Threshold](#trigger-threshold) | edit `AMA_DELTA_THRESHOLD_PERCENT` |
-| Tune buy/sell weight bias | [Asymmetric Weight Shift](#asymmetric-weight-shift) | whitelist `dynamicWeight: true` |
-| Widen/tighten grid bounds by trend | [Grid Range Scaling](#grid-range-scaling) | whitelist `asymmetricBounds: true` |
+| Tune buy/sell weight bias | [Asymmetric Weight Shift](#asymmetric-weight-shift) | `dexbot bot` → `2) Modify bot` → `6) Adapter` → Weight |
+| Widen/tighten grid bounds by trend | [Grid Range Scaling](#grid-range-scaling) | `dexbot bot` → `2) Modify bot` → `6) Adapter` → Range |
 | Override settings for one pair or bot | [Settings and Overrides](#settings-and-overrides) | edit `profiles/market_adapter_settings.json` |
 | Run the adapter standalone or test dry-run | [Live Writes and Dry-Run](#live-writes-and-dry-run) | `node dist/market_adapter/market_adapter.js --dryRun` |
-| Debug a bot not being processed | [Troubleshooting](#troubleshooting) | `dexbot white` |
+| Debug a bot not being processed | [Troubleshooting](#troubleshooting) | `dexbot bot` → `2) Modify bot` → `6) Adapter` flags |
 | Understand the signal pipeline or module layout | [Technical Reference](#technical-reference) | — |
 
 ## Big Picture
@@ -50,9 +50,10 @@ applies the symmetric penalty.
 
 ### 1. Enable AMA
 
-Set `gridPrice` to `ama`, `ama1`, `ama2`, `ama3`, or `ama4` in
-`profiles/bots.json` or through `dexbot bot`. Use `ama` for the pair's
-default preset.
+New bots default to `gridPrice: "ama3"`. Change it in `profiles/bots.json`
+or through `dexbot bot` to `ama`, `ama1`, `ama2`, `ama3`, or `ama4`. `ama1`
+reacts fastest, `ama4` is the slowest and steadiest (higher numbers smooth
+more), and `ama` uses the pair's default preset.
 
 `startPrice` selects the candle source:
 
@@ -64,47 +65,23 @@ default preset.
 
 When fetching candles (`pool` or `book`), the adapter requires a full historical window. The oldest `erPeriod` candles are used for an initial SMA (Simple Moving Average) warmup phase to seed the AMA and establish the first Efficiency Ratio (ER) calculation. See [AMA Warmup Window](#ama-warmup-window--why-candle-length-matters) for technical details.
 
-### 2. Whitelist Live Writes
+### 2. Enable Live Writes
 
-Generate the whitelist from AMA-enabled bots. Without a whitelist entry, the
-adapter still computes state, but live grid snapshots and recalc triggers stay
-in dry-run mode.
+Open the bot editor — `dexbot bot` → `2) Modify bot` → pick the bot →
+`6) Adapter` — and set the three per-bot flags:
 
-```bash
-dexbot white
-```
+| Flag | Whitelist key | Effect |
+|------|---------------|--------|
+| **Price** | `ama` | Allows live `dynamicgrid.json` and recalc-trigger writes. Without it the adapter still computes state, but live output stays in dry-run. |
+| **Weight** | `dynamicWeight` | Opt-in dynamic buy/sell weights. |
+| **Range** | `asymmetricBounds` | Opt-in AMA-slope range scaling. |
 
-This writes `profiles/market_adapter_whitelist.json`, where each bot's AMA,
-dynamic-weight, and range-scaling flags can be inspected or adjusted.
-
-By default, newly generated entries whitelist AMA pricing only, keeping both
-dynamic weights and range scaling (asymmetric bounds) disabled. To opt newly
-generated entries into dynamic weights:
-
-```bash
-dexbot white --dynamic-weight
-```
-
-To opt newly generated entries into range scaling:
-
-```bash
-dexbot white --asymmetric-bounds
-```
-
-To overwrite an existing entry (existing entries are otherwise preserved):
-
-```bash
-dexbot white --dynamic-weight --bot <botKey>
-dexbot white --asymmetric-bounds --bot <botKey>
-```
-
-`--bot` implies overwrite for that key only; without it, `dexbot white` only adds missing bots.
-
-Remove stale whitelist entries (bots no longer in `bots.json`):
-
-```bash
-dexbot white --prune
-```
+The flags are stored per bot in `profiles/market_adapter_whitelist.json`;
+re-open the section any time to inspect or change them. Boolean prompts
+accept `y`/`yes`/`true` and `n`/`no`/`false`; Enter keeps the current value.
+Renaming a bot carries its flags to the new key, deleting a bot removes its
+entry, and all-off flags are saved as an explicit `false` entry so the flags
+never silently fall back to defaults.
 
 ### 3. Start DEXBot2
 
@@ -156,10 +133,8 @@ whitelist gate:
 
 This is separate from dynamic buy/sell weighting. Both grid-range effects are
 enabled only when `asymmetricBounds: true` is set in
-`profiles/market_adapter_whitelist.json`. Range scaling is opt-in: `dexbot white`
-generates AMA-only entries by default, so enable it with
-`dexbot white --asymmetric-bounds` (new bots) or
-`dexbot white --asymmetric-bounds --bot <botKey>` (existing entry).
+`profiles/market_adapter_whitelist.json`. Range scaling is opt-in: enable it
+per bot with `dexbot bot` → `2) Modify bot` → `6) Adapter` → **Range**.
 
 Technical formula and tuning details are in
 [Grid Range Scaling Model](#grid-range-scaling-model).
@@ -334,11 +309,8 @@ Dry-run log lines include `[DRY RUN]` or `[suppressed, dry-run]`.
 
 | Task | Command |
 |------|---------|
-| Generate whitelist | `dexbot white` |
-| Opt new whitelist entries into dynamic weights | `dexbot white --dynamic-weight` |
-| Opt new whitelist entries into range scaling | `dexbot white --asymmetric-bounds` |
-| Overwrite existing entry for a specific bot | `dexbot white --dynamic-weight --bot <botKey>` \| `dexbot white --asymmetric-bounds --bot <botKey>` |
-| Prune stale whitelist entries (bots removed from bots.json) | `dexbot white --prune` |
+| Enable/inspect Price, Weight, Range for a bot | `dexbot bot` → `2) Modify bot` → `6) Adapter` |
+| Remove a deleted bot's entry | Automatic — `dexbot bot` → `3) Delete bot` also drops its whitelist key |
 | Probe public CEX availability | `node dist/market_adapter/inputs/fetch_cex_synthetic_data.js --exchange auto --check-only` |
 | Seed synthetic cross candles | `node dist/market_adapter/inputs/fetch_cex_synthetic_data.js --exchange auto --bot-key <bot-key>` |
 | Run one adapter cycle | `node dist/market_adapter/market_adapter.js --once` |
@@ -368,7 +340,7 @@ match the bot's eventual `botKey`.
 ### Bot is not processed
 
 - Confirm `gridPrice` is `ama`, `ama1`, `ama2`, `ama3`, or `ama4`.
-- Regenerate the whitelist with `dexbot white`.
+- Open `dexbot bot` → `2) Modify bot` → `6) Adapter` and confirm **Price** is `true`.
 - Confirm the expected `botKey` exists in `profiles/market_adapter_whitelist.json`.
 - If `startPrice` is numeric, the adapter will not fetch pool/book candles for that bot. Use `startPrice` only for a fixed anchor in that case; `gridPrice` remains a separate grid setting.
 
@@ -377,7 +349,7 @@ match the bot's eventual `botKey`.
 - Check `lastDeltaPercent` vs `thresholdPercent`.
 - Check `staleData` and `staleAgeHours`.
 - **Confirm the bot is whitelisted.** Non-whitelisted bots only log and do not write triggers.
-- Confirm the bot's whitelist entry has `"ama": true`.
+- Confirm the bot's whitelist entry has `"ama": true` (`dexbot bot` → `2) Modify bot` → `6) Adapter` shows it as **Price**).
 - Run `node dist/market_adapter/market_adapter.js --once --deltaPercent <lower-value>` for a one-cycle threshold test.
 
 ### Trigger fires too often
@@ -615,6 +587,9 @@ market_adapter/
 |-- inputs/
 |   |-- kibana_source.ts           Elasticsearch LP data source
 |   |-- fetch_lp_data.ts           historical LP candle exporter
+|   |-- fetch_book_data.ts         order-book candle exporter
+|   |-- kibana_feed_source.ts      MPA feed candle source
+|   |-- window_cache.ts            shared month-shard candle cache
 |   `-- fetch_cex_synthetic_data.ts  public CEX synthetic-candle seed importer
 |-- utils/
 |   |-- chain.ts                   blockchain query helpers
@@ -632,7 +607,9 @@ market_adapter/
 
 ### Whitelist Semantics
 
-`profiles/market_adapter_whitelist.json` controls live writes:
+`profiles/market_adapter_whitelist.json` controls live writes. It is edited
+per bot in the bot editor (`dexbot bot` → `2) Modify bot` → `6) Adapter`), which reads and
+writes this same file:
 
 ```json
 {
@@ -667,8 +644,11 @@ AMA slope -> live market/start-price offset, capped at half spread
 
 During a grid rebuild, the bot loads the latest dynamic grid snapshot and uses
 the AMA slope diagnostics to tilt the configured `minPrice` and `maxPrice`
-around the AMA center. An uptrend widens the upper bound and tightens the lower
-bound; a downtrend widens the lower bound and tightens the upper bound.
+around the AMA center. A reciprocal (log-symmetric) tilt scales both bounds by
+the same factor: an uptrend shifts the whole band up by `1 + asymmetry`, a
+downtrend shifts it down by `1 / (1 + asymmetry)`. The trend side therefore
+extends while the opposite side tightens toward the center, while total log
+width (and slot count) is preserved.
 
 The same `asymmetricBounds` whitelist also enables `gridPriceOffsetPct`: a
 slope-ratio offset applied only to the live `startPrice` used for initial
@@ -686,15 +666,15 @@ slopeOffset = slope normalized to the configured dynamic-weight slope cap
 asymmetry = min(|slopeOffset| / maxSlopeOffset, 1) × maxAsymmetryFactor
 
 Downtrend: minPrice = center / (M × (1 + asymmetry))
-           maxPrice = center × (M × (1 - asymmetry))
+           maxPrice = (center × M) / (1 + asymmetry)
 
 Uptrend:   maxPrice = center × (M × (1 + asymmetry))
-           minPrice = center / (M × (1 - asymmetry))
+           minPrice = (center / M) × (1 + asymmetry)
 
 Neutral:   symmetric bounds (asymmetry = 0)
 ```
 
-`ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR` defaults to `0.35`; `0` disables the
+`ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR` defaults to `0.333`; `0` disables the
 tilt. `ASYMMETRIC_BOUNDS_MIN_SCALE_SLOTS` defaults to `10` and sets the minimum
 number of price levels the *tightened* side of a range-scaled grid must keep
 between the grid center and its bound (measured in `incrementPercent` steps);
@@ -710,7 +690,7 @@ Both are configurable per bot or per market via
 {
   "globals": {
     "asymmetricBounds": {
-      "maxAsymmetryFactor": 0.35,
+      "maxAsymmetryFactor": 0.333,
       "minScaleSlots": 10
     }
   },
@@ -852,9 +832,9 @@ suppress writes via `unresolved_candle_gaps` until repaired on a future cycle.
 The adapter prunes old candles to the required AMA window and acts only on
 closed 1h candles.
 
-#### Shared Chunk Cache and Fetch Robustness
+#### Shared Month-Shard Cache and Fetch Robustness
 
-Pool, book, and feed candle fetches share one cache entry point (`runCachedWindows` in `market_adapter/inputs/window_cache.ts`): candles live in fixed calendar-month shards (`<base>.shard_YYYY-MM.json`, UTC) whose names never shift, so a run loads only the shards overlapping its requested range, queries only genuinely missing buckets plus a bounded 48h tail refresh, and rewrites only shards that gained buckets or query coverage — pure-reuse runs perform zero writes and zero deletes. Shard metas record the ranges actually queried (`meta.queriedRanges`, monotonically unioned). A missing range is pruned only when recorded query coverage genuinely covers it — the absence of local buckets alone never certifies history as empty. Partial windows merge into the run output but are never persisted. Legacy run-relative `*.chunk_*` files are still read: overlapping ones are absorbed into the shards (buckets + coverage) and retired once every bucket provably lives in a shard, while disjoint ones are never loaded and never deleted — narrow runs cannot wipe older history by construction. Every range fetch runs through `fetchRangeWithRetry` (per-range attempts + linear backoff + abort-signal timeout; the LP path keeps a 4-attempt budget), one-shot Kibana queries retry transient errors (3 attempts), paged fetchers cap at `kibanaMaxPages` (500), and bidirectional fetches tolerate a one-direction failure.
+Pool, book, and feed candle fetches share one cache entry point (`runCachedWindows` in `market_adapter/inputs/window_cache.ts`): candles live in fixed calendar-month shards (`<base>.shard_YYYY-MM.json`, UTC) whose names never shift, so a run loads only the shards overlapping its requested range, queries only genuinely missing buckets plus a bounded 48h tail refresh, and rewrites only shards that gained buckets or query coverage — pure-reuse runs perform zero writes and zero deletes. Shard metas record the ranges actually queried (`meta.queriedRanges`, monotonically unioned). A missing range is pruned only when recorded query coverage genuinely covers it — the absence of local buckets alone never certifies history as empty. Partial windows merge into the run output but are never persisted. Stable month shards are the only supported cache format; obsolete run-relative cache files are ignored. Every range fetch runs through `fetchRangeWithRetry` (per-range attempts + linear backoff + abort-signal timeout; the LP path keeps a 4-attempt budget), one-shot Kibana queries retry transient errors (3 attempts), paged fetchers cap at `kibanaMaxPages` (500), and bidirectional fetches tolerate a one-direction failure.
 
 #### AMA Warmup Window — Why Candle Length Matters
 

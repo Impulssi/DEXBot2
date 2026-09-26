@@ -21,4 +21,4 @@ function muteChainLogs(): void {
     console.warn = mute(_consoleWarn) as typeof console.warn;
 }
 
-export { muteChainLogs, CHAIN_LOG_RE }
+export { muteChainLogs }

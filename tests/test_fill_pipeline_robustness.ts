@@ -291,6 +291,54 @@ async function testDRAIN003_MarkerConsumedAtCycleStart() {
     console.log('✓ DRAIN-003 passed');
 }
 
+async function testDEFER006_RegionAdvanceRearmsBound() {
+    console.log('\n[DEFER-006] Advancing broadcast region re-arms the deferral bound...');
+    const bound = Number(TIMING.FILL_BROADCAST_DEFER_MAX_MS);
+    const bot: any = {
+        manager: {
+            isBroadcastingActive: () => true,
+            _broadcastingStartedAt: 500_000,
+        },
+        _fillBroadcastDeferSince: 0,
+    };
+    shouldDeferFillForBroadcast(bot, 1_000_000);
+    assert.strictEqual(bot._fillBroadcastDeferSince, 1_000_000, 'first deferral stamps now');
+    // Region advances (a fresh holder / progress). Even past the accumulated
+    // bound, the deferral re-arms from the new region instead of falling into
+    // the in-lock wait.
+    bot.manager._broadcastingStartedAt = 1_000_000 + bound - 1;
+    const r = shouldDeferFillForBroadcast(bot, 1_000_000 + bound + 1);
+    assert.deepStrictEqual(r, { defer: true, stuckFallback: false }, 'new region must re-arm deferral');
+    assert.strictEqual(bot._fillBroadcastDeferSince, 1_000_000 + bound + 1, 'marker reset to now on region change');
+    console.log('✓ DEFER-006 passed');
+}
+
+async function testDEFER007_FrozenRegionStillFallsThrough() {
+    console.log('\n[DEFER-007] A frozen region timestamp still trips the bound...');
+    const bound = Number(TIMING.FILL_BROADCAST_DEFER_MAX_MS);
+    const bot: any = {
+        manager: {
+            isBroadcastingActive: () => true,
+            _broadcastingStartedAt: 500_000,
+        },
+        _fillBroadcastDeferSince: 0,
+    };
+    shouldDeferFillForBroadcast(bot, 1_000_000);
+    const r = shouldDeferFillForBroadcast(bot, 1_000_000 + bound);
+    assert.deepStrictEqual(r, { defer: false, stuckFallback: true }, 'frozen flag must fall through at bound');
+    console.log('✓ DEFER-007 passed');
+}
+
+async function testCFG002_DeferBoundExceedsStaleClear() {
+    console.log('\n[CFG-002] Fill deferral bound outlasts the stale-broadcast watchdog...');
+    assert.ok(Number(TIMING.BROADCAST_STALE_CLEAR_MS) > 0, 'watchdog threshold must be configured');
+    assert.ok(
+        Number(TIMING.FILL_BROADCAST_DEFER_MAX_MS) > Number(TIMING.BROADCAST_STALE_CLEAR_MS),
+        'deferral bound must exceed the stale-clear threshold or a long region drops into the in-lock wait'
+    );
+    console.log('✓ CFG-002 passed');
+}
+
 async function runAllTests() {
     console.log('=== Fill-Pipeline Robustness Test Suite ===\n');
     await testDEFER001_IdleProceedsAndClearsMarker();
@@ -298,6 +346,9 @@ async function runAllTests() {
     await testDEFER003_WithinBoundKeepsDeferring();
     await testDEFER004_BoundExpiryFallsThrough();
     await testDEFER005_MissingManagerFailsOpen();
+    await testDEFER006_RegionAdvanceRearmsBound();
+    await testDEFER007_FrozenRegionStillFallsThrough();
+    await testCFG002_DeferBoundExceedsStaleClear();
     await testHOLD010_ConsecutiveTrackingAndSnapshot();
     await testHOLD011_ClearResetsAndNullManagerSafe();
     await testHOLD012_PlanSignatureSetAndCleared();

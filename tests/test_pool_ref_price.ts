@@ -164,10 +164,28 @@ async function testDerivePriceWithPoolRefBookModePassthrough() {
   const client = mockClient();
   const { derivePriceWithPoolRef } = require('../modules/order/utils/withPoolRef');
 
+  let poolFetched = false;
+  const originalGetObjects = client.db.get_objects;
+  client.db.get_objects = async (ids: string[]) => { poolFetched = true; return originalGetObjects(ids); };
+
   const price = await derivePriceWithPoolRef(client, 'BTS', 'XBTSX.USDT', 'book', '1.19.48');
   assert.strictEqual(price, null, 'book mode ignores poolRef and returns null (no mock book data)');
+  assert.strictEqual(poolFetched, false, 'book mode must not fetch the pinned pool (startPrice is master)');
 
   console.log('testDerivePriceWithPoolRefBookModePassthrough passed');
+}
+
+async function testResolveStartPriceMode() {
+  const { resolveStartPriceMode } = require('../modules/order/utils/withPoolRef');
+
+  assert.strictEqual(resolveStartPriceMode('book'), 'book', 'book startPrice selects book mode and ignores a pin');
+  assert.strictEqual(resolveStartPriceMode('POOL'), 'pool', 'string mode is lowercased');
+  assert.strictEqual(resolveStartPriceMode('  Book  '), 'book', 'string mode is trimmed');
+  assert.strictEqual(resolveStartPriceMode(100, 'auto'), 'auto', 'numeric startPrice falls back to the supplied mode');
+  assert.strictEqual(resolveStartPriceMode(undefined, 'auto'), 'auto', 'unset startPrice falls back');
+  assert.strictEqual(resolveStartPriceMode('', 'auto'), 'auto', 'blank startPrice falls back');
+
+  console.log('testResolveStartPriceMode passed');
 }
 
 async function testDerivePriceWithPoolRefAutoModeSucceeds() {
@@ -257,6 +275,7 @@ async function main() {
   await testPoolRefMissingPoolReturnsNull();
   await testDerivePriceWithPoolRefForwardsToPinnedPool();
   await testDerivePriceWithPoolRefBookModePassthrough();
+  await testResolveStartPriceMode();
   await testDerivePriceWithPoolRefAutoModeSucceeds();
   await testDerivePriceWithPoolRefAutoModeFallback();
   await testProxyPoolWithDifferentAssets();

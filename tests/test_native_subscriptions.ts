@@ -1031,6 +1031,588 @@ function makeAccountRecord(account) {
         console.log('   fill polling test passed');
     }
 
+    // ── Fill-channel watchdog regression tests ─────────────────────────
+
+    const NATIVE_CLIENT_WD = require('../modules/constants').NATIVE_CLIENT;
+    const WD_THRESHOLD = Number(NATIVE_CLIENT_WD.SUBSCRIPTIONS.CHANNEL_DEGRADED_FAILURE_THRESHOLD) || 3;
+    const WD_ALERT_AFTER = Number(NATIVE_CLIENT_WD.SUBSCRIPTIONS.CHANNEL_RECOVERY_ALERT_AFTER) || 3;
+
+    const staleApiError = () => new Error('Execution error: Assert Exception: _local_apis.size() > api_id: ');
+
+    /** Build a subscription manager whose history channel always fails. */
+    const makeFailingManager = (overrides: any) => {
+        const forceReconnectCalls: string[] = [];
+        const chainClient: any = {
+            transport: { addMessageHandler() { return () => {}; } },
+            // Stands in for chain_client.forceReconnect, which now owns the
+            // shared cooldown and reports whether it actually issued one.
+            forceReconnect: (reason: string) => { forceReconnectCalls.push(reason); return true; },
+            db: {
+                get_full_accounts: async ([account]: any) => [makeAccountRecord(account)],
+                call: async () => null,
+            },
+            history: {
+                getAccountHistoryOperations: async () => { throw staleApiError(); },
+                get_account_history: async () => { throw staleApiError(); },
+            },
+        };
+        return { chainClient, forceReconnectCalls };
+    };
+
+    const withFakePollTimer = async <T>(fn: (poll: () => Promise<void>) => Promise<T>): Promise<T> => {
+        const originalSetInterval = global.setInterval;
+        const originalClearInterval = global.clearInterval;
+        let pollTimerHandle: any = null;
+        global.setInterval = ((handler: any) => {
+            pollTimerHandle = { fn: handler };
+            return pollTimerHandle as any;
+        }) as any;
+        global.clearInterval = ((_h: any) => {}) as any;
+        try {
+            return await fn(async () => { await pollTimerHandle.fn(); });
+        } finally {
+            global.setInterval = originalSetInterval;
+            global.clearInterval = originalClearInterval;
+        }
+    };
+
+    // The logger routes by level: info/debug -> console.log, warn -> console.warn,
+    // error -> console.error. All three must be captured.
+    const captureLogs = async (fn: () => Promise<void>): Promise<string[]> => {
+        const originalLog = console.log;
+        const originalWarn = console.warn;
+        const originalError = console.error;
+        const lines: string[] = [];
+        const collect = (...args: any[]) => { lines.push(args.join(' ')); };
+        console.log = collect;
+        console.warn = collect;
+        console.error = collect;
+        try { await fn(); } finally {
+            console.log = originalLog;
+            console.warn = originalWarn;
+            console.error = originalError;
+        }
+        return lines;
+    };
+
+    // The watchdog must keep escalating while a channel stays dead. The old code
+    // latched on _channelDegraded, so a forced reconnect that failed to clear the
+    // channel left the account silently degraded forever — the exact "missed
+    // fills for hours" failure the watchdog exists to prevent.
+    {
+        console.log('\n - Testing fill-channel watchdog re-arms while the channel stays dead...');
+        await withFakePollTimer(async (poll) => {
+            const { chainClient, forceReconnectCalls } = makeFailingManager({});
+            // Fast retries disabled so the poll tick alone drives the failure run.
+            const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0, channelRetryLadderMs: [] });
+            const unsub = await manager.subscribe('alice', () => {});
+
+            for (let i = 0; i < WD_THRESHOLD; i++) await poll();
+            assert.strictEqual(forceReconnectCalls.length, 1,
+                `expected one forced reconnect after ${WD_THRESHOLD} consecutive failures`);
+            assert.ok(/fill channel degraded/i.test(forceReconnectCalls[0]),
+                'reconnect reason should identify the degraded fill channel');
+
+            // The degraded latch is gone: further failures while still dead must
+            // keep asking for recovery. The client-level cooldown (not this
+            // layer) is what bounds the rate.
+            await poll();
+            await poll();
+            assert.strictEqual(forceReconnectCalls.length, 3,
+                'watchdog must keep requesting recovery while the channel stays dead (no degraded latch)');
+
+            const aliceSub = manager.getSubscriptions().get('alice');
+            assert.strictEqual(aliceSub._channelDegraded, true, 'account should still be marked degraded');
+
+            // A successful scan clears the whole run, including the cycle counter.
+            chainClient.history.get_account_history = async () => [];
+            chainClient.history.getAccountHistoryOperations = async () => [];
+            await poll();
+            assert.strictEqual(aliceSub._channelFailures, 0, 'successful scan must reset the failure run');
+            assert.strictEqual(aliceSub._channelDegraded, false, 'successful scan must clear the degraded flag');
+            assert.strictEqual(aliceSub._channelRecoveryCycles, 0, 'successful scan must reset the recovery cycle counter');
+
+            unsub();
+        });
+        console.log('   fill-channel re-arm test passed');
+    }
+
+    // Recovery looping is invisible unless it is logged: after N forced
+    // reconnects without recovery, the watchdog must say so.
+    {
+        console.log('\n - Testing unrecoverable-channel escalation alert...');
+        await withFakePollTimer(async (poll) => {
+            const { chainClient } = makeFailingManager({});
+            const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0, channelRetryLadderMs: [] });
+            const unsub = await manager.subscribe('alice', () => {});
+
+            const lines = await captureLogs(async () => {
+                // The threshold costs the first WD_THRESHOLD-1 polls before any
+                // escalation, and the alert lands on the WD_ALERT_AFTER-th
+                // escalation, so drive well past both.
+                for (let i = 0; i < WD_THRESHOLD + WD_ALERT_AFTER + 3; i++) await poll();
+            });
+
+            const alerts = lines.filter(l => /did NOT recover after/.test(l));
+            assert.strictEqual(alerts.length, 1,
+                `expected exactly one unrecoverable-channel alert, got ${alerts.length}`);
+            assert.ok(/fills may be missed/i.test(alerts[0]), 'alert should state the operational impact');
+            assert.ok(/restart/i.test(alerts[0]), 'alert should recommend operator action');
+            assert.ok(/\[ERROR\]/.test(alerts[0]), 'alert should be logged at error level');
+            unsub();
+        });
+        console.log('   unrecoverable-channel alert test passed');
+    }
+
+    // A single failed scan proves nothing; a channel still dead seconds later is
+    // wedged. The retry ladder must reach the threshold and escalate WITHOUT any
+    // further 60s poll tick — that is the whole point of the ladder.
+    {
+        console.log('\n - Testing retry ladder detects a wedge without waiting for poll ticks...');
+        const { chainClient, forceReconnectCalls } = makeFailingManager({});
+        let pollTimerHandle: any = null;
+        const originalSetInterval = global.setInterval;
+        const originalClearInterval = global.clearInterval;
+        global.setInterval = ((handler: any) => { pollTimerHandle = { fn: handler }; return pollTimerHandle as any; }) as any;
+        global.clearInterval = ((_h: any) => {}) as any;
+        let unsub: any = null;
+        try {
+            // Production ladder shape (5s/10s/15s), collapsed to milliseconds.
+            const manager = createSubscriptionManager(chainClient, {
+                noticeCoalesceMs: 0,
+                channelRetryLadderMs: [5, 10, 15],
+            });
+            unsub = await manager.subscribe('alice', () => {});
+
+            // ONE failing poll tick. Everything after this must be ladder-driven.
+            await pollTimerHandle.fn();
+            const aliceSub = manager.getSubscriptions().get('alice');
+            assert.strictEqual(aliceSub._channelFailures, 1, 'the failing poll should record one failure');
+            assert.ok(aliceSub._channelRetryTimer, 'a failure must schedule a fast retry');
+            assert.strictEqual(aliceSub._channelRetryStep, 1, 'a scheduled retry must consume the first rung');
+
+            // A pending retry makes the regular poll skip the account rather than
+            // duplicating the request and burning a failure against the threshold.
+            const failuresBefore = aliceSub._channelFailures;
+            await pollTimerHandle.fn();
+            assert.strictEqual(aliceSub._channelFailures, failuresBefore,
+                'the fill poll must skip an account with a fast retry already pending');
+
+            // The ladder alone must reach the threshold and escalate.
+            const start = Date.now();
+            while (forceReconnectCalls.length === 0 && Date.now() - start < 2000) {
+                await new Promise(r => setTimeout(r, 5));
+            }
+            assert.ok(forceReconnectCalls.length >= 1,
+                'the retry ladder must escalate to a forced reconnect without any further poll tick');
+            assert.ok(Date.now() - start < 2000,
+                'escalation must happen on the ladder cadence, not the 60s poll cadence');
+            assert.ok(aliceSub._channelFailures >= WD_THRESHOLD,
+                `the ladder should have reached the failure threshold, saw ${aliceSub._channelFailures}`);
+        } finally {
+            if (unsub) await unsub();
+            global.setInterval = originalSetInterval;
+            global.clearInterval = originalClearInterval;
+        }
+        console.log('   retry ladder test passed');
+    }
+
+    // The ladder must never index past its configured rungs, and opting out must
+    // schedule nothing.
+    {
+        console.log('\n - Testing retry ladder stays within its rungs and can be disabled...');
+        await withFakePollTimer(async (poll) => {
+            const rungs = [1, 1, 1];
+            // A coalesced forced reconnect (another escalation source already
+            // issued it) must not refill the ladder, so this phase exercises the
+            // rung bound on its own: with no refill the step must stop climbing
+            // at the last rung.
+            const coalesced = makeFailingManager({});
+            coalesced.chainClient.forceReconnect = () => 'coalesced';
+            const manager = createSubscriptionManager(coalesced.chainClient, {
+                noticeCoalesceMs: 0,
+                channelRetryLadderMs: rungs,
+            });
+            const unsub = await manager.subscribe('alice', () => {});
+            const aliceSub = manager.getSubscriptions().get('alice');
+
+            for (let i = 0; i < 15; i++) {
+                await poll();
+                assert.ok(aliceSub._channelRetryStep >= 0 && aliceSub._channelRetryStep <= rungs.length,
+                    `ladder step ${aliceSub._channelRetryStep} must stay within the configured rungs`);
+                await new Promise(r => setTimeout(r, 3));
+            }
+            assert.strictEqual(aliceSub._channelRetryStep, rungs.length,
+                'with no refill the ladder must stop at its last rung, not keep climbing');
+            assert.strictEqual(aliceSub._channelRetryTimer, null,
+                'an exhausted ladder must not schedule another fast retry');
+            unsub();
+
+            // Opt-out: an empty ladder must never schedule a fast retry, leaving
+            // detection entirely on the 60s poll cadence.
+            const disabled = makeFailingManager({});
+            const manager2 = createSubscriptionManager(disabled.chainClient, {
+                noticeCoalesceMs: 0,
+                channelRetryLadderMs: [],
+            });
+            const unsub2 = await manager2.subscribe('bob', () => {});
+            await poll();
+            const bobSub = manager2.getSubscriptions().get('bob');
+            assert.strictEqual(bobSub._channelRetryTimer, null,
+                'an empty retry ladder must schedule nothing');
+            assert.strictEqual(bobSub._channelRetryStep, 0,
+                'an empty retry ladder must not advance its step');
+            unsub2();
+        });
+        console.log('   retry ladder bound test passed');
+    }
+
+    // An issued reconnect refills the ladder: a fresh recovery attempt deserves a
+    // fresh verification ladder, without raising the reconnect rate itself (the
+    // per-client cooldown still floors that).
+    {
+        console.log('\n - Testing an issued reconnect refills the retry ladder...');
+        await withFakePollTimer(async (poll) => {
+            const { chainClient, forceReconnectCalls } = makeFailingManager({});
+            // A single rung keeps the ladder exhausted between polls, so the
+            // threshold-crossing failure deterministically finds it empty.
+            const manager = createSubscriptionManager(chainClient, {
+                noticeCoalesceMs: 0,
+                channelRetryLadderMs: [1],
+            });
+            const unsub = await manager.subscribe('alice', () => {});
+            const aliceSub = manager.getSubscriptions().get('alice');
+
+            // Drain the ladder between polls so the failure that crosses the
+            // threshold is always poll-driven, never a fast retry, then stop the
+            // instant the first reconnect is issued so the assertion below sees
+            // exactly that failure's state.
+            let guard = 0;
+            while (forceReconnectCalls.length === 0 && guard++ < 10) {
+                await poll();
+                if (forceReconnectCalls.length > 0) break;
+                await new Promise(r => setTimeout(r, 15));
+            }
+            assert.ok(forceReconnectCalls.length >= 1, 'expected at least one issued reconnect');
+
+            // The refill happens BEFORE the retry is scheduled, so the escalation
+            // failure itself consumes the first rung again: step 1, timer pending.
+            // Scheduling the retry first would find the ladder exhausted, schedule
+            // nothing, and idle until the next 60s poll.
+            assert.strictEqual(aliceSub._channelRetryStep, 1,
+                'an issued reconnect must restart the verification ladder at its first rung');
+            assert.ok(aliceSub._channelRetryTimer,
+                'the escalation failure must schedule a fresh first-rung retry');
+            unsub();
+        });
+        console.log('   ladder refill test passed');
+    }
+
+    // The refill is bounded per failure run. Without the cap, a client that keeps
+    // issuing reconnects faster than the ladder completes would chain the ladder
+    // forever and a permanently dead channel would scan at the first rung (5s in
+    // production) indefinitely instead of settling back to the 60s poll.
+    {
+        console.log('\n - Testing retry-ladder refills are capped per failure run...');
+        await withFakePollTimer(async (poll) => {
+            const maxRefills = 3;
+            const { chainClient, forceReconnectCalls } = makeFailingManager({});
+            // A client that always issues a reconnect is the worst case for the
+            // refill loop — the cooldown that normally spaces these out is absent.
+            const manager = createSubscriptionManager(chainClient, {
+                noticeCoalesceMs: 0,
+                channelRetryLadderMs: [1, 1, 1],
+                channelRetryMaxRefills: maxRefills,
+            });
+            const unsub = await manager.subscribe('alice', () => {});
+            const aliceSub = manager.getSubscriptions().get('alice');
+
+            const start = Date.now();
+            // Generous wall-clock budget: the assertion is that the runaway case
+            // issues more reconnects than the cap, not how fast. A stalled CI box
+            // must not turn this into a flaky under-count.
+            while (Date.now() - start < 800) {
+                await poll();
+                await new Promise(r => setTimeout(r, 2));
+            }
+
+            assert.ok(forceReconnectCalls.length > maxRefills,
+                'precondition: the runaway case issues more reconnects than the refill cap');
+            assert.ok(aliceSub._channelRetryRefills <= maxRefills,
+                `refills must be capped, saw ${aliceSub._channelRetryRefills}`);
+            // The decisive property: once the cap is hit, fast retries stop and
+            // the failure run stops growing on its own.
+            const settledFailures = aliceSub._channelFailures;
+            await new Promise(r => setTimeout(r, 150));
+            assert.strictEqual(aliceSub._channelFailures, settledFailures,
+                'a capped, dead channel must stop self-driving scans and fall back to the poll cadence');
+            assert.strictEqual(aliceSub._channelRetryTimer, null,
+                'no fast retry may be pending once the refill cap is reached');
+
+            // A recovery must restore the fast-retry capability, otherwise the
+            // NEXT outage would silently get no fast retries at all.
+            chainClient.history.get_account_history = async () => [];
+            chainClient.history.getAccountHistoryOperations = async () => [];
+            await poll();
+            assert.strictEqual(aliceSub._channelRetryRefills, 0,
+                'a successful scan must restore the refill budget');
+            assert.strictEqual(aliceSub._channelFailures, 0,
+                'a successful scan must reset the failure run');
+
+            chainClient.history.get_account_history = async () => { throw new Error('stale again'); };
+            chainClient.history.getAccountHistoryOperations = async () => { throw new Error('stale again'); };
+            for (let i = 0; i < WD_THRESHOLD; i++) { await poll(); await new Promise(r => setTimeout(r, 3)); }
+            assert.ok(aliceSub._channelRetryRefills >= 1,
+                'after a recovery the ladder must be refillable again');
+            unsub();
+        });
+        console.log('   retry refill cap test passed');
+    }
+
+    // A forced reconnect must not cost a healthy node a persistent strike. The
+    // transport's in-memory deprioritization still rotates away from the node
+    // (that is what makes the reconnect useful), but strikes survive restarts
+    // and are only cleared by consecutive successful health probes 4h apart — so
+    // a node that merely had a session-level wedge must not be blacklisted for
+    // 24h. This asserts the real consequence against the real failure ledger.
+    {
+        console.log('\n - Testing node strikes are only recorded when recovery fails...');
+        const { createFailureLedger } = require('../modules/node_failure_ledger');
+        const { NODE_MANAGEMENT } = require('../modules/constants');
+        const { shouldCountNodeStrike } = require('../modules/bitshares_client');
+        const STRIKE_NODE = 'wss://strike-target.invalid/ws';
+
+        // The rule itself: the transport's forced-reconnect report must not
+        // count, every other source must.
+        assert.strictEqual(shouldCountNodeStrike('forced-reconnect'), false,
+            'a forced reconnect must not count as a persistent node strike');
+        for (const src of ['connection', 'keep-alive', 'broadcast', 'fee-cache',
+                           'blockchain-op', 'health-check', 'fill-channel-unrecoverable', undefined]) {
+            assert.strictEqual(shouldCountNodeStrike(src), true,
+                `source ${String(src)} must still count as a strike`);
+        }
+
+        const makeLedger = () => createFailureLedger({
+            threshold: NODE_MANAGEMENT.BLACKLIST_THRESHOLD,
+            cooldownMs: NODE_MANAGEMENT.BLACKLIST_COOLDOWN_MS,
+            // Production rate-limits strikes to one per second, but in production
+            // the 30s forced-reconnect cooldown already spaces recovery cycles
+            // far beyond that, so the rate limit never binds. Disabled here so
+            // the escalation can be driven in milliseconds; the threshold and
+            // 24h blacklist semantics under test are the real ones.
+            reportCooldownMs: 0,
+            resetCountOnBlacklist: false,
+            resetCountAfterCooldown: false,
+            skipWhileBlacklisted: false,
+        });
+
+        // Build a client whose forced reconnects are NOT strikes (the real
+        // wiring, via shouldCountNodeStrike) but which counts escalation strikes.
+        const makeStrikeTrackingManager = (overrides: any, failBudget: number) => {
+            const ledger = makeLedger();
+            const strikes: string[] = [];
+            let remainingFailures = failBudget;
+            const chainClient: any = {
+                transport: {
+                    addMessageHandler() { return () => {}; },
+                    getNodeUrl: () => STRIKE_NODE,
+                },
+                forceReconnect: (reason: string) => {
+                    // Mirrors the real client: a forced reconnect does NOT strike.
+                    if (!shouldCountNodeStrike('forced-reconnect')) return true;
+                    strikes.push('forced-reconnect');
+                    return true;
+                },
+                reportNodeFailure: (url: string, _msg: string, source: string) => {
+                    if (url !== STRIKE_NODE) return;
+                    strikes.push(source);
+                    ledger.recordFailure(url);
+                },
+                db: {
+                    get_full_accounts: async ([account]: any) => [makeAccountRecord(account)],
+                    call: async () => null,
+                },
+                history: {
+                    getAccountHistoryOperations: async () => {
+                        if (remainingFailures > 0) { remainingFailures--; throw staleApiError(); }
+                        return [];
+                    },
+                    get_account_history: async () => {
+                        if (remainingFailures > 0) { remainingFailures--; throw staleApiError(); }
+                        return [];
+                    },
+                },
+            };
+            const manager = createSubscriptionManager(chainClient, overrides);
+            return { manager, ledger, strikes, chainClient };
+        };
+
+        // Scenario A: the wedge clears after two recovery cycles (a session-level
+        // problem). The node must come out of it with zero strikes.
+        await withFakePollTimer(async (poll) => {
+            // Budget: 1 scan is consumed by primeLastDeliveredHistoryId during
+            // subscribe, then threshold (3) + 1 more gives two escalation cycles
+            // before the channel recovers.
+            const { manager, ledger, strikes } = makeStrikeTrackingManager(
+                { noticeCoalesceMs: 0, channelRetryLadderMs: [] }, 5);
+            const unsub = await manager.subscribe('alice', () => {});
+            const aliceSub = manager.getSubscriptions().get('alice');
+            // The cycle counter resets on recovery, so sample the peak while the
+            // channel is still dead.
+            let peakCycles = 0;
+            for (let i = 0; i < 8; i++) {
+                await poll();
+                peakCycles = Math.max(peakCycles, Number(aliceSub._channelRecoveryCycles) || 0);
+                await new Promise(r => setTimeout(r, 2));
+            }
+            assert.ok(peakCycles >= 2,
+                `precondition: expected at least 2 recovery cycles, saw ${peakCycles}`);
+            assert.strictEqual(aliceSub._channelFailures, 0, 'precondition: the channel should have recovered');
+            assert.deepStrictEqual(strikes, [],
+                'a channel that recovers within the recovery cycles must cost the node no strikes');
+            assert.strictEqual(ledger.isBlacklisted(STRIKE_NODE), false,
+                'a recovered channel must never blacklist the node');
+            unsub();
+        });
+
+        // Scenario B: the channel never recovers. The node must still be
+        // blacklisted — on escalation strikes, not on the forced reconnects.
+        await withFakePollTimer(async (poll) => {
+            const { manager, ledger, strikes } = makeStrikeTrackingManager(
+                { noticeCoalesceMs: 0, channelRetryLadderMs: [] }, Number.MAX_SAFE_INTEGER);
+            const unsub = await manager.subscribe('alice', () => {});
+            for (let i = 0; i < 14; i++) { await poll(); await new Promise(r => setTimeout(r, 2)); }
+            const aliceSub = manager.getSubscriptions().get('alice');
+            assert.ok(aliceSub._channelRecoveryCycles >= WD_ALERT_AFTER,
+                `precondition: expected >= ${WD_ALERT_AFTER} recovery cycles, saw ${aliceSub._channelRecoveryCycles}`);
+            assert.ok(strikes.length >= NODE_MANAGEMENT.BLACKLIST_THRESHOLD,
+                `an unrecoverable channel must strike the node enough to blacklist it, got ${strikes.length}`);
+            assert.ok(strikes.every(s => s === 'fill-channel-unrecoverable'),
+                `every strike must come from the escalation path, got: ${JSON.stringify([...new Set(strikes)])}`);
+            assert.strictEqual(ledger.isBlacklisted(STRIKE_NODE), true,
+                'a node that survives repeated failed recovery must be blacklisted');
+            // The first (WD_ALERT_AFTER - 1) cycles are attempts, not evidence.
+            assert.strictEqual(strikes.length, aliceSub._channelRecoveryCycles - (WD_ALERT_AFTER - 1),
+                'strikes must start only once recovery has demonstrably failed');
+            unsub();
+        });
+        console.log('   node strike escalation test passed');
+    }
+
+    // Callback errors are downstream bugs, not channel failures. They must be
+    // logged without counting toward the watchdog — and they must be throttled
+    // like every other per-account warn, which is the gap this fixes: the
+    // per-callback warn used to bypass warnSubscription entirely.
+    {
+        console.log('\n - Testing callback errors are throttled and never trip the watchdog...');
+        await withFakePollTimer(async (poll) => {
+            const forceReconnectCalls: string[] = [];
+            const boom = () => { throw new Error('downstream bug'); };
+            const chainClient: any = {
+                transport: { addMessageHandler() { return () => {}; } },
+                forceReconnect: (reason: string) => { forceReconnectCalls.push(reason); return true; },
+                db: {
+                    get_full_accounts: async ([account]: any) => [makeAccountRecord(account)],
+                    call: async () => null,
+                },
+                history: {
+                    getAccountHistoryOperations: async () => ([{
+                        id: '1.11.900', op: [4, { fee: { amount: 0, asset_id: '1.3.0' } }, {}]}]),
+                    get_account_history: async () => ([{
+                        id: '1.11.900', op: [4, { fee: { amount: 0, asset_id: '1.3.0' } }, {}]}]),
+                },
+            };
+            // A 50ms throttle window stands in for the production 60s one so the
+            // "next emitted line reports the suppressed count" half of the
+            // contract is observable without a wall-clock wait. Wide enough that
+            // the five polls below reliably collapse into one window even on a
+            // loaded machine.
+            const manager = createSubscriptionManager(chainClient, {
+                noticeCoalesceMs: 0,
+                channelRetryLadderMs: [],
+                channelErrorLogIntervalMs: 50,
+            });
+            const unsub = await manager.subscribe('alice', boom);
+
+            const lines = await captureLogs(async () => {
+                for (let i = 0; i < 5; i++) await poll();          // all suppressed after the first
+                await new Promise(r => setTimeout(r, 80));          // let the window expire
+                await poll();                                       // re-emits with the count
+            });
+
+            assert.strictEqual(forceReconnectCalls.length, 0,
+                'callback errors must never trip the fill-channel watchdog');
+            const aliceSub = manager.getSubscriptions().get('alice');
+            assert.strictEqual(aliceSub._channelFailures, 0,
+                'callback errors must not count as channel failures');
+
+            const callbackWarns = lines.filter(l => /processObjects: callback error/.test(l));
+            assert.strictEqual(callbackWarns.length, 2,
+                `callback-error warns must be throttled per account, got ${callbackWarns.length} for 6 polls`);
+            assert.ok(!/\(\+\d+ suppressed\)/.test(callbackWarns[0]),
+                'the first warn in a window must not carry a suppressed count');
+            assert.ok(/\(\+4 suppressed\)/.test(callbackWarns[1]),
+                `the re-emitted warn must report the suppressed count, got: ${callbackWarns[1]}`);
+            unsub();
+        });
+        console.log('   callback error throttling test passed');
+    }
+
+    // A legacy/mock forceReconnect that returns void must not be mistaken for an
+    // issued reconnect: the `=== true` gate in requestChannelReconnect keeps the
+    // recovery-cycle and refill counters from advancing on a no-op.
+    {
+        console.log('\n - Testing a void forceReconnect is not counted as issued...');
+        await withFakePollTimer(async (poll) => {
+            const { chainClient } = makeFailingManager({});
+            chainClient.forceReconnect = () => undefined;
+            const manager = createSubscriptionManager(chainClient, {
+                noticeCoalesceMs: 0,
+                channelRetryLadderMs: [],
+            });
+            const unsub = await manager.subscribe('alice', () => {});
+            for (let i = 0; i < WD_THRESHOLD + 2; i++) await poll();
+            const aliceSub = manager.getSubscriptions().get('alice');
+            assert.strictEqual(aliceSub._channelRecoveryCycles, 0,
+                'a void forceReconnect must not advance the recovery-cycle counter');
+            unsub();
+        });
+        console.log('   void forceReconnect test passed');
+    }
+
+    // A coalesced reconnect (the shared cooldown was spent by another escalation
+    // source — canonically the stale api_id path, which runs inside the RPC
+    // catch before this failure reaches the watchdog) must still advance the
+    // recovery-cycle counter, or the operator alert / node strike would be
+    // starved in exactly the wedge this feature targets.
+    {
+        console.log('\n - Testing a coalesced reconnect still counts as a recovery cycle...');
+        await withFakePollTimer(async (poll) => {
+            const { chainClient } = makeFailingManager({});
+            chainClient.forceReconnect = () => 'coalesced';
+            chainClient.transport.getNodeUrl = () => 'wss://coalesce-target.invalid/ws';
+            const strikes: string[] = [];
+            chainClient.reportNodeFailure = (_url: string, _msg: string, source: string) => { strikes.push(source); };
+            const manager = createSubscriptionManager(chainClient, {
+                noticeCoalesceMs: 0,
+                channelRetryLadderMs: [],
+            });
+            const unsub = await manager.subscribe('alice', () => {});
+            const lines = await captureLogs(async () => {
+                for (let i = 0; i < WD_THRESHOLD + WD_ALERT_AFTER; i++) await poll();
+            });
+            const aliceSub = manager.getSubscriptions().get('alice');
+            assert.ok(aliceSub._channelRecoveryCycles >= WD_ALERT_AFTER,
+                `a coalesced reconnect must still advance the cycle counter, saw ${aliceSub._channelRecoveryCycles}`);
+            assert.strictEqual(lines.filter(l => /did NOT recover after/.test(l)).length, 1,
+                'the operator alert must fire even when the cooldown is spent by another escalation source');
+            assert.ok(strikes.length >= 1 && strikes.every(s => s === 'fill-channel-unrecoverable'),
+                `the coalesced path must still escalate a real node strike, got ${JSON.stringify(strikes)}`);
+            unsub();
+        });
+        console.log('   coalesced reconnect accounting test passed');
+    }
+
     console.log('\n=== All subscription tests passed ===');
 })().catch((err) => {
     console.error(err);

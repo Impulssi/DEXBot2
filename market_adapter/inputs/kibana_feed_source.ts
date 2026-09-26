@@ -601,18 +601,14 @@ async function fetchFeedCandlesSequentially(feedCtx: any, assetA: any, assetB: a
 
 export {
     OP_TYPE_FEED,
-    DEFAULT_CONFIG,
     backingPerMpa,
     hitToFeedPrice,
     buildFeedDocumentQuery,
-    fetchFeedPricePoints,
-    fetchFeedCrossPoints,
     crossPointsToRatios,
     bucketPricesToCandles,
     invertCandles,
     getFeedCandlesForMpa,
     getFeedCandlesForPair,
     getFeedCandlesForMpaCross,
-    feedOutputPath,
     fetchFeedCandlesSequentially,
 }

@@ -7,6 +7,7 @@ import { PATHS } from './paths.js';
 import { normalizeBotEntry } from './bot_settings.js';
 import { getErrorMessage } from './utils/errors.js';
 import { MERGE_STRATEGIES } from './settings_merge.js';
+import { DEFAULT_WHITELIST_FLAGS } from './market_adapter_whitelist.js';
 
 
 interface ValidationProblem {
@@ -34,9 +35,9 @@ const GENERAL_SETTINGS_KNOWN_FIELDS = new Set([
     'EXPERT',
 ]);
 
-const WHITELIST_KNOWN_FLAGS = new Set([
-    'ama', 'dynamicWeight', 'asymmetricBounds',
-]);
+// Derived from the canonical flag constants so a new flag lands here
+// automatically instead of drifting out of sync with the reader.
+const WHITELIST_KNOWN_FLAGS: Set<string> = new Set(Object.keys(DEFAULT_WHITELIST_FLAGS));
 
 const MA_SETTINGS_KNOWN_FIELDS = new Set([
     'globals', 'pairs',

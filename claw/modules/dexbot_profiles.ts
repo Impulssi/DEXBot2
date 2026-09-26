@@ -7,7 +7,7 @@ import { Config } from '../../modules/config.js';
 import { PATHS } from '../../modules/paths.js';
 import { writeJsonFileAtomic as baseWriteJsonFileAtomic } from '../../modules/bots_file_lock.js';
 import { acquireFileLock } from '../../market_adapter/utils/file_lock.js';
-import { assertNoDuplicateBotKeys } from '../../modules/bot_settings.js';
+import { assertNoDuplicateBotKeys, normalizeBotEntry } from '../../modules/bot_settings.js';
 import { BOT_LIVE_CONFIG_KEYS } from '../../modules/runtime_settings.js';
 import { clone } from './utils.js';
 import { createBotKey, sanitizeKey } from '../../modules/account_orders.js';
@@ -682,8 +682,9 @@ async function normalizeBotEntries(rawEntries: Record<string, any>[], options: P
     if (logger) {
       validateBotEntry(entry, index, logger);
     }
-    const normalized = { ...entry, active: entry.active === undefined ? true : !!entry.active };
-    results.push({ ...normalized, botIndex: index, botKey: createBotKey(normalized, index) });
+    // Shared seeder semantics with modules/bot_settings.normalizeBotEntry:
+    // missing active → DEFAULT_CONFIG.active, present values pass through raw.
+    results.push(normalizeBotEntry(entry, index));
   }
   return results;
 }

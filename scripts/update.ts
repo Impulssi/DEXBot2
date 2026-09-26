@@ -34,11 +34,13 @@
  * Usage: node dist/scripts/update.js
  */
 
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import { homedir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { sendControlCommand } from '../modules/launcher/supervisor_control.js';
+import { findMissingDistEntries, inspectDistBundle } from './update_dist_freshness.js';
 
 // Import update configuration from constants
 // Contains: REPOSITORY_URL, BRANCH, BUILD_DIR settings
@@ -393,6 +395,23 @@ function needsDepsInstall(preUpdateHead: string): boolean {
     return false;
 }
 
+/**
+ * Eject the production incremental build cache so the next `tsc` re-emits every
+ * output. An intact `.tsbuildinfo` makes tsc skip outputs it believes are
+ * current — including a file deleted or replaced out of band — so a full
+ * rebuild is the only way to guarantee `dist/` matches the sources.
+ */
+function ejectIncrementalBuildCache() {
+    const cache = path.join(PATHS.PROJECT_ROOT, 'node_modules', '.cache', 'tsc-prod.tsbuildinfo');
+    if (!fs.existsSync(cache)) return;
+    try {
+        fs.rmSync(cache, { force: true });
+        log(`Removed ${path.relative(PATHS.PROJECT_ROOT, cache)} to force a full TypeScript rebuild.`);
+    } catch (err) {
+        log(`Warning: Could not remove the incremental build cache (${getErrorMessage(err)}).`);
+    }
+}
+
 async function detectIsolatedSupervisor(): Promise<Record<string, any> | null> {
     try {
         const resp: any = await sendControlCommand({ cmd: 'status' });
@@ -442,23 +461,75 @@ function snapshotMonolithicState() {
 }
 
 /**
+ * Absolute file:// URL of the freshly built pm2.js. Prefers dist/ and falls
+ * back to the source-tree shim when no build output exists.
+ */
+function resolvePm2ModuleUrl(): string {
+    const distPath = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
+    const pm2Path = fs.existsSync(distPath)
+        ? distPath
+        : path.join(PATHS.PROJECT_ROOT, 'pm2.js');
+    return pathToFileURL(pm2Path).href;
+}
+
+/**
  * Regenerate the PM2 ecosystem config so profiles/ecosystem.config.cjs
  * reflects the current bots.json state (including dexbot-adapter and
- * dexbot-update service apps). Uses the freshly compiled dist/pm2.js.
+ * dexbot-update service apps).
+ *
+ * This MUST run in a fresh process. The updater loaded the pre-pull copies of
+ * modules/paths.js, config.js, constants.js, ... at startup, and Node's ESM
+ * registry is keyed by resolved URL for the process lifetime. Rewriting dist/
+ * via `npm run build` does not evict those cached modules, so importing the
+ * freshly built dist/pm2.js in-process resolves its static imports back to
+ * the stale cached copies. That surfaces as build-fresh-but-import-broken
+ * errors such as "does not provide an export named 'printRelocationNotices'".
+ * A child process starts with an empty registry and sees the new build.
  */
 async function regenerateEcosystemConfig() {
     log('Regenerating PM2 ecosystem config...');
     try {
-        // Try loading from compiled dist/ first, then fall back to source dir
-        const distPath = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
-        const pm2Module = fs.existsSync(distPath)
-            ? await import(distPath)
-            : await import(path.join(PATHS.PROJECT_ROOT, 'pm2.js'));
-        pm2Module.generateEcosystemConfig({ clawOnly: false, exitOnError: false });
+        const moduleUrl = resolvePm2ModuleUrl();
+        const script = [
+            `import(${JSON.stringify(moduleUrl)})`,
+            '  .then((m) => m.generateEcosystemConfig({ clawOnly: false, exitOnError: false }))',
+            '  .catch((err) => { console.error(err && err.stack ? err.stack : String(err)); process.exit(1); });',
+        ].join('\n');
+        const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+            stdio: 'inherit',
+            cwd: PATHS.PROJECT_ROOT,
+        });
+        if (result.error) throw result.error;
+        if (result.status !== 0) {
+            throw new Error(`ecosystem generator exited with code ${result.status}`);
+        }
         log('Ecosystem config regenerated successfully.');
     } catch (err: any) {
         log(`Warning: Ecosystem config regeneration failed (${getErrorMessage(err)}). Continuing with existing config.`);
     }
+}
+
+/**
+ * Evaluate `needsMarketAdapter(runningActiveBots)` from the freshly built
+ * dist/pm2.js in a child process. Importing pm2.js in-process after the build
+ * is unsafe for the same ESM-cache reason documented on
+ * regenerateEcosystemConfig(): its link against the cached pre-pull
+ * modules/paths.js can fail even though dist/ is fresh.
+ */
+function pm2NeedsMarketAdapter(runningActiveBots: any[]): boolean {
+    const moduleUrl = resolvePm2ModuleUrl();
+    const script =
+        `import(${JSON.stringify(moduleUrl)})` +
+        `.then((m) => { process.stdout.write(m.needsMarketAdapter(${JSON.stringify(runningActiveBots)}) ? 'true' : 'false'); })` +
+        `.catch((err) => { console.error(err && err.stack ? err.stack : String(err)); process.exit(1); });`;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+        stdio: ['ignore', 'pipe', 'inherit'],
+        cwd: PATHS.PROJECT_ROOT,
+        encoding: 'utf8',
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(`pm2 helper exited with code ${result.status}`);
+    return (result.stdout || '').trim() === 'true';
 }
 
 /**
@@ -499,6 +570,7 @@ async function restartActiveRuntimes({ monolithicWasRunning, hadMonolithicFiles 
 
                     if (activeInConfig.length > 0) {
                         let runningProcesses: string[] = [];
+                        let pm2Usable = true;
                         try {
                             const output = execSync('pm2 jlist').toString().trim();
                             const jsonStart = output.indexOf('[');
@@ -510,43 +582,52 @@ async function restartActiveRuntimes({ monolithicWasRunning, hadMonolithicFiles 
                                 log('Warning: PM2 jlist output did not contain JSON array.');
                             }
                         } catch (e: any) {
-                            log('Warning: Could not fetch PM2 process list. Falling back to config-only detection.');
-                            runningProcesses = activeInConfig;
+                            // pm2 is not installed (or not usable). Config-active
+                            // bots are not proof of running processes, so don't
+                            // fabricate a process list — skip PM2-managed restarts
+                            // and leave `restarted` false so the monolithic
+                            // auto-start fallback / manual-start notice applies.
+                            log('Warning: PM2 process list unavailable (is pm2 installed?). Skipping PM2-managed restarts.');
+                            pm2Usable = false;
                         }
 
-                        const botsToRestart = activeInConfig.filter((name: string) => (runningProcesses as string[]).includes(name));
-                        const activeBots = (config.bots || []).filter((b: any) => b.active !== false);
-                        const runningActiveBots = activeBots.filter((b: any) => (runningProcesses as string[]).includes(b.name));
-                        const maPath = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
-                        const pm2Module = fs.existsSync(maPath)
-                            ? await import(maPath)
-                            : await import(path.join(PATHS.PROJECT_ROOT, 'pm2.js'));
-                        const marketAdapterRequired = pm2Module.needsMarketAdapter(runningActiveBots);
+                        if (pm2Usable) {
+                            const botsToRestart = activeInConfig.filter((name: string) => (runningProcesses as string[]).includes(name));
+                            const activeBots = (config.bots || []).filter((b: any) => b.active !== false);
+                            const runningActiveBots = activeBots.filter((b: any) => (runningProcesses as string[]).includes(b.name));
+                            const marketAdapterRequired = pm2NeedsMarketAdapter(runningActiveBots);
 
-                        const serviceAppsToRestart: string[] = marketAdapterRequired ? ['dexbot-adapter'] : [];
-                        const servicesToRestart: string[] = serviceAppsToRestart.filter((name: string) => (runningProcesses as string[]).includes(name));
-                        const allToRestart: string[] = [...botsToRestart, ...servicesToRestart];
+                            const serviceAppsToRestart: string[] = marketAdapterRequired ? ['dexbot-adapter'] : [];
+                            const servicesToRestart: string[] = serviceAppsToRestart.filter((name: string) => (runningProcesses as string[]).includes(name));
+                            const allToRestart: string[] = [...botsToRestart, ...servicesToRestart];
 
-                        if (allToRestart.length > 0) {
-                            log(`Active processes detected: ${allToRestart.join(', ')}`);
-                            for (const name of allToRestart) {
-                                try {
-                                    run(`pm2 restart "${name}"`);
-                                } catch (e) {
-                                    log(`Warning: Failed to restart process "${name}" (it might not be running).`);
+                            if (allToRestart.length > 0) {
+                                log(`Active processes detected: ${allToRestart.join(', ')}`);
+                                let restartOk = false;
+                                for (const name of allToRestart) {
+                                    try {
+                                        run(`pm2 restart "${name}"`);
+                                        restartOk = true;
+                                    } catch (e) {
+                                        log(`Warning: Failed to restart process "${name}" (it might not be running).`);
+                                    }
                                 }
+                                if (restartOk) {
+                                    restarted = true;
+                                } else {
+                                    log('Warning: none of the PM2 restart attempts succeeded.');
+                                }
+                            } else {
+                                log('No active processes currently running in PM2. Skipping restart.');
                             }
-                            restarted = true;
-                        } else {
-                            log('No active processes currently running in PM2. Skipping restart.');
-                        }
 
-                        if (marketAdapterRequired && !runningProcesses.includes('dexbot-adapter')) {
-                            log('dexbot-adapter is required by an AMA-grid bot but not running. Starting from ecosystem...');
-                            try {
-                                run(`pm2 start "${PATHS.PROFILES.ECOSYSTEM_CONFIG_JS}" --only dexbot-adapter`);
-                            } catch (e) {
-                                log('Warning: Failed to start dexbot-adapter from ecosystem config.');
+                            if (marketAdapterRequired && !runningProcesses.includes('dexbot-adapter')) {
+                                log('dexbot-adapter is required by an AMA-grid bot but not running. Starting from ecosystem...');
+                                try {
+                                    run(`pm2 start "${PATHS.PROFILES.ECOSYSTEM_CONFIG_JS}" --only dexbot-adapter`);
+                                } catch (e) {
+                                    log('Warning: Failed to start dexbot-adapter from ecosystem config.');
+                                }
                             }
                         }
                     } else {
@@ -584,6 +665,63 @@ async function restartActiveRuntimes({ monolithicWasRunning, hadMonolithicFiles 
             UPDATE_COLORS.warn,
         ));
     }
+}
+
+/**
+ * Fail loudly when the post-build bundle is incomplete or still lags its
+ * source. `dist/dexbot.js` matters here: the CLI alias table lives in it, and
+ * the previous single-marker guard never looked at it.
+ */
+function assertDistBundleFresh(status = inspectDistBundle(PATHS.PROJECT_ROOT, BUILD_DIR)) {
+    if (status.needsRebuild) {
+        throw new Error(
+            `Build left ${BUILD_DIR}/ incomplete or stale (${status.reason}). ` +
+            `Refusing to restart PM2 with a stale bundle. ` +
+            `Run \`npm run build\` manually and inspect tsc output.`
+        );
+    }
+    log(`${BUILD_DIR}/ is fresh.`);
+}
+
+/**
+ * Build the TypeScript bundle, verify it is fresh, regenerate the PM2 ecosystem
+ * config, and restart active runtimes. Shared by the normal update tail and the
+ * "already up to date but dist/ is stale" recovery path.
+ */
+async function buildAndRestartRuntimes({
+    monolithicWasRunning,
+    hadMonolithicFiles,
+    forceFull,
+    successMessage,
+}: {
+    monolithicWasRunning: boolean;
+    hadMonolithicFiles: boolean;
+    forceFull: boolean;
+    successMessage: string;
+}) {
+    if (forceFull) ejectIncrementalBuildCache();
+    log('Building TypeScript sources (npm run build)...');
+    run('npm run build');
+
+    // An incremental build can skip an output whose source only changed mtime
+    // (e.g. a stash re-apply on conflict). If that leaves dist/ stale, clear the
+    // cache and emit everything once more so a false-stale can never fail the
+    // update or spin the cron job. Capture the status so the final check does
+    // not re-walk the source tree.
+    let distStatus = inspectDistBundle(PATHS.PROJECT_ROOT, BUILD_DIR);
+    if (distStatus.needsRebuild) {
+        log('Incremental build left dist/ stale — forcing a full rebuild...');
+        ejectIncrementalBuildCache();
+        run('npm run build');
+        distStatus = inspectDistBundle(PATHS.PROJECT_ROOT, BUILD_DIR);
+    }
+
+    assertDistBundleFresh(distStatus);
+
+    await regenerateEcosystemConfig();
+    await restartActiveRuntimes({ monolithicWasRunning, hadMonolithicFiles });
+    logSuccess(successMessage);
+    process.exit(0);
 }
 
 // ── npm-install update flow ──────────────────────────────────────────
@@ -673,17 +811,11 @@ async function runNpmUpdateFlow() {
         );
     }
 
-    // Verify the pre-built bundle is complete: the `dexbot` bin entry plus the
-    // runtime files this script and the launcher depend on. Published packages
-    // ship a pre-built dist/, so a missing file here means the publish is
-    // broken and restarting runtimes against it would strand them on a dead
-    // install.
-    const distEntries = [
-        path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'dexbot.js'),
-        path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'scripts', 'update.js'),
-        path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'unlock.js'),
-    ];
-    const missingDist = distEntries.filter((entry) => !fs.existsSync(entry));
+    // Verify the pre-built bundle is complete. Published packages ship a
+    // pre-built dist/, so a missing file here means the publish is broken and
+    // restarting runtimes against it would strand them on a dead install.
+    // Shares the required-entry list with the git flow's freshness check.
+    const missingDist = findMissingDistEntries(PATHS.PROJECT_ROOT, BUILD_DIR);
     if (missingDist.length > 0) {
         throw new Error(
             `Update completed but ${BUILD_DIR}/ is missing required files (${missingDist.join(', ')}). ` +
@@ -803,7 +935,9 @@ try {
      * Three scenarios are possible:
      * 1. NO incoming updates (updatesAvailable = false)
      *    - Local is either equal to or ahead of remote
-     *    - Action: Switch branch if needed, then exit cleanly
+     *    - Action: Switch branch if needed, then exit cleanly — unless dist/
+     *      is stale or incomplete, in which case rebuild and restart so a
+     *      bundle that never got built is not preserved forever
      * 2. Incoming updates available (updatesAvailable = true)
      *    - Remote has new commits we need to pull
      *    - Action: Proceed with full update (pull, npm install, restart runtimes)
@@ -815,6 +949,23 @@ try {
             run(`git checkout ${branch}`);
             log('DEXBot2 is now tracking the correct branch.');
         }
+        // `git` never reconciles dist/ (it is gitignored); only the build does.
+        // If a source update bypassed the build (a manual pull/checkout, or a
+        // tsc run that skipped outputs via its incremental cache), the bundle
+        // lags its sources indefinitely while every later run reports
+        // "up to date". Detect that and self-heal instead of exiting stale.
+        const dist = inspectDistBundle(PATHS.PROJECT_ROOT, BUILD_DIR);
+        if (dist.needsRebuild) {
+            log(`Local source is current, but ${BUILD_DIR}/ ${dist.reason}. Rebuilding from source...`);
+            const snapshot = snapshotMonolithicState();
+            await buildAndRestartRuntimes({
+                monolithicWasRunning: snapshot.monolithicWasRunning,
+                hadMonolithicFiles: snapshot.hadMonolithicFiles,
+                forceFull: true,
+                successMessage: 'DEXBot2 rebuild completed successfully.',
+            });
+        }
+
         log('DEXBot2 is already up to date (local is equal or ahead of remote).');
         process.exit(0);
     }
@@ -951,67 +1102,23 @@ try {
     }
 
     /**
-     * STEP 8b: Build TypeScript sources
+     * STEP 8b/8c/9: Build + verify, regenerate the ecosystem config, and restart
+     * active runtimes. Shared with the stale-dist recovery path so both go
+     * through the same freshness guard.
      *
-     * Do NOT rely on the npm `prepare` hook. The `prepare` script only re-fires
-     * when package.json itself changes, not when only .ts source files are
-     * updated. After a `git pull` that touches only .ts files, `npm install`
-     * is skipped as a no-op (see STEP 8), so `tsc` would never run and the
-     * running bot process would keep loading the stale dist/ bundle — with
-     * no error surfaced to the operator.
-     *
-     * Always run the explicit build here so the next PM2 restart picks up
-     * the new code. The staleness check at the end of this step is defense
-     * in depth: if the build silently no-ops (e.g. tsc crashed, output path
-     * missing), the update aborts before PM2 is restarted.
+     * Do NOT rely on the npm `prepare` hook: it only re-fires when package.json
+     * changes, not when only .ts files do. After a pull that touches only .ts,
+     * `npm install` is skipped (STEP 8) and `tsc` would never run, leaving the
+     * running bot on a stale dist/ with no error surfaced. `buildAndRestartRuntimes`
+     * runs the explicit build and aborts before restarting if the bundle is
+     * still incomplete or stale.
      */
-    log('Building TypeScript sources (npm run build)...');
-    run('npm run build');
-
-    const SOURCE_MARKER = path.join(PATHS.PROJECT_ROOT, 'modules', 'dexbot_class.ts');
-    const DIST_MARKER = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'modules', 'dexbot_class.js');
-    if (fs.existsSync(SOURCE_MARKER)) {
-        if (!fs.existsSync(DIST_MARKER)) {
-            throw new Error(
-                `Build did not produce ${BUILD_DIR}/modules/dexbot_class.js. ` +
-                `Refusing to restart PM2 with a missing bundle. ` +
-                `Run \`npm run build\` manually and inspect tsc output.`
-            );
-        }
-
-        const srcStat = fs.statSync(SOURCE_MARKER);
-        const distStat = fs.statSync(DIST_MARKER);
-        if (distStat.mtimeMs < srcStat.mtimeMs) {
-            throw new Error(
-                `Build did not refresh ${BUILD_DIR}/modules/dexbot_class.js ` +
-                `(src mtime=${srcStat.mtime.toISOString()}, ` +
-                `${BUILD_DIR} mtime=${distStat.mtime.toISOString()}). ` +
-                `Refusing to restart PM2 with a stale bundle. ` +
-                `Run \`npm run build\` manually and inspect tsc output.`
-            );
-        }
-        log(`${BUILD_DIR}/ is fresh (mtime=${distStat.mtime.toISOString()}).`);
-    }
-
-    /**
-     * STEP 8c: Regenerate Ecosystem Config
-     * Ensures profiles/ecosystem.config.cjs reflects the current bots.json
-     * state, including service apps like dexbot-adapter and dexbot-update.
-     * Uses the compiled dist/pm2.js (after TS build) for correct dist/ paths.
-     */
-    await regenerateEcosystemConfig();
-
-    /**
-     * STEP 9/9b: Restart Active Runtime Processes
-     * Intelligently restarts only the bots that were active before update
-     * (monolithic, isolated supervisor, or PM2 selective restart), with a
-     * fallback auto-start for a monolithic daemon that died during the update.
-     * Never restarts dexbot-cred through bulk PM2 actions.
-     */
-    await restartActiveRuntimes({ monolithicWasRunning, hadMonolithicFiles });
-
-    logSuccess('DEXBot2 update completed successfully.');
-    process.exit(0);
+    await buildAndRestartRuntimes({
+        monolithicWasRunning,
+        hadMonolithicFiles,
+        forceFull: false,
+        successMessage: 'DEXBot2 update completed successfully.',
+    });
 } catch (err: any) {
     console.error(updateError('=========================================='));
     console.error(updateError('UPDATE FAILED'));

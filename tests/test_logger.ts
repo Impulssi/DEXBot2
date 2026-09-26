@@ -84,19 +84,27 @@ process.env.pm_exec_path = 'pm2';
 process.env.pm_out_log_path = '/tmp/dexbot-test.log';
 Config.pm_exec_path = 'pm2';
 Config.pm_out_log_path = '/tmp/dexbot-test.log';
-assert.strictEqual(createPm2AwareLogger('default').quiet, true, 'PM2-aware logger should auto-quiet when PM2 log paths are configured');
-assert.strictEqual(createPm2AwareLogger('verbose', { quietUnderPm2: false }).quiet, false, 'PM2 quieting can be disabled with quietUnderPm2=false');
+assert.strictEqual(createPm2AwareLogger('default').quiet, false, 'PM2-aware logger must NOT auto-quiet: PM2 captures stdout and direct file writes are suppressed');
+assert.strictEqual(createPm2AwareLogger('verbose', { quietUnderPm2: false }).quiet, false, 'explicit quietUnderPm2=false keeps stdout enabled under PM2');
+assert.strictEqual(createPm2AwareLogger('legacy-quiet', { quietUnderPm2: true }).quiet, true, 'explicit quietUnderPm2=true opts back into the legacy silent behaviour');
 
+// Regression: the OrderManager-style logger (logFile set, no quiet override)
+// must still reach stdout under PM2, otherwise every bot log line is dropped.
 const pm2DirectLogFile = path.join(os.tmpdir(), `dexbot-logger-pm2-${process.pid}.log`);
 safeUnlink(pm2DirectLogFile)
-const pm2Logger = new Logger('pm2-direct-file', { logFile: pm2DirectLogFile, quietUnderPm2: false, quiet: false });
+const pm2Logger = new Logger('pm2-direct-file', { logFile: pm2DirectLogFile });
 let pm2Captured: any[] = [];
 console.log = (...args) => { pm2Captured.push(args.join(' ')); };
 pm2Logger.info('pm2 stdout should remain visible');
 console.log = origLog;
-assert(pm2Captured.some((line) => line.includes('pm2 stdout should remain visible')), 'PM2 logger should still emit stdout for PM2 capture');
+assert(pm2Captured.some((line) => line.includes('pm2 stdout should remain visible')), 'PM2 logger should emit stdout for PM2 capture');
 assert(!pm2Captured.some((line) => /\d{4}-\d{2}-\d{2}T/.test(line)), 'PM2 logger should not add its own timestamp');
 assert.strictEqual(fs.existsSync(pm2DirectLogFile), false, 'direct logger file writes should be suppressed when PM2 log paths are active');
+
+// The exact OrderManager configuration that silently dropped every bot log
+// line: logFile set, no quiet override. It must not be quiet under PM2.
+const mgrLogger = new Logger('mgr-pm2', { logFile: path.join(os.tmpdir(), 'mgr-pm2.log') });
+assert.strictEqual(mgrLogger.quiet, false, 'manager-style logger must stay on under PM2');
 
 Config.pm_exec_path = origConfigPmExec;
 Config.pm_out_log_path = origConfigPmOut;

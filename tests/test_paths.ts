@@ -409,6 +409,20 @@ check('resolveProfilesDir returns a string',
     const quiet = p14.computeRelocationNotices(path.join(repoRoot, 'profiles'), repoRoot);
     check('no relocation notice when profiles stay at the repo layout',
         quiet.length === 0, quiet.join(' | '));
+
+    // printRelocationNotices() must actually emit the same warnings (locks the
+    // launcher-facing wrapper, not just the pure computation).
+    const emitted: string[] = [];
+    p14.printRelocationNotices(homeProfiles, repoRoot, (message) => emitted.push(message));
+    check('printRelocationNotices emits the relocation warnings',
+        emitted.length === notices.length
+        && emitted.some((n) => n.includes('Claw state exists'))
+        && emitted.some((n) => n.includes('Market adapter state exists')),
+        emitted.join(' | '));
+    const emittedQuiet: string[] = [];
+    p14.printRelocationNotices(path.join(repoRoot, 'profiles'), repoRoot, (message) => emittedQuiet.push(message));
+    check('printRelocationNotices stays silent in the normal layout',
+        emittedQuiet.length === 0, emittedQuiet.join(' | '));
 }
 
 // ── 15) Analysis dirs: source layout keeps repo location ────────────

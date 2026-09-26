@@ -1,9 +1,9 @@
 // Batch sizing mirror for documentation: the production cap is the grid
-// gap-slot count (DEXBot._getGapSlotBatchSize); this sim uses gapSlots=4.
+// gap-slot count + 1 (DEXBot._getGapSlotBatchSize); this sim uses gapSlots=4.
 const GAP_SLOTS = 4;
 
 function simulateBatching(totalFills) {
-    const maxBatch = Math.max(1, GAP_SLOTS);
+    const maxBatch = Math.max(1, GAP_SLOTS) + 1;
 
     const useUnifiedPlan = totalFills <= maxBatch;
     
