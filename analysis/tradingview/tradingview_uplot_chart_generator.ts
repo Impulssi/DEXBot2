@@ -2451,7 +2451,10 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 d.style.opacity = '0.55';
                 return y;
             };
-            // Deep shelf: 3px dashed orange, brighter opacity — distinct layer.
+            // Deep shelf: 1px dashed orange (3px minus 2 per request, color
+            // kept) at high opacity — same weight as the rail dashes so the
+            // near-coincident rail buy beside the pin stays visible.
+            let dIdx = 0;
             let dIdx = 0;
             deeps.forEach((p) => {
                 const d = deepLineDivs[dIdx++];
@@ -2459,8 +2462,8 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 if (y == null) { d.style.display = 'none'; return; }
                 d.style.display = 'block';
                 d.style.top = y + 'px';
-                d.style.borderTop = '3px dashed #fb923c';
-                d.style.opacity = '0.85';
+                d.style.borderTop = '1px dashed #fb923c';
+                d.style.opacity = '0.9';
             });
             for (; dIdx < deepLineDivs.length; dIdx++) deepLineDivs[dIdx].style.display = 'none';
             let botBuyY = null;
@@ -3459,7 +3462,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             if (dispDeeps.length && Number.isFinite(mkt)) {
                 const d = Math.max(...dispDeeps);
                 const p = (d - mkt) / mkt * 100;
-                html += '<div style="color:#f97316">DEEP ' + fmtPriceLabel(d) + ' ' + (p >= 0 ? '+' : '') + p.toFixed(1) + '%</div>';
+                html += '<div style="color:#fb923c;background:rgba(34,24,14,0.92);border:1px solid #fb923c;border-radius:3px;padding:0 4px;margin-top:2px;display:inline-block;">DEEP ' + fmtPriceLabel(d) + ' ' + (p >= 0 ? '+' : '') + p.toFixed(1) + '%</div>';
             }
             panel.innerHTML = html;
         }
