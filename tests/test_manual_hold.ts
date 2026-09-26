@@ -325,4 +325,52 @@ check('null hold expires', isManualHoldExpired(null, 100, 0.075), true);
     process.exit(1);
 });
 
+// --- adoption gate: held slots never resurrect via chain adoption (async; after sync summary) ---
+(async () => {
+    let passedA = 0;
+    const acheck = (name, actual, expected) => {
+        assert.strictEqual(actual, expected, `${name}: expected ${expected}, got ${actual}`);
+        passedA++;
+    };
+    const { OrderManager } = require('../modules/order/index').default;
+    const mgr = new OrderManager({
+        market: 'TEST/BTS', assetA: 'TEST', assetB: 'BTS',
+        startPrice: 100, incrementPercent: 1, targetSpreadPercent: 0,
+        activeOrders: { buy: 2, sell: 2 },
+    });
+    mgr.logger.level = 'silent';
+    mgr.assets = { assetA: { id: '1.3.0', precision: 8, symbol: 'TEST' }, assetB: { id: '1.3.1', precision: 5, symbol: 'BTS' } };
+    await mgr.setAccountTotals({ buy: 100000, sell: 100, buyFree: 100000, sellFree: 100 });
+    await mgr.resetFunds();
+    await mgr._updateOrder({ id: 'slot-11', type: ORDER_TYPES.SELL, price: 105, size: 100, state: ORDER_STATES.VIRTUAL });
+    recordManualHold(mgr, 'slot-11', 105);
+    // Full sync: the orphan sell at the held slot's price must NOT adopt —
+    // the slot stays virtual and the orphan lands in the unmatched list.
+    const orphan = { id: '1.7.999', type: ORDER_TYPES.SELL, price: 105, size: 100 };
+    const result = await mgr.syncFromOpenOrders([orphan], { skipAccounting: true });
+    acheck('held slot stays empty after sync', mgr.orders.get('slot-11').orderId || null, null);
+    acheck('slot stays VIRTUAL', mgr.orders.get('slot-11').state, ORDER_STATES.VIRTUAL);
+    acheck('hold survives sync (no auto-clear)', (() => { const M = require('../modules/order/manual_hold'); return M.isSlotHeld(mgr, 'slot-11'); })(), true);
+    // Control: same sync on the unheld slot adopts via the legacy fallback
+    // (no genesis in the fixture) — validates the gate is what blocked the
+    // first sync, not unrelated plumbing.
+    const mgr2 = new OrderManager({
+        market: 'TEST/BTS', assetA: 'TEST', assetB: 'BTS',
+        startPrice: 100, incrementPercent: 1, targetSpreadPercent: 0,
+        activeOrders: { buy: 2, sell: 2 },
+    });
+    mgr2.logger.level = 'silent';
+    mgr2.assets = mgr.assets;
+    await mgr2.setAccountTotals({ buy: 100000, sell: 100, buyFree: 100000, sellFree: 100 });
+    await mgr2.resetFunds();
+    await mgr2._updateOrder({ id: 'slot-11', type: ORDER_TYPES.SELL, price: 105, size: 100, state: ORDER_STATES.VIRTUAL });
+    const r2 = await mgr2.syncFromOpenOrders([orphan], { skipAccounting: true });
+    const adopted = mgr2.orders.get('slot-11');
+    acheck('unheld slot adopts (or orphan tracked otherwise)', adopted.orderId === '1.7.999' || (r2.unmatchedChainOrders || []).length === 0 || adopted.state !== ORDER_STATES.VIRTUAL, true);
+    console.log(`✓ Manual hold adoption-gate tests passed! (${passedA} assertions)`);
+})().catch((err) => {
+    console.error('Test failed:', err);
+    process.exit(1);
+});
+
 console.log(`✓ Manual hold tests passed! (${passed} assertions)`);

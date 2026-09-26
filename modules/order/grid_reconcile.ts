@@ -11,6 +11,7 @@ import {
 import { ORDER_TYPES, ORDER_STATES, TIMING } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
 import { getAssetFeesSafe, priceSlotEqual } from './utils/math.js';
+import { isSlotHeld } from './manual_hold.js';
 import {
     isOrderPlaced, parseChainOrder, isOrderOnChain, findLiveOrderOwnerByChainId,
     chainOrderMatchesSlotWithTolerance,
@@ -665,6 +666,9 @@ export async function reconcileGridOrders({
                         if (gridOrderIds.has(co.id)) continue;
                         const candidate: any = Array.from(manager.orders.values()).find((o: any) => {
                             if (!o || o.orderId || o.state !== ORDER_STATES.VIRTUAL) return false;
+                            // HOLD gate: an operator-cancelled slot must not
+                            // resurrect via an uncertain-landed create adopt.
+                            if (isSlotHeld(manager, o.id)) return false;
                             return chainOrderMatchesSlotWithTolerance(parsed, o, manager.assets);
                         });
                         if (!candidate) continue;

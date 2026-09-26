@@ -162,7 +162,7 @@ import {
     resolveProcessedFillPersistenceMode
 } from './processed_fill_store.js';
 import { getErrorMessage } from '../utils/errors.js';
-import { classifyDisappearanceAsync, recordManualHold, pruneManualHolds } from './manual_hold.js';
+import { classifyDisappearanceAsync, recordManualHold, pruneManualHolds, isSlotHeld } from './manual_hold.js';
 
 /**
  * Confirming re-read for the suspect-empty-read guard: after
@@ -361,6 +361,19 @@ function adoptedSlotKeepsItsOwnPrice(mgr: any, adopted: any, chainOrderId: strin
 }
 
 async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, chainOrderId: string, rawChainOrders: Map<string, any>, matchedGridOrderIds: Set<string>, chainOrderIdsOnGrid: Set<string>, filledOrders: any[], updatedOrders: any[], skipAccounting: boolean): Promise<boolean> {
+    // HOLD gate: an operator-cancelled slot stays empty. An adoption here
+    // would clear the hold (any _updateOrder that gains an orderId clears
+    // it) and resurrect the cancelled level — the exact leak that
+    // resurrected hand-cancelled sells on Sep 17 (surplus slot-60's chain
+    // id adopted into held slot-11). Fail-closed: the orphan stays in the
+    // unmatched list for cancel/defer handling instead.
+    if (isSlotHeld(mgr, slot?.id)) {
+        mgr.logger?.log?.(
+            `[SYNC] Adoption into ${slot?.id} refused — slot held (operator cancel); chain order ${chainOrderId} left for cancel/defer handling`,
+            'info'
+        );
+        return false;
+    }
     // ADOPTION NEVER TAKES THE CHAIN ORDER'S PRICE.
     //
     // Two different prices are conflated on this path, and only one of them is
@@ -1503,6 +1516,13 @@ class SyncEngine {
                     }
                 );
                 if (adoptedSlot && !matchedGridOrderIds.has(adoptedSlot.id) && !adoptedSlot.orderId) {
+                    // HOLD gate (legacy fallback parity): same refusal as
+                    // adoptChainOrderIntoSlot above.
+                    if (isSlotHeld(mgr, adoptedSlot.id)) {
+                        unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'slot-held-deferred', candidateSlotId: adoptedSlot.id });
+                        mgr.logger?.log?.(`[SYNC] Adoption into ${adoptedSlot.id} refused — slot held (operator cancel); chain order ${chainOrderId} left for cancel/defer handling`, 'info');
+                        continue;
+                    }
                     const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
                     // Legacy path parity with the genesis adoption path: the
                     // slot's price is its GENESIS level and is never overwritten
