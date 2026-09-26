@@ -90,8 +90,7 @@
 import { path } from './path_api.js';
 import { getStorage } from './storage/index.js';
 import { ensureProfilesDirectory, readInput, sleep } from './order/utils/system.js';
-import { setGlobalConsoleLevel, getGlobalConsoleLevel } from './order/logger.js';
-import { GRID_LIMITS, RANGE_QUALITY, MARKET_ADAPTER, NODE_MANAGEMENT, INCREMENT_BOUNDS, buildDefaultGeneralSettings } from './constants.js';
+import { setGlobalConsoleLevel, getGlobalConsoleLevel } from './order/logger.js';import { GRID_LIMITS, RANGE_QUALITY, MARKET_ADAPTER, NODE_MANAGEMENT, INCREMENT_BOUNDS, buildDefaultGeneralSettings } from './constants.js';
 import { seedBotDraft, isUnsetGridPrice } from './bot_defaults.js';
 import { PATHS } from './paths.js';
 import { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } from './general_settings.js';
@@ -1191,31 +1190,11 @@ async function askBuyDeepSizes(promptText: string, defaultValue?: any): Promise<
  * @param {Object} [base={}] - The initial bot data to edit.
  * @returns {Object} A normalized bot draft.
  */
-function normalizeBotDraft(base = {}) {
-    const data = JSON.parse(JSON.stringify(base));
-
-    if (!data.weightDistribution) data.weightDistribution = { ...DEFAULT_CONFIG.weightDistribution };
-    if (!data.botFunds) data.botFunds = { ...DEFAULT_CONFIG.botFunds };
-    if (!data.activeOrders) data.activeOrders = { ...DEFAULT_CONFIG.activeOrders };
-    if (typeof data.reserveOrders === 'number') data.reserveOrders = { buy: Math.max(0, Math.floor(data.reserveOrders)), sell: 0 };
-    if (data.reserveOrders === undefined || data.reserveOrders === null || typeof data.reserveOrders !== 'object' || Array.isArray(data.reserveOrders)) data.reserveOrders = { ...DEFAULT_CONFIG.reserveOrders };
-
-    if (data.active === undefined) data.active = DEFAULT_CONFIG.active;
-    if (data.dryRun === undefined) data.dryRun = DEFAULT_CONFIG.dryRun;
-    if (data.minPrice === undefined) data.minPrice = DEFAULT_CONFIG.minPrice;
-    if (data.maxPrice === undefined) data.maxPrice = DEFAULT_CONFIG.maxPrice;
-    if (data.incrementPercent === undefined) data.incrementPercent = DEFAULT_CONFIG.incrementPercent;
-    if (data.targetSpreadPercent === undefined) data.targetSpreadPercent = DEFAULT_CONFIG.targetSpreadPercent;
-    if (data.buyFloorUSDT === undefined) data.buyFloorUSDT = DEFAULT_CONFIG.buyFloorUSDT;
-    if (data.buyDelayMinutes === undefined) data.buyDelayMinutes = DEFAULT_CONFIG.buyDelayMinutes;
-    if (data.buyWindowMode === undefined) data.buyWindowMode = DEFAULT_CONFIG.buyWindowMode;
-    if (data.buyDeepCount === undefined) data.buyDeepCount = DEFAULT_CONFIG.buyDeepCount;
-    if (data.buyDeepSizes === undefined) data.buyDeepSizes = DEFAULT_CONFIG.buyDeepSizes;
-    if (data.startPrice === undefined) data.startPrice = data.startPrice || DEFAULT_CONFIG.startPrice || 'pool';
-    if (data.gridPrice === undefined) data.gridPrice = null;
-    delete data.gridPriceOffsetPct;
-    delete data.gridPriceOffsetClampToBounds;
-    return data;
+function normalizeBotDraft(base = {}): any {
+    // Seeding rules live in modules/bot_defaults.ts (single defaults source;
+    // DRAFT_SEED_ORDER carries the fork buy-window extensions). Return type
+    // stays `any`: the editor prompt-flow treats drafts as dynamic bags.
+    return seedBotDraft(base);
 }
 
 /**
@@ -1357,7 +1336,7 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
              console.log(`\n${COLORS.bold}--- Bot Editor: ` + (data.name || 'New Bot') + ` ---${COLORS.reset}`);
             console.log(`${COLORS.yellowBold}1) Pair:${COLORS.reset}       ${COLORS.cyan}${data.assetA || '?'} / ${data.assetB || '?'}${COLORS.reset}`);
             console.log(`${COLORS.yellowBold}2) Identity:${COLORS.reset}   ${COLORS.orange}Name:${COLORS.reset} ${data.name || '?'} , ${COLORS.orange}Account:${COLORS.reset} ${data.preferredAccount || '?'} , ${COLORS.orange}Active:${COLORS.reset} ${colorBooleanFlag(data.active, true)}, ${COLORS.orange}DryRun:${COLORS.reset} ${colorBooleanFlag(data.dryRun, false)}`);
-            console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}      ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}], ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${data.poolRef || 'none'}, ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice, data.startPrice)}`);
+            console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}      ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}], ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${data.poolRef || 'none'}, ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice)}`);
             console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%, ${COLORS.orange}Floor:${COLORS.reset} ${data.buyFloorUSDT ?? '?'}, ${COLORS.orange}Delay:${COLORS.reset} ${data.buyDelayMinutes ?? '?'}m, ${COLORS.orange}Win:${COLORS.reset} ${data.buyWindowMode ?? '?'}${Number(data.buyDeepCount) > 0 ? `+${data.buyDeepCount}deep${(Array.isArray(data.buyDeepSizes) && data.buyDeepSizes.some((v: any) => Number(v) > 0)) ? '(manual)' : ''}` : ''}`);
             console.log(`${COLORS.yellowBold}5) Funding:${COLORS.reset}    ${COLORS.orange}Sell:${COLORS.reset} ${colorPercentageInput(data.botFunds.sell)}, ${COLORS.orange}Buy:${COLORS.reset} ${colorPercentageInput(data.botFunds.buy)} | ${COLORS.orange}Orders:${COLORS.reset} (S:${data.activeOrders.sell}, B:${data.activeOrders.buy}) | ${COLORS.orange}Reserve:${COLORS.reset} (S:${data.reserveOrders?.sell ?? 0}, B:${data.reserveOrders?.buy ?? 0})`);
              console.log('--------------------------------------------------');

@@ -2394,7 +2394,14 @@ function resolveDeepShelfFloor(manager: any): number | null {
     let ref: any = null;
     try {
         if (/^ama(?:[1-4])?$/.test(gpMode)) {
-            ref = loadAmaCenterPrice(cfg.botKey);
+            ref = cfg.botKey ? loadAmaCenterPrice(cfg.botKey) : null;
+            // Upstream v1.6.5+ defaults gridPrice to "ama3": a bot without an
+            // AMA snapshot yet (fresh config, botKey unset, cache cold) must
+            // fall back to the numeric startPrice instead of losing the shelf
+            // anchor. AMA stays authoritative when it resolves.
+            if (!Number.isFinite(Number(ref)) || Number(ref) <= 0) {
+                ref = Number.isFinite(Number(cfg.startPrice)) ? Number(cfg.startPrice) : null;
+            }
         } else if (Number.isFinite(Number(cfg.startPrice))) {
             ref = Number(cfg.startPrice);
         }

@@ -44,6 +44,11 @@ export const DRAFT_SEED_ORDER = [
     'weightDistribution', 'botFunds', 'activeOrders', 'reserveOrders',
     'active', 'dryRun', 'minPrice', 'maxPrice', 'incrementPercent',
     'targetSpreadPercent', 'startPrice', 'gridPrice',
+    // Fork buy-window extensions: same if-chain semantics as the historical
+    // fork normalizeBotDraft (undefined-only fill; reserveOrders-style
+    // number migration is handled by seedReserveOrders, these are plain
+    // scalars/arrays sourced from DEFAULT_CONFIG).
+    'buyFloorUSDT', 'buyDelayMinutes', 'buyWindowMode', 'buyDeepCount', 'buyDeepSizes',
 ];
 
 /** Fields with no meaning since the grid-price offset was removed; stripped from drafts. */
