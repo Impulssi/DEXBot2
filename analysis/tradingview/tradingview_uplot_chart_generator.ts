@@ -2455,7 +2455,6 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             // kept) at high opacity — same weight as the rail dashes so the
             // near-coincident rail buy beside the pin stays visible.
             let dIdx = 0;
-            let dIdx = 0;
             deeps.forEach((p) => {
                 const d = deepLineDivs[dIdx++];
                 const y = yForPriceCached(ys, overRect, rootRect, p);
