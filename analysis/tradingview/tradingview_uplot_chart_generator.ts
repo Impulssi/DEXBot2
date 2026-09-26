@@ -2254,6 +2254,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         let ceilingLabel = null;
         let spreadMidLabel = null;
         let orderLineDivs = [];
+        let deepLineDivs = [];
         let orderBuyLabel = null;
         let orderSellLabel = null;
         let orderPriceTags = [];
@@ -2261,9 +2262,10 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         function getDisplayOrders() {
             const rawBuys = Array.isArray(payload.orderBuys) ? payload.orderBuys.filter(Number.isFinite).filter((p) => p > 0) : [];
             const rawSells = Array.isArray(payload.orderSells) ? payload.orderSells.filter(Number.isFinite).filter((p) => p > 0) : [];
-            if (normalizePairMode(currentPairMode) !== 'inverse') return { buys: rawBuys, sells: rawSells };
+            const rawDeeps = Array.isArray(payload.orderDeepBuys) ? payload.orderDeepBuys.filter(Number.isFinite).filter((p) => p > 0) : [];
+            if (normalizePairMode(currentPairMode) !== 'inverse') return { buys: rawBuys, sells: rawSells, deeps: rawDeeps };
             const inv = (arr) => arr.map((p) => 1 / p).filter(Number.isFinite).filter((p) => p > 0);
-            return { buys: inv(rawBuys), sells: inv(rawSells) };
+            return { buys: inv(rawBuys), sells: inv(rawSells), deeps: inv(rawDeeps) };
         }
         function yForPriceCached(ys, overRect, rootRect, price) {
             const sMin = Number.isFinite(ys.min) ? ys.min : null;
@@ -2283,6 +2285,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         function hideOverlayNodes() {
             [reserveLine, reserveLabel, ceilingLine, ceilingLabel, spreadMidLabel, orderBuyLabel, orderSellLabel].forEach((n) => { if (n) n.style.display = 'none'; });
             orderLineDivs.forEach((d) => { d.style.display = 'none'; });
+            deepLineDivs.forEach((d) => { d.style.display = 'none'; });
             orderPriceTags.forEach((t) => { t.style.display = 'none'; });
         }
         function positionReserveLine(u) {
@@ -2393,7 +2396,24 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 return;
             }
             try { if (getComputedStyle(u.root).position === 'static') u.root.style.position = 'relative'; } catch (e) {}
-            const { buys, sells } = getDisplayOrders();
+            const { buys, sells, deeps } = getDisplayOrders();
+            // Deep shelf lines (paxier katkoviivat): thicker + brighter than
+            // the thin order dashes so the dip-insurance shelf reads as its
+            // own layer next to the rail.
+            const deepTotal = deeps.length;
+            if (deepLineDivs.length && deepLineDivs[0].parentNode !== u.root) {
+                deepLineDivs.forEach((d) => u.root.appendChild(d));
+            }
+            while (deepLineDivs.length < deepTotal) {
+                const d = document.createElement('div');
+                d.style.cssText = 'position:absolute;z-index:2;pointer-events:none;height:0;left:0;right:0;display:none;';
+                u.root.appendChild(d);
+                deepLineDivs.push(d);
+            }
+            const deepKey = (ys.min || 0) + '|' + (ys.max || 0) + '|' + (u.root.clientWidth || 0) + '|' + currentPriceScale + '|' + currentPairMode + '|DEEP';
+            if (deepKey !== lastOverlayKey) {
+                // Position on the same key as the rail lines (refreshed below).
+            }
             const total = buys.length + sells.length;
             if (orderLineDivs.length && orderLineDivs[0].parentNode !== u.root) {
                 orderLineDivs.forEach((d) => u.root.appendChild(d));
@@ -2435,6 +2455,18 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 d.style.opacity = '0.55';
                 return y;
             };
+            // Deep shelf: 3px dashed orange, brighter opacity — distinct layer.
+            let dIdx = 0;
+            deeps.forEach((p) => {
+                const d = deepLineDivs[dIdx++];
+                const y = yForPriceCached(ys, overRect, rootRect, p);
+                if (y == null) { d.style.display = 'none'; return; }
+                d.style.display = 'block';
+                d.style.top = y + 'px';
+                d.style.borderTop = '3px dashed #fb923c';
+                d.style.opacity = '0.85';
+            });
+            for (; dIdx < deepLineDivs.length; dIdx++) deepLineDivs[dIdx].style.display = 'none';
             let botBuyY = null;
             buys.forEach((p) => { const y = place(p, '#26a69a'); if (y != null && (botBuyY == null || y > botBuyY)) botBuyY = y; });
             let topSellY = null;
@@ -2446,6 +2478,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const levels = [
                 ...buys.map((p) => ({ p, c: '#26a69a', bg: 'rgba(20,30,28,0.92)' })),
                 ...sells.map((p) => ({ p, c: '#ef5350', bg: 'rgba(30,20,22,0.92)' })),
+                ...deeps.map((p) => ({ p, c: '#fb923c', bg: 'rgba(34,24,14,0.92)' })),
             ].sort((a, b) => a.p - b.p);
             let ti = 0, lastTagY = -Infinity;
             const ensureTag = () => {
@@ -2495,6 +2528,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             ceilingLabel = null;
             spreadMidLabel = null;
             orderLineDivs = [];
+            deepLineDivs = [];
             orderBuyLabel = null;
             orderSellLabel = null;
             orderPriceTags = [];
