@@ -2473,25 +2473,42 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             if (orderPriceTags.length && orderPriceTags[0].parentNode !== u.root) {
                 orderPriceTags.forEach((t) => u.root.appendChild(t));
             }
-            const levels = [
-                ...buys.map((p) => ({ p, c: '#26a69a', bg: 'rgba(20,30,28,0.92)' })),
-                ...sells.map((p) => ({ p, c: '#ef5350', bg: 'rgba(30,20,22,0.92)' })),
-                ...deeps.map((p) => ({ p, c: '#fb923c', bg: 'rgba(34,24,14,0.92)' })),
+            // Deep tags FIRST and exempt from the 13px collision filter:
+            // the rail ladder and the deep shelf converge within one
+            // quantum at the ama anchor, so a rail tag at nearly the same
+            // price always won the slot and the deep tag (this level's only
+            // orange readout on the price axis) never showed. Deeps only
+            // collide with other deeps; rail tags keep the old grooming.
+            const deepLevels = deeps.map((p) => ({ p, c: '#fb923c', bg: 'rgba(34,24,14,0.92)', deep: true }));
+            const railLevels = [
+                ...buys.map((p) => ({ p, c: '#26a69a', bg: 'rgba(20,30,28,0.92)', deep: false })),
+                ...sells.map((p) => ({ p, c: '#ef5350', bg: 'rgba(30,20,22,0.92)', deep: false })),
             ].sort((a, b) => a.p - b.p);
+            const levels = [...deepLevels, ...railLevels];
             let ti = 0, lastTagY = -Infinity;
             const ensureTag = () => {
                 if (ti >= orderPriceTags.length) {
                     const t = document.createElement('div');
-                    t.style.cssText = 'position:absolute;z-index:25;pointer-events:none;font:600 9px Segoe UI, sans-serif;line-height:14px;height:14px;padding:0 4px;border-radius:3px;white-space:nowrap;display:none;';
+                    t.style.cssText = 'position:absolute;z-index:26;pointer-events:none;font:600 9px Segoe UI, sans-serif;line-height:14px;height:14px;padding:0 4px;border-radius:3px;white-space:nowrap;display:none;';
                     u.root.appendChild(t);
                     orderPriceTags.push(t);
                 }
                 return orderPriceTags[ti++];
             };
+            let lastDeepTagY = -Infinity;
             for (const lv of levels) {
                 const tag = ensureTag();
                 const y = yForPriceCached(ys, overRect, rootRect, lv.p);
-                if (y == null || Math.abs(y - lastTagY) < 13) { tag.style.display = 'none'; continue; }
+                if (y == null) { tag.style.display = 'none'; continue; }
+                if (lv.deep) {
+                    // Deep vs deep only: they are spaced ~1.5% apart, far
+                    // beyond the tag height; a rail neighbor never hides it.
+                    if (Math.abs(y - lastDeepTagY) < 13) { tag.style.display = 'none'; continue; }
+                    lastDeepTagY = y;
+                } else {
+                    if (Math.abs(y - lastTagY) < 13) { tag.style.display = 'none'; continue; }
+                    lastTagY = y;
+                }
                 tag.style.display = 'block';
                 tag.style.top = (y - 7) + 'px';
                 tag.style.right = '4px';
@@ -2499,7 +2516,6 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 tag.style.background = lv.bg;
                 tag.style.border = '1px solid ' + lv.c;
                 tag.textContent = fmtPriceLabel(lv.p);
-                lastTagY = y;
             }
             for (; ti < orderPriceTags.length; ti++) orderPriceTags[ti].style.display = 'none';
             if (buys.length && botBuyY != null) {
