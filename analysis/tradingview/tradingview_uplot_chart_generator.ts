@@ -2410,10 +2410,6 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 u.root.appendChild(d);
                 deepLineDivs.push(d);
             }
-            const deepKey = (ys.min || 0) + '|' + (ys.max || 0) + '|' + (u.root.clientWidth || 0) + '|' + currentPriceScale + '|' + currentPairMode + '|DEEP';
-            if (deepKey !== lastOverlayKey) {
-                // Position on the same key as the rail lines (refreshed below).
-            }
             const total = buys.length + sells.length;
             if (orderLineDivs.length && orderLineDivs[0].parentNode !== u.root) {
                 orderLineDivs.forEach((d) => u.root.appendChild(d));
