@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.6.7 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.6.8 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
 - **Growth Phase**: 2,277 commits over ~9 active months
 - **Code Maturity**: Evolution from basic utilities to a ~100,000+ LoC intelligent TypeScript system
-- **Stability**: Progression from manual testing to a suite of 297 automated test files
-- **Releases**: 139 version entries in the changelog (v0.1.0 to v1.6.7)
+- **Stability**: Progression from manual testing to a suite of 298 automated test files
+- **Releases**: 140 version entries in the changelog (v0.1.0 to v1.6.8)
 
 > **Post-1.0.0 "why":** the thematic story behind the hardening releases — root cause, recurring
 > bug families, and lessons — lives in
@@ -165,11 +165,12 @@ Compact, era-level view. Per-release detail lives in [CHANGELOG.md](../CHANGELOG
 | v1.6.4 → v1.6.5 | 15 | Editor-managed whitelist flags + legacy generator removal, centralized bot defaults/settings docs, log-symmetric range-scaling tilt, AMA gridPrice default + unset → startPrice normalization, Pool default/warn-color cues, Grid Health AMA-slope Δ knob, dynamic-weight chart CLI, update dist-freshness self-heal, launcher worker rename, RMS log tagging |
 | v1.6.5 → v1.6.6 | 13 | Stale-cancellation guard hardening (live ownership, per-plan startup revalidation, COW orphan protection, settlement safety), editor label/menu realignment + colored bot list, grouped CLI help, poolRef aliases + startPrice priority, legacy SMA/MACD/RSI analyzer archived, run-relative candle-cache migration dropped, update dist-freshness tsconfig-exclude fix |
 | v1.6.6 → v1.6.7 | 10 | Native session/fill-channel recovery (dead-but-open forced reconnect, stale api_id self-heal, COW stale-plan recheck) + clean-process ecosystem regen, `dexbot start` onboarding redirect, key-manager cancellation + empty-vault onboarding link, LAST-FILL-GUARD pivot persistence (provenance-gated snapshot mirror, genesis-bound + TTL + on-grid restore with the boundary, centralized writer, generation invalidation mirroring the owed-crawl ledger), PM2 log-capture restore + `pm2-logrotate` enablement, correction-drain budget + broadcast-region timer/fill deferral (bounded `_gridLock` hold, backlog alarm, stale-flag-safe maintenance deferral, defer bound tied to the watchdog, per-group create yield) |
+| v1.6.7 → v1.6.8 | 2 | Passive new-version notice (bounded registry probe, notify-once latch committed only on display, install-kind hint, independent NOTICE kill switches) + review hardening (dryrun silence, status timeout, latch regression guard, terminal-path flushes, non-blocking print on the isolated-foreground launch path, AbortController-independent hard timeout backstop, centralized flush) |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
 **Last Updated**: September 26, 2026
-**Total Commits**: 2,287
+**Total Commits**: 2,291
 **Date Range**: December 2, 2025 – September 26, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)

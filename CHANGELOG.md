@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.8] - 2026-09-26 - Passive New-Version Notice
+
+### 2026-09-26
+
+- **Feat(version-notice)**: announce newer DEXBot2 releases on start/pm2 — operators had no way to learn a newer release existed: `UPDATER.ACTIVE` defaults to false by design (a bot handling real funds must never silently change its own code) and the only version comparison lived in `dexbot update`. A passive, never-throwing notice now probes the npm registry once per `UPDATER.NOTICE_INTERVAL_MS` (24h) using a single bounded HTTPS GET (no `npm` subprocess), reports a newer `latest` on `dexbot start`/`pm2`/`status`, and never changes code. Gating is independent of the updater via `UPDATER.NOTICE_ENABLED` (default on); `DEXBOT_SKIP_VERSION_NOTICE=1` silences it for tests/CI. The cache lives in `profiles/version_check.json` (gitignored, atomic write) and records the last probe, the observed latest, and the announced version. `dexbot start`/`pm2` emit from the child launcher (parent/child relocation-notice convention); internal children stay silent (`modules/version_notice.ts`, `dexbot.ts`, `pm2.ts`, `unlock.ts`, `modules/constants.ts`, `modules/paths.ts`, `tests/test_version_notice.ts`).
+
+- **Fix(version-notice)**: latch notify-once only after the notice is displayed — the "announced" version was persisted as soon as the probe resolved, so a launcher path that returned without printing (the already-running race window, a startup failure before the success summary) could permanently suppress a hint the operator never saw. The probe now records the observation only; the single `printVersionNotice` path advances the latch, and the latch only ever moves forward so a registry briefly serving an older `latest` (dist-tag rollback) cannot make an announced version reappear. `--dryrun` no longer probes or writes the cache, the missed `unlock.ts` terminal flush is added, and the isolated-foreground launch path prints the notice without awaiting it so the bot start is never delayed. `dexbot status` caps the inline probe at `UPDATER.NOTICE_STATUS_TIMEOUT_MS` (750ms) instead of the 2s default. Hardening: `path.join` for install-kind detection, strict cache field types, and an overridable probe timeout. The probe's timeout is now a race-based hard backstop that resolves even with no `AbortController` or a `fetch` that ignores the abort signal, so a hung registry socket can never stall a terminal `flushVersionNotice` ahead of `process.exit()`; the await+print flush is centralized in the module rather than reimplemented in `unlock.ts` (`modules/version_notice.ts`, `unlock.ts`, `pm2.ts`, `dexbot.ts`, `modules/constants.ts`, `tests/test_version_notice.ts`).
+
 ## [1.6.7] - 2026-09-26 - Native Session Recovery, Start Onboarding, Keys UX, Guard Pivot Persistence
 
 ### 2026-09-26

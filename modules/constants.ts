@@ -1581,7 +1581,27 @@ let UPDATER = {
     // │ │ │ │ ┌────── day of week (0 - 6) (0 is Sunday)
     // │ │ │ │ │
     // 0 0 * * *  (Default: Daily at midnight)
-    SCHEDULE: "0 0 * * *"
+    SCHEDULE: "0 0 * * *",
+
+    // ── Passive version NOTICE (modules/version_notice.ts) ──────────
+    // Deliberately independent of ACTIVE: the notice never changes code, it
+    // only tells the operator a newer release exists. Keeping it on a separate
+    // switch means the default-off auto-updater does not also silence the
+    // "you are running an outdated build" warning.
+    NOTICE_ENABLED: true,
+    // Minimum gap between registry probes (24h). Also throttles failures, so an
+    // offline node pays the network timeout at most once a day, not per start.
+    // Set 0 to probe on every launcher start (an explicit opt-in to always-check).
+    NOTICE_INTERVAL_MS: 86_400_000,
+    // Hard timeout for the registry request. The check never blocks startup,
+    // but a hung socket must not keep the launcher alive either.
+    NOTICE_TIMEOUT_MS: 2_000,
+    // Shorter cap for `dexbot status`, which awaits the probe inline (no
+    // startup work overlaps it), so a stale/offline probe cannot stall the
+    // status output for the full NOTICE_TIMEOUT_MS.
+    NOTICE_STATUS_TIMEOUT_MS: 750,
+    // Registry document queried for the published `latest` version.
+    REGISTRY_URL: "https://registry.npmjs.org/dexbot/latest"
 };
 
 let LAUNCHER = {

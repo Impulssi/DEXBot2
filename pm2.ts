@@ -102,6 +102,7 @@ import * as readline from 'node:readline';
 import { getErrorMessage } from './modules/utils/errors.js';
 import { isSameBotName } from './modules/utils/sanitize_key.js';
 import { muteChainLogs } from './modules/utils/chain_logs.js';
+import { startVersionNoticeCheck, printVersionNotice } from './modules/version_notice.js';
 import { CLI_COLORS } from './modules/cli_colors.js';
 import { getStorage } from './modules/storage/index.js';
 import { usesAmaGridPrice } from './modules/dexbot_maintenance_runtime.js';
@@ -465,6 +466,13 @@ async function main({ botNameFilter = null, clawOnly = false, headless = false, 
     console.log('='.repeat(50));
     console.log();
 
+    // Start the passive "new version available" check immediately but do not
+    // await it: the BitShares connect in Step 0 (and the PM2 work below) takes
+    // seconds, which fully hides the registry round-trip. The notice is printed
+    // in the success block at the end, below the banner, so it can never be
+    // mistaken for part of the startup status. The promise never rejects.
+    const versionNotice = startVersionNoticeCheck();
+
     if (!clawOnly) {
         // Step 0: Wait for BitShares connection. The native chain stack
         // ([Transport]/[NodeManager]/[bitshares_client]) logs straight to
@@ -516,6 +524,8 @@ async function main({ botNameFilter = null, clawOnly = false, headless = false, 
     console.log('If dexbot-cred stops, rerun `dexbot pm2` to unlock it again.');
     console.log('='.repeat(50));
     console.log();
+
+    printVersionNotice(await versionNotice);
 }
 
 function startPM2Process(args: any, env: any = buildScopedChildEnv()) {

@@ -1,3 +1,8 @@
+// The passive "new version available" notice must not reach the npm registry
+// (or the captured output) from a test. Config snapshots process.env at load
+// time, so this has to be set before the first require().
+process.env.DEXBOT_SKIP_VERSION_NOTICE = '1';
+
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');

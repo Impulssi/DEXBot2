@@ -63,6 +63,7 @@ const Config: {
     DEXBOT_MONOLITHIC_BG: boolean;
     DEXBOT_LAUNCHER_WORKER: boolean;
     DEXBOT_UPDATE_SKIP_RELOAD: boolean;
+    DEXBOT_SKIP_VERSION_NOTICE: boolean;
     NO_COLOR: string | undefined;
 
     // ── Paths ───────────────────────────────────────────────────────
@@ -134,6 +135,7 @@ const Config: {
     DEXBOT_MONOLITHIC_BG: bool('DEXBOT_MONOLITHIC_BG'),
     DEXBOT_LAUNCHER_WORKER: bool('DEXBOT_LAUNCHER_WORKER'),
     DEXBOT_UPDATE_SKIP_RELOAD: bool('DEXBOT_UPDATE_SKIP_RELOAD'),
+    DEXBOT_SKIP_VERSION_NOTICE: bool('DEXBOT_SKIP_VERSION_NOTICE'),
     NO_COLOR: str('NO_COLOR'),
 
     // ── Paths ───────────────────────────────────────────────────────

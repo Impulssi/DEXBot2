@@ -1,4 +1,8 @@
 process.env.DEXBOT_SKIP_PROFILE_VALIDATION = '1';
+// Keep the launcher hermetic: the passive "new version available" notice must
+// not reach the npm registry (or the captured output) from a test. Config
+// snapshots process.env at load time, so this has to precede every require().
+process.env.DEXBOT_SKIP_VERSION_NOTICE = '1';
 // Keep this test hermetic: a dev checkout can hold real market_adapter/claw
 // state, and the explicit relocation notices would otherwise pollute the
 // captured warnings asserted below.

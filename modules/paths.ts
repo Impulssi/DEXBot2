@@ -329,6 +329,7 @@ const PATHS = {
     FUND_REGISTRY_JSON: path.join(PROFILES_DIR, 'fund_registry.json'),
     NODE_BLACKLIST_JSON: path.join(PROFILES_DIR, 'node_blacklist.json'),
     NODE_HEALTH_CACHE_JSON: path.join(PROFILES_DIR, 'node_health_cache.json'),
+    VERSION_CHECK_JSON: path.join(PROFILES_DIR, 'version_check.json'),
     MARKET_ADAPTER_WHITELIST_JSON: (): string =>
       Config.DEXBOT_TEST_MARKET_ADAPTER_WHITELIST_FILE || path.join(PROFILES_DIR, 'market_adapter_whitelist.json'),
     ECOSYSTEM_CONFIG_JS: path.join(PROFILES_DIR, 'ecosystem.config.cjs'),

@@ -1533,6 +1533,8 @@ async function promptGeneralSettings() {
           const updaterStatus = settings.UPDATER.ACTIVE ? `${COLORS.green}ON${COLORS.reset}` : `${COLORS.red}OFF${COLORS.reset}`;
           const currentSched = parseCronToDelta(settings.UPDATER.SCHEDULE || "0 0 * * *");
           console.log(`${COLORS.yellowBold}5) Updater:${COLORS.reset}      [${updaterStatus}] ${COLORS.orange}Branch:${COLORS.reset} ${settings.UPDATER.BRANCH}, ${COLORS.orange}Interval:${COLORS.reset} ${currentSched.days}d, ${COLORS.orange}Time:${COLORS.reset} ${currentSched.time}`);
+          const noticeStatus = settings.UPDATER.NOTICE_ENABLED !== false ? `${COLORS.green}ON${COLORS.reset}` : `${COLORS.red}OFF${COLORS.reset}`;
+          console.log(`   ${COLORS.orange}New-version notice:${COLORS.reset} [${noticeStatus}] ${COLORS.gray}(startup hint only, never auto-updates)${COLORS.reset}`);
           console.log('--------------------------------------------------');
           console.log(`${COLORS.greenBold}S) Save & Exit${COLORS.reset}`);
           console.log(`${COLORS.white}C) Cancel (Discard changes)${COLORS.reset}`);
@@ -1645,6 +1647,14 @@ async function promptGeneralSettings() {
                 settings.UPDATER.BRANCH = branch;
 
                 settings.UPDATER.SCHEDULE = schedule;
+
+                // Offered right after the updater switch: the notice is
+                // independent of it (it never changes code), but operators
+                // reach for this screen when they want the "new version out"
+                // hint silenced or restored.
+                const noticeOn = await askBoolean('Show "new version available" notice on startup', settings.UPDATER.NOTICE_ENABLED !== false);
+                if (noticeOn === '\x1b') break;
+                settings.UPDATER.NOTICE_ENABLED = noticeOn;
                 break;
             case 's':
                 saveGeneralSettings(settings);

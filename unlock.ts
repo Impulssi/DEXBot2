@@ -55,6 +55,7 @@ import { UPDATER, LAUNCHER } from './modules/constants.js';
 import { formatStartupNotice } from './modules/cli_start_output.js';
 import { runtime } from './modules/runtime.js';
 import { PATHS, printRelocationNotices } from './modules/paths.js';
+import { startVersionNoticeCheck, flushVersionNotice, printVersionNoticeWhenReady } from './modules/version_notice.js';
 import { buildRuntimeScriptArgs } from './modules/launcher/runtime_entry.js';
 import { sendControlCommand } from './modules/launcher/supervisor_control.js';
 import { registerCleanup, setupGracefulShutdown } from './modules/graceful_shutdown.js';
@@ -161,6 +162,11 @@ function printLauncherSuccess({ botName = null, clawOnly = false, isolated = fal
     console.log();
 }
 
+/**
+ * Print the pending "new version available" notice, if there is one.
+ * Awaited at every terminal launcher path because `process.exit()` would
+ * otherwise truncate the in-flight registry request.
+ */
 function makeFinishGuard(cleanup: () => void) {
     let settled = false;
     let timer: any = null;
@@ -511,6 +517,15 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
         }
     }
     if (!isInternalChild) printRelocationNotices();
+    // Kick off the passive "new version available" check now and await it only
+    // at the terminal paths below. The password prompt and daemon startup that
+    // follow take seconds, which hides the registry round-trip entirely. The
+    // promise never rejects and resolves to null when there is nothing to say.
+    // Internal children (detached supervisor, monolithic bg) stay silent: they
+    // would re-probe and re-print a notice the launcher already handled. A
+    // --dryrun is a side-effect-free validation, so it never probes or writes
+    // the cache either.
+    const versionNotice = (isInternalChild || dryrun) ? Promise.resolve(null) : startVersionNoticeCheck();
     let effectiveBotName = botName;
     if (creditOnly && !effectiveBotName) {
         const creditBots = listConfiguredBots().filter((b: any) => b.creditOnly === true && b.active !== false);
@@ -537,6 +552,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
             printLauncherHeader({ botName: effectiveBotName || botName, clawOnly, creditOnly, isolated, dryrun, headless });
             console.log(`DEXBot2 already running in background (PID ${pid}).`);
             console.log('Use `dexbot stat` to inspect it, or `dexbot restart` to restart it.');
+            await flushVersionNotice(versionNotice);
             process.exitCode = 0;
             return;
         }
@@ -588,6 +604,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
             if (pid > 0) {
                 console.log(`DEXBot2 already running in background (PID ${pid}).`);
                 console.log('Use `dexbot stat` to inspect it, or `dexbot restart` to restart it.');
+                await flushVersionNotice(versionNotice);
                 process.exitCode = 0;
                 return;
             }
@@ -627,11 +644,13 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
             storage.writeFile(MONOLITHIC_PID_FILE, String(child.pid), { mode: 0o600 });
 
             printLauncherStartupSummary({ botNames: launchedBotNames, mode: 'background' });
+            await flushVersionNotice(versionNotice);
             process.exit(0);
         }
 
         if (clawOnly) {
             printLauncherSuccess({ clawOnly });
+            await flushVersionNotice(versionNotice);
             const exitCode = await controller.waitForManagedDaemon();
             process.exitCode = exitCode || 0;
             return;
@@ -639,6 +658,10 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
 
         if (isolated) {
             if (isDetachedSupervisorChild || forceForegroundIsolated) {
+                // Never delay the bot launch on the probe: this branch stays
+                // resident for the bot's lifetime, so print when the probe
+                // settles instead of awaiting it before supervisor.start().
+                printVersionNoticeWhenReady(versionNotice);
                 process.exitCode = await runIsolated({
                     botName: botName ?? undefined,
                     botEntry: selectedBot,
@@ -658,6 +681,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
             console.log(`Supervisor PID: ${supervisorPid}`);
             console.log(`Control socket: ${Config.DEXBOT_SUPERVISOR_SOCKET || SOCKET_PATH}`);
             console.log(`Supervisor logs: ${SUPERVISOR_OUT_LOG}`);
+            await flushVersionNotice(versionNotice);
             process.exitCode = 0;
             return;
         }
@@ -732,6 +756,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
                 if (!updater?.pendingRestart) {
                     if (!isMonolithicBgChild) {
                         printLauncherStartupSummary({ botNames: launchedBotNames, mode: 'foreground' });
+                        await flushVersionNotice(versionNotice);
                     }
                 }
 
