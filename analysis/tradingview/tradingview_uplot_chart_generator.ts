@@ -3464,13 +3464,14 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 // anchor, so a green BUY row sitting next to a deep price
                 // reads as "the deep is green". One orange row per deep
                 // (market-closest first) keeps each orange chart line
-                // matched by an orange badge number.
+                // matched by an orange badge number. Rows are separate
+                // <div>s — no control characters inside the embedded string.
                 const sortedDeeps = [...dispDeeps].sort((a, b) => Math.abs(b - mkt) - Math.abs(a - mkt));
                 const rows = sortedDeeps.map((d) => {
                     const p = (d - mkt) / mkt * 100;
-                    return 'DEEP ' + fmtPriceLabel(d) + ' ' + (p >= 0 ? '+' : '') + p.toFixed(1) + '%';
+                    return '<div>DEEP ' + fmtPriceLabel(d) + ' ' + (p >= 0 ? '+' : '') + p.toFixed(1) + '%</div>';
                 });
-                html += '<div style="color:#fb923c;background:rgba(34,24,14,0.92);border:1px solid #fb923c;border-radius:3px;padding:0 4px;margin-top:2px;display:inline-block;white-space:pre-line;text-align:right;">' + rows.join('\n') + '</div>';
+                html += '<div style="color:#fb923c;background:rgba(34,24,14,0.92);border:1px solid #fb923c;border-radius:3px;padding:2px 4px;margin-top:2px;display:inline-block;">' + rows.join('') + '</div>';
             }
             panel.innerHTML = html;
         }
