@@ -2485,7 +2485,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 ...sells.map((p) => ({ p, c: '#ef5350', bg: 'rgba(30,20,22,0.92)', deep: false })),
             ].sort((a, b) => a.p - b.p);
             const levels = [...deepLevels, ...railLevels];
-            let ti = 0, lastTagY = -Infinity;
+            let ti = 0;
+            const deepTagYs = [];
+            const allTagYs = [];
             const ensureTag = () => {
                 if (ti >= orderPriceTags.length) {
                     const t = document.createElement('div');
@@ -2495,19 +2497,24 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 }
                 return orderPriceTags[ti++];
             };
-            let lastDeepTagY = -Infinity;
             for (const lv of levels) {
                 const tag = ensureTag();
                 const y = yForPriceCached(ys, overRect, rootRect, lv.p);
                 if (y == null) { tag.style.display = 'none'; continue; }
                 if (lv.deep) {
                     // Deep vs deep only: they are spaced ~1.5% apart, far
-                    // beyond the tag height; a rail neighbor never hides it.
-                    if (Math.abs(y - lastDeepTagY) < 13) { tag.style.display = 'none'; continue; }
-                    lastDeepTagY = y;
+                    // beyond the tag height.
+                    if (deepTagYs.some((by) => Math.abs(y - by) < 13)) { tag.style.display = 'none'; continue; }
+                    deepTagYs.push(y);
                 } else {
-                    if (Math.abs(y - lastTagY) < 13) { tag.style.display = 'none'; continue; }
-                    lastTagY = y;
+                    // Rail yields to EVERY already-placed tag (deeps first):
+                    // the rail ladder and the deep shelf converge within one
+                    // quantum at the ama anchor — same pixel row — and with
+                    // equal z-index the later DOM node (rail) painted over
+                    // the deep. Deep wins the slot; the rail price is the
+                    // same number within display rounding anyway.
+                    if (allTagYs.some((by) => Math.abs(y - by) < 13)) { tag.style.display = 'none'; continue; }
+                    allTagYs.push(y);
                 }
                 tag.style.display = 'block';
                 tag.style.top = (y - 7) + 'px';
