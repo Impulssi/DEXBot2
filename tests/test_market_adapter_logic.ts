@@ -13,6 +13,7 @@ const {
     computeCandleStaleness,
     resolveAmaForBot,
     resolveDeltaThresholdPercentFromGeneralSettings,
+    resolveAmaSlopeDeltaThresholdPercentFromGeneralSettings,
     normalizeMarketSource,
     normalizeNativeMarketHistoryCandles,
     fetchNativeMarketHistorySince,
@@ -251,6 +252,38 @@ assert.strictEqual(
         { MARKET_ADAPTER: { AMA_DELTA_THRESHOLD_PERCENT: 4 } }
     );
     assert.strictEqual(cfg.deltaThresholdPercent, 2.5, 'CLI-provided deltaPercent should win over settings');
+}
+
+// General settings → slope-trigger factor (the editor's `AMA-Slope Δ`)
+assert.strictEqual(
+    resolveAmaSlopeDeltaThresholdPercentFromGeneralSettings({ MARKET_ADAPTER: { AMA_SLOPE_DELTA_THRESHOLD_PERCENT: 5 } }),
+    5,
+    'should read MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT when valid'
+);
+
+assert.strictEqual(
+    resolveAmaSlopeDeltaThresholdPercentFromGeneralSettings({ MARKET_ADAPTER: { AMA_SLOPE_DELTA_THRESHOLD_PERCENT: 0 } }),
+    null,
+    'non-positive slope settings value should be ignored'
+);
+
+{
+    const cfg = applyRuntimeDefaultsFromGeneralSettings(
+        { amaSlope: { deltaThresholdPct: 8, maxSlopePct: 0.09 } },
+        {},
+        { MARKET_ADAPTER: { AMA_SLOPE_DELTA_THRESHOLD_PERCENT: 5 } }
+    );
+    assert.strictEqual(cfg.amaSlope.deltaThresholdPct, 5, 'general settings should override the slope factor');
+    assert.strictEqual(cfg.amaSlope.maxSlopePct, 0.09, 'other amaSlope fields must be preserved');
+}
+
+{
+    const cfg = applyRuntimeDefaultsFromGeneralSettings(
+        { amaSlope: { deltaThresholdPct: 8 } },
+        {},
+        { MARKET_ADAPTER: {} }
+    );
+    assert.strictEqual(cfg.amaSlope.deltaThresholdPct, 8, 'absent slope setting leaves the factor untouched');
 }
 
 // Bot AMA config behavior

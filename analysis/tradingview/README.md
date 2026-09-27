@@ -39,6 +39,7 @@ The sections below cover manual usage (explicit candle files, direct runner flag
 - SMA overlay
 - AMA preset buttons `1–4` (one-click AMA1–4, active preset highlighted); numeric inputs kept
 - Bot-grid range highlight, off by default (the bot's min/max around AMA with live asymmetric tilt; red above AMA, green below)
+- Grid-reset simulation (AMA bots, on by default): replays the market adapter's two recentering triggers over the candle history — the accepted grid center as a step line, the simulated grid range around it, and a marker per reset (`init` = first AMA snapshot, `Δ1` = AMA-price Δ, `Δs` = AMA-slope Δ). Thresholds come from the live config chain; a bottom-left panel shows the values, where they came from, and the reset counts (see [Grid-Reset Simulation](#grid-reset-simulation))
 - Range-scale switch: fit the price axis to the range band
 - VWMA overlay
 - Order overlay for bot charts (active grid buys/sells as dashed levels, reserve line at the lowest grid buy, ceiling line at the highest grid sell, spread label; pair-aware, toggle in-chart)
@@ -193,6 +194,10 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 | `--range` | Enable range highlight (off by default; toggle in-chart) | off |
 | `--no-range` | Disable range highlight | — |
 | `--range-scale` | Range Scaling: size the band by AMA slope like the grid build + fit price axis to it | — |
+| `--no-grid-reset` | Render without the grid-reset simulation (toggle it back in the chart) | on for AMA bots |
+| `--grid-delta-pct <n>` | Override the AMA-price Δ threshold for the simulation (skips config resolution) | config |
+| `--grid-slope-delta-pct <n>` | Override the AMA-slope Δ threshold for the simulation, in %/bar | config |
+| `--grid-warmup <bars>` | Override the simulation start bar (skipped before the first accepted center) | AMA warmup |
 | `--range-span <mult>` | x-range around AMA, 1.2–2 (default: bot grid setting) | bot grid |
 | `--orders-file <path>` | Order-grid JSON override for the overlay (default: `profiles/orders/<botKey>.json`) | bot orders |
 | `--no-orders` | Disable the order overlay (levels, reserve/ceiling lines, spread label) | — |
@@ -200,6 +205,78 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 | `--update-marker-bars <n>` | Bar count shown in the update-marker tag (e.g. `(+12)`) | — |
 | `--no-update-marker` | Suppress the update marker even when the candle file has stamped meta | — |
 | `--quiet` | Suppress progress logs | — |
+
+## Grid-Reset Simulation
+
+Bot charts (`--bot-key <key>`, i.e. bots with `gridPrice: "ama"`) additionally
+replay the market adapter's grid recentering over the candle history, so you can
+see *when the grid would have moved* instead of only where it sits today. See
+[docs/GRID_RECALCULATION.md](../../docs/GRID_RECALCULATION.md) for the runtime
+mechanics; the chart mirrors §3 and §4 and nothing else.
+
+**What it draws**
+
+- **Grid center** (violet step line, legend `Grid`) — the accepted
+  `gridCenterPrice`. It only moves on a trigger, so the line is a staircase:
+  flat = "the grid would still be sitting here".
+- **Simulated range** (violet band) — the grid bounds that center would own:
+  the bot's `minPrice`/`maxPrice` multipliers around the accepted center, tilted
+  by the *accepted* slope through `applyAsymmetricBounds` +
+  `applyNarrowingSideGuard` (the same functions the live grid build uses). It
+  re-tilts only at resets, exactly like the real thing.
+- **Reset markers** — one vertical line per reset, colored and tagged by reason:
+  grey `init` (first accepted AMA snapshot, `market_adapter_bootstrap`),
+  amber `Δ1` (`market_adapter_delta_threshold`), cyan `Δs`
+  (`market_adapter_ama_slope_delta_threshold`).
+- **Panel (bottom-left)** — effective `AMA Δ` and `Slope Δ` thresholds, the
+  layer each came from, reset counts, and the last reset.
+
+**Where the thresholds come from**
+
+Resolved through the same chain the running adapter uses, by
+`analysis/tradingview/grid_reset_config.ts`:
+
+1. `modules/constants.ts` (`MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT`,
+   `AMA_SLOPE_DELTA_THRESHOLD_PERCENT` × `DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT`)
+2. `profiles/general.settings.json` → `MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT`
+   and `MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT` (the editor's
+   `AMA-Slope Δ`, applied to `amaSlope.deltaThresholdPct` by
+   `applyRuntimeDefaultsFromGeneralSettings`)
+3. `profiles/market_adapter_settings.json` → `globals` → `pairs[].marketAdapterSettings` → `pairs[].botOverrides[<botName>]`
+
+The effective numbers come from the production resolvers themselves
+(`applyRuntimeDefaultsFromGeneralSettings`, `resolveBotCfg`,
+`calculateBotThreshold`, `MarketAdapterService.resolveAmaSlopeDeltaThresholdPercent`),
+so the chart cannot drift from the runtime. The panel labels the winning layer;
+`--grid-delta-pct` / `--grid-slope-delta-pct` short-circuit the chain and report
+`cli` as the source.
+
+**Gates the replay honors**
+
+- The `Δs` trigger only fires for AMA-grid bots whitelisted for
+  `asymmetricBounds` (range scaling) in
+  `profiles/market_adapter_whitelist.json` **and** carrying an explicit
+  `weightDistribution` — the adapter skips the slope signal otherwise.
+  When gated off, the panel shows the threshold with `off` and the slope
+  trigger is inert, like in production. A non-positive resolved threshold
+  disables the trigger too (it never means "fire every cycle").
+- The replay starts at the AMA warmup point (`getAmaWarmupBars`), capped at half
+  the dataset so a short chart still shows something; the applied value is in
+  the panel and can be forced with `--grid-warmup`.
+- Absolute `minPrice`/`maxPrice` pin the center like `clampGridPriceToBounds` —
+  drift is measured against the **clamped** center, so an AMA outside the
+  bounds does not emit a reset marker every bar; `"Nx"` multipliers travel with
+  the center and never clamp.
+- Not simulated (out of scope for a candle chart): RMS structural divergence,
+  available-funds resizes, manual/legacy triggers, and the staleness / gap /
+  no-new-candle suppression gates. One evaluation per 1h bar.
+
+The replay runs in the page, so the AMA series (and therefore the trigger
+points) follows the AMA inputs and preset buttons; the gating parameters that
+would come from config (`erPeriod`, lookback, warmup, clip percentile) are fixed
+at generation time. The replay uses the canonical `simulateGridResetSeries()`
+from `analysis/tradingview/grid_reset_sim.ts`, embedded verbatim via
+`embedFunctionSources` — not a hand copy of the adapter logic.
 
 ## Notes
 
@@ -216,7 +293,7 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 - The update marker falls back to `prevUpdateLastCandleSec` / `prevUpdateNewBars` stamped in the candle-file `meta` when the flags are absent; those fields are written by external incremental-fetch tooling, not by anything in this repo.
 - `Ctrl+0` (or `Cmd+0`) resets the time-axis zoom to the full dataset.
 - Mouse: drag the candles to pan time + price (price drag sets a manual range); wheel zooms time, except over the price axis where it zooms price. Shift+wheel zooms price anywhere over the price pane (cursor-anchored). Dragging the price-axis gutter scales price, dragging the time-axis gutter scales the timeframe; double-click the price axis to return to autofit. While the price range is manual, timeframe moves no longer refit it.
-- Indicator, timeframe, scale, and overlay-visibility changes are persisted in browser `localStorage` per pool/pair chart (`dexbot2-tradingview-uplot-v3:<pool>:<A>_<B>:<baseSecs|base>`); cursor sync between the price/volume panes uses a separate constant key.
+- Indicator, timeframe, scale, and overlay-visibility changes are persisted in browser `localStorage` per pool/pair chart (`dexbot2-tradingview-uplot-v3:<pool>:<A>_<B>:<baseSecs|base>`); cursor sync between the price/volume panes uses a separate constant key. The `Resets` toggle is persisted the same way, so a chart opened from a previous session keeps its simulation state.
 - The price axis defaults to log base `10`, with a toolbar switch for `Log` / `Linear`.
 - If you regenerate the HTML and then open it later, no CDN access is needed — the `uPlot` library (JS + CSS) is inlined into the file itself, so it renders fully offline and is independent of where the file lives on disk.
 

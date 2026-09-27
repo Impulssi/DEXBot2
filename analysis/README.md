@@ -306,7 +306,7 @@ node dist/analysis/analyze_trade_heatmap.js \
 
 ### TradingView Chart (`tradingview/analyze_tradingview.ts`)
 
-Generates a standalone TradingView-style HTML chart with candle OHLC, SMA, AMA, VWMA, and volume panel. See [tradingview/README.md](tradingview/README.md) for full documentation.
+Generates a standalone TradingView-style HTML chart with candle OHLC, SMA, AMA, VWMA, and volume panel. For AMA-grid bots it also replays the market adapter's grid resets (AMA-price Δ / AMA-slope Δ) using the thresholds resolved from `general.settings` / `market_adapter_settings` — see [tradingview/README.md](tradingview/README.md#grid-reset-simulation) and [docs/GRID_RECALCULATION.md](../docs/GRID_RECALCULATION.md). See [tradingview/README.md](tradingview/README.md) for full documentation.
 
 # Recommended one-step: bot, pool, or pair (fetches candles + renders, default 3 months)
 dexbot tv <bot-key>

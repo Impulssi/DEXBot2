@@ -589,16 +589,34 @@ function resolveDeltaThresholdPercentFromGeneralSettings(settings: any) {
     return null;
 }
 
+/**
+ * Slope-trigger factor from general settings (`(value/100) × maxSlopePct`).
+ * Mirrors the price resolver above; the bot editor writes this knob under
+ * `MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT`, so the runtime must read
+ * it back or the user-facing `AMA-Slope Δ` setting would be inert.
+ */
+function resolveAmaSlopeDeltaThresholdPercentFromGeneralSettings(settings: any) {
+    const explicit = Number(settings?.MARKET_ADAPTER?.AMA_SLOPE_DELTA_THRESHOLD_PERCENT);
+    if (Number.isFinite(explicit) && explicit > 0) return explicit;
+    return null;
+}
+
 function applyRuntimeDefaultsFromGeneralSettings(cfg: any, provided: { deltaThresholdPercent?: boolean } = {}, settingsOverride?: any) {
     const out = { ...cfg };
+    const settings = settingsOverride === undefined
+        ? readGeneralSettings({ fallback: null })
+        : settingsOverride;
     if (!provided?.deltaThresholdPercent) {
-        const settings = settingsOverride === undefined
-            ? readGeneralSettings({ fallback: null })
-            : settingsOverride;
         const fromSettings = resolveDeltaThresholdPercentFromGeneralSettings(settings);
         if (fromSettings != null) {
             out.deltaThresholdPercent = fromSettings;
         }
+    }
+    const slopeFromSettings = resolveAmaSlopeDeltaThresholdPercentFromGeneralSettings(settings);
+    if (slopeFromSettings != null) {
+        // Rebuild amaSlope instead of mutating it: `cfg` may be the shared
+        // DEFAULTS object and must not be poisoned for later calls.
+        out.amaSlope = { ...(out.amaSlope || {}), deltaThresholdPct: slopeFromSettings };
     }
     return out;
 }
@@ -1433,5 +1451,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         });
 }
 
-export { main, runOnceForAma, DEFAULT_AMA, DEFAULTS, calculateBotThreshold, calcAmaComparison, computeCandleStaleness, normalizeMarketSource, sleepUntilAlignedBoundary, resolveAmaForBot, resolveDeltaThresholdPercentFromGeneralSettings, applyRuntimeDefaultsFromGeneralSettings, resolveBotCfg, usesAmaGridPrice, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, _resetCycleCache, writeCenterSnapshot, writeBotDynamicGrid, writeGridResetTrigger, mergeGridResetMetadataFromDynamicGrid, normalizeNativeMarketHistoryCandles, fetchNativeMarketHistorySince, setBitsharesClientForTests as _setBitsharesClientForTests, loadMarketAdapterSettings, findPairForBot }
+export { main, runOnceForAma, DEFAULT_AMA, DEFAULTS, calculateBotThreshold, calcAmaComparison, computeCandleStaleness, normalizeMarketSource, sleepUntilAlignedBoundary, resolveAmaForBot, resolveDeltaThresholdPercentFromGeneralSettings, resolveAmaSlopeDeltaThresholdPercentFromGeneralSettings, applyRuntimeDefaultsFromGeneralSettings, resolveBotCfg, usesAmaGridPrice, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, _resetCycleCache, writeCenterSnapshot, writeBotDynamicGrid, writeGridResetTrigger, mergeGridResetMetadataFromDynamicGrid, normalizeNativeMarketHistoryCandles, fetchNativeMarketHistorySince, setBitsharesClientForTests as _setBitsharesClientForTests, loadMarketAdapterSettings, findPairForBot }
 

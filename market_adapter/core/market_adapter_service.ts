@@ -540,12 +540,24 @@ class MarketAdapterService {
         const currentSlopePct = Number(currentAmaSlope?.slopePct);
         const previousSlopePct = Number(previousAmaSlope?.slopePct);
         const currentReady = !!currentAmaSlope?.isReady && Number.isFinite(currentSlopePct);
-        const previousReady = !!previousAmaSlope && Number.isFinite(previousSlopePct);
+        // A not-ready snapshot (`isReady:false`, slopePct 0) is a truthy object
+        // that can be persisted as the reset baseline before AMA warmup. Treat
+        // it as "no baseline" so its phantom 0 %/bar cannot later trip the
+        // slope trigger on the first real slope. Legacy snapshots without an
+        // `isReady` field still count as ready.
+        const previousReady = !!previousAmaSlope
+            && previousAmaSlope.isReady !== false
+            && Number.isFinite(previousSlopePct);
 
         const deltaPercent = currentReady && previousReady
             ? Math.abs(currentSlopePct - previousSlopePct)
             : null;
-        const thresholdCrossed = Number.isFinite(deltaPercent) && (deltaPercent as number) >= thresholdPercent;
+        // A non-positive threshold means the slope trigger is DISABLED, not
+        // "fire on any delta": `deltaPercent >= 0` would otherwise reset the
+        // grid every cycle whenever the factor/maxSlopePct config is missing.
+        const thresholdCrossed = Number.isFinite(deltaPercent)
+            && thresholdPercent > 0
+            && (deltaPercent as number) >= thresholdPercent;
 
         return {
             thresholdPercent,

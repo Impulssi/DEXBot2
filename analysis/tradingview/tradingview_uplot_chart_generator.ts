@@ -11,13 +11,23 @@ import { getStorage } from '../../modules/storage/index.js';
 const { readJSON } = getStorage();
 import { getErrorMessage } from '../../modules/utils/errors.js';
 import { parseRelativeMultiplier } from '../../modules/order/utils/math.js';
-import { computeAverageAmaSlopePct, computeAmaSlopeClipThreshold } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
+import { computeAverageAmaSlopePct, computeAmaSlopeClipThreshold, createAmaSlopeClipTracker, percentileFromSorted } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
 import {
     resolveBaseBounds,
     computeAsymmetricBoundsMetrics,
     applyAsymmetricBounds,
     applyNarrowingSideGuard,
 } from '../../market_adapter/core/asymmetric_bounds.js';
+import {
+    simulateGridResetSeries,
+    gridSimSlopeSignal,
+    gridSimPositiveNumber,
+    gridSimNonNegativeInt,
+    GRID_RESET_NONE,
+    GRID_RESET_BOOTSTRAP,
+    GRID_RESET_PRICE,
+    GRID_RESET_SLOPE,
+} from './grid_reset_sim.js';
 
 
 function inferBaseIntervalSeconds(candles: any[], fallback: any = 3600) {
@@ -177,8 +187,16 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             maxAsymmetryFactor: Number.isFinite(Number(data.grid.maxAsymmetryFactor)) && Number(data.grid.maxAsymmetryFactor) > 0
                 ? Number(data.grid.maxAsymmetryFactor)
                 : rangeSlope.maxAsymmetryFactor,
+            minScaleSlots: Number.isFinite(Number(data.grid.minScaleSlots)) && Number(data.grid.minScaleSlots) > 0
+                ? Number(data.grid.minScaleSlots)
+                : rangeSlope.minScaleSlots,
         } : null,
         rangeSlope,
+        // Grid-reset simulation: thresholds already resolved through the live
+        // adapter's config chain (analysis/tradingview/grid_reset_config.ts).
+        // Only present for AMA-grid bots, so pool/pair charts stay untouched.
+        gridSim: (data.gridSim && data.gridSim.enabled === true) ? data.gridSim : null,
+        gridSimEnabled: data.gridSimEnabled !== false,
     };
 
     const assetLabelA = meta.assetA?.symbol || meta.assetA?.id || 'Asset A';
@@ -221,6 +239,8 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         updateMarkerTsSec: Number((data as any).updateMarkerTsSec) > 0 ? Number((data as any).updateMarkerTsSec) : null,
         updateMarkerNewBars: Number((data as any).updateMarkerNewBars) || null,
         rangeSlope,
+        gridSim: defaults.gridSim,
+        gridSimEnabled: defaults.gridSimEnabled,
         defaultPairMode,
         assetLabelA,
         assetLabelB,
@@ -582,6 +602,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                             <span id="range-span-val" style="font-size:11px;color:#8b949e;width:40px;display:inline-block;text-align:right">${defaults.rangeSpan.toFixed(2)}x</span>
                         </span>
                     </div>
+                    ${defaults.gridSim ? `<div class="indicator" title="Simulated grid resets: accepted grid center (step line) and range, recentered when the AMA moves past the AMA-\u0394 threshold or the AMA slope past AMA-Slope \u0394">
+                        <label><input type="checkbox" id="grid-sim-toggle"${defaults.gridSimEnabled ? ' checked' : ''}> Resets</label>
+                    </div>` : ''}
                     <div class="indicator">
                         <label title="Init Offset"><input type="checkbox" id="ama-init-offset-toggle"> Offset</label>
                         <input type="range" id="ama-init-offset" min="-50" max="50" value="0" step="1" style="width:90px;vertical-align:middle" disabled>
@@ -604,6 +627,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     <span class="legend-item"><span class="legend-dot" style="background:#93c5fd"></span><span class="legend-label">VWMA</span> <span class="legend-value" id="legend-vwap">-</span></span>
                     <span class="legend-item"><span class="legend-dot" style="background:#22c55e"></span><span class="legend-label">AMA Init</span> <span class="legend-value" id="legend-sma-init">-</span></span>
                     <span class="legend-item"><span class="legend-dot" style="background:#2dd4bf"></span><span class="legend-label">AMA</span> <span class="legend-value" id="legend-ama">-</span></span>
+                    ${defaults.gridSim ? `<span class="legend-item"><span class="legend-dot" style="background:#c084fc"></span><span class="legend-label" title="Grid center the bot would be running right now (step line)">Grid</span> <span class="legend-value" id="legend-grid-center">-</span><span class="legend-value" id="legend-grid-reason"></span></span>` : ''}
                 </div>
             </div>
             <div id="price-chart" title="Wheel: zoom time (out = empty space around data) · Shift+wheel: zoom price · Drag: pan time + price (sets manual price scale) · Wheel/drag on price axis: zoom price · Drag on time axis: zoom time · Double-click price axis: autofit"></div>
@@ -653,6 +677,11 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             ? Math.min(2, Math.max(1.2, Number(state.rangeSpan)))
             : (Number.isFinite(Number(payload.rangeSpan)) && Number(payload.rangeSpan) > 0 ? Math.min(2, Math.max(1.2, Number(payload.rangeSpan))) : 1.55);
         let currentOrdersVisible = state.ordersVisible ?? true;
+        // Grid-reset simulation (AMA-price Δ / AMA-slope Δ). Static per
+        // generation: payload.gridSim is null for non-AMA charts, which removes
+        // the toggle, the series and the panel together.
+        const gridSimCfg = payload.gridSim || null;
+        let currentGridSimEnabled = gridSimCfg ? (state.gridSimEnabled ?? !!payload.gridSimEnabled) : false;
         let currentVolumeVisible = state.volumeVisible ?? true;
         let currentVolumeMode = state.volumeMode === 'quote' ? 'quote' : 'base';
         // Static per generation: the overlay (levels, reserve/ceiling lines,
@@ -686,6 +715,15 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         let currentAmaOff = [];
         let currentRangeUpper = [];
         let currentRangeLower = [];
+        let currentGridCenter = [];
+        let currentSimUpper = [];
+        let currentSimLower = [];
+        let currentSimReason = [];
+        let currentSimStats = null;
+        // Event indices come from the 1h replay; these are the matching indices
+        // in the DISPLAYED (aggregated) series, so the panel can label them.
+        let currentSimStartIdx = null;
+        let currentSimLastIdx = null;
         let priceChart = null;
         let volumeChart = null;
         let lastRenderedPriceScale = null;
@@ -1018,6 +1056,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     rangeWidthPct: currentRangeWidthPct,
                     rangeSpan: currentRangeSpan,
                     ordersVisible: currentOrdersVisible,
+                    gridSimEnabled: currentGridSimEnabled,
                     volumeVisible: currentVolumeVisible,
                     volumeMode: currentVolumeMode,
                     amaInitOffset: currentAmaInitOffset,
@@ -1455,7 +1494,115 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         // red [AMA, upper], green [lower, AMA].
         // Never reads candles, pair-display mapping, or axis/zoom state —
         // inversion and timeframe sampling apply to the AMA first.
-        ${embedFunctionSources([computeAverageAmaSlopePct, computeAmaSlopeClipThreshold, resolveBaseBounds, computeAsymmetricBoundsMetrics, applyAsymmetricBounds, applyNarrowingSideGuard, parseRelativeMultiplier])}
+        ${embedFunctionSources([computeAverageAmaSlopePct, computeAmaSlopeClipThreshold, resolveBaseBounds, computeAsymmetricBoundsMetrics, applyAsymmetricBounds, applyNarrowingSideGuard, parseRelativeMultiplier, percentileFromSorted, createAmaSlopeClipTracker, gridSimPositiveNumber, gridSimNonNegativeInt, gridSimSlopeSignal, simulateGridResetSeries])}
+        // ── Grid-reset simulation ──
+        // Replays the two market-adapter recentering triggers (docs/GRID_RECALCULATION.md
+        // §3 AMA Δ / §4 AMA-Slope Δ) over the 1h AMA series: the accepted grid center
+        // ratchets only on a trigger, and the accepted slope baseline re-seeds on every
+        // reset (the advanceTriggeredBotState chain). Thresholds arrive pre-resolved
+        // through the live config chain in payload.gridSim. The replay itself is the
+        // canonical simulateGridResetSeries() embedded above — not a hand copy.
+        const GRID_RESET_NONE = ${GRID_RESET_NONE};
+        const GRID_RESET_BOOTSTRAP = ${GRID_RESET_BOOTSTRAP};
+        const GRID_RESET_PRICE = ${GRID_RESET_PRICE};
+        const GRID_RESET_SLOPE = ${GRID_RESET_SLOPE};
+        const GRID_RESET_REASON = {
+            none: GRID_RESET_NONE,
+            bootstrap: GRID_RESET_BOOTSTRAP,
+            price: GRID_RESET_PRICE,
+            slope: GRID_RESET_SLOPE,
+        };
+        function gridSimReasonLabel(reason) {
+            if (reason === GRID_RESET_REASON.bootstrap) return 'init';
+            if (reason === GRID_RESET_REASON.price) return '\u03941';
+            if (reason === GRID_RESET_REASON.slope) return '\u0394s';
+            return '';
+        }
+        function buildGridSimSeries(baseAma) {
+            if (!gridSimCfg || !currentAmaEnabled || !Array.isArray(baseAma) || baseAma.length === 0) return null;
+            // The adapter only starts accepting centers after the AMA has
+            // converged (getAmaWarmupBars). On a chart shorter than that
+            // convergence window the gate would swallow the whole series, so
+            // cap it at half the data and report the applied value in the
+            // panel — the replay then honestly shows the AMA transient.
+            const n = baseAma.length;
+            const warmup = Math.min(
+                Math.max(0, Math.round(Number(gridSimCfg.warmupBars) || 0)),
+                Math.floor(n / 2),
+            );
+            const override = gridSimCfg.warmupBarsOverride;
+            const warmupBars = (override != null && Number.isFinite(Number(override)) && Number(override) >= 0)
+                ? Math.ceil(Number(override))
+                : warmup;
+            const cfg = Object.assign({}, gridSimCfg, { warmupBars: warmupBars });
+            return simulateGridResetSeries(baseAma, cfg);
+        }
+        // Simulated grid range for each bar: the accepted center with the accepted
+        // (frozen) slope tilt, through the same canonical pipeline the grid build
+        // uses — applyAsymmetricBounds then applyNarrowingSideGuard. The base range
+        // resolves per side: an absolute bot bound is a fixed level, a "Nx" bound
+        // travels with the accepted center, and a missing side falls back to the
+        // x-range span slider, exactly like computeRangeBand.
+        function computeGridSimRange(sim) {
+            const n = sim && Array.isArray(sim.center) ? sim.center.length : 0;
+            const upper = new Array(n).fill(null);
+            const lower = new Array(n).fill(null);
+            if (!sim || n === 0) return { upper, lower };
+            const gridCfg = payload.grid || null;
+            const downMul = parseRelativeMultiplier(gridCfg && gridCfg.minPrice);
+            const upMul = parseRelativeMultiplier(gridCfg && gridCfg.maxPrice);
+            const hasRelMin = downMul != null && downMul > 1;
+            const hasRelMax = upMul != null && upMul > 1;
+            const inc = gridCfg && Number(gridCfg.incrementPercent) > 0
+                ? Number(gridCfg.incrementPercent)
+                : (Number(gridSimCfg.incrementPercent) > 0 ? Number(gridSimCfg.incrementPercent) : null);
+            const minSlots = Math.floor(Number(gridCfg && gridCfg.minScaleSlots) > 0 ? Number(gridCfg.minScaleSlots) : (Number(gridSimCfg.minScaleSlots) || 0));
+            const maxAsym = gridCfg && Number(gridCfg.maxAsymmetryFactor) > 0
+                ? Number(gridCfg.maxAsymmetryFactor)
+                : (Number(gridSimCfg.maxAsymmetryFactor) > 0 ? Number(gridSimCfg.maxAsymmetryFactor) : 0.333);
+            const maxSlopeOffset = gridSimPositiveNumber(gridSimCfg.maxSlopeOffset, 0.5);
+            const span = Math.min(2, Math.max(1.2, Number(currentRangeSpan) > 0 ? Number(currentRangeSpan) : 1.55));
+            // Absolute bot bounds are fixed price levels; relative ("Nx") bounds
+            // travel with the accepted center. Each side resolves independently so
+            // a mixed absolute/"Nx" config matches the runtime grid build.
+            const absMin = Number(gridSimCfg.clampMin);
+            const absMax = Number(gridSimCfg.clampMax);
+            const hasAbsMin = Number.isFinite(absMin) && absMin > 0;
+            const hasAbsMax = Number.isFinite(absMax) && absMax > 0;
+            for (let i = 0; i < n; i++) {
+                const center = sim.center[i];
+                if (!Number.isFinite(center) || center <= 0) continue;
+                const rMin = hasAbsMin ? absMin : (hasRelMin ? center / downMul : center / span);
+                const rMax = hasAbsMax ? absMax : (hasRelMax ? center * upMul : center * span);
+                if (!Number.isFinite(rMin) || !Number.isFinite(rMax) || rMin <= 0 || rMax <= rMin) continue;
+                const trend = sim.acceptedTrend[i];
+                if ((trend === 'UP' || trend === 'DOWN') && Number(sim.acceptedSlopeOffset[i]) !== 0) {
+                    const tilt = applyAsymmetricBounds({
+                        centerPrice: center,
+                        minPrice: rMin,
+                        maxPrice: rMax,
+                        trend,
+                        slopeOffset: sim.acceptedSlopeOffset[i],
+                        maxSlopeOffset,
+                        maxAsymmetryFactor: maxAsym,
+                    });
+                    const guard = applyNarrowingSideGuard({
+                        centerPrice: center,
+                        minPrice: tilt.resolvedMinPrice,
+                        maxPrice: tilt.resolvedMaxPrice,
+                        trend,
+                        incrementPercent: inc,
+                        minScaleSlots: minSlots,
+                    });
+                    upper[i] = guard.maxPrice;
+                    lower[i] = guard.minPrice;
+                } else {
+                    upper[i] = rMax;
+                    lower[i] = rMin;
+                }
+            }
+            return { upper, lower };
+        }
         function computeRangeBand(baseAma) {
             const n = Array.isArray(baseAma) ? baseAma.length : 0;
             const upper = new Array(n).fill(null);
@@ -1539,6 +1686,11 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             }
             return lo;
         }
+        // How far the simulated grid range may stretch the auto price fit
+        // before it is ignored. Bots with extreme bounds (e.g. 1.65x / 10x)
+        // would otherwise squash the candles into a sliver; the band simply
+        // clips in that case and the user can zoom out on the axis.
+        const SIM_FIT_MAX_STRETCH = 2.5;
         function visiblePriceRange(u) {
             if (!currentCandles.length) return null;
             const xs = u.data[0];
@@ -1549,6 +1701,8 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             let end = Math.min(xs.length, lowerBound(xs, maxX) + 2);
             let min = Infinity;
             let max = -Infinity;
+            let simMin = Infinity;
+            let simMax = -Infinity;
             // Range scaling active: fit the price axis to the full envelope
             // (lower ↔ upper through AMA) instead of the candles, so the
             // switch visibly adjusts the range. Falls through to the candle
@@ -1579,6 +1733,25 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 if (Number.isFinite(s)) { if (s < min) min = s; if (s > max) max = s; }
                 if (Number.isFinite(a)) { if (a < min) min = a; if (a > max) max = a; }
                 if (Number.isFinite(v)) { if (v < min) min = v; if (v > max) max = v; }
+                // Simulated grid: the accepted center always joins the fit (it
+                // is the price the grid is anchored to); its band only joins it
+                // while that stays within SIM_FIT_MAX_STRETCH.
+                if (currentGridSimEnabled && gridSimCfg) {
+                    const c = currentGridCenter[i];
+                    const su = currentSimUpper[i];
+                    const sl = currentSimLower[i];
+                    if (Number.isFinite(c) && c > 0) { if (c < min) min = c; if (c > max) max = c; }
+                    if (Number.isFinite(su) && su > 0) { if (su > simMax) simMax = su; }
+                    if (Number.isFinite(sl) && sl > 0) { if (sl < simMin) simMin = sl; }
+                }
+            }
+            if (Number.isFinite(simMin) && Number.isFinite(simMax) && simMax > simMin) {
+                const candleSpan = max - min;
+                const simSpan = simMax - simMin;
+                if (!(candleSpan > 0) || simSpan <= candleSpan * SIM_FIT_MAX_STRETCH) {
+                    if (simMin < min) min = simMin;
+                    if (simMax > max) max = simMax;
+                }
             }
             if (!Number.isFinite(min) || !Number.isFinite(max) || min <= 0 || max <= 0) return null;
             if (min === max) return [min * 0.96, max * 1.04];
@@ -1650,6 +1823,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             setIndicatorSeriesVisible(8, currentAmaEnabled);
             setIndicatorSeriesVisible(9, currentAmaEnabled && currentAmaInitOffset !== 0);
             setIndicatorSeriesVisible(10, currentAmaEnabled && currentAmaInitOffset !== 0);
+            setIndicatorSeriesVisible(11, currentAmaEnabled && currentGridSimEnabled && !!gridSimCfg);
         }
         function hideSmaSeriesImmediate() {
             clearSMAWorker();
@@ -1677,17 +1851,32 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             currentSmaInitOff = new Array(currentCandles.length).fill(null);
             currentRangeUpper = new Array(currentCandles.length).fill(null);
             currentRangeLower = new Array(currentCandles.length).fill(null);
+            // The simulation replays triggers off the AMA series, so it goes
+            // dark with it (draw hooks have no uPlot series of their own and
+            // would otherwise keep painting the last replay).
+            currentGridCenter = new Array(currentCandles.length).fill(null);
+            currentSimUpper = new Array(currentCandles.length).fill(null);
+            currentSimLower = new Array(currentCandles.length).fill(null);
+            currentSimReason = new Array(currentCandles.length).fill(null);
+            currentSimStats = null;
+            currentSimStartIdx = null;
+            currentSimLastIdx = null;
             if (Array.isArray(currentPriceData) && currentPriceData.length >= 11) {
                 currentPriceData[6] = currentAma;
                 currentPriceData[8] = currentSmaInit;
                 currentPriceData[9] = currentSmaInitOff;
                 currentPriceData[10] = currentAmaOff;
             }
+            if (Array.isArray(currentPriceData) && currentPriceData.length >= 12) {
+                currentPriceData[11] = currentGridCenter;
+            }
             setIndicatorSeriesVisible(6, false);
             setIndicatorSeriesVisible(8, false);
             setIndicatorSeriesVisible(9, false);
             setIndicatorSeriesVisible(10, false);
+            setIndicatorSeriesVisible(11, false);
             refreshLegend();
+            renderGridSimPanel();
             saveState();
         }
         function hideVwapSeriesImmediate() {
@@ -1715,6 +1904,18 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             document.getElementById('legend-vwap').textContent = Number.isFinite(currentVwap[idx]) ? fmtPrice(currentVwap[idx]) : '-';
             document.getElementById('legend-sma-init').textContent = Number.isFinite(currentSmaInit[idx]) ? fmtPrice(currentSmaInit[idx]) : '-';
             document.getElementById('legend-ama').textContent = Number.isFinite(currentAma[idx]) ? fmtPrice(currentAma[idx]) : '-';
+            const gridLegend = document.getElementById('legend-grid-center');
+            if (gridLegend) {
+                gridLegend.textContent = Number.isFinite(currentGridCenter[idx]) ? fmtPrice(currentGridCenter[idx]) : '-';
+                const reasonEl = document.getElementById('legend-grid-reason');
+                if (reasonEl) {
+                    const label = gridSimReasonLabel(currentSimReason[idx]);
+                    reasonEl.textContent = label ? ' ' + label : '';
+                    reasonEl.style.color = currentSimReason[idx] === GRID_RESET_REASON.slope
+                        ? '#22d3ee'
+                        : (currentSimReason[idx] === GRID_RESET_REASON.price ? '#f59e0b' : '#94a3b8');
+                }
+            }
         }
         function candlePlugin() {
             function drawCandles(u) {
@@ -1931,6 +2132,141 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             }
             return { hooks: { draw: [drawRangeBand] } };
         }
+        // ── Grid-reset simulation overlay ──
+        // Two layers:
+        //   1. the simulated grid range (accepted center + accepted slope tilt),
+        //      painted behind the candles like the AMA range band but in the
+        //      simulation's own hue, and
+        //   2. one vertical marker per simulated reset, colored by trigger
+        //      (amber = AMA-price Δ, cyan = AMA-slope Δ, grey = first snapshot).
+        function gridResetPlugin() {
+            const BAND_FILL = 'rgba(192,132,252,0.10)';
+            const BAND_EDGE = 'rgba(192,132,252,0.75)';
+            const REASON_COLOR = {
+                [GRID_RESET_REASON.bootstrap]: '#94a3b8',
+                [GRID_RESET_REASON.price]: '#f59e0b',
+                [GRID_RESET_REASON.slope]: '#22d3ee',
+            };
+            function drawSimBand(u) {
+                if (!currentGridSimEnabled || !currentAmaEnabled || !currentCandles.length) return;
+                const xs = u.data[0];
+                if (!Array.isArray(xs) || xs.length === 0) return;
+                u.ctx.save();
+                u.ctx.beginPath();
+                u.ctx.rect(u.bbox.left, u.bbox.top, u.bbox.width, u.bbox.height);
+                u.ctx.clip();
+                // Behind candles/lines, same trick as the range band.
+                u.ctx.globalCompositeOperation = 'destination-over';
+                const [iMin, iMax] = (u.series[0] && u.series[0].idxs) ? u.series[0].idxs : [0, xs.length - 1];
+                let seg = [];
+                const flush = () => {
+                    if (seg.length > 1) {
+                        u.ctx.fillStyle = BAND_FILL;
+                        u.ctx.beginPath();
+                        u.ctx.moveTo(seg[0][0], seg[0][1]);
+                        for (let k = 1; k < seg.length; k++) u.ctx.lineTo(seg[k][0], seg[k][1]);
+                        for (let k = seg.length - 1; k >= 0; k--) u.ctx.lineTo(seg[k][0], seg[k][2]);
+                        u.ctx.closePath();
+                        u.ctx.fill();
+                        u.ctx.strokeStyle = BAND_EDGE;
+                        u.ctx.lineWidth = 1;
+                        u.ctx.beginPath();
+                        u.ctx.moveTo(seg[0][0], seg[0][1]);
+                        for (let k = 1; k < seg.length; k++) u.ctx.lineTo(seg[k][0], seg[k][1]);
+                        u.ctx.stroke();
+                        u.ctx.beginPath();
+                        u.ctx.moveTo(seg[0][0], seg[0][2]);
+                        for (let k = 1; k < seg.length; k++) u.ctx.lineTo(seg[k][0], seg[k][2]);
+                        u.ctx.stroke();
+                    }
+                    seg = [];
+                };
+                for (let i = iMin; i <= iMax; i++) {
+                    const center = currentGridCenter[i];
+                    const up = currentSimUpper[i];
+                    const lo = currentSimLower[i];
+                    if (!Number.isFinite(center) || center <= 0
+                            || !Number.isFinite(up) || up <= center
+                            || !Number.isFinite(lo) || lo <= 0 || lo >= center) {
+                        flush();
+                        continue;
+                    }
+                    const x = u.valToPos(xs[i], 'x', true);
+                    const yU = u.valToPos(up, 'y', true);
+                    const yL = u.valToPos(lo, 'y', true);
+                    if (!Number.isFinite(x) || !Number.isFinite(yU) || !Number.isFinite(yL)) {
+                        flush();
+                        continue;
+                    }
+                    seg.push([x, yU, yL]);
+                }
+                flush();
+                u.ctx.restore();
+            }
+            function drawSimResets(u) {
+                if (!currentGridSimEnabled || !currentAmaEnabled || !currentCandles.length) return;
+                const xs = u.data[0];
+                if (!Array.isArray(xs) || xs.length === 0) return;
+                const [iMin, iMax] = (u.series[0] && u.series[0].idxs) ? u.series[0].idxs : [0, xs.length - 1];
+                const top = u.bbox.top;
+                const height = u.bbox.height;
+                u.ctx.save();
+                u.ctx.beginPath();
+                u.ctx.rect(u.bbox.left, u.bbox.top, u.bbox.width, u.bbox.height);
+                u.ctx.clip();
+                let lastLabelX = [-Infinity, -Infinity];
+                u.ctx.font = '600 10px Segoe UI, sans-serif';
+                u.ctx.textAlign = 'left';
+                u.ctx.textBaseline = 'middle';
+                for (let i = iMin; i <= iMax; i++) {
+                    const reason = currentSimReason[i];
+                    if (!reason) continue;
+                    const x = u.valToPos(xs[i], 'x', true);
+                    if (!Number.isFinite(x)) continue;
+                    const color = REASON_COLOR[reason] || '#94a3b8';
+                    // Slope resets are typically far more frequent than price
+                    // resets, so they are drawn fainter to keep clusters readable.
+                    const emphasis = reason === GRID_RESET_REASON.slope ? 0.4 : 0.8;
+                    u.ctx.strokeStyle = color;
+                    u.ctx.globalAlpha = emphasis;
+                    u.ctx.lineWidth = 1.5;
+                    u.ctx.setLineDash(reason === GRID_RESET_REASON.price ? [] : [4, 3]);
+                    u.ctx.beginPath();
+                    u.ctx.moveTo(x, top);
+                    u.ctx.lineTo(x, top + height);
+                    u.ctx.stroke();
+                    // A tick where the center jumped to, so the step is visible
+                    // even when the accepted center is off-screen.
+                    const center = currentGridCenter[i];
+                    const yC = Number.isFinite(center) ? u.valToPos(center, 'y', true) : NaN;
+                    if (Number.isFinite(yC)) {
+                        u.ctx.setLineDash([]);
+                        u.ctx.fillStyle = color;
+                        u.ctx.beginPath();
+                        u.ctx.arc(x, yC, 3, 0, Math.PI * 2);
+                        u.ctx.fill();
+                    }
+                    // Two label lanes; a lane is skipped when the next marker
+                    // would overlap the previous label on it.
+                    if (x - u.bbox.left > u.bbox.width - 60) continue;
+                    const lane = (x - lastLabelX[0]) > 40 ? 0 : 1;
+                    if ((x - lastLabelX[lane]) <= 40) continue;
+                    lastLabelX[lane] = x;
+                    const labelY = top + 10 + lane * 15;
+                    const text = gridSimReasonLabel(reason);
+                    u.ctx.globalAlpha = 1;
+                    const w = u.ctx.measureText(text).width + 6;
+                    u.ctx.fillStyle = 'rgba(13,17,23,0.9)';
+                    u.ctx.fillRect(x + 2, labelY - 7, w, 14);
+                    u.ctx.fillStyle = color;
+                    u.ctx.fillText(text, x + 5, labelY);
+                }
+                u.ctx.setLineDash([]);
+                u.ctx.globalAlpha = 1;
+                u.ctx.restore();
+            }
+            return { hooks: { draw: [drawSimBand, drawSimResets] } };
+        }
         function buildData() {
             const tf = timeframeMap.get(currentTimeframe) || timeframeMap.get(defaultTimeframe.label) || timeframes[0];
             currentSeriesState = getSeriesState(currentPairMode);
@@ -1968,6 +2304,36 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const baseRange = computeRangeBand(baseAma);
             currentRangeUpper = sampleSeriesByIndex(baseRange.upper, aggregated.idxs);
             currentRangeLower = sampleSeriesByIndex(baseRange.lower, aggregated.idxs);
+            // Grid-reset simulation: replayed on the 1h AMA series (so AMA input
+            // changes re-run it), then sampled onto the active timeframe like
+            // every other indicator.
+            const baseSim = currentGridSimEnabled ? buildGridSimSeries(baseAma) : null;
+            currentSimStats = baseSim ? baseSim.stats : null;
+            // First displayed bar at/after a 1h replay index (aggregated.idxs
+            // holds the last 1h index of every displayed bucket).
+            const displayIndexOf = (baseIdx) => {
+                if (baseIdx == null) return null;
+                for (let k = 0; k < aggregated.idxs.length; k++) {
+                    if (aggregated.idxs[k] >= baseIdx) return k;
+                }
+                return aggregated.idxs.length > 0 ? aggregated.idxs.length - 1 : null;
+            };
+            currentSimStartIdx = baseSim ? displayIndexOf(baseSim.stats.bootstrapIndex) : null;
+            currentSimLastIdx = baseSim ? displayIndexOf(baseSim.stats.lastResetIndex) : null;
+            if (baseSim) {
+                currentGridCenter = sampleSeriesByIndex(baseSim.center, aggregated.idxs);
+                currentSimReason = sampleSeriesByIndex(baseSim.reason, aggregated.idxs);
+                const simRange = computeGridSimRange(baseSim);
+                currentSimUpper = sampleSeriesByIndex(simRange.upper, aggregated.idxs);
+                currentSimLower = sampleSeriesByIndex(simRange.lower, aggregated.idxs);
+            } else {
+                currentGridCenter = new Array(currentCandles.length).fill(null);
+                currentSimReason = new Array(currentCandles.length).fill(null);
+                currentSimUpper = new Array(currentCandles.length).fill(null);
+                currentSimLower = new Array(currentCandles.length).fill(null);
+                currentSimStartIdx = null;
+                currentSimLastIdx = null;
+            }
             currentAmaOff = currentAmaEnabled && currentAmaInitOffset !== 0 ? sampleSeriesByIndex(baseAmaOff, aggregated.idxs) : new Array(currentCandles.length).fill(null);
             currentVwap = currentVwapEnabled ? sampleSeriesByIndex(baseVwap, aggregated.idxs) : new Array(currentCandles.length).fill(null);
             const amaCfg = currentAmaConfig();
@@ -2004,6 +2370,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 currentSmaInit,
                 currentSmaInitOff,
                 currentAmaOff,
+                currentGridCenter,
             ];
             currentVolumeData = [
                 currentCandles.map((c) => c.time),
@@ -2056,6 +2423,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     { label: 'AMA Init', stroke: '#22c55e', width: 1.5, dash: [6, 4], points: { show: false }, spanGaps: false },
                     { label: 'Off Init', stroke: '#a855f7', width: 1.5, dash: [6, 4], points: { show: false }, spanGaps: false },
                     { label: 'AMA Off', stroke: '#a855f7', width: 1.5, dash: [4, 4], points: { show: false }, spanGaps: false },
+                    // Accepted grid center: piecewise constant (ratchets only on a
+                    // simulated reset), so the plain polyline already draws as steps.
+                    { label: 'Grid Ctr', stroke: '#c084fc', width: 1.5, dash: [3, 3], points: { show: false }, spanGaps: false },
                 ],
                 axes: [
                     makeTimeAxis(false),
@@ -2086,7 +2456,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
 
             const plugin = candlePlugin();
             plugin.opts(null, priceOpts);
-            priceOpts.plugins = [rangeBandPlugin(), plugin];
+            priceOpts.plugins = [rangeBandPlugin(), gridResetPlugin(), plugin];
             if (!priceChart) priceChart = new uPlot(priceOpts, data.priceData, priceEl);
             else priceChart.setData(data.priceData, false);
 
@@ -2741,6 +3111,8 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             setActivePriceScale(currentPriceScale);
             const ordersToggle = document.getElementById('orders-toggle');
             if (ordersToggle) ordersToggle.checked = currentOrdersVisible;
+            const gridSimToggle = document.getElementById('grid-sim-toggle');
+            if (gridSimToggle) gridSimToggle.checked = currentGridSimEnabled;
             const volumeToggleEl = document.getElementById('volume-toggle');
             if (volumeToggleEl) volumeToggleEl.checked = currentVolumeVisible;
             setActiveVolumeUnit();
@@ -2864,6 +3236,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             renderMarketPanel();
             renderRangePanel();
             renderVolumePanel();
+            renderGridSimPanel();
             saveState();
         }
 
@@ -2911,6 +3284,17 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     positionOrderLines(priceChart);
                 }
                 renderMarketPanel();
+            });
+        }
+        // Grid-reset simulation toggle: replays the accepted center/band, so it
+        // needs a full rerender (the replay is derived from the AMA series).
+        const gridSimToggleInit = document.getElementById('grid-sim-toggle');
+        if (gridSimToggleInit) {
+            gridSimToggleInit.checked = currentGridSimEnabled;
+            gridSimToggleInit.addEventListener('change', () => {
+                currentGridSimEnabled = gridSimToggleInit.checked;
+                setControls();
+                rerender(true);
             });
         }
         // Volume toggle: hide the volume chart so flex yields the space to
@@ -3197,6 +3581,46 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             panel.style.display = 'block';
             panel.innerHTML = '<div style="color:#e8eef5">max ' + fmtVolumeWithSym(stats.vol) + '</div>';
         }
+        // Grid-reset panel (bottom-left of the price chart): the thresholds the
+        // replay used, where each came from (constants / general.settings /
+        // market_adapter_settings globals|pair|bot / cli), and how often the
+        // grid would have recentered. Only rendered for AMA-grid bots.
+        function fmtSimSource(source) {
+            if (source === 'market_adapter_settings:bot') return 'bot';
+            if (source === 'market_adapter_settings:pair') return 'pair';
+            if (source === 'market_adapter_settings:globals') return 'ma-globals';
+            if (source === 'general.settings') return 'general';
+            if (source === 'cli') return 'cli';
+            return 'default';
+        }
+        function renderGridSimPanel() {
+            if (!priceChart) return;
+            let panel = document.getElementById('grid-sim-panel');
+            if (!panel) {
+                panel = document.createElement('div');
+                panel.id = 'grid-sim-panel';
+                panel.style.cssText = 'position:absolute;z-index:26;bottom:10px;left:10px;pointer-events:none;font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.5;padding:6px 10px;border-radius:8px;background:rgba(13,17,23,0.85);border:1px solid #263241;white-space:nowrap;text-align:left;';
+                priceChart.root.appendChild(panel);
+            }
+            if (!gridSimCfg || !currentGridSimEnabled || !currentSimStats) { panel.style.display = 'none'; return; }
+            const st = currentSimStats;
+            const priceThr = gridSimCfg.priceDeltaThresholdPercent;
+            const slopeThr = gridSimCfg.slopeDeltaThresholdPercent;
+            panel.style.display = 'block';
+            let html = '<div style="color:#c084fc">sim grid resets: ' + st.resets + ' <span style="color:#f59e0b">\u03941 ' + st.priceResets + '</span> <span style="color:#22d3ee">\u0394s ' + st.slopeResets + '</span></div>';
+            html += '<div style="color:#e8eef5">AMA \u0394 ' + (Number.isFinite(priceThr) ? Number(priceThr).toFixed(2) + '%' : '-') + ' <span style="color:#8b949e">(' + fmtSimSource(gridSimCfg.priceSource) + ')</span></div>';
+            html += '<div style="color:#e8eef5">Slope \u0394 ' + (Number.isFinite(slopeThr) ? Number(slopeThr).toFixed(4) + '%/bar' : '-')
+                + ' <span style="color:#8b949e">(' + fmtSimSource(gridSimCfg.slopeSource) + (st.slopeTriggerArmed ? '' : ', off') + ')</span></div>';
+            if (st.lastResetIndex != null) {
+                const last = currentCandles[Math.max(0, Math.min(currentCandles.length - 1, currentSimLastIdx ?? 0))];
+                html += '<div style="color:#8b949e">last ' + (last ? fmtTime(last.time) : '-') + ' (' + st.barsSinceLastReset + ' bars ago)</div>';
+            }
+            if (st.bootstrapIndex != null) {
+                const first = currentCandles[Math.max(0, Math.min(currentCandles.length - 1, currentSimStartIdx ?? 0))];
+                html += '<div style="color:#8b949e">sim from ' + (first ? fmtTime(first.time) : '-') + ' (' + st.warmupBars + ' warmup)</div>';
+            }
+            panel.innerHTML = html;
+        }
         function scheduleStatPanels() {
             if (rangePanelRaf) return;
             rangePanelRaf = requestAnimationFrame(() => {
@@ -3237,6 +3661,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         renderMarketPanel();
         renderRangePanel();
         renderVolumePanel();
+        renderGridSimPanel();
 
         window.addEventListener('resize', () => {
             if (!charts.length) return;

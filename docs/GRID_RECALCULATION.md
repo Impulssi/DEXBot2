@@ -620,3 +620,15 @@ Removed trigger file.
 - `modules/market_adapter_whitelist.ts` — Whitelist storage/read helpers (the bot editor's `6) Adapter` reads and writes the same file)
 - `profiles/general.settings.json` — User-editable configuration
 - `profiles/bots.json` — Per-bot configuration including AMA
+
+## Visualizing the AMA Triggers (§3 and §4)
+
+`dexbot tv <bot>` (and `analysis/tradingview/analyze_tradingview.js`) replays the
+two market-adapter recentering triggers over the chart's candle history and draws
+the accepted grid center, the range that center would own, and one marker per
+reset (amber = AMA-price Δ, cyan = AMA-slope Δ, grey = first snapshot). The
+thresholds are resolved through the same constants → `general.settings` →
+`market_adapter_settings` chain the adapter uses, so the chart shows where the
+grid would actually have moved — handy for tuning `AMA_DELTA_THRESHOLD_PERCENT`
+and `AMA-Slope Δ` before changing them. Details:
+[analysis/tradingview/README.md](../analysis/tradingview/README.md#grid-reset-simulation).

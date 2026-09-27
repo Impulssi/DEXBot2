@@ -281,4 +281,8 @@ export {
     roundToN,
     computeAmaSlopeClipThreshold,
     createAmaSlopeClipTracker,
+    // Exported so chart generators can embed the clip tracker's exact
+    // dependency set via fn.toString() (see embedFunctionSources): the tracker
+    // itself calls this, and embedding one without the other breaks the page.
+    percentileFromSorted,
 }

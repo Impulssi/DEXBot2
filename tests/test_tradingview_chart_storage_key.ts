@@ -3,6 +3,7 @@ const assert = require('assert');
 console.log('Running tradingview chart storage-key tests');
 
 const {
+    generateHTML,
     resolveChartStorageKey,
     sanitizeStorageComponent,
     TRADINGVIEW_PREFS_KEY_PREFIX,
@@ -104,6 +105,23 @@ check('key: object asset without id/symbol uses fallback, not "object_Object"', 
 
 check('key: empty meta produces a valid default key', () => {
     assert.strictEqual(resolveChartStorageKey(), 'dexbot2-tradingview-uplot-v3:nipool:assetA_assetB:base');
+});
+
+// ── Simulated band price-axis fit ─────────────────────────────────
+check('fit: simulated band extension tracks the upper edge with max', () => {
+    const html = generateHTML({
+        candles: [
+            [1710000000000, 1, 1.1, 0.9, 1.02, 10],
+            [1710003600000, 1.02, 1.2, 0.98, 1.08, 12],
+            [1710007200000, 1.08, 1.22, 1.01, 1.15, 9],
+        ],
+        meta: { assetA: { symbol: 'A' }, assetB: { symbol: 'B' } },
+        grid: { minPrice: '1.5x', maxPrice: '3x' },
+        gridSim: { enabled: true, priceDeltaThresholdPercent: 1, slopeDeltaThresholdPercent: 0.0072, slopeEnabled: true },
+    });
+    assert.ok(html.includes('if (su > simMax) simMax = su;'), 'simMax must track the band upper bound');
+    assert.ok(!html.includes('if (su < simMax) simMax = su;'), 'inverted simMax comparison must not return');
+    assert.ok(html.includes('SIM_FIT_MAX_STRETCH'), 'the stretch guard must stay wired');
 });
 
 if (failed > 0) {

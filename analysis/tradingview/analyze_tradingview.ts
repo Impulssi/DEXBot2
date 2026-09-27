@@ -5,6 +5,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { generateHTML } from './tradingview_uplot_chart_generator.js';
+import { resolveGridResetSimConfig, toGridSimPayload } from './grid_reset_config.js';
+import { resolveAmaConfig } from '../bot_key_utils.js';
 import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { loadCandleFile } from '../math_utils.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
@@ -40,6 +42,10 @@ function parseArgs() {
         rangeSpan: number | undefined;
         ordersFile: string | null;
         noOrders: boolean;
+        gridResetEnabled: boolean;
+        gridDeltaPct: number | undefined;
+        gridSlopeDeltaPct: number | undefined;
+        gridWarmupBars: number | undefined;
         noUpdateMarker: boolean;
         updateMarkerTsSec: number | null;
         updateMarkerNewBars: number | null;
@@ -63,6 +69,10 @@ function parseArgs() {
         rangeSpan: undefined,
         ordersFile: null,
         noOrders: false,
+        gridResetEnabled: true,
+        gridDeltaPct: undefined,
+        gridSlopeDeltaPct: undefined,
+        gridWarmupBars: undefined,
         noUpdateMarker: false,
         updateMarkerTsSec: null,
         updateMarkerNewBars: null,
@@ -95,6 +105,23 @@ function parseArgs() {
         else if (arg === '--range-span') config.rangeSpan = parseFloat(args[++i]);
         else if (arg === '--orders-file') config.ordersFile = String(args[++i] || '');
         else if (arg === '--no-orders') config.noOrders = true;
+        else if (arg === '--grid-reset') config.gridResetEnabled = true;
+        else if (arg === '--no-grid-reset') config.gridResetEnabled = false;
+        else if (arg === '--grid-delta-pct') {
+            const v = parseFloat(args[++i]);
+            if (Number.isFinite(v) && v > 0) config.gridDeltaPct = Math.max(0.01, v);
+            else console.warn('[TradingView] --grid-delta-pct requires a positive number; ignoring.');
+        }
+        else if (arg === '--grid-slope-delta-pct') {
+            const v = parseFloat(args[++i]);
+            if (Number.isFinite(v) && v > 0) config.gridSlopeDeltaPct = Math.max(0.0001, v);
+            else console.warn('[TradingView] --grid-slope-delta-pct requires a positive number; ignoring.');
+        }
+        else if (arg === '--grid-warmup') {
+            const v = parseFloat(args[++i]);
+            if (Number.isFinite(v) && v >= 0) config.gridWarmupBars = Math.max(0, Math.round(v));
+            else console.warn('[TradingView] --grid-warmup requires a non-negative bar count; ignoring.');
+        }
         else if (arg === '--no-update-marker') config.noUpdateMarker = true;
         else if (arg === '--update-marker-ts') config.updateMarkerTsSec = Math.max(0, parseInt(args[++i], 10) || 0) || null;
         else if (arg === '--update-marker-bars') config.updateMarkerNewBars = Math.max(0, parseInt(args[++i], 10) || 0) || null;
@@ -228,6 +255,30 @@ async function main() {
         const orderSells = ordersData.sells;
         const gridBounds = { low: ordersData.low, high: ordersData.high };
         if (!config.quiet && ordersFile) console.log(`[TradingView] Order overlay: ${orderBuys.length} buys + ${orderSells.length} sells from ${ordersFile}`);
+        // Grid-reset simulation (docs/GRID_RECALCULATION.md §3/§4): resolve the
+        // AMA-price and AMA-slope delta thresholds exactly like the running
+        // adapter does (constants → general.settings → market_adapter_settings
+        // globals/pair/bot), so the chart replays the real recentering points.
+        const simOverrides = {
+            priceDeltaThresholdPercent: config.gridDeltaPct,
+            slopeDeltaThresholdPercent: config.gridSlopeDeltaPct,
+            warmupBars: config.gridWarmupBars,
+        };
+        const gridSim = botKey
+            ? toGridSimPayload(resolveGridResetSimConfig({
+                botKey,
+                bot: botMeta,
+                ama: resolveAmaConfig(botKey),
+                overrides: simOverrides,
+            }))
+            : null;
+        if (!config.quiet && gridSim) {
+            console.log(
+                `[TradingView] Grid resets: AMA Δ ${gridSim.priceDeltaThresholdPercent}% (${gridSim.priceSource})`
+                + ` | AMA-Slope Δ ${gridSim.slopeDeltaThresholdPercent}%/bar (${gridSim.slopeSource})`
+                + ` | slope trigger ${gridSim.slopeEnabled ? 'on' : 'off'}`,
+            );
+        }
         const html = generateHTML({
             candles,
             meta: jsonMeta || {
@@ -253,6 +304,8 @@ async function main() {
             rangeScaleEnabled: config.rangeScaleEnabled,
             rangeSpan: config.rangeSpan,
             grid,
+            gridSim,
+            gridSimEnabled: config.gridResetEnabled,
             priceScale: config.priceScale === 'linear' ? 'linear' : 'log',
             defaultTimeframe: '1h',
             marketAdapter: MARKET_ADAPTER,

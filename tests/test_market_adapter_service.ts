@@ -2395,6 +2395,39 @@ function testSlopeDirectionChangeDoesNotTriggerBelowDeltaThreshold() {
     assert.strictEqual(details.shouldTrigger, false, 'direction change alone should not trigger a grid reset');
 }
 
+function testNonPositiveSlopeThresholdDisablesTrigger() {
+    const service = new MarketAdapterService({});
+    // A large delta that would cross any positive threshold, but the resolved
+    // threshold is 0 (factor/maxSlopePct missing). Zero must DISABLE the
+    // trigger rather than make `delta >= 0` fire every cycle.
+    const details = service.buildAmaSlopeResetDetails(
+        { trend: 'UP', slopePct: 5, isReady: true },
+        { trend: 'DOWN', slopePct: -5, isReady: true },
+        {}
+    );
+
+    assert.strictEqual(details.thresholdPercent, 0, 'no explicit threshold and no factor resolves to 0');
+    assert.strictEqual(details.deltaPercent, 10, 'delta itself is still reported');
+    assert.strictEqual(details.thresholdCrossed, false, 'a non-positive threshold must not cross');
+    assert.strictEqual(details.shouldTrigger, false);
+}
+
+function testUnreadySlopeBaselineDoesNotTrigger() {
+    const service = new MarketAdapterService({});
+    // Bootstrap can persist the not-ready slope result (slopePct 0, isReady
+    // false) before AMA warmup. A later ready slope must not be measured
+    // against that phantom 0 baseline.
+    const details = service.buildAmaSlopeResetDetails(
+        { trend: 'UP', slopePct: 0.2, isReady: true },
+        { trend: 'NEUTRAL', slopePct: 0, isReady: false },
+        { amaSlopeDeltaThresholdPercent: 0.05 }
+    );
+
+    assert.strictEqual(details.deltaPercent, null, 'no ready previous baseline means no delta');
+    assert.strictEqual(details.thresholdCrossed, false);
+    assert.strictEqual(details.shouldTrigger, false, 'a phantom 0 baseline must not trip the slope trigger');
+}
+
 function testLegacyStateSlopeDiagnosticsConvertToPerBar() {
     const service = new MarketAdapterService({});
     const normalized = service.normalizePersistedBotState({
@@ -6020,6 +6053,8 @@ async function run() {
     await testCenterStableButSlopeDeltaTriggersReset();
     await testSlopeTriggerRecoversBaselineFromDynamicGridAfterStateClear();
     testSlopeDirectionChangeDoesNotTriggerBelowDeltaThreshold();
+    testNonPositiveSlopeThresholdDisablesTrigger();
+    testUnreadySlopeBaselineDoesNotTrigger();
     testLegacyStateSlopeDiagnosticsConvertToPerBar();
     testMarkedPerBarStateSlopeDiagnosticsStayUnchanged();
     await testLegacyDynamicGridSlopeBaselineIsNormalizedBeforeComparison();

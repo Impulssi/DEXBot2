@@ -54,6 +54,10 @@ Price derivation, orderbook inspection, tolerance checks.
 AMA signal processing, price offset, bound clamping, signal gates.
 *Examples:* `test_market_adapter_logic.ts`, `test_market_adapter_service.ts`, `test_market_adapter_signal_gates.ts`, `test_market_adapter_integration_core.ts`
 
+### Analysis & Charting
+Research/analysis tools: chart generators, backtests, and the grid-reset replay used by the TradingView exporter ([GRID_RECALCULATION.md](../docs/GRID_RECALCULATION.md)).
+*Examples:* `test_grid_reset_sim.ts`, `test_tradingview_chart_storage_key.ts`, `test_backtest_bot_fitting_logic.ts`
+
 ### Order Management & Execution
 Order lifecycle, fill processing, trade history, batch execution.
 *Examples:* `test_open_orders.ts`, `test_fills.ts`, `test_fill_batch_chunking.ts`, `test_fill_replay_guards.ts`, `test_uncertain_broadcast.ts`
