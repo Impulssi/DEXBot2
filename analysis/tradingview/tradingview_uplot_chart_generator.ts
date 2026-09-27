@@ -3482,19 +3482,12 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 html += '<div style="color:#26a69a">BUY ' + fmtPriceLabel(b) + ' ' + (p >= 0 ? '+' : '') + p.toFixed(1) + '%</div>';
             }
             if (dispDeeps.length && Number.isFinite(mkt)) {
-                // Every deep level gets its own orange row: the rail ladder
-                // and the deep shelf converge within one quantum at the ama
-                // anchor, so a green BUY row sitting next to a deep price
-                // reads as "the deep is green". One orange row per deep
-                // (market-closest first) keeps each orange chart line
-                // matched by an orange badge number. Rows are separate
-                // <div>s — no control characters inside the embedded string.
-                const sortedDeeps = [...dispDeeps].sort((a, b) => Math.abs(b - mkt) - Math.abs(a - mkt));
-                const rows = sortedDeeps.map((d) => {
-                    const p = (d - mkt) / mkt * 100;
-                    return '<div>DEEP ' + fmtPriceLabel(d) + ' ' + (p >= 0 ? '+' : '') + p.toFixed(1) + '%</div>';
-                });
-                html += '<div style="color:#fb923c;background:rgba(34,24,14,0.92);border:1px solid #fb923c;border-radius:3px;padding:2px 4px;margin-top:2px;display:inline-block;">' + rows.join('') + '</div>';
+                // Single DEEP row again (user preference): the market-closest
+                // deep only. The full deep ladder lives in the right-edge
+                // price tags (orange) and the chart lines.
+                const d = [...dispDeeps].sort((a, b) => Math.abs(a - mkt) - Math.abs(b - mkt))[0];
+                const p = (d - mkt) / mkt * 100;
+                html += '<div style="color:#fb923c;background:rgba(34,24,14,0.92);border:1px solid #fb923c;border-radius:3px;padding:0 4px;margin-top:2px;display:inline-block;">DEEP ' + fmtPriceLabel(d) + ' ' + (p >= 0 ? '+' : '') + p.toFixed(1) + '%</div>';
             }
             panel.innerHTML = html;
         }
