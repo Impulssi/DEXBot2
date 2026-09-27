@@ -411,8 +411,7 @@ Shared analyzers and chart renderers for the dynamic-weight signal path. Core en
 **Tests:**
 
 ```bash
-node dist/analysis/trend_detection/tests/test_kalman_trend.js
-node dist/analysis/trend_detection/tests/test_kalman_velocity_smoothing.js
+npm run test:legacy
 ```
 
 **Note:** `trend_detection/` has no external dependencies — runs directly from the compiled build (`node dist/...`).
