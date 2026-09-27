@@ -57,6 +57,7 @@ import { PATHS } from '../../paths.js';
 import { toFiniteNumber, isValidNumber } from '../format.js';
 import * as MathUtils from './math.js';
 import * as OrderUtils from './order.js';
+import { isSlotHeld } from '../manual_hold.js';
 import Logger from '../../order/logger.js';
 import { runtime } from '../../runtime.js';
 import { getErrorMessage } from '../../utils/errors.js';
@@ -1576,11 +1577,23 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
             // default 1.0, 0 = off; mirrors strategy.ts) and while the buy
             // delay (config buyDelayMinutes, default 15, 0 = off; deadline)
             // is armed — divergence corrections must not bypass either.
+            // HOLD gate: an operator-cancelled slot stays empty. Queuing a
+            // CREATE here (or letting the optimizer fold it with a surplus
+            // cancel into an UPDATE remap — same leak, one step later)
+            // resurrected hand-cancelled sells on Sep 27: the fold turned
+            // surplus slot-38..44 cancels into placements on held
+            // slot-11..17, and the executor's linkage write cleared the
+            // holds. Fail-closed: the hole stays empty until the hold
+            // releases.
             const buyFloorUsdtDiv = MathUtils.resolveBuyFloorUsdt(manager.config);
             const buyDelayMsDiv = MathUtils.resolveBuyDelayMs(manager.config);
             for (const slot of desiredSlots) {
                 const hasCreate = hasActionForOrder(actions, COW_ACTIONS.CREATE, slot);
                 if (!onChainBySlotId.has(slot.id) && slot.size > 0 && !hasCreate) {
+                    if (isSlotHeld(manager, slot.id)) {
+                        manager.logger.log(`[DIVERGENCE-COW] Skipping placement for ${slot.id} — slot held (operator cancel)`, 'info');
+                        continue;
+                    }
                     if (orderType === ORDER_TYPES.BUY) {
                         const lastBuyTime = (manager as any)._lastBuyFillTime || 0;
                         const delayActive = buyDelayMsDiv > 0 && lastBuyTime !== 0
@@ -1617,7 +1630,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         // removes churn when a fill-driven boundary shift re-types slots. The COW
         // executor already handles rotation UPDATEs (newGridId + newPrice remap).
         const optimizedActions = optimizeRebalanceActions(actions, manager.orders, {
-            logger: (msg: any, level: any) => manager.logger?.log?.(msg, level),
+            logger: (msg: any, _level: any) => manager.logger?.log?.(msg, 'info'),
             boundaryIdx: pendingBoundaryIdx,
             gapSlots: manager._gapSlots,
             assets: manager.assets
@@ -1625,6 +1638,26 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         if (optimizedActions !== actions) {
             actions.length = 0;
             actions.push(...optimizedActions);
+        }
+        // HOLD post-fold guard: the cancel+create fold above turns a surplus
+        // cancel + a hole create into one rotation UPDATE remapping the chain
+        // order ONTO the create's slot. If that target is held (operator
+        // cancel), the remap would resurrect the cancelled level (Sep-27:
+        // surplus slot-38..44 sells folded onto held slot-11..17; the
+        // executor's linkage write cleared the holds). Unfold: keep the
+        // cancel (surplus still leaves) and drop the create side — the held
+        // hole stays empty until the hold releases.
+        for (let i = actions.length - 1; i >= 0; i--) {
+            const a = actions[i];
+            if (a?.type !== COW_ACTIONS.UPDATE || !a?.isRotation) continue;
+            if (!isSlotHeld(manager, a?.newGridId)) continue;
+            const restoredCancel = {
+                type: COW_ACTIONS.CANCEL,
+                id: a.id,
+                orderId: a.orderId,
+            };
+            manager.logger.log(`[DIVERGENCE-COW] Unfolding rotation into ${a.newGridId} — slot held (operator cancel); keeping the cancel, dropping the placement`, 'warn');
+            actions.splice(i, 1, restoredCancel);
         }
         // Refill-slot wire (boundary-hold): unpairable hole-CREATEs surviving
         // the fold above justify the pending boundary shift. The executor
