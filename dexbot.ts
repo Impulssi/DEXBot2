@@ -92,7 +92,7 @@ const { initializeFeeCache, ensureProfilesDirectory, readInput } = require('./mo
 const accountBots = require('./modules/account_bots');
 const SharedDEXBot = require('./modules/dexbot_class').default;
 const fundRegistry = require('./modules/fund_registry');
-const { maybePrintVersionNotice } = require('./modules/version_notice');
+const { maybePrintVersionStatus } = require('./modules/version_notice');
 
 /**
  * Resolve a collateral asset reference (symbol or ID) to its canonical asset ID.
@@ -1125,14 +1125,22 @@ async function handleCLICommands() {
             return true;
         }
         case 'status': {
-            console.log(`DEXBot2 v${Config.VERSION}`);
-            console.log();
-            // Passive "new version available" hint. Nothing overlaps here, so
-            // await it inline — the probe is throttled to once per
-            // UPDATER.NOTICE_INTERVAL_MS and hard-timeouts at the shorter
-            // UPDATER.NOTICE_STATUS_TIMEOUT_MS so status output cannot stall.
+            // Installed-vs-published version status, from the single shared
+            // renderer in modules/version_notice.ts: green when current, orange
+            // when a newer release exists, gray when the probe cannot answer.
+            // Nothing overlaps here, so await it inline — the probe is throttled
+            // to once per UPDATER.NOTICE_INTERVAL_MS and hard-timeouts at the
+            // shorter UPDATER.NOTICE_STATUS_TIMEOUT_MS so status output cannot
+            // stall. The status line names the installed version, so a bare
+            // header is only needed when the check is switched off entirely.
             const { UPDATER } = require('./modules/constants');
-            await maybePrintVersionNotice({ timeoutMs: UPDATER.NOTICE_STATUS_TIMEOUT_MS });
+            const versionStatus = await maybePrintVersionStatus({
+                timeoutMs: UPDATER.NOTICE_STATUS_TIMEOUT_MS,
+                indent: '',
+                surround: false,
+            });
+            if (!versionStatus) console.log(`DEXBot2 v${Config.VERSION}`);
+            console.log();
             const { spawnSync, execSync } = require('child_process') as any as any;
             const MONOLITHIC_PID_FILE = PATHS.PROFILES.MONOLITHIC_PID;
             const MONOLITHIC_CRED_PID_FILE = PATHS.PROFILES.MONOLITHIC_CRED_PID;

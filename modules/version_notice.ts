@@ -1,21 +1,24 @@
 /**
- * modules/version_notice.ts - Passive "new version available" notice.
+ * modules/version_notice.ts - Passive version status + "new version" notice.
  *
- * Prints a one-time hint when a newer DEXBot2 release is published, without
- * ever changing code on its own. This is deliberately ORTHOGONAL to
- * `UPDATER.ACTIVE` (the automated updater, default OFF): a bot handling real
- * funds must never silently change its own code, but the operator still
- * deserves to KNOW a fix or a breaking change landed. The opt-out lives in
- * `UPDATER.NOTICE_ENABLED` so it can be tuned independently of the updater.
+ * Reports the INSTALLED version against the published `latest` on every start
+ * and in `dexbot stat`, and prints a one-time hint when a newer DEXBot2 release
+ * exists — without ever changing code on its own. This is deliberately
+ * ORTHOGONAL to `UPDATER.ACTIVE` (the automated updater, default OFF): a bot
+ * handling real funds must never silently change its own code, but the
+ * operator still deserves to KNOW a fix or a breaking change landed. The
+ * opt-out lives in `UPDATER.NOTICE_ENABLED` so it can be tuned independently of
+ * the updater.
  *
  * ===============================================================================
  * DESIGN CONSTRAINTS
  * ===============================================================================
  *
- * 1. NEVER BLOCKS STARTUP. `startVersionNoticeCheck()` returns a promise
- *    immediately and resolves with a rendered message (or null). Callers
- *    start it early and `await` it late, so the round-trip overlaps work
- *    that is already happening (BitShares connection, password prompt).
+ * 1. NEVER BLOCKS STARTUP. `startVersionStatusCheck()` returns a promise
+ *    immediately and resolves with a `VersionStatus` (or null when the check is
+ *    disabled). Callers start it early and `await` it late, so the round-trip
+ *    overlaps work that is already happening (BitShares connection, password
+ *    prompt).
  * 2. NEVER THROWS. Every failure path — offline, DNS failure, slow registry,
  *    unreadable cache, browser — resolves to `null`.
  * 3. NO SUBPROCESSES. The registry is queried with a single HTTPS GET and a
@@ -26,9 +29,15 @@
  *    `UPDATER.NOTICE_INTERVAL_MS`, and the same version is announced only once
  *    (`notifiedVersion` in the cache) so an ignored notice does not nag on
  *    every restart. A new published version resets that latch. The latch is
- *    committed by `printVersionNotice` only AFTER the notice is displayed, so a
+ *    committed by `printVersionStatus` only AFTER the notice is displayed, so a
  *    launcher path that returns without printing cannot silently consume it —
- *    the next run re-offers it instead.
+ *    it is re-offered once the throttle window expires. A throttled run still
+ *    reports a status (from the cached observation) so `dexbot stat` answers
+ *    "am I current?" without spending a request.
+ * 4b. ONE IMPLEMENTATION. Every consumer (`unlock`, `pm2`, `dexbot stat`) goes
+ *    through `startVersionStatusCheck` → `printVersionStatus`; the colour of the
+ *    status line, the hint wording and the latch all live here, so no caller can
+ *    drift from another.
  * 5. SILENT WHEN DISABLED. `Config.DEXBOT_SKIP_VERSION_NOTICE=1` (tests, CI,
  *    automation) or `UPDATER.NOTICE_ENABLED: false` short-circuits before any
  *    network or filesystem work.
@@ -52,15 +61,38 @@ const { readJSON } = storage;
 /** How the running copy was installed — selects the hint text. */
 export type InstallKind = 'npm-global' | 'git' | 'other';
 
+/**
+ * The pending one-time announcement: what the operator is told when a newer
+ * release exists and has not been displayed yet. It carries DATA only — the
+ * wording and colour are rendered by `printVersionStatus`, so there is exactly
+ * one place that decides how a version verdict looks.
+ */
 export interface VersionNotice {
     currentVersion: string;
     latestVersion: string;
     installKind: InstallKind;
-    /** Fully rendered block, no trailing newline. */
-    message: string;
-    /** Cache file `printVersionNotice` advances once the notice is displayed.
+    /** Cache file `printVersionStatus` advances once the notice is displayed.
      *  Internal plumbing; callers should not read it. */
     cacheFile: string;
+}
+
+/** Green when current, orange when a newer release exists, gray when unknown. */
+export type VersionState = 'up-to-date' | 'update-available' | 'unknown';
+
+export interface VersionStatus {
+    /** Installed version — `Config.VERSION` unless overridden. */
+    currentVersion: string;
+    /** Latest version observed this run, or from the throttle cache. Null when
+     *  the probe failed, which renders as `unknown`. */
+    latestVersion: string | null;
+    installKind: InstallKind;
+    state: VersionState;
+    /** Cache file backing the throttle. Plumbing; callers should not read it. */
+    cacheFile: string;
+    /** Present only when a NEWER version exists AND it has not been announced
+     *  yet. Carries the one-time hint; `printVersionStatus` is the only path
+     *  that latches it. */
+    notice: VersionNotice | null;
 }
 
 interface VersionCheckCache {
@@ -139,24 +171,37 @@ export function detectInstallKind(projectRoot: string = PATHS.PROJECT_ROOT): Ins
 }
 
 /**
+ * The single status line, shared by `dexbot stat` and every launcher start.
+ *
+ * GREEN when the install matches the registry, ORANGE when a newer release
+ * exists, GRAY when the probe could not answer (offline / throttled with no
+ * prior observation) — an unknown answer must never be rendered as "up to
+ * date". The installed version is always named, so a caller never needs a
+ * second "DEXBot2 vX.Y.Z" header of its own.
+ */
+export function formatVersionStatusLine(status: Pick<VersionStatus, 'currentVersion' | 'latestVersion' | 'state'>): string {
+    const c = CLI_COLORS;
+    const current = `DEXBot2 v${status.currentVersion}`;
+    if (status.state === 'up-to-date') {
+        return `${current}  ${c.brightGreen}✓${c.reset} ${c.greenBold}Your version is up to date.${c.reset}`;
+    }
+    if (status.state === 'update-available') {
+        return `${current}  ${c.orange}⬆${c.reset} ${c.orange}A new version is available: v${status.latestVersion}.${c.reset}`;
+    }
+    return `${current}  ${c.gray}? Could not check for a newer version.${c.reset}`;
+}
+
+/**
  * Hint text. `dexbot update` is the correct verb for BOTH layouts: the npm
  * flow does `npm install -g <pkg>@<latest>`, the git flow does
  * `fetch` + `pull` + rebuild + runtime restart. `update` is only complete
  * once active bots have been restarted onto the new code, which a bare
  * `git pull` in a terminal would not do.
  */
-function formatVersionNotice(currentVersion: string, latestVersion: string, installKind: InstallKind): string {
-    const c = CLI_COLORS;
-    const arrow = `${c.yellowBold}⬆${c.reset}`;
-    const head = `${arrow}  ${c.yellowBold}DEXBot2 v${latestVersion} is available${c.reset} (you have v${currentVersion}).`;
-    let hint: string;
-    if (installKind === 'git') {
-        hint = `Run \`dexbot update\` to pull it and restart your bots.`;
-    } else {
-        hint = `Run \`dexbot update\` to install it and restart your bots.`;
-    }
-    const hintLine = `   ${c.gray}${hint}${c.reset}`;
-    return `${head}\n${hintLine}`;
+function formatVersionHint(installKind: InstallKind): string {
+    return installKind === 'git'
+        ? `Run \`dexbot update\` to pull it and restart your bots.`
+        : `Run \`dexbot update\` to install it and restart your bots.`;
 }
 
 function readCache(file: string): VersionCheckCache | null {
@@ -202,7 +247,7 @@ async function fetchLatestVersion(registryUrl: string, timeoutMs: number, fetchI
     // rejection. The enclosing timeout is a HARD backstop: it resolves even
     // when no AbortController exists or a custom fetch ignores the signal, so
     // the "never blocks startup" guarantee does not depend on either. Without
-    // it, a hung registry socket could stall a terminal `flushVersionNotice`
+    // it, a hung registry socket could stall a terminal `flushVersionStatus`
     // ahead of `process.exit()` and freeze `dexbot start`.
     const attempt = (async (): Promise<string | null> => {
         try {
@@ -236,14 +281,33 @@ async function fetchLatestVersion(registryUrl: string, timeoutMs: number, fetchI
     }
 }
 
+/** Assemble a status; `includeNotice` is false on the throttled path, which
+ *  reports the cached observation but never re-announces. */
+function buildVersionStatus(
+    currentVersion: string,
+    latestVersion: string | null,
+    installKind: InstallKind,
+    cacheFile: string,
+    includeNotice: boolean,
+): VersionStatus {
+    const state: VersionState = !latestVersion
+        ? 'unknown'
+        : compareVersions(currentVersion, latestVersion) < 0 ? 'update-available' : 'up-to-date';
+    const notice = state === 'update-available' && includeNotice && latestVersion
+        ? { currentVersion, latestVersion, installKind, cacheFile }
+        : null;
+    return { currentVersion, latestVersion, installKind, state, cacheFile, notice };
+}
+
 /**
- * Start the check. Resolves with a rendered notice when a NEWER version
- * exists and that version has not been announced yet, otherwise null.
+ * Start the check. Resolves with the installed-vs-published status, plus a
+ * `notice` when a NEWER version exists and that version has not been
+ * announced yet. Resolves null only when the whole feature is switched off.
  * Rejects never.
  */
-export function startVersionNoticeCheck(options: VersionNoticeOptions = {}): Promise<VersionNotice | null> {
+export function startVersionStatusCheck(options: VersionNoticeOptions = {}): Promise<VersionStatus | null> {
     // Every early return is a resolved null so callers can always await.
-    const done = (value: VersionNotice | null | undefined): Promise<VersionNotice | null> =>
+    const done = (value: VersionStatus | null | undefined): Promise<VersionStatus | null> =>
         Promise.resolve(value ?? null);
 
     if (!hasProcess()) return done(null);
@@ -255,12 +319,6 @@ export function startVersionNoticeCheck(options: VersionNoticeOptions = {}): Pro
     const now = options.now ?? Date.now();
     const intervalMs = options.intervalMs ?? Number((UPDATER as any)?.NOTICE_INTERVAL_MS ?? 0);
     const previous = readCache(cacheFile);
-
-    // Throttle: a recent probe (successful OR failed) means stay quiet, so an
-    // offline node never pays the timeout on every single restart.
-    if (!options.force && Number.isFinite(intervalMs) && intervalMs > 0 && previous) {
-        if (now - previous.lastCheckMs < intervalMs) return done(null);
-    }
 
     // `??` (not `||`) so an explicitly empty current version is reported as
     // "unknown" and stays silent rather than falling back to a real version.
@@ -277,11 +335,20 @@ export function startVersionNoticeCheck(options: VersionNoticeOptions = {}): Pro
     }
     const installKind = options.installKind || detectInstallKind();
 
+    // Throttle: a recent probe (successful OR failed) means stay quiet, so an
+    // offline node never pays the timeout on every single restart. The cached
+    // observation still answers "am I current?" without spending a request.
+    if (!options.force && Number.isFinite(intervalMs) && intervalMs > 0 && previous) {
+        if (now - previous.lastCheckMs < intervalMs) {
+            return done(buildVersionStatus(currentVersion, previous.latestVersion, installKind, cacheFile, false));
+        }
+    }
+
     return (async () => {
         const latestVersion = await fetchLatestVersion(registryUrl, resolveTimeoutMs(options.timeoutMs), options.fetchImpl);
 
         // Record the observation but DO NOT latch here: `notifiedVersion` is
-        // advanced by `printVersionNotice` only once the hint is displayed.
+        // advanced by `printVersionStatus` only once the hint is displayed.
         const base: VersionCheckCache = {
             version: CACHE_VERSION,
             updatedAt: new Date(now).toISOString(),
@@ -291,17 +358,13 @@ export function startVersionNoticeCheck(options: VersionNoticeOptions = {}): Pro
         };
         writeCache(cacheFile, base);
 
-        if (!latestVersion) return null;
-        if (compareVersions(currentVersion, latestVersion) >= 0) return null;
-        if (previous?.notifiedVersion === latestVersion) return null;
-
-        return {
-            currentVersion,
-            latestVersion,
-            installKind,
-            cacheFile,
-            message: formatVersionNotice(currentVersion, latestVersion, installKind),
-        };
+        const status = buildVersionStatus(currentVersion, latestVersion, installKind, cacheFile, true);
+        // Same version already announced: keep reporting the state, drop only
+        // the one-time hint.
+        if (status.notice && previous?.notifiedVersion === status.notice.latestVersion) {
+            return { ...status, notice: null };
+        }
+        return status;
     })().catch(() => null);
 }
 
@@ -331,39 +394,52 @@ function latchVersionNotice(notice: VersionNotice): void {
 }
 
 /**
- * Print a notice, if any, and commit its notify-once latch. The single print
- * path for every caller, so latching cannot drift from display.
+ * Print the status line (plus the install hint when a NEW, unannounced
+ * version exists) and commit the notify-once latch for that hint. The single
+ * print path for every caller, so latching cannot drift from display.
  */
-export function printVersionNotice(notice: VersionNotice | null | undefined): void {
-    if (!notice) return;
-    console.log();
-    console.log(`  ${notice.message}`);
-    console.log();
-    latchVersionNotice(notice);
+export function printVersionStatus(status: VersionStatus | null | undefined, options: { indent?: string; surround?: boolean } = {}): void {
+    if (!status) return;
+    const c = CLI_COLORS;
+    const indent = options.indent ?? '  ';
+    const surround = options.surround !== false;
+    if (surround) console.log();
+    console.log(`${indent}${formatVersionStatusLine(status)}`);
+    if (status.notice) {
+        console.log(`${indent}  ${c.gray}${formatVersionHint(status.installKind)}${c.reset}`);
+        latchVersionNotice(status.notice);
+    }
+    if (surround) console.log();
 }
 
 /**
- * Await the check and print the notice to stdout if there is one. Convenience
- * wrapper for call sites (e.g. `dexbot status`) with nothing to overlap.
+ * Run the check and print the status/notice to stdout. Convenience wrapper
+ * for call sites with nothing to overlap (e.g. `dexbot status`). Returns the
+ * status that was printed, or null when the feature is switched off.
  */
-export async function maybePrintVersionNotice(options: VersionNoticeOptions = {}): Promise<void> {
-    printVersionNotice(await startVersionNoticeCheck(options));
+export async function maybePrintVersionStatus(
+    options: VersionNoticeOptions & { indent?: string; surround?: boolean } = {},
+): Promise<VersionStatus | null> {
+    const status = await startVersionStatusCheck(options);
+    printVersionStatus(status, { indent: options.indent, surround: options.surround });
+    return status;
 }
 
 /**
- * Await an already-started check and print its notice. The single flush path
- * for callers (`unlock.ts`) that start the probe early and surface it only at
- * a terminal point, so the await+print pair is not reimplemented per call site.
+ * Await an already-started check and print its status. The single flush path
+ * for callers (`unlock.ts`, `pm2.ts`) that start the probe early and surface it
+ * only at a terminal point, so the await+print pair is not reimplemented per
+ * call site.
  */
-export async function flushVersionNotice(pending: Promise<VersionNotice | null>): Promise<void> {
-    printVersionNotice(await pending);
+export async function flushVersionStatus(pending: Promise<VersionStatus | null>): Promise<void> {
+    printVersionStatus(await pending);
 }
 
 /**
- * Print the notice when the probe settles, WITHOUT awaiting it. For launch
+ * Print the status when the probe settles, WITHOUT awaiting it. For launch
  * paths that must never delay the bot start — the resident process outlives the
  * probe, so there is no `process.exit()` to truncate it.
  */
-export function printVersionNoticeWhenReady(pending: Promise<VersionNotice | null>): void {
-    void pending.then(printVersionNotice, () => {});
+export function printVersionStatusWhenReady(pending: Promise<VersionStatus | null>): void {
+    void pending.then(printVersionStatus, () => {});
 }
