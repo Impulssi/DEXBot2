@@ -66,7 +66,7 @@
  *   - resolveLiveReserveEdgeAnchorPrice(manager, side) - Live-grid edge anchor (ladder/rail extreme first, config bound last; null when unresolved)
  *   - resolveReserveEdgeAnchorPrice(config, side) - Config-bound anchor fallback (buy→minPrice, sell→maxPrice; null when unresolvable)
  *   - compareReserveEdge(a, b, edge, anchorPrice) - Shared anchored edge comparator (single ordering source)
- *   - reserveEdgeIdSet(allSlots, config, orderType, anchorPrice?) - Edge reserve id set (config count; shares the picker ordering)
+ *   - reserveEdgeIdSet(allSlots, config, orderType, anchorPrice?, excludeIds?) - Edge reserve id set (config count; shares the picker ordering; excludeIds carries the window exclusion)
  *   - selectReserveEdgeSlots(sortedAsc, count, excludeIds, edge, anchorPrice?) - Shared position picker (both edges anchor toward their bound)
  *
  * ===============================================================================
@@ -1933,6 +1933,23 @@ function checkSizesBeforeMinimum(sizes: any, minSize: any, precision: any) {
 }
 
 /**
+ * Bounded rail-center index for a slot array of `length` with `gapSlots`.
+ * The same fallback used by `calculateIdealBoundary` (non-numeric reference)
+ * and `deriveTargetBoundary` (Tier-4 recovery): never a rail edge, wrong by
+ * at most half the rail. Shared so the two spellings cannot drift.
+ *
+ * @param {number} length - Slot count
+ * @param {number} gapSlots - Gap band size
+ * @returns {number} Clamped center index (0 when the rail is empty)
+ */
+function railCenterIndex(length: any, gapSlots: any): number {
+    const len = Number(length);
+    if (!Number.isFinite(len) || len <= 0) return 0;
+    const gap = Number.isFinite(Number(gapSlots)) && Number(gapSlots) >= 0 ? Math.floor(Number(gapSlots)) : 0;
+    return Math.max(0, Math.floor((len - 1 - gap) / 2));
+}
+
+/**
  * Calculate ideal grid boundary based on reference price.
  * Places boundary near reference price with gap spacing in mind.
  *
@@ -1951,8 +1968,7 @@ function checkSizesBeforeMinimum(sizes: any, minSize: any, precision: any) {
 function calculateIdealBoundary(allSlots: any, referencePrice: any, gapSlots: any) {
     if (!allSlots || allSlots.length === 0) return -1;
     if (!Number.isFinite(Number(referencePrice))) {
-        const gap = Number.isFinite(Number(gapSlots)) && Number(gapSlots) >= 0 ? Math.floor(Number(gapSlots)) : 0;
-        return Math.max(0, Math.floor((allSlots.length - 1 - gap) / 2));
+        return railCenterIndex(allSlots.length, gapSlots);
     }
     let splitIdx = allSlots.findIndex((s: any) => s.price >= referencePrice);
     if (splitIdx === -1) splitIdx = allSlots.length;
@@ -2386,8 +2402,7 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
         // never a rail-edge fabrication. The next fill batch re-anchors
         // from live prices via Tier 1.
         if (referencePrice === null && Array.isArray(allSlots) && allSlots.length > 0) {
-            const gap = Number.isFinite(Number(gapSlots)) && Number(gapSlots) >= 0 ? Math.floor(Number(gapSlots)) : 0;
-            const centerIdx = Math.max(0, Math.floor((allSlots.length - 1 - gap) / 2));
+            const centerIdx = railCenterIndex(allSlots.length, gapSlots);
             const centerPrice = Number(allSlots[centerIdx]?.price);
             if (Number.isFinite(centerPrice)) referencePrice = centerPrice;
         }
@@ -2422,8 +2437,19 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
     // `edgeAnchors` (resolveLiveReserveEdgeAnchorPrice) is the same anchor the
     // placement sites use; without it the classification falls back to the
     // config-bound anchor, which can disagree with the slots actually placed.
-    const reserveBuyIds = reserveEdgeIdSet(allSlots, config, ORDER_TYPES.BUY, edgeAnchors?.buy ?? null);
-    const reserveSellIds = reserveEdgeIdSet(allSlots, config, ORDER_TYPES.SELL, edgeAnchors?.sell ?? null);
+    // The window exclusion is the same one every placement picker applies: a
+    // window that reaches the grid edge (e.g. a keep-low window sitting on
+    // the floor) must not let the edge pick land on window members — otherwise
+    // a genuine window fill is treated as a static reserve fill and never
+    // crawls, and the hole is refilled same-side. Unknown geometry
+    // (null boundary) fails open to the previous classification.
+    const windowBoundaryIdx = (currentBoundaryIdx === null || currentBoundaryIdx === undefined)
+        ? newBoundaryIdx
+        : currentBoundaryIdx;
+    const windowBuyIds = windowIdSetFromSlots(allSlots, config, ORDER_TYPES.BUY, windowBoundaryIdx, gapSlots);
+    const windowSellIds = windowIdSetFromSlots(allSlots, config, ORDER_TYPES.SELL, windowBoundaryIdx, gapSlots);
+    const reserveBuyIds = reserveEdgeIdSet(allSlots, config, ORDER_TYPES.BUY, edgeAnchors?.buy ?? null, windowBuyIds);
+    const reserveSellIds = reserveEdgeIdSet(allSlots, config, ORDER_TYPES.SELL, edgeAnchors?.sell ?? null, windowSellIds);
     // Pending crawls: fills recorded by earlier batches whose derivation
     // never committed (refused broadcast, P4 abort, or pre-restart loss —
     // the Sep-10 case: 4 fills consumed under a null boundary, crawl lost,
@@ -2551,8 +2577,13 @@ export function consumePendingFillCrawls(manager: any): { applied: boolean; from
     // two disagree: the config-bound fallback is null for mode-string/relative
     // bounds, so a restart would rank a stale below-rail slot as a reserve and
     // silently drop a crawl the live run recorded as ordinary market movement.
-    const reserveBuyIds = reserveEdgeIdSet(slots, config, ORDER_TYPES.BUY, resolveLiveReserveEdgeAnchorPrice(manager, 'buy'));
-    const reserveSellIds = reserveEdgeIdSet(slots, config, ORDER_TYPES.SELL, resolveLiveReserveEdgeAnchorPrice(manager, 'sell'));
+    // The window exclusion must match placement too (same source as the count
+    // fix) — a window over the reserve edge must not be read as a reserve, or
+    // its owed crawl is dropped instead of applied.
+    const windowBuyIds = liveWindowIdSet(manager, ORDER_TYPES.BUY);
+    const windowSellIds = liveWindowIdSet(manager, ORDER_TYPES.SELL);
+    const reserveBuyIds = reserveEdgeIdSet(slots, config, ORDER_TYPES.BUY, resolveLiveReserveEdgeAnchorPrice(manager, 'buy'), windowBuyIds);
+    const reserveSellIds = reserveEdgeIdSet(slots, config, ORDER_TYPES.SELL, resolveLiveReserveEdgeAnchorPrice(manager, 'sell'), windowSellIds);
     let netShift = 0;
     let count = 0;
     for (const e of pending) {
@@ -2611,13 +2642,24 @@ export function consumePendingFillCrawls(manager: any): { applied: boolean; from
  * Buy reserves pin at the grid floor, sell reserves at the grid ceiling.
  * Non-finite/non-integer/negative values disable (0).
  *
+ * The legacy numeric form (`reserveOrders: n`) is migrated here at read time
+ * to `{ buy: n, sell: 0 }`: the editor seeder rewrites the persisted JSON, but
+ * a hand-edited bots.json that bypassed the editor must not have its reserve
+ * count silently read as 0.
+ *
  * @param {Object} config - Bot configuration
  * @param {string} side - 'buy' or 'sell'
  * @returns {number} Reserve count for the side (>= 0 integer)
  */
 function resolveReserveCount(config: any, side: any) {
     const key = side === 'sell' ? 'sell' : 'buy';
-    const raw = Number(config?.reserveOrders?.[key] ?? 0);
+    const rawReserve = config?.reserveOrders;
+    if (typeof rawReserve === 'number') {
+        if (side === 'sell') return 0;
+        const n = Math.floor(rawReserve);
+        return Number.isFinite(n) && n >= 0 ? n : 0;
+    }
+    const raw = Number(rawReserve?.[key] ?? 0);
     if (!Number.isInteger(raw) || raw < 0) return 0;
     return raw;
 }
@@ -2683,19 +2725,59 @@ function reserveEdgeIdSet(allSlots: any, config: any, orderType: any, anchorPric
 }
 
 /**
- * Window member ids for one side, mirroring the window every placement
- * picker excludes from its reserve pick: in-rail slots of the side (geometry
- * via resolveGapBand/isSlotInRail — the same source the reconcile pickers
- * use), ordered closest to market first (buys: highest price first; sells:
- * lowest first), sliced to the configured activeOrders count. The slice runs
- * over the FULL master rail, not just live orders — window membership is
- * geometric (a virtual hole inside the window still blocks the reserve pick
- * there), so live-only slices would misclassify live reserves as window
- * members whenever the window itself is under-filled.
+ * Window member ids for one side from an explicit slot list and geometry.
  *
- * Returns null when the boundary geometry is unknown: the pickers cannot
- * place reserves without it either, so callers fail open (no exclusion)
- * and keep their previous classification instead of guessing.
+ * Mirror of the window every placement picker excludes from its reserve
+ * pick: in-rail slots of the side (geometry via isSlotInRail), ordered
+ * closest to market first (buys: highest price first; sells: lowest first),
+ * sliced to the configured activeOrders count. The slice runs over the FULL
+ * rail, not just live orders — window membership is geometric (a virtual
+ * hole inside the window still blocks the reserve pick there), so live-only
+ * slices would misclassify live reserves as window members whenever the
+ * window itself is under-filled.
+ *
+ * Returns null when the boundary geometry is unknown (null boundary): the
+ * pickers cannot place reserves without it either, so callers fail open
+ * (no exclusion) and keep their previous classification instead of guessing.
+ *
+ * @param {Array<Object>} allSlots - Slots (master grid or clone)
+ * @param {Object} config - Bot configuration (activeOrders count source)
+ * @param {string} orderType - ORDER_TYPES.BUY or SELL
+ * @param {number|null|undefined} boundaryIdx - Boundary the rail is derived from
+ * @param {number} gapSlots - Gap band size
+ * @returns {Set<string>|null} Window slot ids, or null when geometry unknown
+ */
+function windowIdSetFromSlots(allSlots: any, config: any, orderType: any, boundaryIdx: any, gapSlots: any): Set<string> | null {
+    try {
+        const isSell = orderType === ORDER_TYPES.SELL;
+        const type = isSell ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
+        const side = isSell ? 'sell' : 'buy';
+        const count = Math.max(0, Math.floor(Number(config?.activeOrders?.[side])) || 0);
+        if (!(count > 0)) return new Set<string>();
+        if (!Array.isArray(allSlots)) return new Set<string>();
+        if (boundaryIdx === null || boundaryIdx === undefined || !Number.isFinite(Number(boundaryIdx))) return null;
+        const gap = Number.isFinite(Number(gapSlots)) ? Number(gapSlots) : 0;
+        const inRail = (o: any): boolean => MathUtils.isSlotInRail(boundaryIdx, gap, type, o);
+        // Same type filter as the window pickers with known geometry: the
+        // side's concrete type plus SPREAD placeholders (normalized empties
+        // sitting in this side's rail).
+        const typeFilter = (o: any): boolean => o && o.id != null && o.price != null && (o.type === type || o.type === ORDER_TYPES.SPREAD);
+        const ids = allSlots
+            .filter(typeFilter)
+            .filter(inRail)
+            .sort((a: any, b: any) => isSell ? Number(a.price) - Number(b.price) : Number(b.price) - Number(a.price))
+            .slice(0, count)
+            .map((o: any) => String(o.id));
+        return new Set<string>(ids);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Window member ids for one side from the live manager (see
+ * windowIdSetFromSlots). Delegates so the manager and explicit-geometry
+ * callers share one definition.
  *
  * @param {any} manager - OrderManager (orders Map, config, boundaryIdx)
  * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
@@ -2703,25 +2785,10 @@ function reserveEdgeIdSet(allSlots: any, config: any, orderType: any, anchorPric
  */
 function liveWindowIdSet(manager: any, orderType: any): Set<string> | null {
     try {
-        const isSell = orderType === ORDER_TYPES.SELL;
-        const type = isSell ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
-        const side = isSell ? 'sell' : 'buy';
-        const count = Math.max(0, Math.floor(Number(manager?.config?.activeOrders?.[side])) || 0);
-        if (!(count > 0) || !manager?.orders || typeof manager.orders.values !== 'function') return new Set<string>();
+        if (!manager?.orders || typeof manager.orders.values !== 'function') return new Set<string>();
         const resolved = MathUtils.resolveGapBand(manager);
         if (resolved?.boundaryIdx == null || resolved?.sellStartIdx == null) return null;
-        const inRail = (o: any): boolean => MathUtils.isSlotInRail(resolved.boundaryIdx, resolved.gapSlots, type, o);
-        // Same type filter as the window pickers with known geometry: the
-        // side's concrete type plus SPREAD placeholders (normalized empties
-        // sitting in this side's rail).
-        const typeFilter = (o: any): boolean => o && o.id != null && o.price != null && (o.type === type || o.type === ORDER_TYPES.SPREAD);
-        const ids = (Array.from(manager.orders.values()) as any[])
-            .filter(typeFilter)
-            .filter(inRail)
-            .sort((a: any, b: any) => isSell ? Number(a.price) - Number(b.price) : Number(b.price) - Number(a.price))
-            .slice(0, count)
-            .map((o: any) => String(o.id));
-        return new Set<string>(ids);
+        return windowIdSetFromSlots(Array.from(manager.orders.values()), manager.config, orderType, resolved.boundaryIdx, resolved.gapSlots);
     } catch {
         return null;
     }
@@ -2755,10 +2822,13 @@ function liveWindowIdSet(manager: any, orderType: any): Set<string> | null {
  * @param {Iterable<Object>} [options.slots] - Master slots (reserve classification)
  * @param {{buy?: number|null, sell?: number|null}} [options.edgeAnchors] - Live
  *   edge anchors (same pair the strategy classifies reserve fills against)
+ * @param {any} [options.manager] - OrderManager for the window exclusion (same
+ *   set the placement pickers exclude); omit to fall back to the previous
+ *   exclusion-free classification (fail-open)
  * @returns {string[]} Refill slot ids (CREATE ids minus reserve edge ids)
  */
-function collectRefillSlotIds(actions: any, options: { config?: any; slots?: any; edgeAnchors?: { buy?: number | null; sell?: number | null } | null } = {}): string[] {
-    const { config = null, slots = null, edgeAnchors = null } = options;
+function collectRefillSlotIds(actions: any, options: { config?: any; slots?: any; edgeAnchors?: { buy?: number | null; sell?: number | null } | null; manager?: any } = {}): string[] {
+    const { config = null, slots = null, edgeAnchors = null, manager = null } = options;
     const out: string[] = [];
     if (!Array.isArray(actions)) return out;
     const createIds = actions
@@ -2776,8 +2846,15 @@ function collectRefillSlotIds(actions: any, options: { config?: any; slots?: any
                 : (typeof (slots as any)?.values === 'function'
                     ? Array.from((slots as any).values())
                     : Array.from(slots as Iterable<any>));
-            const buyIds = reserveEdgeIdSet(allSlots, config, ORDER_TYPES.BUY, edgeAnchors?.buy ?? null);
-            const sellIds = reserveEdgeIdSet(allSlots, config, ORDER_TYPES.SELL, edgeAnchors?.sell ?? null);
+            // Window exclusion keeps classification in agreement with the
+            // placement pickers: a window reaching the grid edge must not have
+            // its window hole-CREATEs dropped from the wire as if they were
+            // reserves, or a guard-skipped window refill would no longer pin
+            // the committed boundary (stranding the hole it failed to fill).
+            const windowBuyIds = manager ? liveWindowIdSet(manager, ORDER_TYPES.BUY) : null;
+            const windowSellIds = manager ? liveWindowIdSet(manager, ORDER_TYPES.SELL) : null;
+            const buyIds = reserveEdgeIdSet(allSlots, config, ORDER_TYPES.BUY, edgeAnchors?.buy ?? null, windowBuyIds);
+            const sellIds = reserveEdgeIdSet(allSlots, config, ORDER_TYPES.SELL, edgeAnchors?.sell ?? null, windowSellIds);
             if (buyIds || sellIds) reserveIds = new Set<string>([...(buyIds ?? []), ...(sellIds ?? [])]);
         } catch { reserveIds = null; }
     }

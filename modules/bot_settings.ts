@@ -89,8 +89,15 @@ function validateBotEntry(b: any, i: number, src: string): string | null {
     }
 
     if ('reserveOrders' in b && b.reserveOrders !== undefined && b.reserveOrders !== null) {
-        if (typeof b.reserveOrders !== 'object' || Array.isArray(b.reserveOrders)) problems.push("'reserveOrders' must be an object {buy, sell}");
-        else {
+        if (typeof b.reserveOrders === 'number') {
+            // Legacy numeric form migrates at read time (resolveReserveCount):
+            // { buy: n, sell: 0 }. Accept it here so a hand-edited bots.json
+            // that bypassed the editor is not rejected for a form the runtime
+            // still understands.
+            if (!Number.isInteger(b.reserveOrders) || b.reserveOrders < 0) problems.push("'reserveOrders' numeric form must be a non-negative integer");
+        } else if (typeof b.reserveOrders !== 'object' || Array.isArray(b.reserveOrders)) {
+            problems.push("'reserveOrders' must be an object {buy, sell}");
+        } else {
             for (const side of ['buy', 'sell']) {
                 const v = (b.reserveOrders as any)[side];
                 if (v !== undefined && (!Number.isInteger(Number(v)) || Number(v) < 0)) problems.push(`'reserveOrders.${side}' must be a non-negative integer`);

@@ -307,7 +307,8 @@ class COWRebalanceEngine {
         const refillSlotIds = collectRefillSlotIds(optimizedActions, {
             config: this.config,
             slots: masterGrid,
-            edgeAnchors: reserveEdgeAnchors
+            edgeAnchors: reserveEdgeAnchors,
+            manager: this
         });
 
         projectTargetToWorkingGrid(workingGrid, targetGrid, { actions: optimizedActions });

@@ -69,7 +69,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
   - A hold run carrying fresh fills (>= `TIMING.BOUNDARY_HOLD_RESYNC_THRESHOLD`) requests a guard-aware structural re-center (`requestStructuralGridResync`, cooldown `TIMING.BOUNDARY_HOLD_RESYNC_COOLDOWN_MS`) instead of holding forever — the heal path when the grid is trailing the market.
 
 - `INV-COW-008` Owed fill crawls survive unapplied commits
-  - `order/strategy.ts` records a crawl per shift-eligible fill at intake (slot-level dedupe, capped at 500); `deriveTargetBoundary` folds still-owed `_pendingFillCrawls` into the next derivation, excluding the current batch's slots and reserve slots.
+  - `order/strategy.ts` records a crawl per shift-eligible fill at intake (slot-level dedupe, capped at 500); `deriveTargetBoundary` folds still-owed `_pendingFillCrawls` into the next derivation, excluding the current batch's slots, reserve slots, and window members — a window that reaches the grid edge is not a reserve, using the same window exclusion every placement picker and `countLiveReserveOrders` apply.
   - `_commitWorkingGrid` clears them only when the plan's boundary was actually applied — a held boundary (`boundaryHeld`), a gate-rejected boundary, and a null boundary all leave them owed.
   - `consumePendingFillCrawls` applies them onto a restored finite boundary; `applyPersistedPendingCrawls` is the shared startup/recovery wrapper used before sync/reconcile; `_clearPendingFillCrawls` drops them when the boundary is re-anchored (grid rebuild via `initializeGrid`, rejected snapshot via `rejectCorruptedGridSnapshot`, persisted snapshot wipe via `AccountOrders.clearGrid`).
 

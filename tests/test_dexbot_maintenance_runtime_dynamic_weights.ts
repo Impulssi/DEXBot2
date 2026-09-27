@@ -59,7 +59,7 @@ const NAMES = {
         'isOrderGoneErrorMessage', 'isOrderHealthy', 'isOrderOnChain',
         'isOrderPlaced', 'isOrderVirtual', 'isPhantomOrder', 'isShiftEligibleFill',
         'isNonBlockingUnmatchedOrder',
-        'isSlotAvailable', 'parseChainOrder', 'parseSlotIndex', 'reserveEdgeIdSet',
+        'isSlotAvailable', 'parseChainOrder', 'parseSlotIndex', 'reserveEdgeIdSet', 'liveWindowIdSet',
         'resolveConfiguredPriceBound', 'resolveLiveReserveEdgeAnchorPrice',
         'resolveOnChainRetypeType', 'resolveReserveCount',
         'resolveSpreadOrderSide', 'selectReserveEdgeSlots', 'shouldFlagOutOfSpread', 'virtualizeOrder',

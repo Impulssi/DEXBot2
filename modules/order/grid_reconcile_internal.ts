@@ -10,7 +10,7 @@
 import { ORDER_TYPES, ORDER_STATES, TIMING, BTS_PRECISION } from '../constants.js';
 import { readOpenOrdersGuarded } from '../chain_orders.js';
 import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, findCrossedOrder, resolveGapBand, isSlotInRail, priceSlotEqual } from './utils/math.js';
-import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, reserveEdgeIdSet, compareReserveEdge, parseSlotIndex, reportGridPriceInvariant } from './utils/order.js';
+import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, reserveEdgeIdSet, compareReserveEdge, parseSlotIndex, reportGridPriceInvariant, liveWindowIdSet } from './utils/order.js';
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -1764,7 +1764,7 @@ async function _reconcileStartupSide({
         const pickedIds = new Set(desiredSlots.map((s: any) => s?.id).filter(Boolean));
         const freshEdge = _pickEdgeReserveSlots(manager, orderType, reserveCount, pickedIds);
         const reserveAnchor = resolveLiveReserveEdgeAnchorPrice(manager, reserveSide);
-        reserveEdgeIds = reserveEdgeIdSet((Array.from(manager.orders.values()) as any[]), manager.config, orderType, reserveAnchor);
+        reserveEdgeIds = reserveEdgeIdSet((Array.from(manager.orders.values()) as any[]), manager.config, orderType, reserveAnchor, liveWindowIdSet(manager, orderType));
         // Window first, then the ready edge reserves. Only the reserve share
         // still MISSING on-chain is held back for the edge (a live reserve is
         // already part of matchedOnGrid and must not shrink the window plan), so

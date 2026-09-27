@@ -176,7 +176,8 @@ import {
     resolveOnChainRetypeType,
     resolveReserveCount,
     reserveEdgeIdSet,
-    resolveLiveReserveEdgeAnchorPrice
+    resolveLiveReserveEdgeAnchorPrice,
+    liveWindowIdSet
 } from './utils/order.js';
 import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry, restoreLastFillPivot, resetLastFillPivot } from './utils/system.js';
 import * as MathUtils from './utils/math.js';
@@ -1315,8 +1316,8 @@ export async function initializeGrid(manager: any): Promise<void> {
                 buy: resolveLiveReserveEdgeAnchorPrice(manager, 'buy'),
                 sell: resolveLiveReserveEdgeAnchorPrice(manager, 'sell')
             };
-            const reserveBuyIds = reserveEdgeIdSet(oldSlots, manager.config, ORDER_TYPES.BUY, edgeAnchors.buy);
-            const reserveSellIds = reserveEdgeIdSet(oldSlots, manager.config, ORDER_TYPES.SELL, edgeAnchors.sell);
+            const reserveBuyIds = reserveEdgeIdSet(oldSlots, manager.config, ORDER_TYPES.BUY, edgeAnchors.buy, liveWindowIdSet(manager, ORDER_TYPES.BUY));
+            const reserveSellIds = reserveEdgeIdSet(oldSlots, manager.config, ORDER_TYPES.SELL, edgeAnchors.sell, liveWindowIdSet(manager, ORDER_TYPES.SELL));
             let netShift = 0;
             for (const e of owedCrawls) {
                 if (e?.side === ORDER_TYPES.BUY && reserveBuyIds?.has(e.slotId)) continue;
@@ -1811,11 +1812,13 @@ export async function _recalculateGridOrderSizesFromBlockchain(manager: any, ord
         // geometric progression including empties, then re-type the picked slot
         // to BUY/SELL before placement.  The COW boundary-shift path re-types
         // the working grid by geometry first, so crossers stay in the correct
-        // side's denominator.  Reserve edge slots are deliberately excluded from
-        // that startup re-derivation: they activate only with the size the
-        // target-grid sizing pipeline has already written (exact values, one
-        // sizing rule), and an unsized reserve waits for that pipeline instead
-        // of being placed with a locally guessed size.
+        // side's denominator.  Reserve edge slots are included here like any
+        // other slot-N side slot: this geometric curve sizes them too, and the
+        // activation picker (_pickEdgeReserveSlots) only ever places a reserve
+        // with the stored size the target-grid sizing pipeline already wrote
+        // (exact values, one sizing rule). Skipping reserves in this pass
+        // would make the divergence resize disagree with that pipeline. Only
+        // non-slot-N shelf/manual ids are skipped below.
         const orderSource = collectActions ? workingGrid : manager.orders;
         const allSideSlots = (Array.from(orderSource.values()) as Order[])
             .filter((o: any) => o.type === orderType)

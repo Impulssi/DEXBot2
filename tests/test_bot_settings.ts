@@ -619,5 +619,22 @@ assert(
     'validateBotEntry should require assetA when creditOnly is not set'
 );
 
+// reserveOrders: legacy numeric form is accepted (migrated at read time) but
+// still must be a non-negative integer.
+const baseBot = { name: 'Res', assetA: 'BTS', assetB: 'USD', activeOrders: { sell: 5, buy: 5 }, botFunds: { sell: '100%', buy: '100%' } };
+assert.strictEqual(
+    validateBotEntry({ ...baseBot, reserveOrders: 2 }, 0, 'test'),
+    null,
+    'validateBotEntry should accept the legacy numeric reserveOrders form'
+);
+assert(
+    validateBotEntry({ ...baseBot, reserveOrders: 2.5 }, 0, 'test')?.includes('reserveOrders'),
+    'validateBotEntry should reject a non-integer legacy numeric reserveOrders'
+);
+assert(
+    validateBotEntry({ ...baseBot, reserveOrders: -1 }, 0, 'test')?.includes('reserveOrders'),
+    'validateBotEntry should reject a negative legacy numeric reserveOrders'
+);
+
 console.log('bot settings tests passed');
 process.exit(0);

@@ -1516,7 +1516,8 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
             edgeAnchors: {
                 buy: OrderUtils.resolveLiveReserveEdgeAnchorPrice(manager, 'buy'),
                 sell: OrderUtils.resolveLiveReserveEdgeAnchorPrice(manager, 'sell')
-            }
+            },
+            manager
         });
 
         // Build COW result with all actions
@@ -2007,6 +2008,11 @@ export async function applyPersistedPendingCrawls(
                 'warn'
             );
             try { await bot.manager?.persistGrid?.(); } catch { /* best-effort */ }
+        } else if (result?.reason === 'restore-failed') {
+            // consumePendingFillCrawls deliberately does NOT clear the ledger
+            // on a restore failure, so these records are retained and retried —
+            // they were not dropped.
+            log(`[BOUNDARY] Pending fill crawls retained (${result.reason}); restored boundary kept`, 'warn');
         } else if (result?.reason && result.reason !== 'nothing-owed'
             && result.reason !== 'no-op' && result.reason !== 'null-boundary') {
             log(`[BOUNDARY] Pending fill crawls dropped (${result.reason})`, 'warn');

@@ -18,8 +18,8 @@
  *    Methods:
  *      syncMeta(botConfig), storeMasterGrid(orders, btsFeesOwed, boundaryIdx, assets, debugInputs, recentFillKeys, genesis, gapEvacStreaks, pendingFillCrawls, lastFillPivot)
  *      loadGrid(forceReload), loadRecentFillKeys(forceReload), loadPersistedAssets(forceReload), loadPendingFillCrawls(forceReload)
- *      loadBoundaryIdx(forceReload), loadBtsBalance(forceReload), loadBtsFeesOwed(forceReload), loadGapEvacStreaks(forceReload), loadGenesis(forceReload)
- *      clearGrid()
+ *      loadBoundaryIdx(forceReload), loadBtsBalance(forceReload), loadBtsFeesOwed(forceReload), loadGapEvacStreaks(forceReload), loadGenesis(forceReload), loadLastFillPivot(forceReload)
+ *      clearGrid(), clearPersistedBoundary(), clearPersistedLastFillPivot()
  *      loadProcessedFills(options), updateProcessedFillsBatch(fills), cleanOldProcessedFills(olderThanMs)
  *      getAssetBalances(forceReload)
  *

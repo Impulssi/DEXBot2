@@ -47,6 +47,9 @@ async function runTests() {
         assert.strictEqual(resolveReserveCount({ reserveOrders: { sell: 2.9 } }, 'sell'), 0, 'non-integer disables (matches validation)');
         assert.strictEqual(resolveReserveCount({ reserveOrders: { buy: -1 } }, 'buy'), 0, 'negative disables');
         assert.strictEqual(resolveReserveCount({ reserveOrders: { buy: 'x' } }, 'buy'), 0, 'garbage disables');
+        assert.strictEqual(resolveReserveCount({ reserveOrders: 3 }, 'buy'), 3, 'legacy numeric form migrates to buy');
+        assert.strictEqual(resolveReserveCount({ reserveOrders: 3 }, 'sell'), 0, 'legacy numeric form has no sell side');
+        assert.strictEqual(resolveReserveCount({ reserveOrders: -2 }, 'buy'), 0, 'negative legacy numeric disables');
         assert.strictEqual(resolveReserveOrders({ reserveOrders: { buy: 2, sell: 1 } }), 3, 'total sums sides');
         assert.deepStrictEqual(DEFAULT_CONFIG.reserveOrders, { buy: 0, sell: 0 }, 'default off');
     }
@@ -303,9 +306,14 @@ async function runTests() {
 
     console.log(' - reserve fills never crawl the boundary...');
     {
+        // 6 buy slots (0..5) and 6 sell slots (6..11); gap=2 puts the sell
+        // rail at 8..11. Window buys = 3,4,5; floor reserves = 0,1. Window
+        // sells = 8,9,10; ceiling reserve = 11. Each side has a genuine
+        // reserve OUTSIDE the window, so the no-crawl assertions exercise a
+        // real reserve rather than a window slot at the edge.
         const allSlots = [];
-        for (let i = 0; i < 10; i++) {
-            allSlots.push({ id: `slot-${i}`, price: 80 + i, type: i < 8 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL });
+        for (let i = 0; i < 12; i++) {
+            allSlots.push({ id: `slot-${i}`, price: 80 + i, type: i < 6 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL });
         }
         const cfg = {
             startPrice: 100,
@@ -313,7 +321,7 @@ async function runTests() {
             reserveOrders: { buy: 2, sell: 1 },
         };
         const floorFill = [{ id: 'slot-0', type: ORDER_TYPES.BUY }];
-        const ceilFill = [{ id: 'slot-9', type: ORDER_TYPES.SELL }];
+        const ceilFill = [{ id: 'slot-11', type: ORDER_TYPES.SELL }];
         const midBuy = [{ id: 'slot-5', type: ORDER_TYPES.BUY }];
         const midSell = [{ id: 'slot-8', type: ORDER_TYPES.SELL }];
         assert.strictEqual(
@@ -647,6 +655,60 @@ async function runTests() {
         assert.strictEqual(excluded && excluded.size, 0, 'windowed ids are skipped, overlapping edge pick is empty');
         const partial = reserveEdgeIdSet(slots, cfg, ORDER_TYPES.BUY, null, new Set(['slot-0']));
         assert.deepStrictEqual([...(partial || [])].sort(), ['slot-1', 'slot-2'], 'partially windowed edge refills the count from the next floor slots');
+    }
+
+    console.log(' - window edge is not a reserve: window fills crawl and the wire keeps the hole...');
+    {
+        // Regression: the live-reserve COUNT excluded window members, but the
+        // no-crawl classification and the refill wire did not. A keep-low
+        // window reaching the floor edge made its window fills look like
+        // static reserve fills (no crawl) and dropped its hole CREATE from the
+        // refill wire, so the bot refilled same-side and a guard-skipped window
+        // refill could not pin the boundary.
+        const allSlots: any[] = [];
+        for (let i = 0; i < 9; i++) {
+            allSlots.push({ id: `slot-${i}`, price: 100 + i, type: i < 6 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL });
+        }
+        const config = {
+            activeOrders: { buy: 6, sell: 3 },
+            reserveOrders: { buy: 2, sell: 0 },
+            startPrice: 105.5,
+        };
+        const fill = [{ id: 'slot-0', type: ORDER_TYPES.BUY, price: 100, size: 10, isPartial: false }];
+
+        // Window wins the overlap: slot-0 is a window member, so the fill must
+        // crawl (boundary 6 -> 5), exactly as with reserves disabled.
+        const withReserves = deriveTargetBoundary(fill, 6, allSlots, config, 0, 10, [], { buy: null, sell: null });
+        assert.strictEqual(withReserves.boundaryIdx, 5, 'window overlap fill still crawls the boundary');
+        const noReserves = deriveTargetBoundary(
+            fill, 6, allSlots, { ...config, reserveOrders: { buy: 0, sell: 0 } }, 0, 10, [], { buy: null, sell: null }
+        );
+        assert.strictEqual(noReserves.boundaryIdx, 5, 'no-reserve control crawls the same fill');
+
+        // A genuine reserve BEYOND the window still does not crawl.
+        const windowCfg = { activeOrders: { buy: 4, sell: 3 }, reserveOrders: { buy: 2, sell: 0 }, startPrice: 106 };
+        const reserveFill = [{ id: 'slot-0', type: ORDER_TYPES.BUY, price: 100, size: 10, isPartial: false }];
+        const reserveResult = deriveTargetBoundary(reserveFill, 6, allSlots, windowCfg, 0, 10, [], { buy: null, sell: null });
+        assert.strictEqual(reserveResult.boundaryIdx, 6, 'genuine floor reserve fill does not crawl');
+
+        // Refill wire: the window floor hole CREATE stays in the wire; a
+        // genuine reserve CREATE is excluded. Both need the live window set,
+        // so pass the manager (the placement-picker input).
+        const mgrMock = { orders: new Map(allSlots.map((s) => [s.id, s])), config, boundaryIdx: 6, _gapSlots: 0 };
+        const overlapWire = collectRefillSlotIds(
+            [{ type: COW_ACTIONS.CREATE, id: 'slot-0' }, { type: COW_ACTIONS.CREATE, id: 'slot-7' }],
+            { config, slots: allSlots, edgeAnchors: { buy: null, sell: null }, manager: mgrMock }
+        );
+        assert(overlapWire.includes('slot-0'), `window floor CREATE stays in the refill wire (wire: ${overlapWire.join(', ')})`);
+        assert(overlapWire.includes('slot-7'), 'window sell CREATE remains in the wire');
+
+        const reserveMgrMock = { orders: new Map(allSlots.map((s) => [s.id, s])), config: windowCfg, boundaryIdx: 6, _gapSlots: 0 };
+        const reserveWire = collectRefillSlotIds(
+            [{ type: COW_ACTIONS.CREATE, id: 'slot-0' }, { type: COW_ACTIONS.CREATE, id: 'slot-4' }],
+            { config: windowCfg, slots: allSlots, edgeAnchors: { buy: null, sell: null }, manager: reserveMgrMock }
+        );
+        assert(!reserveWire.includes('slot-0'), 'genuine reserve CREATE is excluded from the wire');
+        assert(reserveWire.includes('slot-4'), 'window CREATE stays in the wire alongside a reserve');
     }
 
     console.log(' - liveWindowIdSet mirrors the picker window slice...');
