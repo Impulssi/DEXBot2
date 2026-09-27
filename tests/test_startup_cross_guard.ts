@@ -98,7 +98,7 @@ async function run() {
         const { manager } = createManager([
             emptySlot('slot-10', ORDER_TYPES.BUY, 840.0)
         ], [
-            { chainOrderId: '1.7.300', type: ORDER_TYPES.SELL, price: 870.0, size: 0.1, reason: 'price-drift-orphan' }
+            { chainOrderId: '1.7.300', type: ORDER_TYPES.SELL, price: 870.0, size: 0.1, reason: 'out-of-grid-deferred' }
         ]);
         const plan = {
             chainOrderId: '1.7.200',

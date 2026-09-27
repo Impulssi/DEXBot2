@@ -23,6 +23,7 @@ setCachedModule(
 const { OrderManager } = require('../modules/order/index').default;
 const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../modules/constants');
 const { createSilentLogger } = require('./helpers/silent_logger');
+const { makeLadderFromPrices } = require('./helpers/order_test_helpers');
 
 const { _setFeeCache } = require('../modules/order/utils/math');
 _setFeeCache({
@@ -45,6 +46,11 @@ const createManager = async () => {
     mgr.logger = createSilentLogger();
     mgr.assets = { assetA: { id: '1.3.0', precision: 8 }, assetB: { id: '1.3.1', precision: 5 } };
     await mgr.setAccountTotals({ buy: 10000, sell: 100, buyFree: 10000, sellFree: 100 });
+    // Genesis-frozen engine: the sync gate refuses a populated grid with no
+    // price ladder (INV-GRID-004), so the fixture carries one. `slot-1` is
+    // ladder index 1, so the ladder must have at least two levels with 100 at
+    // that index — a single-level ladder would leave the slot unaddressable.
+    mgr._genesis = makeLadderFromPrices([1, 100]);
     await mgr._updateOrder({
         id: 'slot-1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.SELL,
         size: 10, price: 100, orderId: '1.7.100'

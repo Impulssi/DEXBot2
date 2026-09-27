@@ -101,9 +101,11 @@ function testBuildStartupDefaultsLogReflectsExplicitOnlyDynamicBase() {
     const text = buildStartupDefaultsLog(DEFAULT_AMA, DEFAULT_CONFIG, MARKET_ADAPTER);
     const expectedFallback = `weightFallback=${fixedTo(DEFAULT_CONFIG.weightDistribution.sell, 2)}/${fixedTo(DEFAULT_CONFIG.weightDistribution.buy, 2)}`;
 
+    const expectedAsymCap = `asymCap=${(MARKET_ADAPTER.ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR * 100).toFixed(0)}%`;
+
     assert.ok(text.includes('dynamicBase=explicit-only'), 'startup defaults should document explicit-only dynamic base weights');
     assert.ok(text.includes(expectedFallback), 'startup defaults should include fallback weights');
-    assert.ok(text.includes('asymCap=33%'), 'startup defaults should include default asymmetry cap');
+    assert.ok(text.includes(expectedAsymCap), 'startup defaults should include the merged asymmetry cap');
 }
 
 testBuildWeightSummaryFormatsSellBuyOrder();

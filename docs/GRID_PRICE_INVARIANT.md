@@ -232,26 +232,27 @@ adopt into `slot--17` (via `slotIndexForPrice`) and **let the slot keep
 placed*; it is not the slot's price, and it disappears on the next
 rotation/cancel.
 
-This is what the genesis path (`adoptChainOrderIntoSlot`) already did — it sets
-`orderId`, `state`, `size`, `rawOnChain` and **never touches `price`**. The
-legacy fallback was the only path that got it wrong; it now matches.
+This is what `adoptChainOrderIntoSlot` does — it sets `orderId`, `state`,
+`size`, `rawOnChain` and **never touches `price`**. It used to be stated on two
+paths (the no-genesis legacy fallback got it wrong); the legacy path is gone, so
+there is now exactly one adoption path.
 
-**Both paths now state this explicitly, and warn when it is broken.** Keeping
-the slot's price by *not assigning it* is correct but invisible: nothing would
-catch a later edit that reintroduced `price: chainOrder.price`, and nothing
-would catch a slot whose price was **already** corrupted before it reached
-adoption — it would simply be re-adopted. `adoptedSlotKeepsItsOwnPrice` runs on
-both paths and warns, naming the path, slot, expected level and drift, when an
-adopted slot's price is not its genesis level.
+**The rule is stated explicitly, and warns when it is broken.** Keeping the
+slot's price by *not assigning it* is correct but invisible: nothing would catch
+a later edit that reintroduced `price: chainOrder.price`, and nothing would
+catch a slot whose price was **already** corrupted before it reached adoption —
+it would simply be re-adopted. `adoptedSlotKeepsItsOwnPrice` runs on adoption
+and warns, naming the slot, expected level and drift, when an adopted slot's
+price is not its genesis level. A manager with no ladder is a fault, not a
+pass: the check reports it rather than waving the adoption through.
 
 That check is deliberately **non-blocking**: the chain order is real and must be
 tracked, so refusing the adoption would strand it untracked on the book —
 strictly worse than the corrupt slot it reports. It is a signal, not a gate.
 
-Note the two adoption paths are covered separately, because a fixture with a
-genesis takes the genesis path and a fixture without one takes the legacy
-fallback: LEGACY-ADOPT-001 covers the legacy path, ADOPT-NAME-001 the genesis
-path. Each is mutation-tested against its own path.
+ADOPT-001 pins the rule on the nearest-slot path with a resting price that is
+clearly off the level, and ADOPT-NAME-001 pins that a correct adoption does not
+warn.
 
 ## Healing a pre-existing off-grid slot price
 
@@ -279,11 +280,11 @@ assertion.
 ### After a repair: expect one churn cycle
 
 A repair changes `slot.price`, so any *resting* order still sitting at the old
-corrupt price no longer matches its slot. It resolves on the next reconcile via
-price-drift auto-cancel, which means **one cycle of cancel/replace churn after a
-repair is expected, not a new fault**. Operators seeing a burst of cancels
-immediately following a `[GENESIS] Slot … price repaired from genesis` line are
-watching the repair settle.
+corrupt price now maps to a different ladder level than its slot. Pass 1 queues
+it as a price mismatch and the correction re-prices it onto the slot, so **one
+cycle of churn after a repair is expected, not a new fault**. Operators seeing
+a burst of corrections immediately following a `[GENESIS] Slot … price repaired
+from genesis` line are watching the repair settle.
 
 ### Repair only runs at load — so a persistent rejection escalates
 
@@ -307,11 +308,11 @@ not "rejected N times ever".
 
 **Why not heal in place** (`slot.price = expected` at rejection time): the
 checker does compute the right value, but silently rewriting it destroys the
-diagnostic signal. The streak is what distinguishes the four corruption sources
-— legacy persisted state, migration fallback, genesis-identity mismatch, or an
-unknown live writer. Auto-heal makes all four look identical. Count first,
-escalate on persistence; consider an in-place fast path only after a soak shows
-in-process corruption is the common case.
+diagnostic signal. The streak is what distinguishes the corruption sources —
+a pre-ladder snapshot, the ladder-migration cross-check, a genesis-identity
+mismatch, or an unknown live writer. Auto-heal makes them all look identical.
+Count first, escalate on persistence; consider an in-place fast path only after a
+soak shows in-process corruption is the common case.
 
 The streak is **bot-scoped**, not module-scoped: the monolithic runtime
 (`dexbot.ts`) runs every active bot in one process, so a shared count would pool
@@ -439,7 +440,7 @@ drift:
 |---|---|---|
 | `grid.loadGrid` | **E1**, source choke point | throws `MissingGenesisError` **before any mutation** (no asset init, no fund reset, no boundary restore) |
 | `dexbot_startup_runtime` | **E3**, startup gate | regenerates the grid (`initializeGrid` re-derives prices, reconcile is update-first) or aborts startup |
-| `order/sync_engine._assertGenesisInvariant` | **E2**, defence in depth | reports once per generation, counts, and requests a structural resync — never throws |
+| `order/sync_engine._assertGenesisInvariant` | **E2**, defence in depth | **refuses the sync** (empty result, nothing touched), reports once per generation, counts, and requests a structural resync — never throws |
 | `AccountOrders.loadGenesis` | schema | a row with empty/absent `priceLevels` is not a ladder and is not returned |
 
 ### Policy
@@ -469,12 +470,36 @@ Anything other than `'halt'` falls back to `'rebuild'`.
   "escalate to structural resync"; under `'halt'` the failure carries `halt: true`
   so the maintenance resync path suppresses the automatic rebuild and waits for
   the operator.
-- **runtime E2 assert** — never fatal; it exists to make a future bypass loud.
+- **runtime E2 assert** — never fatal: it aborts the sync instead of reconciling a grid whose slots have no price authority, and it exists to make a future bypass loud.
 
 Observability is part of the design, not an afterthought: the fault is recorded on
 the manager as `_missingGenesis` (reason, detail, mismatch ratio, policy) and
 cleared by the next successful load or grid build, so a log read tells an operator
 whether T2-T4 ever fire in the wild.
+
+### The tolerance matcher is gone
+
+The consumers listed above no longer degrade, because there is nothing left to
+degrade *into*:
+
+| Former legacy behaviour | Now |
+|---|---|
+| pass-2 tolerance adoption, incl. the widened `ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER` spread-orphan band | nearest-slot only; no ladder means the orphan is reported as `no-genesis-deferred` and nothing is touched |
+| pass-1 price-equality / duplicate-swap fallback to `calculatePriceTolerance` | level identity (`chainPriceOnSameLevel`: both prices map to the same slot), integer equality only when unjudgeable; a few-quanta rest-drift within one level is left in place (no re-price) until the order rotates |
+| correction-queue staleness matched by tolerance | `priceSlotEqual` against the slot's own level, and a ladder-less entry is dropped |
+| `computeOutOfToleranceDriftTag` + `price-drift-orphan` auto-cancel (`PRICE_DRIFT_TOLERANCE_MULTIPLIER`) | removed — an off-grid order is HELD (`out-of-grid-deferred`) and resolved structurally, never cancelled off a fuzzy price diff |
+| `findMatchingGridOrderByOpenOrder` | removed (its last production caller was the pass-2 legacy block; the cancelOrder linkage matches by `orderId`) |
+| `resolveLiveReserveEdgeAnchorPrice` tiers 2/3 (live slot extreme, config bound) | ladder extreme only; a ladder-less manager returns `null` (the live resolver no longer computes a config bound — consumers that want one, e.g. `reserveEdgeIdSet`, resolve it themselves) |
+| materialize descriptor-price fallback for a `slot-N` id | kept only for an unparseable id; a `slot-N` id with no ladder logs `error` and requests a structural resync |
+
+**E2 is fail-closed.** `syncFromOpenOrders` calls `_assertGenesisInvariant`
+before anything else and, when slots exist without a ladder, returns an empty
+result — no locks, no adoption, no correction queued — after logging at `error`
+and requesting the structural resync that re-derives the ladder. It used to log
+and continue *into* the tolerance matcher; that continuation is what made the
+legacy path a live safety net, and it is what this removal gives up. The load
+gates (E1/E3) own the fail-closed decision, so the state is unreachable through
+a supported flow.
 
 ### Rejected alternatives
 
@@ -482,7 +507,9 @@ whether T2-T4 ever fire in the wild.
   live tracking and persisting a mismatched genesis) — corruption risk, rejected.
 - **Derive the ladder from the persisted slot prices** — a truncated persisted
   array would permanently shrink it.
-- **Keep loading "as-is without a ladder"** — this is the state being removed.
+- **Keep loading "as-is without a ladder"** — this is the state that was removed.
+- **Keep the tolerance matcher as the E2 fallback** — it is the corruption path
+  the invariant exists to close; E2 refuses instead.
 
 ## Key constants (`modules/constants.ts`, `TIMING`)
 
@@ -513,6 +540,7 @@ whether T2-T4 ever fire in the wild.
 | Final pre-broadcast pivot gate re-checks BUILT ops on a refreshed pivot | **landed** |
 | Fill-guard pivot persisted with the grid snapshot (provenance: fills only) | **landed** |
 | Snapshot without a usable ladder refused at load; rebuild by default, `halt` opt-in | **landed** |
+| Legacy tolerance matcher removed; E2 fail-closed (refuse the sync) instead of warning and continuing | **landed** |
 | Pivot restored with the boundary (TTL → genesis → on-grid validation chain) | **landed** |
 | Pivot mutation behind one provenance-tagged writer (`setLastFillPivot`) | **landed** |
 | Grid generation invalidates the pivot (in-memory + persisted row) | **landed** |
@@ -532,12 +560,17 @@ reported.
   rotation price is derived from the destination's genesis level (GPI-013), and
   the derivation declines — rather than inventing a price — with no ladder
   (GPI-014) or an out-of-ladder index (GPI-015).
-- **Unit:** a legacy-path out-of-grid order is held, not adopted, and keeps its
-  genesis price (LEGACY-ADOPT-001/002); the materialize path derives the slot
-  price AND order type from genesis and warns when it cannot
-  (MATERIALIZE-001/002/003); adoption
-  keeps the slot's own level on the genesis path and does not warn when correct
-  (ADOPT-NAME-001) (`tests/test_sync_out_of_grid_defer.ts`).
+- **Unit:** an out-of-grid order is held, not adopted, and keeps its genesis
+  price (ADOPT-001/002); the materialize path derives the slot price AND order
+  type from genesis (MATERIALIZE-001/003) and, on a ladder-less grid, still
+  tracks the placed order but logs the undefined grid at `error` and requests a
+  structural resync (MATERIALIZE-002); adoption keeps the slot's own level and
+  does not warn when correct (ADOPT-NAME-001)
+  (`tests/test_sync_out_of_grid_defer.ts`).
+- **Unit:** pass-2 orphan classification is nearest-slot only — out-of-grid is
+  held, an in-grid orphan adopts into the slot its price maps to and keeps that
+  slot's level, an occupied level is a cancel-only duplicate, and a ladder-less
+  grid refuses the whole sync (`tests/test_sync_excess_orphan.ts`).
 - **Unit:** pre-broadcast drift is reported at `warn` and the op is built from
   the *planned* price (`tests/test_cow_orchestration_fixes.ts`).
 - **Unit:** pivot snapping and off-ladder refusal

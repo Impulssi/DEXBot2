@@ -53,7 +53,7 @@ const NAMES = {
         'clearDuplicateOrphanDetection', 'collectRefillSlotIds', 'compareReserveEdge', 'consumePendingFillCrawls', 'convertToSpreadPlaceholder',
         'deriveTargetBoundary', 'duplicateOrphanLogInfo',
         'extractBatchOperationResults', 'filterOrdersByType',
-        'findMatchingGridOrderByOpenOrder', 'geometryTypeForSlotIndex',
+        'geometryTypeForSlotIndex',
         'getActiveOrdersTotal',
         'getSideBudget', 'hasOnChainId', 'isCrossingCheckCandidate', 'isEmptyGridSlot',
         'isOrderGoneErrorMessage', 'isOrderHealthy', 'isOrderOnChain',
@@ -748,7 +748,6 @@ function makeDivergenceSelf(opts) {
         _getPipelineSignals: () => ({}),
         _cancelDustOrders: async () => ({ cancelledCount: 0, batchResult: null }),
         _abortFlowIfIllegalState: async () => false,
-        _autoCancelOneUnmatchedOrphan: async () => ({ cancelled: false, reason: 'test-noop' }),
         _performGridResync: async (_options?: any) => {
             opts.markResync?.();
             return true;

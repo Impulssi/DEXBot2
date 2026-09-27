@@ -2521,21 +2521,10 @@ async function executeMaintenanceLogic(bot: any, context: any) {
             healthResult = freshHealth;
         }
 
-        if (!repairedFromTarget) {
-            const autoCancelResult = await bot._autoCancelOneUnmatchedOrphan();
-            if (autoCancelResult?.cancelled) {
-                bot._log(
-                    `[MAINT] Auto-cancelled unmatched price-drift orphan ${autoCancelResult.orderId} during ${context} ` +
-                    `(unblocking CREATE pipeline that targeted-drift reconcile could not adopt).`,
-                    'warn'
-                );
-            } else if (autoCancelResult?.reason) {
-                bot._log(
-                    `[MAINT] Skipped unmatched-orphan auto-cancel during ${context}: ${autoCancelResult.reason}`,
-                    'debug'
-                );
-            }
-        }
+        // NOTE: no unmatched-orphan auto-cancel here any more. The
+        // price-drift-orphan tag came from the legacy tolerance band, which no
+        // longer exists: an off-grid chain order is HELD (out-of-grid-deferred)
+        // and resolved structurally, never cancelled off a fuzzy price diff.
 
         refreshDynamicWeightDistribution(bot, context);
 

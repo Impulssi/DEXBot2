@@ -24,7 +24,6 @@ const {
     toRailHolePlaceholder,
     buildOutsideInPairGroups,
     isOrderPlaced,
-    findLiveOrderOwnerByChainId,
     chainOrderUnchangedFromCache,
     detectCrossedBookPlan,
     collectKnownOnChainOrderIds,
@@ -167,19 +166,6 @@ function getPendingBroadcasts(bot: any): any[] {
     return (bot.manager && bot.manager._pendingBroadcasts instanceof Map)
         ? Array.from(bot.manager._pendingBroadcasts.values()) as any[]
         : [];
-}
-
-/**
- * Count pending-broadcast entries without materializing the array.
- * Same instanceof Map guard as getPendingBroadcasts, for hot paths that
- * only need the count (e.g. the orphan auto-cancel gate).
- * @param {import('./dexbot_class.js').DEXBot} bot
- * @returns {number}
- */
-function countPendingBroadcasts(bot: any): number {
-    return (bot.manager && bot.manager._pendingBroadcasts instanceof Map)
-        ? bot.manager._pendingBroadcasts.size
-        : 0;
 }
 
 /**
@@ -1140,83 +1126,6 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
 }
 
 /**
- * Auto-cancel one unmatched orphan (price-drift orphan) per cycle.
- * @param {import('./dexbot_class.js').DEXBot} bot
- * @returns {Promise<{cancelled: boolean, reason?: string, orderId?: string}>}
- */
-async function autoCancelOneUnmatchedOrphan(bot: any) {
-    const cycleId = bot._currentCycleId || 0;
-    const recoveryActive = bot.manager?._recoveryState?.structuralResyncRequested === true;
-    const cycleCap = recoveryActive ? 5 : 1;
-
-    if (bot._autoCancelOrphanCycleMarker === cycleId) {
-        if (bot._autoCancelOrphanSubCount >= cycleCap) {
-            return { cancelled: false, reason: 'cap-reached-this-cycle', subCount: bot._autoCancelOrphanSubCount };
-        }
-    } else {
-        bot._autoCancelOrphanCycleMarker = cycleId;
-        bot._autoCancelOrphanSubCount = 0;
-    }
-    const pending = countPendingBroadcasts(bot);
-    if (pending > 0) {
-        return { cancelled: false, reason: 'pending-broadcasts-active' };
-    }
-    const unmatched = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
-        ? bot.manager._lastUnmatchedChainOrders
-        : [];
-    if (unmatched.length === 0) {
-        return { cancelled: false, reason: 'no-unmatched' };
-    }
-    const fingerprinted = unmatched.find((u: any) => u && u.fingerprint);
-    if (fingerprinted) {
-        return { cancelled: false, reason: 'fingerprinted-handle-via-recovery' };
-    }
-
-    const target = unmatched.find((u: any) => u && u.reason === 'price-drift-orphan');
-    if (!target) {
-        return { cancelled: false, reason: 'no-price-drift-orphan', message: 'no price-drift orphan to cancel; remaining unmatched orders need no cancellation (adoptable or deferred holds)' };
-    }
-    const orderId = target.id || target.orderId || target.chainOrderId;
-    if (!orderId) {
-        return { cancelled: false, reason: 'no-orderId' };
-    }
-    // _lastUnmatchedChainOrders is a cached snapshot. A sync/reconcile may
-    // have adopted this same chain id after the snapshot was recorded, so a
-    // direct cancel here would destroy a now-live grid order. The pending
-    // broadcast gate does not cover this case.
-    const liveOwner: any = findLiveOrderOwnerByChainId(bot.manager, orderId);
-    if (liveOwner) {
-        bot.manager._lastUnmatchedChainOrders = unmatched.filter((u: any) => {
-            const id = u?.id || u?.orderId || u?.chainOrderId;
-            return id !== orderId;
-        });
-        return { cancelled: false, reason: 'now-owned', slotId: liveOwner.id };
-    }
-    if (!chainOrders?.cancelOrder) {
-        return { cancelled: false, reason: 'cancelOrder-unavailable' };
-    }
-    try {
-        await chainOrders.cancelOrder(bot.account, bot.privateKey, orderId);
-        if (typeof chainOrders.recordOwnCancel === 'function') {
-            chainOrders.recordOwnCancel(orderId);
-        }
-        bot._autoCancelOrphanSubCount++;
-        bot.manager.logger.log(
-            `[COW] Auto-cancelled ${bot._autoCancelOrphanSubCount}/${unmatched.length} unmatched chain order ` +
-            `(${formatUnmatchedChainOrderForLog(target)}) — per-cycle cap=${cycleCap}.`,
-            'warn'
-        );
-        return { cancelled: true, orderId };
-    } catch (err) {
-        bot.manager.logger.log(
-            `[COW] Auto-cancel of unmatched chain order ${orderId} failed: ${(err as any)?.message || err}`,
-            'error'
-        );
-        return { cancelled: false, reason: 'cancel-failed', error: (err as any)?.message || String(err) };
-    }
-}
-
-/**
  * Check whether to execute creates in outside-in pair mode.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Array} opContexts
@@ -1840,11 +1749,11 @@ function checkGridPriceInvariant(slotId: any, price: any, genesis: any): { ok: b
  * copies from the destination hole's `order.price` and which is therefore only
  * as sound as whatever last wrote that object. Deriving the emitted price here
  * means a planner bug cannot produce a mis-priced UPDATE on its own; the
- * invariant check remains as the backstop for the no-genesis case.
+ * invariant check remains as the backstop.
  *
  * @returns {number} the destination's genesis level, or NaN when there is no
  *   genesis ladder / no parseable destination index (caller falls back to the
- *   planned price, which is the migration case the checker fails open on).
+ *   planned price — an undefined grid, which the load and sync gates refuse).
  */
 function deriveRotationPrice(bot: any, newGridId: any): number {
     try {
@@ -5892,7 +5801,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
         updateOperationCount
     };
 }
-export { isLastFillGuardBlocked, resolveOnGridPivot, checkGridPriceInvariant, deriveRotationPrice, refreshLastFillPivotFromQueue, runFinalPivotGate, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, popPushedWorkingGrid, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, autoCancelOneUnmatchedOrphan, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, buildActionsFromPlan, buildCowResultFromPlan, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain, resolveRefillBoundaryHold, toRefillSlotIdSet, trackBoundaryHold };
+export { isLastFillGuardBlocked, resolveOnGridPivot, checkGridPriceInvariant, deriveRotationPrice, refreshLastFillPivotFromQueue, runFinalPivotGate, buildOutsideInPairGroupsForOrders, buildOutsideInPairGroupsForCreateEntries, markMissingCreateResultsAsStructuralBlocker, formatUnmatchedChainOrderForLog, recordPendingBroadcast, clearPendingBroadcasts, popPushedWorkingGrid, findChainOrderForSlot, reconcileAfterUncertainBroadcast, reconcileAfterUncertainBroadcastImpl, executeWithRetryOnUncertain, executeChunkedWithRetryOnUncertain, formatPartialBroadcastSummary, executeOperationsWithStrategy, buildActionsFromPlan, buildCowResultFromPlan, applyRotationTransitionsToWorkingGrid, pollChainForConfirmation, updateOrdersOnChainBatchCOW, processBatchResults, adoptPlacedBatchFromChain, resolveRefillBoundaryHold, toRefillSlotIdSet, trackBoundaryHold };
 // Exported for regression tests (issue #23 sibling): the uncertain-broadcast
 // discard path must never drop a placement silently when master lost the slot.
 export { restoreDiscardedCreates };
@@ -5914,7 +5823,6 @@ export default {
     findChainOrderForSlot,
     reconcileAfterUncertainBroadcast,
     reconcileAfterUncertainBroadcastImpl,
-    autoCancelOneUnmatchedOrphan,
     shouldExecuteCreatePairMode,
     executeWithRetryOnUncertain,
     executeChunkedWithRetryOnUncertain,

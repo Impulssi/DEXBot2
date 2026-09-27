@@ -163,8 +163,6 @@ class DEXBot {
     _maintenanceCooldownCycles: number;
     _lastGridActivityAt: number;
     _currentCycleId: number;
-    _autoCancelOrphanCycleMarker: number | null;
-    _autoCancelOrphanSubCount: number;
     _consecutiveConsumeFailures: number;
     _consumeFailureFirstAt: number;
     _reconnectUnregister: any;
@@ -289,8 +287,6 @@ class DEXBot {
         this._lastGridActivityAt = 0;
         this._lastDeferredDustCount = 0;
         this._currentCycleId = 0;
-        this._autoCancelOrphanCycleMarker = null;
-        this._autoCancelOrphanSubCount = 0;
 
         // Dust cancellation is driven by the periodic dust health-check timer
         // (setupDustHealthCheckInterval) rather than per-dust state maps.
@@ -1008,35 +1004,6 @@ class DEXBot {
      */
     async _reconcileAfterUncertainBroadcast(err: any, opContexts: any, options: Record<string, any> = {}) {
         return cowRuntime.reconcileAfterUncertainBroadcast(this, err, opContexts, options);
-    }
-
-    /**
-     * Auto-cancel a price-drift orphan from the unmatched-order snapshot.
-     *
-     * Only cancels entries with reason === 'price-drift-orphan' — these are
-     * surplus orders that drifted away from their slot price and have no
-     * adoptable grid slot. All other unmatched orders (duplicate-price-level,
-     * already-matched-slot, etc.) are adoptable positions that the structural
-     * resync will integrate into the grid; cancelling them destroys capital.
-     *
-     * This is the post-recovery safety net: if, after
-     * _reconcileAfterUncertainBroadcast runs, there are still price-drift
-     * orphans, cancel ONE per cycle. Per-cycle cap = 1 (or 5 in recovery mode)
-     * — the next cycle will pick up the next orphan if more remain.
-     *
-     * Safety conditions (ALL must hold):
-     *   1. _pendingBroadcasts is empty (no in-flight recovery)
-     *   2. _lastUnmatchedChainOrders contains at least one price-drift-orphan
-     *   3. The current cycle has not already auto-cancelled an orphan
-     *      (tracked via this._autoCancelOrphanCycleMarker)
-     *
-     * Records the cancel via _recordOwnCancelOps so the fill consumer
-     * doesn't trip the self-cancel guard.
-     *
-     * @returns {Promise<{cancelled: boolean, orderId?: string, reason?: string}>}
-     */
-    async _autoCancelOneUnmatchedOrphan() {
-        return cowRuntime.autoCancelOneUnmatchedOrphan(this);
     }
 
     /**

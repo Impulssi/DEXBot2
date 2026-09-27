@@ -24,6 +24,7 @@ const {
     _stampCorrectionProvenance,
 } = require('../modules/order/utils/order');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { makeLadderFromPrices } = require('./helpers/order_test_helpers');
 
 const ASSETS = {
     assetA: { id: '1.3.0', precision: 5, symbol: 'HONEST' },
@@ -37,11 +38,19 @@ function liveSell(id, orderId, price, size = 850) {
 // Minimal manager harness: live slots Map + correction queue + logger + fake _gridLock.
 function createManager(ordersList, queue = []) {
     const logs = [];
+    // The engine is genesis-frozen: staleness is decided by priceSlotEqual
+    // against the slot's own level, which needs a ladder. Build one from the
+    // prices this fixture uses so every slot price IS a level.
+    const fixturePrices = [
+        ...ordersList.map((o) => o.price),
+        ...queue.map((e) => e.expectedPrice),
+    ];
     const manager = {
         orders: new Map(ordersList.map((o) => [o.id, { ...o }])),
         assets: ASSETS,
         ordersNeedingPriceCorrection: queue.map((e) => ({ ...e })),
         _lastUnmatchedChainOrders: [] as any[],
+        _genesis: makeLadderFromPrices(fixturePrices),
         boundaryIdx: 0,
         _gapSlots: 0,
         config: undefined as any,

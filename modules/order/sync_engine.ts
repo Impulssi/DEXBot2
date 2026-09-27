@@ -126,20 +126,16 @@ const { toFiniteNumber } = Format;
 import {
     blockchainToFloat,
     floatToBlockchainInt,
-    calculatePriceTolerance,
     getAssetFees,
     getBtsSide,
-    getSellStartIdx,
     slotIndexForPrice,
     isChainPriceOutOfGrid,
     isSlotInRail,
-    isSlotIndexInGapBand,
     priceForSlot,
     priceSlotEqual
 } from './utils/math.js';
 import {
     parseChainOrder,
-    findMatchingGridOrderByOpenOrder,
     applyChainSizeToGridOrder,
     convertToSpreadPlaceholder,
     virtualizeOrder,
@@ -220,7 +216,16 @@ async function confirmSuspectEmptyRead(mgr: any): Promise<string> {
     }
 }
 
-function describeNearestAdoptionCandidates(mgr: any, chainOrder: any, precision: any, calcTolerance: any, matchedGridOrderIds: Set<string> | null = null) {
+/**
+ * Describe the nearest same-side (or spread) candidate slots for a chain order
+ * that could not be adopted, so a log read says WHICH slot blocked it.
+ *
+ * Ladder-based, not tolerance-based: a candidate is "at this price" when the
+ * chain order and the candidate's slot price map to the same ladder level
+ * (`chainPriceOnSameLevel` — the adoption rule itself). The price diff is
+ * reported against the slot's own level for the human reader.
+ */
+function describeNearestAdoptionCandidates(mgr: any, chainOrder: any, precision: any, matchedGridOrderIds: Set<string> | null = null) {
     if (!mgr?.orders || !chainOrder || typeof precision !== 'number') return 'candidate diagnostics unavailable';
 
     const chainPrice = toFiniteNumber(chainOrder.price);
@@ -236,27 +241,27 @@ function describeNearestAdoptionCandidates(mgr: any, chainOrder: any, precision:
 
         const price = toFiniteNumber(slot.price);
         const priceDiff = Math.abs(price - chainPrice);
-        const effectiveSize = slot.size > 0 ? toFiniteNumber(slot.size) : chainSize;
-        const tolerance = calcTolerance(price, effectiveSize, chainOrder.type) || 0;
+        let priceEqual = false;
+        try { priceEqual = chainPriceOnSameLevel(chainPrice, price, mgr?._genesis, precision); } catch { priceEqual = chainPrice === price; }
         const gridInt = floatToBlockchainInt(toFiniteNumber(slot.size), precision);
         const sizeDiffInt = chainInt - gridInt;
         const hasOrderId = Boolean(slot.orderId);
         const alreadyMatched = Boolean(matchedGridOrderIds?.has?.(slot.id));
         const sizeOk = Math.abs(sizeDiffInt) <= 1;
-        const primaryEligible = typeMatch && priceDiff <= tolerance && sizeOk;
-        const fallbackEligible = (typeMatch || spreadMatch) && priceDiff <= tolerance && sizeOk && !hasOrderId && !alreadyMatched;
+        const primaryEligible = typeMatch && priceEqual && sizeOk;
+        const adoptable = (typeMatch || spreadMatch) && priceEqual && sizeOk && !hasOrderId && !alreadyMatched;
 
         candidates.push({
             slot,
             typeMatch,
             spreadMatch,
             priceDiff,
-            tolerance,
+            priceEqual,
             sizeDiffInt,
             hasOrderId,
             alreadyMatched,
             primaryEligible,
-            fallbackEligible,
+            adoptable,
         });
     }
 
@@ -267,17 +272,16 @@ function describeNearestAdoptionCandidates(mgr: any, chainOrder: any, precision:
         const slot = candidate.slot;
         const reasons: string[] = [];
         if (!candidate.typeMatch && !candidate.spreadMatch) reasons.push('type');
-        if (candidate.priceDiff > candidate.tolerance) reasons.push('price');
+        if (!candidate.priceEqual) reasons.push('price');
         if (Math.abs(candidate.sizeDiffInt) > 1) reasons.push('size');
         if (candidate.hasOrderId) reasons.push(`occupied:${slot.orderId}`);
         if (candidate.alreadyMatched) reasons.push('alreadyMatched');
         if (candidate.primaryEligible) reasons.push('primary-matchable');
-        if (candidate.fallbackEligible) reasons.push('fallback-adoptable');
+        if (candidate.adoptable) reasons.push('adoptable');
         return `${slot.id || 'unknown'} ${slot.type}/${slot.state}` +
             ` orderId=${slot.orderId || 'none'}` +
             ` price=${Format.formatPrice6(slot.price)}` +
             ` diff=${Format.formatPrice6(candidate.priceDiff)}` +
-            ` tol=${Format.formatPrice6(candidate.tolerance)}` +
             ` size=${Format.formatSizeByOrderType(slot.size || 0, chainOrder.type, mgr.assets)}` +
             ` sizeDiffInt=${candidate.sizeDiffInt}` +
             ` reason=${reasons.join('|') || 'unknown'}`;
@@ -285,51 +289,60 @@ function describeNearestAdoptionCandidates(mgr: any, chainOrder: any, precision:
 }
 
 /**
- * Find the closest same-side (or spread) candidate slot for a chain order and
- * return a "price-drift-orphan" tag if the slot's price diff is larger than the
- * strict tolerance but small enough to be considered a meaningful drift.
+ * Whether a chain order rests on the SAME LADDER LEVEL as a slot (the slot's
+ * own index), which is the "has this order moved?" test the pass-1 path needs.
  *
- * Rationale: when the chain order has drifted from the planned slot price by
- * more than the matcher's strict tolerance (so the matcher correctly rejects
- * the adoption), the next planning cycle's pre-broadcast guard will refuse
- * new CREATEs and the structural resync will cancel+recreate. Tagging the
- * entry as a price-drift-orphan lets the auto-cancel path prioritize it and
- * the diagnostics surface the exact slot the orphan drifted from.
- *
- * "Meaningful drift" = price diff > strict tolerance AND price diff
- * <= strict tolerance * PRICE_DRIFT_TOLERANCE_MULTIPLIER. Larger diffs are
- * considered wildly-out-of-tolerance orphans (e.g. legacy orders from a
- * previous config) and are NOT tagged — the resync will discard them
- * structurally instead.
- *
- * @param {Object} mgr - OrderManager instance
- * @param {Object} chainOrder - Parsed chain order { price, size, type }
- * @param {Function} calcToleranceFn - calculatePriceTolerance function
- * @returns {{candidateSlotId: string, candidateSlotPrice: number, priceDiff: number, tolerance: number}|null}
+ * Level identity, not float equality: a chain order legitimately rests a few
+ * quanta off its slot's level (a regeneration leaves old orders at old levels,
+ * a broadcast rounds), and both prices still map to the same slot. An order that
+ * maps to a DIFFERENT slot really has moved, and only then is a price
+ * correction / duplicate / re-slot warranted. Unjudgeable inputs (no ladder,
+ * non-finite price) fall back to integer equality at the asset precision.
  */
+function chainPriceOnSameLevel(chainPrice: any, slotPrice: any, genesis: any, precision: number): boolean {
+    if (hasGenesisLadder(genesis)) {
+        try {
+            return slotIndexForPrice(chainPrice, genesis) === slotIndexForPrice(slotPrice, genesis);
+        } catch { /* unjudgeable — fall through to integer equality */ }
+    }
+    try { return priceSlotEqual(chainPrice, slotPrice, precision); } catch { return chainPrice === slotPrice; }
+}
+
 /**
  * Assert (non-fatally) that an adopted slot still carries its own genesis
  * level, not a price inherited from the chain order.
  *
- * Both adoption paths keep the slot's price by NOT assigning it — an absence of
- * a write. That is correct but invisible: nothing would notice if a later edit
- * added `price: chainOrder.price` back, and nothing would notice a slot whose
- * price had already been corrupted before it reached adoption. This makes the
- * rule explicit and warns when it is broken.
+ * Adoption keeps the slot's price by NOT assigning it — an absence of a write.
+ * That is correct but invisible: nothing would notice if a later edit added
+ * `price: chainOrder.price` back, and nothing would notice a slot whose price
+ * had already been corrupted before it reached adoption. This makes the rule
+ * explicit and warns when it is broken.
  *
  * Deliberately non-throwing: adoption already has handled rejection paths, and
  * turning a warning into a crash here would strand a live chain order. The
  * caller's existing rejection handling stays the enforcement; this is the
  * signal that surfaces the corruption in the log.
  *
- * @returns {boolean} true when the slot's price is its genesis level (or cannot
- *   be judged), false when it demonstrably is not.
+ * @returns {boolean} true when the slot's price is its genesis level (or its id
+ *   cannot address a level); false when it demonstrably is not, or when the
+ *   manager holds no ladder at all (INV-GRID-004 fault, not a pass).
  */
 function adoptedSlotKeepsItsOwnPrice(mgr: any, adopted: any, chainOrderId: string, path: string): boolean {
     try {
         const genesis = (mgr as any)?._genesis;
         const levels = genesis?.priceLevels;
-        if (!Array.isArray(levels) || levels.length === 0) return true; // no ladder: unjudgeable, fail open
+        if (!Array.isArray(levels) || levels.length === 0) {
+            // Undefined grid (INV-GRID-004): no ladder means no authority for
+            // the slot's price, so there is nothing to check the adoption
+            // against. Report it — the caller's return value is informational
+            // (adoption is never blocked), so the log is the signal.
+            mgr.logger?.log?.(
+                `[SYNC] Adoption (${path}) for ${chainOrderId} into slot ${adopted?.id}: the manager holds no price ladder ` +
+                `(INV-GRID-004), so the slot's price cannot be verified against its genesis level.`,
+                'error'
+            );
+            return false;
+        }
         const idx = parseSlotIndex(adopted?.id);
         if (idx === null || !Number.isFinite(idx) || idx < 0 || idx >= levels.length) return true;
         const expected = Number(priceForSlot(idx, genesis));
@@ -383,7 +396,7 @@ async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, cha
     // validateOrder treats SPREAD + orderId/on-chain state as fatal
     // ILLEGAL_SPREAD_STATE, and the size precision below depends on the
     // resolved side. Every other activation path (COW rotation destinations,
-    // legacy fallback adoption, grid load) performs the same re-type.
+    // grid load) performs the same re-type.
     if (bestMatch.type === ORDER_TYPES.SPREAD && (chainOrder.type === ORDER_TYPES.BUY || chainOrder.type === ORDER_TYPES.SELL)) {
         bestMatch.type = chainOrder.type;
     }
@@ -442,41 +455,6 @@ async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, cha
     updatedOrders.push(bestMatch);
     chainOrderIdsOnGrid.add(chainOrderId);
     return true;
-}
-
-function computeOutOfToleranceDriftTag(mgr: any, chainOrder: any, calcToleranceFn: any) {
-    if (!mgr?.orders || !chainOrder) return null;
-    const chainPrice = toFiniteNumber(chainOrder.price);
-    if (!Number.isFinite(chainPrice)) return null;
-    const chainSize = toFiniteNumber(chainOrder.size);
-    const orderType = chainOrder.type;
-    if (orderType !== ORDER_TYPES.BUY && orderType !== ORDER_TYPES.SELL) return null;
-
-    let bestDrift: any = null;
-    for (const slot of mgr.orders.values()) {
-        if (!slot) continue;
-        if (slot.type !== orderType && slot.type !== ORDER_TYPES.SPREAD) continue;
-        if (slot.orderId) continue;
-        if (![ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL, ORDER_STATES.VIRTUAL].includes(slot.state)) continue;
-        const slotPrice = toFiniteNumber(slot.price);
-        if (!Number.isFinite(slotPrice)) continue;
-        const priceDiff = Math.abs(slotPrice - chainPrice);
-        const effectiveSize = slot.size > 0 ? toFiniteNumber(slot.size) : chainSize;
-        const tolerance = (calcToleranceFn ? (calcToleranceFn(slotPrice, effectiveSize, orderType) || 0) : 0);
-        if (priceDiff <= tolerance) continue;
-        const driftMultiplier = mgr?.config?.gridLimits?.PRICE_DRIFT_TOLERANCE_MULTIPLIER;
-        const driftBudget = tolerance * driftMultiplier;
-        if (driftBudget > 0 && priceDiff > driftBudget) continue;
-        if (!bestDrift || priceDiff < bestDrift.priceDiff) {
-            bestDrift = {
-                candidateSlotId: slot.id,
-                candidateSlotPrice: slotPrice,
-                priceDiff,
-                tolerance
-            };
-        }
-    }
-    return bestDrift;
 }
 
 class SyncEngine {
@@ -565,11 +543,20 @@ class SyncEngine {
         // E2 (defence in depth): a populated grid MUST have a price ladder
         // before the first sync touches it. loadGrid (E1) and the startup gate
         // (E3) establish that invariant; this assert exists to catch a future
-        // path that skips both. It does NOT throw -- a sync in flight is not
-        // the place to abort a live manager -- it reports (once per
-        // generation, with a running count) and asks for the structural resync
-        // that re-derives the ladder. See docs/GRID_PRICE_INVARIANT.md.
-        this._assertGenesisInvariant(mgr);
+        // path that skips both. It is FAIL-CLOSED: without a ladder there is no
+        // authority for a slot's price, so the sync returns without touching
+        // the grid (no locks taken, nothing adopted, nothing queued for
+        // correction) and a structural resync re-derives the ladder. There is no
+        // tolerance matcher left to fall back to. See docs/GRID_PRICE_INVARIANT.md.
+        //
+        // Note: unlike the normal path (which snapshots the result into
+        // `_lastUnmatchedChainOrders`), this early return does NOT rewrite that
+        // snapshot. The refusal is itself the resync signal, and leaving any
+        // prior holds in place keeps the maintenance stranded-hold escalation
+        // able to act on them until the next successful sync.
+        if (!this._assertGenesisInvariant(mgr)) {
+            return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
+        }
         if (!mgr._syncLock) {
             mgr.logger?.log?.('Error: syncLock not initialized', 'error');
             return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
@@ -1024,17 +1011,12 @@ class SyncEngine {
                     });
                     continue;
                 } else {
-                    const genesisForPass1 = (mgr as any)._genesis;
-                    let isPriceEqual = false;
-                    if (genesisForPass1 && Array.isArray(genesisForPass1.priceLevels)) {
-                        const precision = gridOrder.type === ORDER_TYPES.SELL ? assetAPrecision : assetBPrecision;
-                        // Genesis path: single epsilon via integer round-trip
-                        try { isPriceEqual = priceSlotEqual(chainOrder.price, gridOrder.price, precision); } catch { isPriceEqual = chainOrder.price === gridOrder.price; }
-                    } else {
-                        const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, mgr.assets);
-                        const normalizedTolerance = (priceTolerance === null) ? 0 : priceTolerance;
-                        isPriceEqual = Math.abs(chainOrder.price - gridOrder.price) <= normalizedTolerance;
-                    }
+                    // "Did the chain order move?" is level identity: both prices
+                    // must map to the same slot (see chainPriceOnSameLevel). A
+                    // drift of a few quanta inside one level is normal and must
+                    // not queue a price correction.
+                    const precision = gridOrder.type === ORDER_TYPES.SELL ? assetAPrecision : assetBPrecision;
+                    const isPriceEqual = chainPriceOnSameLevel(chainOrder.price, gridOrder.price, (mgr as any)._genesis, precision);
                     if (!isPriceEqual) {
                         queueCorrection({
                             gridOrder: { ...gridOrder },
@@ -1071,17 +1053,11 @@ class SyncEngine {
                             if (candidateId === gridOrder.orderId) continue;
                             if (chainOrderIdsOnGrid.has(candidateId)) continue;
                             if (!candidateOrder || candidateOrder.type !== chainOrder.type) continue;
-                            // Per-candidate price check: genesis → priceSlotEqual, else tolerance
-                            const genesisForSwap = (mgr as any)._genesis;
-                            let swapPriceEqual = false;
-                            if (genesisForSwap && Array.isArray(genesisForSwap.priceLevels)) {
-                                const precision = gridOrder.type === ORDER_TYPES.SELL ? assetAPrecision : assetBPrecision;
-                                try { swapPriceEqual = priceSlotEqual(candidateOrder.price, gridOrder.price, precision); } catch { swapPriceEqual = candidateOrder.price === gridOrder.price; }
-                            } else {
-                                const candidateTolerance = calculatePriceTolerance(Math.min(candidateOrder.price, gridOrder.price), Math.max(candidateOrder.size, gridOrder.size), gridOrder.type, mgr.assets);
-                                swapPriceEqual = Math.abs(candidateOrder.price - gridOrder.price) <= (candidateTolerance ?? 0);
-                            }
-                            if (!swapPriceEqual) continue;
+                            // Price check: the candidate must belong to the same
+                            // ladder level as the slot (the swap tiebreak's whole
+                            // premise — a duplicate at this level).
+                            const precision = gridOrder.type === ORDER_TYPES.SELL ? assetAPrecision : assetBPrecision;
+                            if (!chainPriceOnSameLevel(candidateOrder.price, gridOrder.price, (mgr as any)._genesis, precision)) continue;
                             if (floatToBlockchainInt(candidateOrder.size, precision) !== currentSizeInt) continue;
                             swapMatch = { id: candidateId, order: candidateOrder };
                             break;
@@ -1257,8 +1233,13 @@ class SyncEngine {
         // PASS 2: CHAIN → GRID - Nearest-slot deterministic adoption (genesis-frozen)
         // ====================================================================
         const genesis = (mgr as any)._genesis;
-        const hasGenesis = genesis && Array.isArray(genesis.priceLevels) && genesis.priceLevels.length > 0;
-        const anchorPrice = hasGenesis ? genesis.startPrice : mgr.config?.startPrice;
+        // Genesis is mandatory for any populated grid, but an EMPTY grid
+        // (slotCount 0) passes the E2 gate without a ladder, so the
+        // `!hasGenesis` branch below is reachable when live chain orders exist
+        // against no slots. There the anchor is meaningless and only orders the
+        // deferred holds (every price is measured against 0, i.e. ascending).
+        const hasGenesis = hasGenesisLadder(genesis);
+        const anchorPrice = hasGenesis ? genesis.startPrice : 0;
         const sortedChainEntries = [...parsedChainOrders.entries()].sort((a: any, b: any) => {
             const pa = toFiniteNumber(a[1].price);
             const pb = toFiniteNumber(b[1].price);
@@ -1269,223 +1250,98 @@ class SyncEngine {
         for (const [chainOrderId, chainOrder] of sortedChainEntries) {
             if (chainOrderIdsOnGrid.has(chainOrderId)) continue;
 
-            // Genesis path: nearest-slot is single authority (no tolerance)
-            if (hasGenesis) {
-                let idx: number;
-                try { idx = slotIndexForPrice(chainOrder.price, genesis); } catch {
-                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot' });
-                    queueCorrection({ gridOrder: { id: `slot-unknown-${chainOrderId}`, type: chainOrder.type } as any, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
-                    continue;
-                }
-                const slotId = `slot-${idx}`;
-                // Out-of-grid hold: slotIndexForPrice clamps below/above-rail
-                // prices onto the edge slots (0/N-1), so the clamp is not a
-                // real match. A below-grid buy is not slot-0 and an
-                // above-grid sell is not slot-(N-1): never adopt into the
-                // rail slot and never cancel as its duplicate — hold/defer
-                // (no adopt, no cancelOnly), e.g. dip-protection levels
-                // sitting below a fresh grid after a reset.
-                {
-                    const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-                    if (isChainPriceOutOfGrid(chainOrder.price, genesis, precision)) {
-                        unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'out-of-grid-deferred', candidateSlotId: slotId });
-                        mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: price outside grid range, deferred (nearest slot ${slotId})`, 'warn');
-                        continue;
-                    }
-                }
-                const gapSlots = genesis.gapSlots ?? (mgr as any)._gapSlots ?? 0;
-                const boundaryIdx = (mgr as any).boundaryIdx;
-                // Pre-boundary sync: gap geometry is unknown, so adoption is
-                // deferred entirely — touch nothing (no adopt, no cancelOnly).
-                // The orphan stays visible to the crossing guards and the
-                // validate orphan layer via _lastUnmatchedChainOrders and is
-                // re-evaluated once the boundary commits. Accepted cost: a
-                // legitimate in-rail orphan waits one sync cycle
-                // post-boundary-commit before adoption. Strictly better than
-                // adopting a gap stray into the wrong slot.
-                if (boundaryIdx == null || !Number.isFinite(Number(boundaryIdx))) {
-                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'boundary-unknown-deferred', candidateSlotId: slotId });
-                    mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: boundary unknown, deferred until boundary commits (nearest slot ${slotId})`, 'warn');
-                    continue;
-                }
-                // Duplicate-price guard becomes slotId equality: if placed order already occupies this slot
-                const occupying = mgr.orders.get(slotId);
-                if (occupying && isOrderPlaced(occupying) && occupying.type === chainOrder.type) {
-                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'duplicate-price-level', candidateSlotId: slotId });
-                    const { level, suffix } = duplicateOrphanLogInfo(chainOrderId);
-                    mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: duplicates slot ${slotId} (${occupying.orderId})${suffix}`, level);
-                    queueCorrection({ gridOrder: occupying, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
-                    continue;
-                }
-                // Gap exclusion: nearest slot in SPREAD gap → no adopt (boundary
-                // is known here — the pre-boundary case continued above).
-                {
-                    const inRail = isSlotInRail(boundaryIdx, gapSlots, chainOrder.type, { id: slotId } as any);
-                    if (!inRail) {
-                        unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot', candidateSlotId: slotId });
-                        queueCorrection({ gridOrder: { id: slotId, type: chainOrder.type } as any, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
-                        continue;
-                    }
-                }
-                const slot: any = mgr.orders.get(slotId);
-                if (!slot || matchedGridOrderIds.has(slot.id) || slot.orderId) {
-                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot', candidateSlotId: slotId });
-                    const diag = describeNearestAdoptionCandidates(mgr, chainOrder, (chainOrder.type === ORDER_TYPES.SELL ? assetAPrecision : assetBPrecision), (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets), matchedGridOrderIds);
-                    mgr.logger?.log?.(`[SYNC] Unmatched chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}): nearest slot ${slotId} not adoptable. Nearest candidates: ${diag}`, 'warn');
-                    continue;
-                }
-                const typeCompat = slot.type === chainOrder.type || slot.type === ORDER_TYPES.SPREAD;
-                if (!typeCompat) {
-                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot', candidateSlotId: slotId });
-                    continue;
-                }
-                const adopted = await adoptChainOrderIntoSlot(mgr, slot, chainOrder, chainOrderId, rawChainOrders, matchedGridOrderIds, chainOrderIdsOnGrid, filledOrders, updatedOrders, skipAccounting);
-                if (!adopted) {
-                    // Order update was rejected (fatal validation) — the chain
-                    // order stays untracked and must not dangle on the book.
-                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'adoption-rejected', candidateSlotId: slotId });
-                    queueCorrection({ gridOrder: slot, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
-                    mgr.logger?.log?.(`[SYNC] Chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}) NOT adopted into slot ${slotId}: order update rejected — queued for cancellation`, 'error');
-                }
-                continue;
-            }
-
-            // Legacy fallback when genesis unavailable (migration)
-            const duplicatePriceOrder: any = Array.from(mgr.orders.values()).find((o: any) => {
-                const co: any = chainOrder;
-                return o.type === co.type && isOrderPlaced(o) && co != null && Math.abs(o.price - co.price) <= (calculatePriceTolerance as any)(Math.min(o.price, co.price), Math.max(o.size, co.size), o.type, mgr.assets);
-            });
-            if (duplicatePriceOrder) {
-                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'duplicate-price-level', candidateSlotId: duplicatePriceOrder.id });
-                const { level, suffix } = duplicateOrphanLogInfo(chainOrderId);
-                mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: duplicates price level of active ${duplicatePriceOrder.id} (${duplicatePriceOrder.orderId} at ${duplicatePriceOrder.price})${suffix}`, level);
-                queueCorrection({ gridOrder: duplicatePriceOrder, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
-                continue;
-            }
-            const match = findMatchingGridOrderByOpenOrder(
-                { orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size },
-                { orders: mgr.orders, assets: mgr.assets, calcToleranceFn: (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger, allowSmallerChainSize: true, requireAvailableSlot: true, excludeGridOrderIds: matchedGridOrderIds }
-            );
-            if (match && !matchedGridOrderIds.has(match.id)) {
-                const adopted = await adoptChainOrderIntoSlot(mgr, match, chainOrder, chainOrderId, rawChainOrders, matchedGridOrderIds, chainOrderIdsOnGrid, filledOrders, updatedOrders, skipAccounting);
-                if (!adopted) {
-                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'adoption-rejected', candidateSlotId: match.id });
-                    queueCorrection({ gridOrder: match, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
-                    mgr.logger?.log?.(`[SYNC] Chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}) NOT adopted into slot ${match.id}: order update rejected — queued for cancellation`, 'error');
-                }
-            } else if (match) {
-                mgr.logger?.log?.(`Warning: Orphan chain order ${chainOrderId} matched grid order ${match.id}, but grid order was already matched to another chain order. Queuing orphan for cancellation.`, 'warn');
-                queueCorrection({ gridOrder: match, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
-                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'already-matched-slot', candidateSlotId: match.id });
-            } else {
-                // Legacy spread-orphan fallback: adopt into nearest VIRTUAL/spread slot (allowSpreadType + skipSizeMatch) with widened tolerance
-                const adoptedSlot = findMatchingGridOrderByOpenOrder(
-                    { orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size },
-                    {
-                        orders: mgr.orders,
-                        assets: mgr.assets,
-                        calcToleranceFn: (p: number, s: number, t: any) => {
-                            const strict = calculatePriceTolerance(p, s, t, mgr.assets);
-                            const mult = (mgr?.config?.gridLimits?.ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER as number) || 4;
-                            return strict == null ? null : strict * mult;
-                        },
-                        allowSpreadType: true,
-                        skipSizeMatch: true,
-                        requireAvailableSlot: true,
-                        excludeGridOrderIds: matchedGridOrderIds
-                    }
+            // Genesis is mandatory (INV-GRID-004): the frozen ladder is the single
+            // authority for which slot a chain order belongs to. No tolerance
+            // matcher remains — the E2 gate refuses to sync a ladder-less grid and
+            // loadGrid cannot produce one — so this guard is defence in depth
+            // against a future bypass, not a supported state. A chain order is
+            // never price-matched into a slot.
+            if (!hasGenesis) {
+                // No candidateSlotId: without a ladder no slot index can be
+                // derived, so there is nothing meaningful to name (unlike the
+                // out-of-grid / rail holds, which have a resolved nearest slot).
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-genesis-deferred' });
+                mgr.logger?.log?.(
+                    `[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: the grid has no price ladder (INV-GRID-004); deferred, never price-matched`,
+                    'error'
                 );
-                if (adoptedSlot && !matchedGridOrderIds.has(adoptedSlot.id) && !adoptedSlot.orderId) {
-                    const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-                    // Legacy path parity with the genesis adoption path: the
-                    // slot's price is its GENESIS level and is never overwritten
-                    // with the chain order's price. Adopting chainOrder.price
-                    // here made the slot's price whichever price happened to be
-                    // on the book, which is how an off-grid order could become a
-                    // grid level and then be re-emitted as a plan price. The
-                    // size below is still the chain value: size is real state,
-                    // price is a ladder position.
-                    const legacyRail = isSlotInRail(
-                        (mgr as any).boundaryIdx,
-                        (mgr as any)._gapSlots ?? 0,
-                        chainOrder.type,
-                        adoptedSlot
-                    );
-                    if (!legacyRail) {
-                        unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'out-of-rail-deferred', candidateSlotId: adoptedSlot.id });
-                        mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted into slot ${adoptedSlot.id}: slot is outside the active rail for a ${chainOrder.type}; deferred`, 'warn');
-                        continue;
-                    }
-                    const chainInt = floatToBlockchainInt(chainOrder.size, precision);
-                    const adoptedRaw = rawChainOrders.get(chainOrderId);
-                    const adoptedState = chainInt > 0 ? ORDER_STATES.PARTIAL : ORDER_STATES.VIRTUAL;
-                    const adoptedBtsFeeState = (adoptedRaw) ? (() => {
-                        const rawFee = toFiniteNumber(adoptedRaw.deferred_fee, null);
-                        return rawFee !== null && rawFee > 0 ? { deferredFee: blockchainToFloat(rawFee, BTS_PRECISION) } : undefined;
-                    })() : undefined;
-                    // ADOPTION NEVER TAKES THE CHAIN ORDER'S PRICE (legacy parity).
-                    //
-                    // Same rule as adoptChainOrderIntoSlot, stated here because
-                    // this path is the one that used to get it wrong: it set
-                    // `price: chainOrder.price`, so a slot's id and its price
-                    // could disagree — an off-grid order became a grid level and
-                    // was then re-emitted as a plan price (S1).
-                    //
-                    // `...adoptedSlot` below carries the slot's own level and
-                    // `price` is deliberately NOT reassigned. A differing
-                    // chainOrder.price is expected (a regeneration leaves old
-                    // orders resting at old levels) and is not corruption; it
-                    // simply is not this slot's price.
-                    //
-                    // Size differs: size is real state, so the chain value is
-                    // adopted. Price is a ladder position; it is not.
-                    const adoptedOrder = {
-                        ...adoptedSlot,
-                        orderId: chainOrderId,
-                        type: chainOrder.type,
-                        state: adoptedState,
-                        size: chainOrder.size,
-                        rawOnChain: adoptedRaw ? { ...adoptedRaw, fetchedAt: Date.now() } : adoptedRaw,
-                        ...(adoptedBtsFeeState ? { btsFeeState: adoptedBtsFeeState } : {}),
-                    };
-                    adoptedSlotKeepsItsOwnPrice(mgr, adoptedOrder, chainOrderId, 'legacy-fallback');
-                    const applied = await mgr._applyOrderUpdate(adoptedOrder, 'sync-pass2-adopt-orphan', { skipAccounting: skipAccounting, fee: 0 });
-                    if (applied === false) {
-                        // Fatal rejection: parity with the genesis adoption path —
-                        // the slot must not be marked matched and the chain order
-                        // must not dangle untracked on the book.
-                        unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'adoption-rejected', candidateSlotId: adoptedSlot.id });
-                        queueCorrection({ gridOrder: adoptedSlot, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
-                        mgr.logger?.log?.(`[SYNC] Chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}) NOT adopted into slot ${adoptedSlot.id}: order update rejected — queued for cancellation`, 'error');
-                        continue;
-                    }
-                    matchedGridOrderIds.add(adoptedSlot.id);
-                    chainOrderIdsOnGrid.add(chainOrderId);
-                    updatedOrders.push(adoptedOrder);
-                    // Phase 4 attribution: log the adoption slot's geometry
-                    // (idx vs frozen boundary/gap) so the next re-map incident
-                    // can tell an in-rail adoption from a gap-band re-map
-                    // without on-chain archaeology.
-                    let adoptGeo = '';
-                    try {
-                        const adoptIdx = parseSlotIndex(adoptedSlot.id);
-                        const adoptB = Number((mgr as any)?.boundaryIdx);
-                        const adoptG = Number((mgr as any)?._gapSlots);
-                        if (adoptIdx !== null && adoptIdx !== undefined && Number.isFinite(adoptB) && Number.isFinite(adoptG)) {
-                            const inBand = isSlotIndexInGapBand(adoptIdx, adoptB, adoptG);
-                            adoptGeo = ` geo(idx=${adoptIdx},boundary=${adoptB},gap=${adoptG},sellStart=${getSellStartIdx(adoptB, adoptG)},band=${inBand ? 'gap' : 'rail'})`;
-                        }
-                    } catch { /* geometry is diagnostic-only */ }
-                    mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) adopted into slot ${adoptedSlot.id} (was ${adoptedSlot.type})${adoptGeo}`, 'warn');
-                } else {
-                    const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-                    const candidateDiagnostics = describeNearestAdoptionCandidates(mgr, chainOrder, precision, (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets), matchedGridOrderIds);
-                    const driftTag = computeOutOfToleranceDriftTag(mgr, chainOrder, (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets));
-                    const unmatchedEntry: Record<string, any> = { chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), candidateDiagnostics };
-                    if (driftTag) { unmatchedEntry.reason = 'price-drift-orphan'; unmatchedEntry.candidateSlotId = driftTag.candidateSlotId; unmatchedEntry.candidateSlotPrice = driftTag.candidateSlotPrice; unmatchedEntry.priceDiff = driftTag.priceDiff; unmatchedEntry.tolerance = driftTag.tolerance; }
-                    unmatchedChainOrders.push(unmatchedEntry);
-                    mgr.logger?.log?.(`[SYNC] Unmatched chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}): no adoptable slot found` + (driftTag ? ` (price-drift-orphan slot=${driftTag.candidateSlotId}@${driftTag.candidateSlotPrice} diff=${driftTag.priceDiff} tol=${driftTag.tolerance})` : '') + `. Nearest candidates: ${candidateDiagnostics}`, 'warn');
+                continue;
+            }
+            let idx: number;
+            try { idx = slotIndexForPrice(chainOrder.price, genesis); } catch {
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot' });
+                queueCorrection({ gridOrder: { id: `slot-unknown-${chainOrderId}`, type: chainOrder.type } as any, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
+                continue;
+            }
+            const slotId = `slot-${idx}`;
+            // Out-of-grid hold: slotIndexForPrice clamps below/above-rail
+            // prices onto the edge slots (0/N-1), so the clamp is not a
+            // real match. A below-grid buy is not slot-0 and an
+            // above-grid sell is not slot-(N-1): never adopt into the
+            // rail slot and never cancel as its duplicate — hold/defer
+            // (no adopt, no cancelOnly), e.g. dip-protection levels
+            // sitting below a fresh grid after a reset.
+            {
+                const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
+                if (isChainPriceOutOfGrid(chainOrder.price, genesis, precision)) {
+                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'out-of-grid-deferred', candidateSlotId: slotId });
+                    mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: price outside grid range, deferred (nearest slot ${slotId})`, 'warn');
+                    continue;
                 }
+            }
+            const gapSlots = genesis.gapSlots ?? (mgr as any)._gapSlots ?? 0;
+            const boundaryIdx = (mgr as any).boundaryIdx;
+            // Pre-boundary sync: gap geometry is unknown, so adoption is
+            // deferred entirely — touch nothing (no adopt, no cancelOnly).
+            // The orphan stays visible to the crossing guards and the
+            // validate orphan layer via _lastUnmatchedChainOrders and is
+            // re-evaluated once the boundary commits. Accepted cost: a
+            // legitimate in-rail orphan waits one sync cycle
+            // post-boundary-commit before adoption. Strictly better than
+            // adopting a gap stray into the wrong slot.
+            if (boundaryIdx == null || !Number.isFinite(Number(boundaryIdx))) {
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'boundary-unknown-deferred', candidateSlotId: slotId });
+                mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: boundary unknown, deferred until boundary commits (nearest slot ${slotId})`, 'warn');
+                continue;
+            }
+            // Duplicate-price guard becomes slotId equality: if placed order already occupies this slot
+            const occupying = mgr.orders.get(slotId);
+            if (occupying && isOrderPlaced(occupying) && occupying.type === chainOrder.type) {
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'duplicate-price-level', candidateSlotId: slotId });
+                const { level, suffix } = duplicateOrphanLogInfo(chainOrderId);
+                mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: duplicates slot ${slotId} (${occupying.orderId})${suffix}`, level);
+                queueCorrection({ gridOrder: occupying, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
+                continue;
+            }
+            // Gap exclusion: nearest slot in SPREAD gap → no adopt (boundary
+            // is known here — the pre-boundary case continued above).
+            {
+                const inRail = isSlotInRail(boundaryIdx, gapSlots, chainOrder.type, { id: slotId } as any);
+                if (!inRail) {
+                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot', candidateSlotId: slotId });
+                    queueCorrection({ gridOrder: { id: slotId, type: chainOrder.type } as any, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
+                    continue;
+                }
+            }
+            const slot: any = mgr.orders.get(slotId);
+            if (!slot || matchedGridOrderIds.has(slot.id) || slot.orderId) {
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot', candidateSlotId: slotId });
+                const diag = describeNearestAdoptionCandidates(mgr, chainOrder, (chainOrder.type === ORDER_TYPES.SELL ? assetAPrecision : assetBPrecision), matchedGridOrderIds);
+                mgr.logger?.log?.(`[SYNC] Unmatched chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}): nearest slot ${slotId} not adoptable. Nearest candidates: ${diag}`, 'warn');
+                continue;
+            }
+            const typeCompat = slot.type === chainOrder.type || slot.type === ORDER_TYPES.SPREAD;
+            if (!typeCompat) {
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot', candidateSlotId: slotId });
+                continue;
+            }
+            const adopted = await adoptChainOrderIntoSlot(mgr, slot, chainOrder, chainOrderId, rawChainOrders, matchedGridOrderIds, chainOrderIdsOnGrid, filledOrders, updatedOrders, skipAccounting);
+            if (!adopted) {
+                // Order update was rejected (fatal validation) — the chain
+                // order stays untracked and must not dangle on the book.
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'adoption-rejected', candidateSlotId: slotId });
+                queueCorrection({ gridOrder: slot, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
+                mgr.logger?.log?.(`[SYNC] Chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}) NOT adopted into slot ${slotId}: order update rejected — queued for cancellation`, 'error');
             }
         }
 
@@ -2229,32 +2085,39 @@ class SyncEngine {
      */
     /**
      * E2 invariant assert: a manager holding grid slots but no price ladder is
-     * in the undefined state every genesis-derived consumer degrades from.
+     * in the undefined state the grid-price invariant forbids (INV-GRID-004).
      *
      * Reports once per grid generation (latched on the manager, counted in
      * `_genesisInvariantViolations`) and, when the bot wired the structural
-     * resync, requests one so the ladder is re-derived instead of leaving the
-     * fuzzy fallbacks in charge. Deliberately non-throwing: the load-side
-     * gates own the fail-closed decision, this one only makes a bypass loud.
+     * resync, requests one so the ladder is re-derived. Returns FALSE so the
+     * caller ABORTS the sync untouched: with no ladder there is no authority for
+     * a slot's price, and the legacy tolerance matcher that used to cover this
+     * state is gone — continuing would let an off-grid chain price be adopted
+     * into a slot.
+     *
+     * Non-throwing on purpose: the load-side gates (E1/E3) own the fail-closed
+     * decision, this one makes a bypass loud without stranding a live manager.
      * @param {any} mgr - OrderManager instance
+     * @returns {boolean} true when the grid may be synced (no slots, or a usable
+     *   ladder is present); false when the sync must not run.
      */
-    _assertGenesisInvariant(mgr: any) {
+    _assertGenesisInvariant(mgr: any): boolean {
         try {
             const orders = mgr?.orders;
             const slotCount = orders instanceof Map ? orders.size : (Array.isArray(orders) ? orders.length : 0);
-            if (slotCount === 0) return;
-            if (hasGenesisLadder(mgr._genesis)) return;
+            if (slotCount === 0) return true;
+            if (hasGenesisLadder(mgr._genesis)) return true;
 
             const count = ((mgr as any)._genesisInvariantViolations || 0) + 1;
             (mgr as any)._genesisInvariantViolations = count;
             const fault = (mgr as any)._missingGenesis;
-            if (count > 1) return; // already reported for this generation
+            if (count > 1) return false; // already reported for this generation
             (mgr as any)._genesisInvariantLoggedAt = Date.now();
             mgr.logger?.log?.(
-                `[GENESIS] INVARIANT: sync is about to run against ${slotCount} grid slot(s) with NO price ladder` +
+                `[GENESIS] INVARIANT: sync REFUSED against ${slotCount} grid slot(s) with NO price ladder` +
                 (fault ? ` (refused earlier: ${fault.reason} — ${fault.detail})` : '') +
-                `. Every slot-price consumer degrades to a tolerance matcher, so off-grid prices ` +
-                `can become grid evidence. A structural resync re-derives the ladder.`,
+                `. Slot prices have no authority, so no chain order is matched, adopted or corrected this cycle. ` +
+                `A structural resync re-derives the ladder.`,
                 'error'
             );
             if (typeof mgr.requestStructuralGridResync === 'function') {
@@ -2263,8 +2126,11 @@ class SyncEngine {
                         mgr.logger?.log?.(`[GENESIS] Structural resync request failed: ${getErrorMessage(err)}`, 'warn');
                     });
             }
+            return false;
         } catch {
-            // Never let observability break a sync.
+            // Never let observability break a sync — but an unevaluatable
+            // check must not hand a ladder-less grid to the reconciler either.
+            return false;
         }
     }
 
@@ -2381,16 +2247,50 @@ class SyncEngine {
                                 // disagreeing in one order object.
                                 const materializeIdx = parseSlotIndex(gridOrderId);
                                 let ladderLevel: number | null = null;
+                                // Distinguish the two reasons the ladder cannot
+                                // price this slot, so the fault log names the
+                                // real one: a missing ladder (INV-GRID-004) vs a
+                                // ladder that exists but does not address this
+                                // index (out-of-range slot id).
+                                let ladderFault: 'missing-ladder' | 'out-of-range' | null = null;
                                 try {
                                     const genesis = (mgr as any)._genesis;
-                                    if (materializeIdx !== null && Array.isArray(genesis?.priceLevels) && genesis.priceLevels.length > 0) {
-                                        const onLadder = Number(priceForSlot(materializeIdx, genesis));
-                                        if (Number.isFinite(onLadder) && onLadder > 0) ladderLevel = onLadder;
+                                    if (materializeIdx !== null) {
+                                        if (hasGenesisLadder(genesis)) {
+                                            const onLadder = Number(priceForSlot(materializeIdx, genesis));
+                                            if (Number.isFinite(onLadder) && onLadder > 0) ladderLevel = onLadder;
+                                            else ladderFault = 'out-of-range';
+                                        } else {
+                                            ladderFault = 'missing-ladder';
+                                        }
                                     }
-                                } catch { /* fall back to the descriptor below */ }
+                                } catch { ladderFault = 'out-of-range'; }
 
-                                // Only fall back to the descriptor when the ladder
-                                // cannot speak (migration / unparseable id).
+                                // A `slot-N` id the ladder cannot price leaves the
+                                // slot with no authority for its price, so the
+                                // descriptor can only be a stopgap. Keep the live
+                                // chain order tracked (stranding it would be
+                                // worse) but make the fault loud and ask for the
+                                // ladder/slot to be re-derived, which re-prices
+                                // the slot on reload.
+                                if (materializeIdx !== null && ladderLevel === null) {
+                                    const reason = ladderFault === 'out-of-range'
+                                        ? `slot index ${materializeIdx} is outside the price ladder (${hasGenesisLadder((mgr as any)._genesis) ? 'the ladder exists but does not address this slot' : 'no usable ladder'}); the slot id and ladder disagree`
+                                        : 'the grid has no price ladder (INV-GRID-004)';
+                                    mgr.logger?.log?.(
+                                        `[GENESIS] createOrder materialized ${gridOrderId} from the placement descriptor ` +
+                                        `because ${reason} — the slot price is unverified ` +
+                                        `and will be re-derived on the next grid build`,
+                                        'error'
+                                    );
+                                    if (typeof mgr.requestStructuralGridResync === 'function') {
+                                        Promise.resolve(mgr.requestStructuralGridResync('missing-genesis', { reason: 'createOrder-materialize' }))
+                                            .catch((err: any) => mgr.logger?.log?.(`[GENESIS] Structural resync request failed: ${getErrorMessage(err)}`, 'warn'));
+                                    }
+                                }
+
+                                // Only fall back to the descriptor price when the
+                                // ladder cannot address the slot (unparseable id).
                                 if (!materializeType && Number.isFinite(descriptorPrice)) {
                                     const sidePrice = ladderLevel ?? descriptorPrice;
                                     materializeType = resolveSpreadOrderSide(sidePrice, mgr.config.startPrice);
@@ -2421,9 +2321,9 @@ class SyncEngine {
                                     // and for a slot being materialized at a new
                                     // index it can be a price from a different
                                     // grid entirely. The descriptor price is kept
-                                    // only when genesis is unavailable
-                                    // (migration), where there is no ladder to
-                                    // derive from.
+                                    // only when the ladder cannot address the slot
+                                    // (unparseable id, or the undefined-grid fault
+                                    // logged above).
                                     let materializePrice = descriptorPrice;
                                     let priceSource = 'descriptor';
                                     if (ladderLevel !== null && materializeIdx !== null) {
@@ -2438,11 +2338,11 @@ class SyncEngine {
                                         state: isPartialPlacement ? ORDER_STATES.PARTIAL : ORDER_STATES.ACTIVE,
                                         orderId: chainOrderId,
                                     };
-                                    if (priceSource === 'descriptor' && materializeIdx !== null) {
+                                    if (priceSource === 'descriptor' && materializeIdx === null) {
                                         mgr.logger?.log?.(
                                             `[SYNC] createOrder for ${gridOrderId}: materialized with the DESCRIPTOR price ` +
-                                            `${descriptorPrice} because no genesis ladder was available to derive ` +
-                                            `the slot level — verify this slot's price on the next sync`,
+                                            `${descriptorPrice} because the grid order id is not a slot-N addressable by the ` +
+                                            `price ladder — verify this slot's price on the next sync`,
                                             'warn'
                                         );
                                     }
@@ -2501,7 +2401,9 @@ class SyncEngine {
                     };
                 }
                 const runCancel = async () => {
-                    const gridOrder = findMatchingGridOrderByOpenOrder({ orderId }, { orders: mgr.orders, assets: mgr.assets, calcToleranceFn: (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger });
+                    // Linkage is by chain orderId (authoritative) — no price matching: the slot
+                    // that owns this order id is the slot, whatever its level.
+                    const gridOrder = Array.from(mgr.orders.values() as any[]).find((o: any) => o && o.orderId === orderId);
                     if (gridOrder) {
                         // Lock both chain orderId and grid order ID to prevent concurrent modifications
                         const orderIds = [orderId, gridOrder.id].filter(Boolean);

@@ -4,11 +4,13 @@
  * The genesis ladder is the ONLY authoritative price for a slot
  * (docs/GRID_PRICE_INVARIANT.md, INV-GRID-004). A grid whose genesis is
  * missing is therefore not a degraded grid -- it is an undefined one: every
- * consumer that reads `priceForSlot(idx, genesis)` falls back to a
- * tolerance/fuzzy matcher (nearest-slot adoption, drift tagging, the
- * materialize descriptor-price fallback, reserve-edge anchoring, the
- * `isSlotInRail` fail-open), and that is precisely the path on which an
- * off-grid price became grid evidence and got re-emitted.
+ * consumer that reads `priceForSlot(idx, genesis)` has no authority for a
+ * slot's price (nearest-slot adoption, the materialize descriptor-price
+ * fallback, reserve-edge anchoring, the `isSlotInRail` fail-open), and that is
+ * precisely the state on which an off-grid price became grid evidence and got
+ * re-emitted. The tolerance matcher that used to cover it has been removed:
+ * E2 refuses to sync such a grid and asks for the resync that re-derives the
+ * ladder.
  *
  * This module owns the single decision "can this snapshot have a ladder?",
  * used by:

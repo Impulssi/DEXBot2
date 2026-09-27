@@ -100,6 +100,9 @@ function mockManager(boundary, orders, pending, config: any = CFG): any {
     return {
         boundaryIdx: boundary,
         orders,
+        // The live reserve anchor comes from the frozen ladder (the ladder
+        // extremes ARE the live rail bounds); slot-0's level is the buy floor.
+        _genesis: buildGenesisFromPriceLevels(0.001, 1, GAP, buildSlots(N_SLOTS).map((s) => s.price)),
         config,
         _gapSlots: GAP,
         _pendingFillCrawls: pending,
@@ -234,12 +237,12 @@ async function testConsume_DropsUnsafe() {
 }
 
 async function testConsume_LiveAnchorClassifies() {
-    console.log('\n[PEND-011] startup classifies reserves with the live anchor, not the config fallback...');
+    console.log('\n[PEND-011] startup classifies reserves with the ladder anchor, not the config fallback...');
     // Stale leftover: a BUY-typed VIRTUAL slot left above the buy rail by an
-    // older bound, priced below the live floor. The live run (finite live
-    // anchor) ranks it out of the reserve set, so its crawl is owed; the
-    // config-bound fallback is null for mode-string bounds, and plain rank
-    // would make it a reserve and drop the crawl.
+    // older bound, priced below the live floor. The ladder anchor (the buy
+    // rail's lowest level) ranks it out of the reserve set, so its crawl is
+    // owed; the config-bound fallback is null for mode-string bounds, and
+    // plain rank would make it a reserve and drop the crawl.
     const orders = buildMaster();
     Object.assign(orders.get('slot-210'), {
         type: ORDER_TYPES.BUY, state: ORDER_STATES.VIRTUAL, orderId: '', price: 0.0005, size: 0,
@@ -250,7 +253,8 @@ async function testConsume_LiveAnchorClassifies() {
     const liveAnchor = resolveLiveReserveEdgeAnchorPrice(mgr, 'buy');
     const liveReserveIds = reserveEdgeIdSet(allSlots, mgr.config, ORDER_TYPES.BUY, liveAnchor);
     const configAnchorIds = reserveEdgeIdSet(allSlots, mgr.config, ORDER_TYPES.BUY);
-    assert.ok(!liveReserveIds.has('slot-210'), 'live anchor must not rank the stale leftover as a reserve');
+    assert.strictEqual(liveAnchor, 0.001, 'live anchor is the ladder bottom (buy rail floor)');
+    assert.ok(!liveReserveIds.has('slot-210'), 'ladder anchor must not rank the stale leftover as a reserve');
     assert.ok(configAnchorIds.has('slot-210'), 'config fallback would (the drift this pins down)');
     const result = consumePendingFillCrawls(mgr);
     assert.strictEqual(result.applied, true, `live-anchored classification must apply the crawl (${result.reason ?? 'no reason'})`);

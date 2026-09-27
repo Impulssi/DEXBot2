@@ -540,7 +540,6 @@ async function testReconcileAdoptsRuntimePendingBroadcast() {
     let readCalls = 0;
     let syncCalls = 0;
     const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
-    const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
 
     bot.manager.orders.set(slotId, { id: slotId, type: 'sell', price: 0.05, size: 1.2 });
     bot.manager.synchronizeWithChain = async (params) => {
@@ -549,7 +548,6 @@ async function testReconcileAdoptsRuntimePendingBroadcast() {
         assert.strictEqual(params.chainOrderId, '1.7.572312011');
         assert.strictEqual(params.expectedType, 'sell');
     };
-    bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false, reason: 'test-noop' });
     bot._recordPendingBroadcast({
         opIndex: 0,
         ctxIndex: 0,
@@ -580,7 +578,6 @@ async function testReconcileAdoptsRuntimePendingBroadcast() {
         assert.strictEqual(syncCalls, 1, 'synchronizeWithChain must be called for each adopted CREATE');
     } finally {
         chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
-        bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
     }
     console.log('✓ UNC-008b passed');
 }
@@ -628,7 +625,6 @@ async function testReconcileAcquiresFillLock() {
     const plannedSell = 120000000;
     const plannedReceive = 6000000;
     const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
-    const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
     let lockAcquireCalls = 0;
     let insideLock = false;
     let syncCalls = 0;
@@ -650,7 +646,6 @@ async function testReconcileAcquiresFillLock() {
         syncCalls++;
         assert.strictEqual(insideLock, true, 'recovery sync must run while fill lock is held');
     };
-    bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false, reason: 'test-noop' });
     bot._recordPendingBroadcast({
         opIndex: 0,
         ctxIndex: 0,
@@ -672,7 +667,6 @@ async function testReconcileAcquiresFillLock() {
         assert.strictEqual(syncCalls, 1, 'synchronizeWithChain must be called for each adopted CREATE');
     } finally {
         chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
-        bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
     }
     console.log('✓ UNC-008c2 passed');
 }
@@ -1009,172 +1003,6 @@ async function testExecuteBatchRetryPreservesUncertainBroadcastHandling() {
         transport.restore();
     }
     console.log('✓ UNC-008i passed');
-}
-
-async function testAutoCancelPerCycleCap() {
-    console.log('\n[UNC-009] _autoCancelOneUnmatchedOrphan only cancels price-drift-orphan entries, enforces per-cycle cap=1...');
-    const bot = makeBot();
-    bot._currentCycleId = 7;
-    bot.manager._lastUnmatchedChainOrders = [
-        { id: '1.7.111', orderId: '1.7.111', reason: 'price-drift-orphan' },
-        { id: '1.7.222', orderId: '1.7.222', reason: 'price-drift-orphan' },
-        { id: '1.7.333', orderId: '1.7.333', reason: 'price-drift-orphan' }
-    ];
-
-    // Stub cancelOrder so we can count calls (via the swappable stage mock —
-    // the compiled module namespace itself is frozen).
-    let cancelCalls = 0;
-    const origCancel = chainOrders.cancelOrder;
-    chainOrders.cancelOrder = async () => {
-        cancelCalls++;
-        return { success: true };
-    };
-    // Record-own-cancel stub
-    const origRecord = chainOrders.recordOwnCancel;
-    chainOrders.recordOwnCancel = () => {};
-
-    try {
-        const r1 = await bot._autoCancelOneUnmatchedOrphan();
-        assert.strictEqual(r1.cancelled, true, 'first call in cycle should cancel');
-        assert.strictEqual(cancelCalls, 1, 'one cancel call expected');
-        assert.strictEqual(r1.orderId, '1.7.111', 'first unmatched order is cancelled first');
-
-        const r2 = await bot._autoCancelOneUnmatchedOrphan();
-        assert.strictEqual(r2.cancelled, false, 'second call in same cycle must be capped');
-        assert.strictEqual(r2.reason, 'cap-reached-this-cycle');
-        assert.strictEqual(cancelCalls, 1, 'no additional cancel call');
-
-        // New cycle -> cap resets.
-        bot._currentCycleId = 8;
-        const r3 = await bot._autoCancelOneUnmatchedOrphan();
-        assert.strictEqual(r3.cancelled, true, 'new cycle should allow another cancel');
-        assert.strictEqual(cancelCalls, 2, 'second cancel call expected in new cycle');
-    } finally {
-        chainOrders.cancelOrder = origCancel;
-        chainOrders.recordOwnCancel = origRecord;
-    }
-    console.log('✓ UNC-009 passed');
-}
-
-async function testAutoCancelUsesSyncEngineChainOrderIdShape() {
-    console.log('\n[UNC-009b] _autoCancelOneUnmatchedOrphan handles sync-engine chainOrderId shape (price-drift-orphan)...');
-    const bot = makeBot();
-    bot._currentCycleId = 11;
-    bot.manager._lastUnmatchedChainOrders = [
-        { chainOrderId: '1.7.777', type: 'sell', price: 0.05, size: 1, reason: 'price-drift-orphan' }
-    ];
-
-    let cancelledOrderId = null;
-    const origCancel = chainOrders.cancelOrder;
-    const origRecord = chainOrders.recordOwnCancel;
-    chainOrders.cancelOrder = async (_account, _privateKey, orderId) => {
-        cancelledOrderId = orderId;
-        return { success: true };
-    };
-    chainOrders.recordOwnCancel = () => {};
-
-    try {
-        const result = await bot._autoCancelOneUnmatchedOrphan();
-        assert.strictEqual(result.cancelled, true);
-        assert.strictEqual(result.orderId, '1.7.777');
-        assert.strictEqual(cancelledOrderId, '1.7.777');
-    } finally {
-        chainOrders.cancelOrder = origCancel;
-        chainOrders.recordOwnCancel = origRecord;
-    }
-    console.log('✓ UNC-009b passed');
-}
-
-async function testAutoCancelSkipsWhenPendingBroadcasts() {
-    console.log('\n[UNC-010] _autoCancelOneUnmatchedOrphan skips when pending broadcasts exist...');
-    const bot = makeBot();
-    bot._currentCycleId = 9;
-    bot.manager._lastUnmatchedChainOrders = [
-        { id: '1.7.555', orderId: '1.7.555', reason: 'price-drift-orphan' }
-    ];
-    bot.manager._pendingBroadcasts.set('some-fp', { slotId: 'sell-1' });
-
-    const r = await bot._autoCancelOneUnmatchedOrphan();
-    assert.strictEqual(r.cancelled, false, 'must not cancel while pending broadcasts exist');
-    assert.strictEqual(r.reason, 'pending-broadcasts-active');
-    console.log('✓ UNC-010 passed');
-}
-
-async function testAutoCancelSkipsFingerprinted() {
-    console.log('\n[UNC-011] _autoCancelOneUnmatchedOrphan skips fingerprinted unmatched (recovery handles them)...');
-    const bot = makeBot();
-    bot._currentCycleId = 10;
-    bot.manager._lastUnmatchedChainOrders = [
-        { id: '1.7.666', orderId: '1.7.666', reason: 'pending-broadcast', fingerprint: 'sell:1.3.0:1.3.121:1:2:sell-1' }
-    ];
-
-    const r = await bot._autoCancelOneUnmatchedOrphan();
-    assert.strictEqual(r.cancelled, false, 'fingerprinted unmatched must be left to recovery');
-    assert.strictEqual(r.reason, 'fingerprinted-handle-via-recovery');
-    console.log('✓ UNC-011 passed');
-}
-
-async function testAutoCancelSkipsNowOwnedOrphan() {
-    console.log('\n[UNC-011c] _autoCancelOneUnmatchedOrphan skips a stale unmatched entry now owned by the grid...');
-    const bot = makeBot();
-    bot._currentCycleId = 13;
-    const orderId = '1.7.888';
-    bot.manager.orders.set('slot-888', {
-        id: 'slot-888',
-        orderId,
-        type: ORDER_TYPES.SELL,
-        price: 0.05,
-        size: 1,
-        state: ORDER_STATES.ACTIVE,
-    });
-    bot.manager._lastUnmatchedChainOrders = [
-        { chainOrderId: orderId, reason: 'price-drift-orphan' },
-    ];
-    const origCancel = chainOrders.cancelOrder;
-    const origRecord = chainOrders.recordOwnCancel;
-    let cancelCalled = false;
-    chainOrders.cancelOrder = async () => { cancelCalled = true; return {}; };
-    chainOrders.recordOwnCancel = () => {};
-    try {
-        const result = await bot._autoCancelOneUnmatchedOrphan();
-        assert.strictEqual(result.cancelled, false, 'a chain order now owned by the grid must not be auto-cancelled');
-        assert.strictEqual(result.reason, 'now-owned');
-        assert.strictEqual(result.slotId, 'slot-888');
-        assert.strictEqual(cancelCalled, false);
-        assert.strictEqual(bot.manager._lastUnmatchedChainOrders.length, 0, 'stale unmatched entry must be evicted');
-    } finally {
-        chainOrders.cancelOrder = origCancel;
-        chainOrders.recordOwnCancel = origRecord;
-    }
-    console.log('✓ UNC-011c passed');
-}
-
-async function testAutoCancelOnlyPriceDriftOrphans() {
-    console.log('\n[UNC-011b] _autoCancelOneUnmatchedOrphan skips non-price-drift orphans...');
-    const bot = makeBot();
-    bot._currentCycleId = 12;
-    // Three unmatched entries with NO price-drift-orphan reason.
-    bot.manager._lastUnmatchedChainOrders = [
-        { id: '1.7.111', orderId: '1.7.111', reason: 'unknown' },
-        { id: '1.7.222', orderId: '1.7.222', reason: 'duplicate-price-level' },
-        { id: '1.7.333', orderId: '1.7.333', reason: 'already-matched-slot' }
-    ];
-    const origCancel = chainOrders.cancelOrder;
-    let cancelCalled = false;
-    chainOrders.cancelOrder = async () => { cancelCalled = true; };
-    const origRecord = chainOrders.recordOwnCancel;
-    chainOrders.recordOwnCancel = () => {};
-
-    try {
-        const r = await bot._autoCancelOneUnmatchedOrphan();
-        assert.strictEqual(r.cancelled, false, 'must not cancel non-price-drift orphans');
-        assert.strictEqual(r.reason, 'no-price-drift-orphan', 'reason must indicate no price-drift orphan');
-        assert.strictEqual(cancelCalled, false, 'cancelOrder must not be called');
-    } finally {
-        chainOrders.cancelOrder = origCancel;
-        chainOrders.recordOwnCancel = origRecord;
-    }
-    console.log('✓ UNC-011b passed');
 }
 
 function makeBot() {
@@ -1822,12 +1650,6 @@ async function main() {
     await testCredentialClientFallbackSkipsPlainError();
     await testCredentialClientFallbackEmptyList();
     await testCredentialClientFallbackReportsFailedNode();
-    await testAutoCancelPerCycleCap();
-    await testAutoCancelUsesSyncEngineChainOrderIdShape();
-    await testAutoCancelSkipsWhenPendingBroadcasts();
-    await testAutoCancelSkipsFingerprinted();
-    await testAutoCancelSkipsNowOwnedOrphan();
-    await testAutoCancelOnlyPriceDriftOrphans();
     await testCowCatchBlockPassesFillLockAlreadyHeld();
     await testExecuteWithRetryOnUncertainRetriesOnce();
     await testExecuteWithRetryOnVerifiedAbsence();
@@ -2567,7 +2389,6 @@ async function testBoundaryShiftAllDiscarded() {
     console.log('\n[UNC-017] Boundary shift recovery: all CREATEs discarded → boundaryIdx unchanged...');
     const bot = makeBot();
     const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
-    const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
 
     const INITIAL_BOUNDARY = 5;
     bot.manager.boundaryIdx = INITIAL_BOUNDARY;
@@ -2592,7 +2413,6 @@ async function testBoundaryShiftAllDiscarded() {
     });
 
     chainOrders.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
-    bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false });
 
     try {
         const result = await bot._reconcileAfterUncertainBroadcast(
@@ -2616,7 +2436,6 @@ async function testBoundaryShiftAllDiscarded() {
             'boundaryIdx must NOT shift when the read is ambiguous');
     } finally {
         chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
-        bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
     }
     console.log('✓ UNC-017 passed');
 }
@@ -2626,7 +2445,6 @@ async function testBoundaryShiftMixedAdoptedDiscarded() {
     console.log('\n[UNC-017b] Boundary shift recovery: mixed adopted/discarded → boundary shifts for adopted only...');
     const bot = makeBot();
     const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
-    const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
 
     const INITIAL_BOUNDARY = 5;
     bot.manager.boundaryIdx = INITIAL_BOUNDARY;
@@ -2656,7 +2474,6 @@ async function testBoundaryShiftMixedAdoptedDiscarded() {
         ],
         truncated: false
     });
-    bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false });
 
     try {
         const result = await bot._reconcileAfterUncertainBroadcast(
@@ -2673,7 +2490,6 @@ async function testBoundaryShiftMixedAdoptedDiscarded() {
             'boundaryIdx should remain unchanged after uncertain broadcast recovery (reconcile does not shift boundary)');
     } finally {
         chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
-        bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
     }
     console.log('✓ UNC-017b passed');
 }
@@ -2683,7 +2499,6 @@ async function testBoundaryShiftAllAdopted() {
     console.log('\n[UNC-017c] Boundary shift recovery: all CREATEs adopted → boundary shifts for all...');
     const bot = makeBot();
     const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
-    const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
 
     const INITIAL_BOUNDARY = 5;
     bot.manager.boundaryIdx = INITIAL_BOUNDARY;
@@ -2713,7 +2528,6 @@ async function testBoundaryShiftAllAdopted() {
         ],
         truncated: false
     });
-    bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false });
 
     try {
         const result = await bot._reconcileAfterUncertainBroadcast(
@@ -2730,7 +2544,6 @@ async function testBoundaryShiftAllAdopted() {
             'boundaryIdx should remain unchanged after uncertain broadcast recovery');
     } finally {
         chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
-        bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
     }
     console.log('✓ UNC-017c passed');
 }
@@ -2740,7 +2553,6 @@ async function testBoundaryShiftTruncatedRead() {
     console.log('\n[UNC-017d] Boundary shift recovery: truncated chain read → ambiguous (protection kept, no discard)...');
     const bot = makeBot();
     const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
-    const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
 
     const INITIAL_BOUNDARY = 5;
     bot.manager.boundaryIdx = INITIAL_BOUNDARY;
@@ -2774,7 +2586,6 @@ async function testBoundaryShiftTruncatedRead() {
         orders: [makeChainOrder('1.7.900', 'sell', 999999999, 999999999)],
         truncated: true
     });
-    bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false });
 
     try {
         const result = await bot._reconcileAfterUncertainBroadcast(
@@ -2794,7 +2605,6 @@ async function testBoundaryShiftTruncatedRead() {
             'boundaryIdx must NOT shift when the read is ambiguous');
     } finally {
         chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
-        bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
     }
     console.log('✓ UNC-017d passed');
 }
@@ -2807,7 +2617,6 @@ async function testReReadLateAdoptsDiscardedCreate() {
     console.log('\n[UNC-017e] Re-read reveals a discarded CREATE landed → late adoption (create-uncertain restore NOT needed)...');
     const bot = makeBot();
     const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
-    const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
 
     bot.manager.persistGrid = async () => ({ isValid: true });
     bot.manager._markGridDirty = () => {};
@@ -2842,7 +2651,6 @@ async function testReReadLateAdoptsDiscardedCreate() {
             truncated: false
         };
     };
-    bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false });
 
     try {
         const result = await bot._reconcileAfterUncertainBroadcast(
@@ -2861,7 +2669,6 @@ async function testReReadLateAdoptsDiscardedCreate() {
             'pending-broadcast protection must clear after late adoption');
     } finally {
         chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
-        bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
     }
     console.log('✓ UNC-017e passed');
 }
@@ -2985,7 +2792,6 @@ async function testAdoptionZeroFeeFallbackWithoutFeeCache() {
     const plannedSell = 120000000;
     const plannedReceive = 6000000;
     const origReadOpenOrdersWithMeta = chainOrders.readOpenOrdersWithMeta;
-    const origAutoCancel = bot._autoCancelOneUnmatchedOrphan;
     const mathUtils = require('../modules/order/utils/math');
     let syncCalls = 0;
     let capturedFee = null;
@@ -2999,7 +2805,6 @@ async function testAdoptionZeroFeeFallbackWithoutFeeCache() {
         capturedFee = params.fee;
         capturedSource = source;
     };
-    bot._autoCancelOneUnmatchedOrphan = async () => ({ cancelled: false, reason: 'test-noop' });
     bot._recordPendingBroadcast({
         opIndex: 0, ctxIndex: 0,
         order: { id: slotId, type: 'sell', price: 0.05, size: 1.2 },
@@ -3026,7 +2831,6 @@ async function testAdoptionZeroFeeFallbackWithoutFeeCache() {
             'getAssetFeesSafe fallback must yield createFee 0 (null fee data), never throw');
     } finally {
         chainOrders.readOpenOrdersWithMeta = origReadOpenOrdersWithMeta;
-        bot._autoCancelOneUnmatchedOrphan = origAutoCancel;
         ensureFeeCache();
     }
     console.log('✓ UNC-019 passed');

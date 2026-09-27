@@ -10,7 +10,6 @@
  *
  * SECTION 1: CHAIN ORDER MATCHING & RECONCILIATION (5 functions)
  *   - parseChainOrder(chainOrder, assets) - Parse blockchain order to grid format
- *   - findMatchingGridOrderByOpenOrder(parsedChainOrder, opts) - Find matching grid order
  *   - applyChainSizeToGridOrder(manager, gridOrder, chainSize) - Apply chain size to grid
  *   - correctOrderPriceOnChain(manager, correctionInfo, ...) - Correct order price on chain
  *   - correctAllPriceMismatches(manager, accountName, ...) - Correct all price mismatches
@@ -63,7 +62,7 @@
  * SECTION 10: STRATEGY CALCULATIONS (7 functions)
  *   - resolveReserveCount(config, side) - Clamped per-side reserve count (>=0 int, 0 disables)
  *   - resolveReserveOrders(config) - Total reserves buy+sell (fee/count totals)
- *   - resolveLiveReserveEdgeAnchorPrice(manager, side) - Live-grid edge anchor (ladder/rail extreme first, config bound last; null when unresolved)
+ *   - resolveLiveReserveEdgeAnchorPrice(manager, side) - Live-grid edge anchor (genesis ladder extreme; null when no usable ladder)
  *   - resolveReserveEdgeAnchorPrice(config, side) - Config-bound anchor fallback (buy→minPrice, sell→maxPrice; null when unresolvable)
  *   - compareReserveEdge(a, b, edge, anchorPrice) - Shared anchored edge comparator (single ordering source)
  *   - reserveEdgeIdSet(allSlots, config, orderType, anchorPrice?, excludeIds?) - Edge reserve id set (config count; shares the picker ordering; excludeIds carries the window exclusion)
@@ -79,6 +78,7 @@ import * as MathUtils from './math.js';
 import Logger from '../../order/logger.js';
 import { sleep } from './system.js';
 import { getErrorMessage } from '../../utils/errors.js';
+import { hasGenesisLadder } from '../genesis_policy.js';
 import { parseSlotIndex as parseSlotIndexShared } from './slot.js';
 const { isValidNumber, toFiniteNumber } = Format;
 const { blockchainToFloat, floatToBlockchainInt, quantizeFloat, priceSlotEqual } = MathUtils;
@@ -267,10 +267,10 @@ function findLiveOrderOwnerByChainId(manager: any, chainOrderId: any, slotId?: a
  * An entry is actionable only when the live slot:
  *   1. still exists in the master grid,
  *   2. still owns this chainOrderId (not re-slotted / adopted elsewhere),
- *   3. still targets the queued price — via priceSlotEqual on genesis
- *      grids (same integer-round-trip predicate the pass-1 detector
- *      uses) or calculatePriceTolerance on legacy grids (same predicate
- *      the detector uses there).
+ *   3. still targets the queued price — priceSlotEqual against the slot's own
+ *      level (the same integer-round-trip predicate the pass-1 detector
+ *      uses). A ladder-less manager is an INV-GRID-004 fault, so the entry is
+ *      dropped rather than matched by tolerance.
  *
  * Cancel-only duplicate-orphan decisions need an ownership check. They are
  * queued when a chain order has no matching grid slot, but startup reconcile
@@ -336,19 +336,17 @@ function _validatePriceCorrectionEntry(manager: any, entry: any): { valid: boole
     }
     const assets = manager?.assets;
     const precision = entry.type === ORDER_TYPES.SELL ? assets?.assetA?.precision : assets?.assetB?.precision;
-    let priceMatches = false;
-    try {
-        const genesis = (manager as any)?._genesis;
-        if (genesis && Array.isArray(genesis.priceLevels)) {
-            priceMatches = priceSlotEqual(slot.price, entry.expectedPrice, precision);
-        } else {
-            const tolerance = MathUtils.calculatePriceTolerance(entry.expectedPrice, entry.size, entry.type, assets);
-            priceMatches = Math.abs(slot.price - entry.expectedPrice) <= (tolerance ?? 0);
-        }
-    } catch {
-        priceMatches = slot.price === entry.expectedPrice;
+    // A correction is stale when the slot no longer targets the price it was
+    // queued for. That is integer equality at the asset precision (the slot's
+    // level is its ladder level). A ladder-less manager is an INV-GRID-004
+    // fault: no slot has a price authority, so the entry cannot be validated
+    // and is dropped. The E2 sync gate refuses such a grid outright (queues
+    // nothing); it is the structural resync that restores the ladder, after
+    // which a later sync re-evaluates the slot.
+    if (!hasGenesisLadder((manager as any)?._genesis)) {
+        return { valid: false, reason: `no price ladder (INV-GRID-004) — slot ${slotId} has no authoritative price` };
     }
-    if (!priceMatches) {
+    if (!priceSlotEqual(slot.price, entry.expectedPrice, precision)) {
         return { valid: false, reason: `slot ${slotId} now targets ${slot.price} (entry queued ${entry.expectedPrice})` };
     }
     // Size check: the broadcast sends amountToSell from the QUEUED snapshot.
@@ -418,76 +416,6 @@ function parseChainOrder(chainOrder: any, assets: any) {
     }
 
     return { orderId: chainOrder.id, price, type, size };
-}
-
-/**
- * Find grid order matching a blockchain order.
- * First tries exact orderId match, then falls back to price/size matching within tolerance.
- * Used during synchronization to link blockchain orders to grid slots.
- * 
- * @param {Object} parsedChainOrder - Parsed blockchain order {orderId, price, type, size}
- * @param {Object} [opts={}] - Options object
- * @param {Map} [opts.orders] - Grid orders map to search
- * @param {Object} [opts.assets] - Asset metadata for precision
- * @param {Function} [opts.calcToleranceFn] - Function to calculate price tolerance
- * @param {Object} [opts.logger] - Optional logger
- * @param {boolean} [opts.skipSizeMatch=false] - Skip size matching check
- * @param {boolean} [opts.allowSmallerChainSize=false] - Allow chain order to be smaller
- * @param {boolean} [opts.requireAvailableSlot=false] - Skip slots already bound to a different chain order
- * @param {Set<string>} [opts.excludeGridOrderIds] - Skip grid slot ids already assigned in this sync pass
- * @returns {Object|null} Matching grid order or null if no match found
- */
-function findMatchingGridOrderByOpenOrder(parsedChainOrder: any, opts: any) {
-    const { orders, assets, calcToleranceFn } = opts || {};
-    if (!parsedChainOrder || !orders) return null;
-
-    if (parsedChainOrder.orderId) {
-        for (const gridOrder of orders.values()) {
-            if (gridOrder?.orderId === parsedChainOrder.orderId) return gridOrder;
-        }
-    }
-
-    const chainSize = toFiniteNumber(parsedChainOrder.size);
-    const chainPrice = toFiniteNumber(parsedChainOrder.price);
-    const isSell = parsedChainOrder.type === ORDER_TYPES.SELL;
-    const precision = isSell ? assets?.assetA?.precision : assets?.assetB?.precision;
-
-    if (typeof precision !== 'number') return null;
-
-    const chainInt = floatToBlockchainInt(chainSize, precision);
-    let bestMatch = null;
-    let bestPriceDiff = Infinity;
-
-    for (const gridOrder of orders.values()) {
-        const typeMatch = gridOrder?.type === parsedChainOrder.type ||
-            (opts?.allowSpreadType && gridOrder?.type === ORDER_TYPES.SPREAD);
-        if (!gridOrder || !typeMatch) continue;
-        if (opts?.excludeGridOrderIds?.has?.(gridOrder.id)) continue;
-        if (![ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL, ORDER_STATES.VIRTUAL].includes(gridOrder.state)) continue;
-        if (opts?.requireAvailableSlot && gridOrder.orderId && gridOrder.orderId !== parsedChainOrder.orderId) continue;
-
-        const priceDiff = Math.abs(gridOrder.price - chainPrice);
-        // Virtual/spread slots have size=0 — fall back to chain order's size so the
-        // precision-based tolerance is meaningful instead of collapsing to 0.
-        const effectiveSize = gridOrder.size > 0 ? gridOrder.size : chainSize;
-        // When calcToleranceFn returns null (e.g. zero-size virtual slot), fall back to
-        // exact matching (tolerance=0). This is intentional — virtual/spread slots should
-        // only match chain orders at exactly their grid price.
-        const priceTolerance = calcToleranceFn?.(gridOrder.price, effectiveSize, parsedChainOrder.type) || 0;
-        if (priceDiff > priceTolerance) continue;
-
-        const gridInt = floatToBlockchainInt(gridOrder.size, precision);
-        const sizeMismatch = opts?.allowSmallerChainSize ? (chainInt > gridInt + 1) : (Math.abs(gridInt - chainInt) > 1);
-
-        if (!opts?.skipSizeMatch && sizeMismatch) continue;
-
-        if (priceDiff < bestPriceDiff) {
-            bestPriceDiff = priceDiff;
-            bestMatch = gridOrder;
-        }
-    }
-
-    return bestMatch;
 }
 
 /**
@@ -1661,6 +1589,8 @@ function isNonBlockingUnmatchedOrder(order: any): boolean {
  *   - `boundary-unknown-deferred`: gap geometry is unknown pre-boundary; the
  *     comment at sync_engine.ts names the accepted cost as one sync cycle
  *     after the boundary commits. Self-resolving, not stranded.
+ *   - `no-genesis-deferred`: included deliberately — a ladder-less grid is
+ *     repaired by exactly the reload this escalation performs.
  *
  * Anything not listed is treated as NOT escalatable, so a future transient
  * reason is excluded by default rather than silently becoming a resync
@@ -1669,6 +1599,9 @@ function isNonBlockingUnmatchedOrder(order: any): boolean {
 const STRANDED_HOLD_REASONS = new Set<string>([
     'out-of-rail-deferred',
     'out-of-grid-deferred',
+    // Undefined grid (INV-GRID-004): a reload/rebuild IS the remedy, so this
+    // hold escalates rather than sitting until a fill happens to trigger one.
+    'no-genesis-deferred',
 ]);
 
 /**
@@ -2876,8 +2809,10 @@ function collectRefillSlotIds(actions: any, options: { config?: any; slots?: any
  *
  * Known limit: this is the statically resolved config bound, not the
  * gridPrice/AMA-referenced live rail bound. Placement call sites should use
- * resolveLiveReserveEdgeAnchorPrice(manager, side), which prefers the live
- * grid geometry and only falls back to this function.
+ * resolveLiveReserveEdgeAnchorPrice(manager, side), which prefers the genesis
+ * ladder extreme and returns null when there is no usable ladder. Callers that
+ * need a fallback (e.g. reserveEdgeIdSet) still resolve this config bound when
+ * the live anchor is null; the live resolver itself no longer computes it.
  *
  * @param {Object} config - Bot configuration
  * @param {string} side - 'buy' or 'sell'
@@ -2909,63 +2844,39 @@ type ReserveEdgeAnchorManager = {
  *
  * The anchor must come from the geometry the bot is actually trading, never
  * from a config value that can be a mode string ("pool"/"book"), a relative
- * multiplier, or a stale bound. Tiers, strongest first:
+ * multiplier, or a stale bound, and never from the live slot prices of a grid
+ * whose levels have no authority. The only source is the genesis ladder:
+ * `_genesis.priceLevels` is the exact ladder the loaded grid was built from —
+ * sorted ascending, index-aligned with `slot-<idx>` (assertSlotPriceInvariant),
+ * refreshed by initializeGrid, persisted with the grid, and unaffected by the
+ * raw-profile re-merge a resync performs. Slot 0 is always on the buy rail and
+ * the last level always on the sell rail, so the ladder extremes are the live
+ * rail bounds.
  *
- *   1. Genesis ladder extreme — `_genesis.priceLevels` is the exact ladder the
- *      loaded grid was built from: sorted ascending, index-aligned with
- *      `slot-<idx>` (assertSlotPriceInvariant), refreshed by initializeGrid,
- *      persisted with the grid, and unaffected by the raw-profile re-merge a
- *      resync performs. Slot 0 is always on the buy rail and the last level
- *      always on the sell rail, so the ladder extremes are the live rail
- *      bounds.
- *   2. Live in-rail extreme of the master grid — geometry-only rail
- *      membership (resolveGapBand + isSlotInRail, the same predicate the
- *      selectors use) for snapshots without a genesis.
- *   3. Config bound (resolveReserveEdgeAnchorPrice) — the previous behavior,
- *      kept as the last resolved tier.
- *   4. null — callers keep the legacy rank-based selection.
+ * A manager with no usable ladder returns null. That is the undefined-grid state
+ * (INV-GRID-004), which the load and sync gates refuse, not a degraded mode to
+ * paper over. The former tiers — the live in-rail slot extreme and the resolved
+ * config bound — are gone with the legacy matcher they only existed to cover;
+ * any config-bound fallback is now resolved by the individual consumer that
+ * wants one (see reserveEdgeIdSet), not by this live-edge resolver. The fault
+ * itself is reported
+ * once per grid generation by the sync-entry gate; this resolver stays silent
+ * because it is called from per-fill and per-placement paths.
  *
- * @param {Object} manager - OrderManager (needs _genesis, orders, boundary)
+ * @param {Object} manager - OrderManager (needs _genesis)
  * @param {string} side - 'buy' or 'sell'
  * @returns {number|null} Finite anchor price, or null
  */
 function resolveLiveReserveEdgeAnchorPrice(manager: ReserveEdgeAnchorManager | null | undefined, side: unknown): number | null {
     const isSell = side === 'sell';
 
-    // Tier 1 — the ladder the loaded grid was generated from.
     const levels = manager?._genesis?.priceLevels;
     if (Array.isArray(levels) && levels.length > 0) {
         const extreme = Number(isSell ? levels[levels.length - 1] : levels[0]);
         if (Number.isFinite(extreme) && extreme > 0) return extreme;
     }
 
-    // Tier 2 — live in-rail extreme of the master grid.
-    const sideType = isSell ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
-    if (manager?.orders && typeof manager.orders.values === 'function') {
-        let best: number | null = null;
-        try {
-            const band = MathUtils.resolveGapBand(manager);
-            for (const entry of manager.orders.values()) {
-                if (!entry || typeof entry !== 'object') continue;
-                if (!('type' in entry) || !('price' in entry)) continue;
-                if (entry.type !== sideType) continue;
-                // Shelf/manual ids (e.g. fork-kept deep-* orders below the rail)
-                // are never rail geometry: isSlotInRail is fail-open for
-                // unparseable ids, so without this gate a cheap shelf order drags
-                // the anchor down to itself and then qualifies as the reserve edge
-                // (issue #27 follow-up). No-op upstream (grids only mint slot-N).
-                if (parseSlotIndex((entry as any)?.id) === null) continue;
-                if (!MathUtils.isSlotInRail(band.boundaryIdx, band.gapSlots, sideType, entry)) continue;
-                const price = Number(entry.price);
-                if (!Number.isFinite(price) || price <= 0) continue;
-                if (best === null || (isSell ? price > best : price < best)) best = price;
-            }
-        } catch (e) { best = null; }
-        if (best !== null) return best;
-    }
-
-    // Tier 3 — configured/resolved bound.
-    return resolveReserveEdgeAnchorPrice(manager?.config, side);
+    return null;
 }
 
 /**
@@ -3302,6 +3213,6 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
     return { masterIds: [...masterIds], createIds: [...createIds], all: [...all] };
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, _validatePriceCorrectionEntry, _stampCorrectionProvenance, findLiveOrderOwnerByChainId, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isNonBlockingUnmatchedOrder, isStrandedHoldOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, deriveTargetBoundary, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds, reserveEdgeIdSet, liveWindowIdSet, checkGridPriceInvariant, reportGridPriceInvariant }
+export { parseChainOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, _validatePriceCorrectionEntry, _stampCorrectionProvenance, findLiveOrderOwnerByChainId, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isNonBlockingUnmatchedOrder, isStrandedHoldOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, deriveTargetBoundary, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds, reserveEdgeIdSet, liveWindowIdSet, checkGridPriceInvariant, reportGridPriceInvariant }
 export { resolveReserveEdgeAnchorPrice, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge, collectRefillSlotIds };
 

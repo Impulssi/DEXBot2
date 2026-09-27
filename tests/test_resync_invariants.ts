@@ -7,6 +7,7 @@
 
 const assert = require('assert');
 const { esmMockEntry, defineEsmMockAbs } = require('./helpers/esm_mocks');
+const { makeLadderFromPrices } = require('./helpers/order_test_helpers');
 
 // Compiled ESM namespaces are frozen and require.cache injection cannot
 // intercept static ESM imports, so chain_orders is replaced via loader hooks
@@ -120,6 +121,9 @@ async function runTests() {
             buyFree: 10000,
             sellFree: 100
         });
+        // Genesis-frozen engine: a populated grid needs a price ladder or the
+        // sync gate refuses the run (INV-GRID-004).
+        mgr._genesis = makeLadderFromPrices([10, 100]);
         return mgr;
     };
 
@@ -213,6 +217,8 @@ async function runTests() {
             assetA: { id: '1.3.1', symbol: 'TEST', precision: 5 },
             assetB: { id: '1.3.0', symbol: 'BTS', precision: 5 }
         };
+        manager._genesis = makeLadderFromPrices([10]);
+        manager.boundaryIdx = 0; // slot-0 is on the BUY rail
         await manager.setAccountTotals({
             buy: 10000,
             sell: 100,
@@ -273,6 +279,8 @@ async function runTests() {
             assetA: { id: '1.3.1', symbol: 'TEST', precision: 5 },
             assetB: { id: '1.3.0', symbol: 'BTS', precision: 5 }
         };
+        manager._genesis = makeLadderFromPrices([10]);
+        manager.boundaryIdx = 0; // slot-0 is on the BUY rail
         await manager.setAccountTotals({
             buy: 1000,
             sell: 0,
@@ -280,8 +288,11 @@ async function runTests() {
             sellFree: 0
         });
 
+        // Slot id must be ladder-addressable: the chain order at price 10
+        // adopts into its nearest slot (slotIndexForPrice), so the fund lock
+        // this case asserts on actually happens.
         await manager._updateOrder({
-            id: 'buy-slot',
+            id: 'slot-0',
             state: ORDER_STATES.VIRTUAL,
             type: ORDER_TYPES.BUY,
             price: 10,

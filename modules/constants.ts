@@ -568,10 +568,11 @@ let GRID_LIMITS = {
     // MISSING_GENESIS_POLICY: what to do when a persisted grid cannot be tied
     // to a price ladder ("no genesis" -- the genesis-less state analysed in
     // docs/GRID_PRICE_INVARIANT.md). A genesis-less grid is NOT repairable in
-    // place: every consumer (nearest-slot adoption, drift tagging, the
-    // materialize descriptor-price fallback, reserve-edge anchoring,
-    // isSlotInRail) silently degrades to a fuzzy/tolerance matcher, which is
-    // exactly how an off-grid price became grid evidence and was re-emitted.
+    // place: every consumer (nearest-slot adoption, the materialize
+    // descriptor-price fallback, reserve-edge anchoring) has no authority for a
+    // slot's price, which is exactly how an off-grid price became grid evidence
+    // and was re-emitted. The load and sync gates refuse that state outright —
+    // no tolerance matcher remains.
     //   'rebuild' (default) -- refuse the snapshot and rebuild a clean ladder
     //                         through the existing resync machinery
     //                         (initializeGrid/recalculateGrid, which re-derive
@@ -627,12 +628,6 @@ let GRID_LIMITS = {
     // PRICE_TOLERANCE_MIN_ABSOLUTE: Floor for the price tolerance cap in price units.
     // Ensures the cap is non-zero even for extremely cheap assets.
     PRICE_TOLERANCE_MIN_ABSOLUTE: 0.0001,
-
-    // ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER: Legacy fallback multiplier for calculatePriceTolerance
-    // (sync_engine pass-2 before genesis). With genesis-frozen nearest-slot (slotIndexForPrice)
-    // this multiplier is deprecated — deterministic slotId equality replaces widening. Kept for
-    // migration fallback when genesis missing; otherwise unused.
-    ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER: 4,
 
     // GRID_REGENERATION_PERCENTAGE: Trigger threshold for automatic grid size recalculation.
     // Works in BOTH directions (bidirectional), sharing one threshold:
@@ -774,11 +769,6 @@ let GRID_LIMITS = {
     // Example: 0.1 means two values are considered equal when diff < 0.1% of magnitude.
     // Note: Final blockchain update filtering still happens with integer precision checks.
     RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT: 0.1,
-
-    // PRICE_DRIFT_TOLERANCE_MULTIPLIER: Legacy for price-drift-orphan tagging when genesis missing.
-    // With genesis-frozen nearest-slot, drift is deterministic no-available-nearest-slot (gap/occupied)
-    // not a tolerance band. Kept for diagnostics fallback only.
-    PRICE_DRIFT_TOLERANCE_MULTIPLIER: 4,
 
 };
 

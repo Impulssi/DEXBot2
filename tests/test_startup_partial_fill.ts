@@ -1,5 +1,6 @@
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
+const { makeLadderFromPrices } = require('./helpers/order_test_helpers');
 
 console.log('Running offline partial-fill unit test (syncing startup orders)...');
 
@@ -12,6 +13,9 @@ console.log('Running offline partial-fill unit test (syncing startup orders)...'
             botFunds: { buy: 1000, sell: 1000 }
         };
         const mgr = new OrderManager(cfg);
+        // Genesis-frozen engine: a populated grid needs a price ladder or the
+        // sync gate refuses the run (INV-GRID-004).
+        mgr._genesis = makeLadderFromPrices([2]);
 
         // Mock asset metadata (ids and precisions) so conversions work
         mgr.assets = {

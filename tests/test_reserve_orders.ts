@@ -219,11 +219,10 @@ async function runTests() {
             'null anchor keeps the leftover first (legacy)'
         );
 
-        // Tier 2: no genesis -> live in-rail extreme of the master grid.
-        // Non-grid shelf/manual ids (e.g. a fork-kept deep-* order below the
-        // rail) never drag the anchor: isSlotInRail is fail-open for
-        // unparseable ids, so the Tier 2 scan skips them explicitly
-        // (issue #27 follow-up) and the live rail floor wins.
+        // No ladder -> no anchor. The live-grid extreme and the config bound
+        // are gone with the legacy matcher: a ladder-less grid is an undefined
+        // grid (INV-GRID-004, refused at load/sync), so the rank fallback is
+        // all that is left and it must not pretend the grid is priced.
         assert.strictEqual(
             resolveLiveReserveEdgeAnchorPrice({
                 config: poolCfg,
@@ -232,14 +231,16 @@ async function runTests() {
                 boundaryIdx: 4,
                 _gapSlots: 2,
             }, 'buy'),
-            80,
-            'no genesis falls back to the live in-rail extreme (shelf ids skipped)'
+            null,
+            'no ladder yields no anchor (the undefined grid is not priced from slot prices)'
         );
-
-        // Tier 3/4: nothing to read -> config bound, then legacy null.
-        assert.strictEqual(resolveLiveReserveEdgeAnchorPrice({ config: poolCfg }, 'buy'), null, 'no geometry + unresolvable config keeps legacy rank');
-        assert.strictEqual(resolveLiveReserveEdgeAnchorPrice({ config: { minPrice: 80, startPrice: 'pool' } }, 'buy'), 80, 'no geometry falls back to the config bound');
-        assert.strictEqual(resolveLiveReserveEdgeAnchorPrice(null, 'buy'), null, 'missing manager keeps legacy rank');
+        assert.strictEqual(resolveLiveReserveEdgeAnchorPrice({ config: poolCfg }, 'buy'), null, 'unresolvable config cannot invent an anchor');
+        assert.strictEqual(
+            resolveLiveReserveEdgeAnchorPrice({ config: { minPrice: 80, startPrice: 'pool' } }, 'buy'),
+            null,
+            'a config bound is not a live anchor any more'
+        );
+        assert.strictEqual(resolveLiveReserveEdgeAnchorPrice(null, 'buy'), null, 'missing manager keeps rank fallback');
     }
 
     console.log(' - no-crawl classification follows the live edge anchor...');
@@ -278,8 +279,10 @@ async function runTests() {
         // Shelf-only grid: empty edge set, so the deficit (0/2) can fire.
         const shelfOnly = reserveEdgeIdSet(shelfSlots.slice(0, 2), shelfCfg, ORDER_TYPES.BUY, 80);
         assert(shelfOnly && shelfOnly.size === 0, 'no rail slots means no live reserves');
-        // Tier 2 anchor scan skips shelf ids even though isSlotInRail is
-        // fail-open for unparseable ids: the live rail floor wins.
+        // A ladder-less grid has no anchor at all: slot prices are not a
+        // pricing authority (INV-GRID-004), so nothing can be derived from
+        // them — not even "safely", because a shelf order would then set the
+        // rail bound.
         const shelfManager = {
             config: { startPrice: 'pool', minPrice: '3x', maxPrice: '3x' },
             _genesis: null,
@@ -287,7 +290,7 @@ async function runTests() {
             boundaryIdx: 4,
             _gapSlots: 2,
         };
-        assert.strictEqual(resolveLiveReserveEdgeAnchorPrice(shelfManager, 'buy'), 80, 'shelf ids never drag the live anchor');
+        assert.strictEqual(resolveLiveReserveEdgeAnchorPrice(shelfManager, 'buy'), null, 'a ladder-less grid has no live anchor');
     }
 
     console.log(' - getActiveOrdersTotal includes both sides...');

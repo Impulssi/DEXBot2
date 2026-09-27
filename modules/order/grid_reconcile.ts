@@ -64,6 +64,15 @@ function _startupCancelPlanStillCurrent(
 }
 
 /**
+ * Resume a persisted grid whose order ids no longer match the book, by
+ * re-adopting the live chain orders into the frozen ladder (nearest-slot).
+ *
+ * The name is historical: there is no price matcher here any more. It loads the
+ * persisted grid (which establishes the price ladder, or is refused with
+ * MissingGenesisError and reported as "not resumed") and lets the normal sync
+ * bind each live chain order to the slot its price maps to. A grid whose ladder
+ * is unusable never resumes — the caller regenerates.
+ *
  * Returns { resumed: boolean, matchedCount: number }.
  * @param {Object} params - Destructured parameters
  * @param {Object} params.manager - OrderManager instance
@@ -95,7 +104,7 @@ export async function attemptResumePersistedGridByPriceMatch({
     if (!manager || typeof manager.synchronizeWithChain !== 'function') return { resumed: false, matchedCount: 0 };
 
     try {
-        logger && logger.log && logger.log('No matching active order IDs found. Attempting to match by price...', 'info');
+        logger && logger.log && logger.log('No matching active order IDs found. Attempting to re-adopt by ladder level...', 'info');
         const { loadGrid } = require('./grid');
         // Prefer explicit genesis if caller wired it, else fall back to manager._genesis
         const genesisArg = genesis ?? (manager as any)?._genesis ?? null;
@@ -110,17 +119,17 @@ export async function attemptResumePersistedGridByPriceMatch({
         );
 
         if (matchedOrderIds.size === 0) {
-            logger && logger.log && logger.log('Price-based matching found no matches. Generating new grid.', 'info');
+            logger && logger.log && logger.log('Ladder-level re-adoption found no matches. Generating new grid.', 'info');
             return { resumed: false, matchedCount: 0 };
         }
 
-        logger && logger.log && logger.log(`Successfully matched ${matchedOrderIds.size} orders by price. Resuming with existing grid.`, 'info');
+        logger && logger.log && logger.log(`Successfully re-adopted ${matchedOrderIds.size} orders by ladder level. Resuming with existing grid.`, 'info');
         if (typeof storeGrid === 'function') {
             await storeGrid(Array.from(manager.orders.values()) as any[]);
         }
         return { resumed: true, matchedCount: matchedOrderIds.size };
     } catch (err: any) {
-        logger && logger.log && logger.log(`Price-based resume attempt failed: ${err && getErrorMessage(err) ? getErrorMessage(err) : err}`, 'warn');
+        logger && logger.log && logger.log(`Ladder-level resume attempt failed: ${err && getErrorMessage(err) ? getErrorMessage(err) : err}`, 'warn');
         return { resumed: false, matchedCount: 0 };
     }
 }

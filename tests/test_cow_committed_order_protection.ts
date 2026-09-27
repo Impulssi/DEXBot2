@@ -2,6 +2,7 @@ const assert = require('assert');
 const { OrderManager } = require('../modules/order/index').default;
 const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../modules/constants');
 const { createSilentLogger } = require('./helpers/silent_logger');
+const { makeLadderFromPrices } = require('./helpers/order_test_helpers');
 
 // Compiled ESM namespaces are frozen: seed the fee cache via the _setFeeCache
 // seam instead of patching OrderUtils.getAssetFees (createFee=0.1, updateFee=0.001).
@@ -37,6 +38,9 @@ async function runTests() {
         });
         mgr.logger = createSilentLogger();
         mgr.assets = { assetA: { id: '1.3.0', precision: 8 }, assetB: { id: '1.3.1', precision: 5 } };
+        // Genesis-frozen engine: a populated grid needs a price ladder or the
+        // sync gate refuses the run (INV-GRID-004).
+        mgr._genesis = makeLadderFromPrices([50]);
         await mgr.setAccountTotals({ buy: 10000, sell: 100, buyFree: 10000, sellFree: 100 });
         return mgr;
     };
