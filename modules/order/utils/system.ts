@@ -57,12 +57,26 @@ import { PATHS } from '../../paths.js';
 import { toFiniteNumber, isValidNumber } from '../format.js';
 import * as MathUtils from './math.js';
 import * as OrderUtils from './order.js';
-import { isSlotHeld } from '../manual_hold.js';
 import Logger from '../../order/logger.js';
 import { runtime } from '../../runtime.js';
 import { getErrorMessage } from '../../utils/errors.js';
 import { withTimeout } from './timeout.js';
 const { ensureDir, readJSON } = storage;
+// Lazy hold gate for the divergence-COW planner: MUST NOT be a static
+// import. system.ts already sits inside the module cycle manual_hold →
+// chain_orders → key_store → credential_policy → bitshares_client → system;
+// a static edge made credential_policy destructure BitShares while
+// bitshares_client was still mid-evaluation (TDZ ReferenceError that killed
+// every unlock/stop/start). The lazy require resolves after the cycle has
+// settled (same pattern as the serializeManualHolds require below).
+function isSlotHeldLazy(manager: any, slotId: any): boolean {
+    try {
+        return require('../manual_hold.js').isSlotHeld(manager, slotId);
+    } catch {
+        return false;
+    }
+}
+
 const systemLogger = new Logger('System');
 
 /**
@@ -1590,7 +1604,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
             for (const slot of desiredSlots) {
                 const hasCreate = hasActionForOrder(actions, COW_ACTIONS.CREATE, slot);
                 if (!onChainBySlotId.has(slot.id) && slot.size > 0 && !hasCreate) {
-                    if (isSlotHeld(manager, slot.id)) {
+                    if (isSlotHeldLazy(manager, slot.id)) {
                         manager.logger.log(`[DIVERGENCE-COW] Skipping placement for ${slot.id} — slot held (operator cancel)`, 'info');
                         continue;
                     }
@@ -1650,7 +1664,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         for (let i = actions.length - 1; i >= 0; i--) {
             const a = actions[i];
             if (a?.type !== COW_ACTIONS.UPDATE || !a?.isRotation) continue;
-            if (!isSlotHeld(manager, a?.newGridId)) continue;
+            if (!isSlotHeldLazy(manager, a?.newGridId)) continue;
             const restoredCancel = {
                 type: COW_ACTIONS.CANCEL,
                 id: a.id,
