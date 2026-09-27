@@ -16,6 +16,11 @@ import { BitShares, onReconnect as registerReconnectHook } from './bitshares_cli
 import orderModule from './order/index.js';
 import { getErrorMessage } from './utils/errors.js';
 import { processSweepOrphanFill } from './dexbot_fill_runtime.js';
+import {
+    ON_MISSING_GENESIS,
+    recordMissingGenesisFault,
+    resolvePersistedGenesis
+} from './order/genesis_policy.js';
 const { OrderManager, grid: Grid } = orderModule;
 function initializeFeeCache(...args: any) { return require('./order/utils/system').initializeFeeCache(...args); }
 function parseJsonWithComments(...args: any) { return require('./order/utils/system').parseJsonWithComments(...args); }
@@ -151,6 +156,50 @@ async function initializeStartupState(bot: any) {
         persistedGenesis,
         persistedGapEvacStreaks,
     };
+}
+
+/**
+ * E3 startup gate: decide whether the persisted grid can be resumed at all.
+ *
+ * A snapshot with orders but no usable price ladder is refused (the same
+ * `resolvePersistedGenesis` verdict `loadGrid` enforces, so the two cannot
+ * drift) and the configured policy decides what happens next:
+ *   'rebuild' (default) -> return `{ needsRebuild: true }`; the caller takes
+ *       the regeneration branch, where `initializeGrid` re-derives prices
+ *       (resolving mode strings such as "pool") and builds a fresh ladder
+ *       before the first sync. Live orders are reconciled update-first, so
+ *       only true surplus is cancelled.
+ *   'halt' -> throw the fault; the startup sequence's catch logs it, shuts the
+ *       bot down and rethrows. Nothing is cancelled without an operator.
+ *
+ * @param {import('./dexbot_class.js').DEXBot} bot
+ * @param {any[]} persistedGrid - Persisted grid array (non-empty).
+ * @param {any} persistedGenesis - Persisted ladder row (may be null).
+ * @returns {{needsRebuild: boolean}}
+ */
+function evaluateStartupGenesisGate(bot: any, persistedGrid: any, persistedGenesis: any): { needsRebuild: boolean } {
+    const config = bot.manager?.config || bot.config;
+    const resolution = resolvePersistedGenesis({
+        config,
+        grid: persistedGrid,
+        genesisInput: persistedGenesis,
+        log: (msg: string, level?: string) => bot._log(msg, level)
+    });
+    if (resolution.ok) return { needsRebuild: false };
+
+    // Records the fault on the manager (so the E2 sync-entry assert and any
+    // later read can name the reason) and logs the policy-specific guidance.
+    const fault = recordMissingGenesisFault(bot.manager, { ...resolution });
+    if (fault.policy === ON_MISSING_GENESIS.HALT) {
+        throw fault;
+    }
+    bot._log(
+        `[GENESIS] Persisted grid cannot be resumed without a price ladder — regenerating the grid from live ` +
+        `config (missing-genesis policy='${fault.policy}'); the rebuild re-derives prices ` +
+        `and reconciles against the live book update-first`,
+        'warn'
+    );
+    return { needsRebuild: true };
 }
 
 /**
@@ -492,31 +541,42 @@ async function finishStartupSequence(bot: any, startupState: any) {
             shouldRegenerate = true;
             bot._log('No persisted grid found. Generating new grid.');
         } else {
-            await bot.manager._initializeAssets();
-            const decision = await reconcileMod.decideStartupGridAction({
-                persistedGrid,
-                chainOpenOrders,
-                manager: bot.manager,
-                logger: botRetryLogger(bot),
-                storeGrid: async (orders: any) => {
-                    await bot.manager.persistGrid(orders);
-                },
-                boundaryIdx: persistedBoundaryIdx,
-                genesis: persistedGenesis,
-                attemptResumeFn: reconcileMod.attemptResumePersistedGridByPriceMatch,
-            });
-            shouldRegenerate = decision.shouldRegenerate;
+            // E3 STARTUP GATE (docs/GRID_PRICE_INVARIANT.md): a persisted grid with
+            // no usable price ladder must never reach the first sync — every
+            // slot-price consumer degrades to a tolerance matcher from there on.
+            // Ask the SAME question loadGrid asks (one resolver, two callers) and
+            // take the configured action BEFORE deciding resume-vs-regenerate, so
+            // a genesis-less snapshot is rebuilt instead of half-loaded.
+            const genesisGate = evaluateStartupGenesisGate(bot, persistedGrid, persistedGenesis);
+            if (genesisGate.needsRebuild) {
+                shouldRegenerate = true;
+            } else {
+                await bot.manager._initializeAssets();
+                const decision = await reconcileMod.decideStartupGridAction({
+                    persistedGrid,
+                    chainOpenOrders,
+                    manager: bot.manager,
+                    logger: botRetryLogger(bot),
+                    storeGrid: async (orders: any) => {
+                        await bot.manager.persistGrid(orders);
+                    },
+                    boundaryIdx: persistedBoundaryIdx,
+                    genesis: persistedGenesis,
+                    attemptResumeFn: reconcileMod.attemptResumePersistedGridByPriceMatch,
+                });
+                shouldRegenerate = decision.shouldRegenerate;
 
-            if (shouldRegenerate && chainOpenOrders.length === 0) {
-                bot._log('Persisted grid found, but no matching active orders on-chain. Generating new grid.');
-            }
+                if (shouldRegenerate && chainOpenOrders.length === 0) {
+                    bot._log('Persisted grid found, but no matching active orders on-chain. Generating new grid.');
+                }
 
-            if (shouldRegenerate && chainOpenOrders.length > 0 && bot.manager?.assets) {
-                const orderCount = chainOpenOrders.filter(
-                    (o: any) => parseChainOrder(o, bot.manager.assets) !== null
-                ).length;
-                if (orderCount === 0) {
-                    bot._log(`Persisted grid found with no matching orders (${chainOpenOrders.length} other-pair order(s) on account). Generating new grid.`);
+                if (shouldRegenerate && chainOpenOrders.length > 0 && bot.manager?.assets) {
+                    const orderCount = chainOpenOrders.filter(
+                        (o: any) => parseChainOrder(o, bot.manager.assets) !== null
+                    ).length;
+                    if (orderCount === 0) {
+                        bot._log(`Persisted grid found with no matching orders (${chainOpenOrders.length} other-pair order(s) on account). Generating new grid.`);
+                    }
                 }
             }
         }

@@ -155,6 +155,7 @@ import { parseSlotIndex } from './utils/slot.js';
 import {
     resolveProcessedFillPersistenceMode
 } from './processed_fill_store.js';
+import { hasGenesisLadder } from './genesis_policy.js';
 import { getErrorMessage } from '../utils/errors.js';
 
 /**
@@ -561,6 +562,14 @@ class SyncEngine {
         if (!mgr) {
             throw new Error('manager required for syncFromOpenOrders');
         }
+        // E2 (defence in depth): a populated grid MUST have a price ladder
+        // before the first sync touches it. loadGrid (E1) and the startup gate
+        // (E3) establish that invariant; this assert exists to catch a future
+        // path that skips both. It does NOT throw -- a sync in flight is not
+        // the place to abort a live manager -- it reports (once per
+        // generation, with a running count) and asks for the structural resync
+        // that re-derives the ladder. See docs/GRID_PRICE_INVARIANT.md.
+        this._assertGenesisInvariant(mgr);
         if (!mgr._syncLock) {
             mgr.logger?.log?.('Error: syncLock not initialized', 'error');
             return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
@@ -2218,6 +2227,47 @@ class SyncEngine {
      * @param {string} source - Source identifier ('createOrder', 'cancelOrder', 'readOpenOrders', etc.)
      * @returns {Promise<Object>} { newOrders, ordersNeedingCorrection }
      */
+    /**
+     * E2 invariant assert: a manager holding grid slots but no price ladder is
+     * in the undefined state every genesis-derived consumer degrades from.
+     *
+     * Reports once per grid generation (latched on the manager, counted in
+     * `_genesisInvariantViolations`) and, when the bot wired the structural
+     * resync, requests one so the ladder is re-derived instead of leaving the
+     * fuzzy fallbacks in charge. Deliberately non-throwing: the load-side
+     * gates own the fail-closed decision, this one only makes a bypass loud.
+     * @param {any} mgr - OrderManager instance
+     */
+    _assertGenesisInvariant(mgr: any) {
+        try {
+            const orders = mgr?.orders;
+            const slotCount = orders instanceof Map ? orders.size : (Array.isArray(orders) ? orders.length : 0);
+            if (slotCount === 0) return;
+            if (hasGenesisLadder(mgr._genesis)) return;
+
+            const count = ((mgr as any)._genesisInvariantViolations || 0) + 1;
+            (mgr as any)._genesisInvariantViolations = count;
+            const fault = (mgr as any)._missingGenesis;
+            if (count > 1) return; // already reported for this generation
+            (mgr as any)._genesisInvariantLoggedAt = Date.now();
+            mgr.logger?.log?.(
+                `[GENESIS] INVARIANT: sync is about to run against ${slotCount} grid slot(s) with NO price ladder` +
+                (fault ? ` (refused earlier: ${fault.reason} — ${fault.detail})` : '') +
+                `. Every slot-price consumer degrades to a tolerance matcher, so off-grid prices ` +
+                `can become grid evidence. A structural resync re-derives the ladder.`,
+                'error'
+            );
+            if (typeof mgr.requestStructuralGridResync === 'function') {
+                Promise.resolve(mgr.requestStructuralGridResync('missing-genesis', { violations: count }))
+                    .catch((err: any) => {
+                        mgr.logger?.log?.(`[GENESIS] Structural resync request failed: ${getErrorMessage(err)}`, 'warn');
+                    });
+            }
+        } catch {
+            // Never let observability break a sync.
+        }
+    }
+
     async synchronizeWithChain(chainData: any, source: string) {
         const mgr = this.manager;
         if (!mgr.assets) return { newOrders: [], ordersNeedingCorrection: [] };

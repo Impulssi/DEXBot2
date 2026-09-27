@@ -1,5 +1,6 @@
 const assert = require('assert');
 const { isGridBloated, loadGrid } = require('../modules/order/grid');
+const { buildGenesisFromPriceLevels, calculateGapSlots } = require('../modules/order/utils/math');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const { ORDER_SPREAD_TOLERANCE } = require('../modules/constants');
 const { getErrorMessage } = require('../modules/utils/errors');
@@ -202,7 +203,12 @@ async function runTests() {
         const capturedLogs: string[] = [];
         mgr.logger.log = (msg: string) => { capturedLogs.push(msg); };
 
-        await loadGrid(mgr as any, grid, 5);
+        // The ladder for this fixture's own levels (1.0 + 0.003*i): loadGrid
+        // refuses a non-empty snapshot without one (genesis invariant).
+        await loadGrid(mgr as any, grid, 5, buildGenesisFromPriceLevels(
+            1.015, 0.3, calculateGapSlots(0.3, 1.5),
+            grid.map((s: any) => s.price)
+        ));
 
         // Check that stale types were corrected
         const getType = (id: string) => mgr.orders.get(id)?.type;

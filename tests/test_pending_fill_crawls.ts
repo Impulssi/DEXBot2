@@ -35,6 +35,7 @@ const { OrderManager } = require('../modules/order/manager');
 const { WorkingGrid } = require('../modules/order/working_grid');
 const { applyPersistedPendingCrawls } = require('../modules/order/utils/system');
 const { loadGrid } = require('../modules/order/grid');
+const { buildGenesisFromPriceLevels, calculateGapSlots } = require('../modules/order/utils/math');
 
 const GAP = 4;
 const N_SLOTS = 216;
@@ -509,6 +510,18 @@ function buildPersistableMaster(count) {
     return arr;
 }
 
+/**
+ * The ladder for the linear-price fixture grid (0.001 + i*0.000004).
+ * loadGrid requires a ladder for a non-empty snapshot (genesis invariant), and
+ * a linear fixture rail can never match the geometric migration rail — so the
+ * snapshot carries its own genesis, exactly as a real one does.
+ */
+function fixtureGenesis(count = N_SLOTS) {
+    const levels = [];
+    for (let i = 0; i < count; i++) levels.push(0.001 + i * 0.000004);
+    return buildGenesisFromPriceLevels(0.001 + (count / 2) * 0.000004, 0.5, GAP, levels);
+}
+
 function createGeomManager() {
     const manager = new OrderManager({
         assetA: 'BTS', assetB: 'USD', ...GEOM_CFG, logging: { level: 'error' },
@@ -536,7 +549,7 @@ async function testPersistSkip_RestartReplaysCommitOnce() {
     try {
         // Generation on disk: boundary 96 with two owed buy crawls (93, 94).
         await accountOrders.storeMasterGrid(buildPersistableMaster(N_SLOTS), 0, B0,
-            null, null, null, null, undefined, [
+            null, null, null, fixtureGenesis(), undefined, [
                 { slotId: 'slot-93', side: ORDER_TYPES.BUY, ts: 1 },
                 { slotId: 'slot-94', side: ORDER_TYPES.BUY, ts: 2 },
             ]);

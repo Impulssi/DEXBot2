@@ -3277,6 +3277,16 @@ function wireStructuralGridResyncRequest(bot: any) {
                     }
                     return;
                 }
+                if (persistedResult.halt) {
+                    // Missing-genesis policy 'halt': the operator must reset the
+                    // grid manually. Do not fall through to the automatic
+                    // structural resync below (docs/GRID_PRICE_INVARIANT.md).
+                    bot._warn(
+                        `[RECOVERY] Missing-genesis policy='halt' — suppressing the automatic structural ` +
+                        `resync for ${reason}. Run a manual grid reset for this bot.`
+                    );
+                    return;
+                }
 
                 const suffix = unmatchedCount > 0 ? ` (${unmatchedCount} unmatched chain order(s))` : '';
                     bot._warn(`[RECOVERY] Running structural full grid resync for ${reason}${suffix}`);

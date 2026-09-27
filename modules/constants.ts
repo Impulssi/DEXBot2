@@ -565,6 +565,37 @@ let TIMING = {
 
 // Grid limits and scaling constants
 let GRID_LIMITS = {
+    // MISSING_GENESIS_POLICY: what to do when a persisted grid cannot be tied
+    // to a price ladder ("no genesis" -- the genesis-less state analysed in
+    // docs/GRID_PRICE_INVARIANT.md). A genesis-less grid is NOT repairable in
+    // place: every consumer (nearest-slot adoption, drift tagging, the
+    // materialize descriptor-price fallback, reserve-edge anchoring,
+    // isSlotInRail) silently degrades to a fuzzy/tolerance matcher, which is
+    // exactly how an off-grid price became grid evidence and was re-emitted.
+    //   'rebuild' (default) -- refuse the snapshot and rebuild a clean ladder
+    //                         through the existing resync machinery
+    //                         (initializeGrid/recalculateGrid, which re-derive
+    //                          prices and reconcile update-first, so only true
+    //                          surplus is cancelled). Deterministic, but the
+    //                          live orders are re-slotted -- the same net effect
+    //                          as a manual `dexbot reset`.
+    //   'halt'              -- refuse to start and require the operator to run a
+    //                         manual grid reset. Strongest fund safety (nothing
+    //                         is cancelled without consent); the bot stays down
+    //                         until a human acts, so it is opt-in, not default.
+    // Read as `config.gridLimits.MISSING_GENESIS_POLICY` (see
+    // modules/order/genesis_policy.ts); any other value falls back to 'rebuild'.
+    MISSING_GENESIS_POLICY: 'rebuild',
+
+    // MISSING_GENESIS_MISMATCH_RATIO: share of persisted slots that must match
+    // the config-derived rail before a migrated (genesis-less) snapshot may
+    // adopt that rail as its genesis. Above it, the config was edited since the
+    // snapshot, so the config-derived ladder is a DIFFERENT generation:
+    // adopting it would mass-virtualize live order tracking in 'enforce' mode
+    // (or flood the log in 'log' mode) and persist a genesis the live grid does
+    // not match. Treated as a missing genesis instead -- refused, never adopted.
+    MISSING_GENESIS_MISMATCH_RATIO: 0.5,
+
     // MIN_SPREAD_FACTOR: Ensures spread is at least (incrementPercent × MIN_SPREAD_FACTOR) slots wide.
     // Rationale: Spread must be sufficiently wide to:
     //   1. Avoid order collision (orders too close get rejected by blockchain)

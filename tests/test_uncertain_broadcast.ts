@@ -1935,6 +1935,15 @@ runEsmMockStages(['cow', 'daemon'], async (stage) => {
     }
 });
 
+/**
+ * Ladder for the shared 2-slot recovery fixture (prices 0.04 / 0.06). Real
+ * snapshots always persist their ladder and loadGrid refuses one that lacks it
+ * (genesis invariant), so recovery fixtures must supply it.
+ */
+function recoveryFixtureLadder() {
+    return require('../modules/order/utils/math').buildGenesisFromPriceLevels(0.05, 1, 1, [0.04, 0.06]);
+}
+
 // ── UPDATE→CREATE fallback: size-update branch ──────────────────────────
 async function testUpdateToCreateFallbackOnNotFound() {
     console.log('\n[UNC-015] UPDATE→CREATE fallback on "not found" (size-update branch)...');
@@ -2161,7 +2170,10 @@ async function testRecoverFromPersistedGrid() {
             // the BUY side of the geometry, so the persisted-boundary gate
             // (validatePersistedBoundary) accepts it.
             return 1;
-        }
+        },
+        // A real snapshot always carries its ladder; loadGrid refuses one
+        // without (genesis invariant), so the fixture provides one.
+        loadGenesis: () => recoveryFixtureLadder()
     };
 
     chainOrders.readOpenOrdersWithMeta = async (accountRef) => {
@@ -2235,6 +2247,7 @@ async function testRecoverFromPersistedGridTruncatedRead() {
         // Valid dummy boundary (42 would be rejected by the persisted-boundary
         // gate before the chain read this test exercises).
         loadBoundaryIdx: () => 1,
+        loadGenesis: () => recoveryFixtureLadder(),
     };
 
     // Truncated read: the get_full_accounts window omitted the freshest
@@ -2357,6 +2370,7 @@ async function testRecoverFromPersistedGridBloated() {
             return persistedGrid;
         },
         loadBoundaryIdx: () => 0,
+        loadGenesis: () => recoveryFixtureLadder(),
     };
 
     chainOrders.readOpenOrdersWithMeta = async () => ({ orders: chainState, truncated: false });
@@ -2435,6 +2449,7 @@ async function testRecoverFromPersistedGridUnmatchedRemain() {
         // snapshot before sync even runs — masking the unmatched-order path
         // this test exercises.
         loadBoundaryIdx: () => 1,
+        loadGenesis: () => recoveryFixtureLadder(),
     };
 
     chainOrders.readOpenOrdersWithMeta = async () => ({ orders: chainState, truncated: false });
@@ -2522,6 +2537,7 @@ async function testRecoverFromPersistedGridOutOfGridHold() {
     bot.accountOrders = {
         loadGrid: () => persistedGrid,
         loadBoundaryIdx: () => 1,
+        loadGenesis: () => recoveryFixtureLadder(),
     };
 
     chainOrders.readOpenOrdersWithMeta = async () => ({ orders: chainState, truncated: false });

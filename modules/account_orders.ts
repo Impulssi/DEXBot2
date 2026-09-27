@@ -66,6 +66,7 @@ import { ORDER_TYPES, ORDER_STATES } from './constants.js';
 import { PATHS } from './paths.js';
 import AsyncLock from './order/async_lock.js';
 import { isPhantomOrder } from './order/utils/order.js';
+import { hasGenesisLadder } from './order/genesis_policy.js';
 import * as Format from './order/format.js';
 import { ensureDir, nowIso, normalizeLastFillPivot } from './order/utils/system.js';
 import Logger from './order/logger.js';
@@ -504,14 +505,50 @@ class AccountOrders {
     return (this.data && Array.isArray(this.data.grid)) ? this.data.grid : null;
   }
 
+  /**
+   * Load the persisted price-ladder (genesis) for this bot.
+   *
+   * SCHEMA GATE (docs/GRID_PRICE_INVARIANT.md, "Schema"): a usable ladder needs a
+   * NON-EMPTY `priceLevels` array. A row without one is not a ladder --
+   * accepting it would hand `loadGrid` a genesis it cannot validate against
+   * (and, for an empty array, silently disable every genesis-derived consumer).
+   * Refusing it here means the caller takes the missing-genesis path once, at
+   * the source, instead of at every consumer.
+   *
+   * The hash is deliberately NOT required here: a present-but-tampered hash is
+   * still returned, because the hash-mismatch warning belongs to `loadGrid`,
+   * which can say what it compared against (`hasGenesisLadder` in
+   * modules/order/genesis_policy.ts draws the same distinction).
+   * @param {boolean} forceReload - If true, reload from disk
+   * @returns {Object|null} The genesis object, or null when absent/invalid
+   */
   loadGenesis(forceReload: boolean = false) {
     if (forceReload) {
       this.data = this._loadData() || emptyData();
     }
-    if (this.data && this.data.genesis && Array.isArray(this.data.genesis.priceLevels)) {
-      return this.data.genesis;
+    const genesis = this.data?.genesis;
+    // Same predicate as loadGrid/genesis_policy: one definition of "usable
+    // ladder", so the schema gate cannot diverge from the load-time gate.
+    if (hasGenesisLadder(genesis)) {
+      return genesis;
+    }
+    if (genesis) {
+      this._noteRejectedGenesis(genesis);
     }
     return null;
+  }
+
+  /**
+   * Record why a persisted genesis row was refused (observability for the
+   * schema gate above; loadGrid cannot report a row it never receives).
+   */
+  private _noteRejectedGenesis(genesis: any) {
+    try {
+      const reason = !Array.isArray(genesis?.priceLevels)
+        ? 'priceLevels is not an array'
+        : (genesis?.priceLevels?.length === 0 ? 'priceLevels is empty' : 'malformed');
+      (this as any)._rejectedGenesis = { reason, at: Date.now() };
+    } catch { /* never fail a load for telemetry */ }
   }
 
   /**

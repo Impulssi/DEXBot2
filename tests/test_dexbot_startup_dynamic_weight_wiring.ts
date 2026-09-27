@@ -9,6 +9,7 @@ console.log('Running dexbot startup dynamic weight wiring tests');
 // startup seams are bot-level: _gridModule, _gridReconcileModule,
 // _listenForFillsHook and _readOpenOrdersHook.
 const DEXBot = require('../modules/dexbot_class').default;
+const { buildGenesisFromPriceLevels } = require('../modules/order/utils/math');
 
 async function testPlaceInitialOrdersRefreshesAndFallsBack() {
     const botKey = 'test_startup_dynamic_weight_initial';
@@ -207,6 +208,10 @@ async function testFinishStartupSequenceUsesLiveWeightsForStartupFillRebalance()
             persistedGrid: [{ id: 'slot-174', state: 'active' }],
             persistedBtsFeesOwed: 0,
             persistedBoundaryIdx: 0,
+            // The E3 startup gate refuses a snapshot with no price ladder and
+            // regenerates instead; this test drives the RESUME branch, so the
+            // snapshot carries its ladder (as every real one does).
+            persistedGenesis: buildGenesisFromPriceLevels(1, 0.5, 1, [1]),
         });
 
         assert.strictEqual(loadGridCalls, 1, 'startup should load the persisted grid once');

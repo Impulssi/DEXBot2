@@ -10,6 +10,7 @@ import * as grid from './order/grid.js';
 import { convertToSpreadPlaceholder, parseChainOrder, isNonBlockingUnmatchedOrder } from './order/utils/order.js';
 import { restoreGapEvacStreaks, applyPersistedPendingCrawls, resetLastFillPivot } from './order/utils/system.js';
 import { blockchainToFloat, calculateGapSlots, validatePersistedBoundary, isTransientInBandRejection } from './order/utils/math.js';
+import { ON_MISSING_GENESIS, isMissingGenesisError } from './order/genesis_policy.js';
 import { hasExecutableActions } from './order/utils/validate.js';
 import { getErrorMessage } from './utils/errors.js';
 const { isGridBloated } = grid;
@@ -529,6 +530,32 @@ async function recoverFromPersistedGrid(bot: any) {
 
         return { success: true };
     } catch (err: any) {
+        if (isMissingGenesisError(err)) {
+            // Fail closed on the snapshot, not on the manager: `loadGrid`
+            // refused it before touching any state. What happens next is the
+            // configured missing-genesis policy (docs/GRID_PRICE_INVARIANT.md):
+            //   'rebuild' -> fail the reload; the caller runs the structural
+            //                resync, which re-derives the ladder from live config.
+            //   'halt'    -> do NOT auto-rebuild; the operator must run a manual
+            //                grid reset. Signalled to the caller with
+            //                `halt: true` so it skips the resync branch.
+            if (err.policy === ON_MISSING_GENESIS.HALT) {
+                bot.manager.logger.log(
+                    `[RECOVERY] Refusing the persisted snapshot — no usable price ladder ` +
+                    `(${err.reason}: ${err.detail}); missing-genesis policy='halt', so the automatic ` +
+                    `structural resync is suppressed. Run a manual grid reset for this bot (or set ` +
+                    `gridLimits.MISSING_GENESIS_POLICY=rebuild to auto-rebuild instead).`,
+                    'error'
+                );
+                return { success: false, reason: `missing price ladder (${err.reason})`, halt: true };
+            }
+            bot.manager.logger.log(
+                `[RECOVERY] Refusing the persisted snapshot — no usable price ladder ` +
+                `(${err.reason}: ${err.detail}). Escalating to a structural resync, which re-derives the ladder.`,
+                'error'
+            );
+            return { success: false, reason: `missing price ladder (${err.reason})` };
+        }
         bot.manager.logger.log(
             `[RECOVERY] Full grid reload from persisted snapshot failed: ${getErrorMessage(err)}`,
             'error'

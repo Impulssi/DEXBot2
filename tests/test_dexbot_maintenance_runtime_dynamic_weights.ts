@@ -96,7 +96,7 @@ const NAMES = {
         'validateOrderAmountsWithinLimits', 'validatePersistedBoundary',
         'cloneWeightDistribution', 'priceLevelsForGenesis', 'priceForSlot',
         'slotIndexForPrice', 'slotIdForPrice', 'assertSlotPriceInvariant',
-        'priceSlotEqual', 'buildGenesisFromPriceLevels', 'hashPriceLevels',
+        'priceSlotEqual', 'derivePriceLevels', 'buildGenesisFromPriceLevels', 'hashPriceLevels',
         'quantumForPrecision', 'quantizeFloat',
         'validateOrderSize', 'getDustThresholdFactor', 'calculateSwapInAmount',
         'findCrossedOrder', 'getPrecision',

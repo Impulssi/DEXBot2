@@ -1923,6 +1923,79 @@ function priceSlotEqual(a: number, b: number, precision: number): boolean {
     }
 }
 
+/**
+ * Derive the geometric price ladder (the "rail") from a live config.
+ *
+ * SINGLE SOURCE OF TRUTH for rail geometry: `createOrderGrid` (fresh build)
+ * and `buildGenesisFromLiveRail` (legacy-snapshot migration) MUST agree
+ * exactly, or a migrated genesis would describe a different ladder than a
+ * freshly built grid of the same config -- making the migration cross-check
+ * reject a snapshot it should adopt, or adopt one that no longer matches a
+ * rebuild. Both callers go through here; neither re-implements the loop.
+ *
+ * Returns the ascending, deduped levels (dedupe uses `toFixed(12)` equality so
+ * `floatToBlockchainInt` collisions collapse and slot-N <-> index stays
+ * stable); throws if the loops cannot advance or produce nothing.
+ *
+ * Config validation (finiteness, price bounds, increment bounds) is deliberately
+ * left to the callers: `createOrderGrid` validates strictly, while the migration
+ * path builds a candidate ladder for a finite-but-out-of-bounds config so the
+ * slot cross-check — not an input error — rejects it. The only guard here is the
+ * one that prevents non-termination, which no caller could recover from.
+ */
+function derivePriceLevels(
+    startPrice: number,
+    minPrice: number,
+    maxPrice: number,
+    incrementPercent: number
+): number[] {
+    const stepUp = 1 + (incrementPercent / 100);
+    const stepDown = 1 - (incrementPercent / 100);
+    // Non-termination guard. For `stepUp === 1` (incrementPercent <= 0, or so
+    // small it underflows `1 + inc/100`) the ascending loop multiplies by
+    // exactly 1 and never ends; likewise `stepDown === 1` on the descending
+    // loop. Everything else (finiteness, bounds, increment bounds) is the
+    // CALLER's validation — kept there so the migration path can build a
+    // candidate ladder for an out-of-bounds-but-finite config and let the
+    // slot cross-check reject it, instead of failing as a config error.
+    if (!(stepUp > 1) || !(stepDown < 1)) {
+        throw new Error(
+            `Invalid incrementPercent: ${incrementPercent}. Must be large enough to advance the geometric rail.`
+        );
+    }
+    const priceLevels: number[] = [];
+
+    // Expand outward from startPrice so the grid is centered on the market price.
+    let upPrice = startPrice * Math.sqrt(stepUp);
+    while (upPrice <= maxPrice) {
+        priceLevels.push(upPrice);
+        upPrice *= stepUp;
+    }
+    let downPrice = startPrice * Math.sqrt(stepDown);
+    while (downPrice >= minPrice) {
+        priceLevels.push(downPrice);
+        downPrice *= stepDown;
+    }
+    priceLevels.sort((a, b) => a - b);
+
+    // Dedupe levels that collide at float precision.
+    const seen = new Set<string>();
+    const deduped: number[] = [];
+    for (const p of priceLevels) {
+        const key = Number(p).toFixed(12);
+        if (!seen.has(key)) { seen.add(key); deduped.push(p); }
+    }
+
+    if (deduped.length === 0) {
+        throw new Error(
+            `Grid generation produced no price levels for startPrice=${startPrice}, ` +
+            `bounds=[${minPrice}, ${maxPrice}], incrementPercent=${incrementPercent}. ` +
+            `Widen bounds or reduce incrementPercent.`
+        );
+    }
+    return deduped;
+}
+
 function buildGenesisFromPriceLevels(startPrice: number, incrementPercent: number, gapSlots: number, priceLevels: number[]): GridGenesis {
     const hash = hashPriceLevels(priceLevels);
     return {
@@ -1935,7 +2008,7 @@ function buildGenesisFromPriceLevels(startPrice: number, incrementPercent: numbe
     };
 }
 
-export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, isSlotIndexInGapBand, isEvacuationRotationAllowed, isEvacuationSizeStillValid, validateBoundaryCommit, validatePersistedBoundary, isTransientInBandRejection, BOUNDARY_REJECT_PLACED_IN_BAND, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals, priceLevelsForGenesis, priceForSlot, slotIndexForPrice, slotIdForPrice, assertSlotPriceInvariant, priceSlotEqual, buildGenesisFromPriceLevels, hashPriceLevels, isChainPriceOutOfGrid }
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, isSlotIndexInGapBand, isEvacuationRotationAllowed, isEvacuationSizeStillValid, validateBoundaryCommit, validatePersistedBoundary, isTransientInBandRejection, BOUNDARY_REJECT_PLACED_IN_BAND, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals, priceLevelsForGenesis, priceForSlot, slotIndexForPrice, slotIdForPrice, assertSlotPriceInvariant, priceSlotEqual, derivePriceLevels, buildGenesisFromPriceLevels, hashPriceLevels, isChainPriceOutOfGrid }
 
 /**
  * Round a value to a given factor.

@@ -151,6 +151,7 @@ import {
     isTransientInBandRejection,
     adjustBudgetForBtsFees,
     clamp,
+    derivePriceLevels,
     buildGenesisFromPriceLevels,
     assertSlotPriceInvariant,
     priceForSlot,
@@ -181,6 +182,11 @@ import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry, restore
 import * as MathUtils from './utils/math.js';
 import { derivePriceWithPoolRef, resolveStartPriceMode } from './utils/withPoolRef.js';
 import { getWhitelistFlags } from '../market_adapter_whitelist.js';
+import {
+    hasGenesisLadder,
+    recordMissingGenesisFault,
+    resolvePersistedGenesis
+} from './genesis_policy.js';
 
 import type { Order } from '../types.js';
 import { getErrorMessage } from '../utils/errors.js';
@@ -426,8 +432,8 @@ export function createOrderGrid(config: any): any {
             throw new Error(`Invalid incrementPercent: ${incrementPercent}. Must be a finite number.`);
         }
         // Fall back to the canonical INCREMENT_BOUNDS when the config omits
-        // incrementBounds. Without this, a non-positive incrementPercent (e.g. 0)
-        // silently passes validation and the geometric loop below spins forever.
+        // incrementBounds. derivePriceLevels also refuses a step that cannot
+        // advance, but this enforces the configured increment range.
         const incrementBounds = config.incrementBounds || INCREMENT_BOUNDS;
         const minPercent = incrementBounds.MIN_PERCENT;
         const maxPercent = incrementBounds.MAX_PERCENT;
@@ -438,58 +444,13 @@ export function createOrderGrid(config: any): any {
             );
         }
 
-        const stepUp = 1 + (incrementPercent / 100);
-        const stepDown = 1 - (incrementPercent / 100);
-
         // ================================================================================
         // STEP 1: GENERATE PRICE LEVELS (Geometric progression)
         // ================================================================================
-        // Create a geometric series of prices from minPrice to maxPrice.
-        // Each level is incrementPercent% away from its neighbors.
-        //
-        // We start from startPrice and expand outward in both directions to ensure
-        // the grid is centered around the market price.
-
-        const priceLevels: number[] = [];
-
-        // Generate levels upwards from startPrice (higher prices for SELL orders)
-        // Start from sqrt(stepUp) × startPrice to center the grid
-        let upPrice = startPrice * Math.sqrt(stepUp);
-        while (upPrice <= maxPrice) {
-            priceLevels.push(upPrice);
-            upPrice *= stepUp;
-        }
-
-        // Generate levels downwards from startPrice (lower prices for BUY orders)
-        // Start from sqrt(stepDown) × startPrice to center the grid
-        let downPrice = startPrice * Math.sqrt(stepDown);
-        while (downPrice >= minPrice) {
-            priceLevels.push(downPrice);
-            downPrice *= stepDown;
-        }
-
-        // Sort all levels from lowest to highest (Master Rail order)
-        priceLevels.sort((a: any, b: any) => a - b);
-        // Dedupe geometric levels that collide at float precision (tiny increments);
-        // keeps slot-N ↔ index mapping stable vs migration dedupe (grid.ts:652)
-        {
-            const seen = new Set<string>();
-            const deduped: number[] = [];
-            for (const p of priceLevels) {
-                const key = Number(p).toFixed(12);
-                if (!seen.has(key)) { seen.add(key); deduped.push(p); }
-            }
-            priceLevels.length = 0;
-            priceLevels.push(...deduped);
-        }
-
-        if (priceLevels.length === 0) {
-            throw new Error(
-                `Grid generation produced no price levels for startPrice=${startPrice}, ` +
-                `bounds=[${minPrice}, ${maxPrice}], incrementPercent=${incrementPercent}. ` +
-                `Widen bounds or reduce incrementPercent.`
-            );
-        }
+        // Rail geometry lives in ONE place (modules/order/utils/math.ts,
+        // derivePriceLevels) so a fresh build and a legacy-snapshot migration
+        // cannot drift into two different ladders for the same config.
+        const priceLevels = derivePriceLevels(startPrice, minPrice, maxPrice, incrementPercent);
 
         // ================================================================================
         // STEP 2: CALCULATE SPREAD GAP SIZE
@@ -589,11 +550,45 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null,
             // Genesis determinism: if snapshot provided genesis, validate slots
             // against it; if legacy snapshot has no genesis, migrate by building
             // genesis from live config and re-sorting to canonical price order.
-            let genesis: any = genesisInput || manager._genesis || null;
+            //
+            // GENESIS INVARIANT (docs/GRID_PRICE_INVARIANT.md, E1): a snapshot that
+            // carries orders MUST carry a ladder. The decision lives in
+            // genesis_policy.resolvePersistedGenesis, so the startup gate can ask
+            // the same question before committing to a resume. A refused snapshot
+            // throws BEFORE any mutation (no asset init, no fund reset, no
+            // boundary restore), so the caller rebuilds from a clean manager.
+            // Assigned from the single resolver below; the raw inputs are only
+            // inspected by that resolver (so a malformed `genesisInput` cannot
+            // shadow the manager's own ladder or the migration path).
+            let genesis: any = null;
+            const validationMode = (() => {
+                try {
+                    const raw = (typeof process !== 'undefined' && (process as any).env?.GRID_PRICE_SLOT_VALIDATION) || 'log';
+                    return String(raw).toLowerCase() === 'enforce' ? 'enforce' : 'log';
+                } catch { return 'log'; }
+            })();
+
+            const resolution = resolvePersistedGenesis({
+                config: manager.config,
+                grid,
+                genesisInput,
+                managerGenesis: manager._genesis,
+                validationMode,
+                log: (msg: string, level?: string) => manager.logger?.log?.(msg, level)
+            });
+            if (!resolution.ok) {
+                throw recordMissingGenesisFault(manager, resolution);
+            }
+            genesis = resolution.genesis;
+            // A ladder is (re)established: clear any fault recorded by an earlier
+            // attempt in this process, so the observability record reflects the
+            // CURRENT state rather than a resolved one.
+            if ((manager as any)._missingGenesis) (manager as any)._missingGenesis = null;
+
             // Validate genesis hash if present (wired for stale-pair detection #3)
             // On mismatch we only warn — genesis is still used for validation (log mode) / virtualization (enforce mode);
             // a stale persisted snapshot vs fresh manager._genesis scenario is covered by the log/enforce gate above
-            if (genesis && Array.isArray(genesis.priceLevels) && typeof genesis.priceLevelsHash === 'string') {
+            if (hasGenesisLadder(genesis) && typeof genesis.priceLevelsHash === 'string') {
                 try {
                     const recomputed = hashPriceLevels(genesis.priceLevels);
                     if (recomputed !== genesis.priceLevelsHash) {
@@ -601,13 +596,7 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null,
                     }
                 } catch {}
             }
-            const validationMode = (() => {
-                try {
-                    const raw = (typeof process !== 'undefined' && (process as any).env?.GRID_PRICE_SLOT_VALIDATION) || 'log';
-                    return String(raw).toLowerCase() === 'enforce' ? 'enforce' : 'log';
-                } catch { return 'log'; }
-            })();
-            if (genesis && Array.isArray(genesis.priceLevels)) {
+            if (hasGenesisLadder(genesis)) {
                 // Validate each slot's price against genesis; virtualize only in enforce mode (plan §13)
                 //
                 // REPAIR (both modes): a slot id determines its price from the
@@ -693,55 +682,17 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null,
                 } else {
                     manager._genesis = genesis;
                 }
-            } else if (grid.length > 0) {
-                // Migration: build genesis from live geometric rail (plan §4.1/§10)
-                // Do NOT derive priceLevels from persisted slot prices — a truncated
-                // persisted array would permanently shrink genesis. Recompute from
-                // startPrice/min/max/increment per createOrderGrid §2.1.
-                const startPrice = Number(manager.config?.startPrice);
-                const minPrice = Number(manager.config?.minPrice);
-                const maxPrice = Number(manager.config?.maxPrice);
-                const incPct = Number(manager.config?.incrementPercent);
-                if (Number.isFinite(startPrice) && Number.isFinite(minPrice) && Number.isFinite(maxPrice) && Number.isFinite(incPct)) {
-                    try {
-                        const stepUp = 1 + (incPct / 100);
-                        const stepDown = 1 - (incPct / 100);
-                        const priceLevels: number[] = [];
-                        let upPrice = startPrice * Math.sqrt(stepUp);
-                        while (upPrice <= maxPrice) { priceLevels.push(upPrice); upPrice *= stepUp; }
-                        let downPrice = startPrice * Math.sqrt(stepDown);
-                        while (downPrice >= minPrice) { priceLevels.push(downPrice); downPrice *= stepDown; }
-                        priceLevels.sort((a: any, b: any) => a - b);
-                        // Dedupe (floatToBlockchainInt equality via fixed 12-decimals)
-                        const uniq: number[] = [];
-                        const seen = new Set<string>();
-                        for (const p of priceLevels) {
-                            const key = Number(p).toFixed(12);
-                            if (!seen.has(key)) { seen.add(key); uniq.push(p); }
-                        }
-                        const gapSlotsForGenesis = calculateGapSlots(incPct, manager.config?.targetSpreadPercent, manager.config?.gridLimits);
-                        const built = buildGenesisFromPriceLevels(startPrice, incPct, gapSlotsForGenesis, uniq);
-                        // Cross-check: if user edited startPrice/min/max/increment across restarts on a legacy snapshot,
-                        // the new-config rail will mismatch most persisted slot prices → noisy log / mass-virtualize
-                        // in enforce mode and the mismatched genesis would be persisted. Count failures first.
-                        let mismatchCount = 0;
-                        for (const slot of grid) {
-                            try { assertSlotPriceInvariant(slot, built); } catch { mismatchCount++; }
-                        }
-                        const mismatchRatio = grid.length > 0 ? mismatchCount / grid.length : 0;
-                        if (mismatchRatio > 0.5) {
-                            manager.logger?.log?.(`[GENESIS] Migration: ${mismatchCount}/${grid.length} slots mismatch new-config rail (ratio ${mismatchRatio.toFixed(2)}) — config may have changed since snapshot; NOT adopting migration genesis (validation would ${validationMode === 'enforce' ? 'mass-virtualize' : 'be noisy'}). Persisted grid will be kept as-is until a clean rebuild`, 'warn');
-                        } else {
-                            if (mismatchCount > 0) {
-                                manager.logger?.log?.(`[GENESIS] Migration: ${mismatchCount}/${grid.length} slots mismatch new-config rail — will be logged${validationMode === 'enforce' ? '/virtualized' : ''} on next load`, 'warn');
-                            }
-                            manager._genesis = built;
-                            genesis = built;
-                            manager.logger?.log?.(`[GENESIS] Migrated legacy grid: built genesis with ${uniq.length} levels (hash ${built.priceLevelsHash})`, 'info');
-                        }
-                    } catch (e: any) {
-                        manager.logger?.log?.(`[GENESIS] Migration failed: ${getErrorMessage(e)}`, 'warn');
-                    }
+                // Legacy snapshot with no persisted ladder: the resolver built one
+                // from the live geometric rail and cross-checked it against the
+                // persisted slots (mismatch ratio at or below
+                // MISSING_GENESIS_MISMATCH_RATIO), so it describes THIS generation.
+                // A refused ladder throws above (E1), so there is no genesis-less
+                // state left to load into. This is the only place a migration
+                // ladder is installed, so its adoption log lives here too (the
+                // former `else if` branch was unreachable, since this branch
+                // already handles every ladder-bearing resolution).
+                if (resolution.source === 'migration') {
+                    manager.logger?.log?.(`[GENESIS] Migrated legacy grid: built genesis with ${genesis.priceLevels.length} levels (hash ${genesis.priceLevelsHash})`, 'info');
                 }
             }
             try {
@@ -1423,7 +1374,15 @@ export async function initializeGrid(manager: any): Promise<void> {
             maxPrice: resolvedMaxP,
         });
         manager._gapSlots = gapSlots;
-        if (genesis) manager._genesis = genesis;
+        if (genesis) {
+            manager._genesis = genesis;
+            // New generation: clear the missing-genesis fault/counter records so
+            // the E2 sync-entry assert stops re-reporting a resolved condition
+            // and an operator reading the logs sees only live faults.
+            manager._missingGenesis = null;
+            manager._genesisInvariantViolations = 0;
+            manager._genesisInvariantLoggedAt = 0;
+        }
 
         // A rebuilt grid is a NEW generation: the boundary below is re-derived
         // absolutely from the fresh price ladder, so owed fill crawls recorded

@@ -2,6 +2,15 @@ const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { grid: Grid } = require('../modules/order').default;
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { buildGenesisFromPriceLevels } = require('../modules/order/utils/math');
+
+/**
+ * Ladder covering a legacy-id fixture grid. loadGrid refuses a non-empty
+ * snapshot that carries no ladder (genesis invariant), so the snapshot hands
+ * it one; legacy (non slot-N) ids are validated in 'log' mode, which is the
+ * behaviour this sanitize test is about.
+ */
+const ladder = (levels) => buildGenesisFromPriceLevels(levels[Math.floor(levels.length / 2)], 1, 1, levels);
 
 // Regression test for the load-time orphan heal (Layer 1 of the durable fix).
 //
@@ -40,7 +49,7 @@ async function testOrphanLoadSanitize() {
         { id: 's1', type: ORDER_TYPES.SELL, state: ORDER_STATES.ACTIVE, price: 1.20, size: 10, orderId: '1.7.104' }
     ];
 
-    await Grid.loadGrid(mgr, grid, 1);
+    await Grid.loadGrid(mgr, grid, 1, ladder([0.80, 1.00, 1.20]));
 
     console.log('  Scenario: createUncertain VIRTUAL + size>0 + no orderId is neutralized at load');
     const orphan = mgr.orders.get('orphan');
@@ -74,7 +83,7 @@ async function testOrphanLoadSanitize() {
         { id: 'b1', type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, price: 0.80, size: 10, orderId: '1.7.101' },
         { id: 'planned', type: ORDER_TYPES.BUY, state: ORDER_STATES.VIRTUAL, price: 1.10, size: 0.5 }
     ];
-    await Grid.loadGrid(mgr2, grid2, 1);
+    await Grid.loadGrid(mgr2, grid2, 1, ladder([0.80, 1.10]));
     const planned = mgr2.orders.get('planned');
     assert.strictEqual(
         Number(planned.size || 0),

@@ -407,10 +407,89 @@ distinguishable from the hold record alone. The blast radius is bounded by
 the stranded-reasons allow-list above. The designated home for a real signal
 is divergence telemetry built on `calculateGridSideDivergenceMetric`.
 
+## The genesis-less state: refused at load, rebuilt or halted
+
+**A grid with no price ladder is not a degraded grid — it is an undefined one.**
+Every consumer of the invariant reads `priceForSlot(idx, genesis)`, and each one
+silently degrades without it: nearest-slot adoption, `computeOutOfToleranceDriftTag`,
+the materialize descriptor-price fallback, `resolveLiveReserveEdgeAnchorPrice`
+tiers 3/4, and the `isSlotInRail` fail-open. That degradation is the tolerance
+matcher, which is exactly the path on which an off-grid price becomes grid
+evidence. So the ladder is treated as a **required** part of a snapshot, not a
+nice-to-have.
+
+The trigger is narrow: only a *pre-v1.4.25* snapshot (one persisted before the
+genesis was written) can reach it. Given such a snapshot:
+
+| Trigger | Condition | Verdict |
+|---|---|---|
+| T1 | config rail matches the persisted slots | migration ladder is adopted (unchanged) |
+| T2 | > `MISSING_GENESIS_MISMATCH_RATIO` (50%) of slots mismatch the config rail | **refused** — the config was edited, so the derived rail is a different generation |
+| T3 | rail config is not numeric yet (`startPrice: "pool"`, `minPrice: "2x"`) | **refused** — nothing can be built until `initializeGrid` derives them |
+| T4 | the ladder build throws | **refused** |
+
+### The decision lives in one place
+
+`modules/order/genesis_policy.ts` owns the single question "can this snapshot
+have a ladder?" (`resolvePersistedGenesis`) and the policy
+(`resolveOnMissingGenesisPolicy`). Three call sites, one verdict — they cannot
+drift:
+
+| Site | Mechanism | What it does on a refusal |
+|---|---|---|
+| `grid.loadGrid` | **E1**, source choke point | throws `MissingGenesisError` **before any mutation** (no asset init, no fund reset, no boundary restore) |
+| `dexbot_startup_runtime` | **E3**, startup gate | regenerates the grid (`initializeGrid` re-derives prices, reconcile is update-first) or aborts startup |
+| `order/sync_engine._assertGenesisInvariant` | **E2**, defence in depth | reports once per generation, counts, and requests a structural resync — never throws |
+| `AccountOrders.loadGenesis` | schema | a row with empty/absent `priceLevels` is not a ladder and is not returned |
+
+### Policy
+
+`config.gridLimits.MISSING_GENESIS_POLICY`:
+
+- **`'rebuild'` (default)** — refuse the snapshot and rebuild a clean ladder
+  through the existing resync machinery. Deterministic, no operator action, and
+  fund-safe in the same sense a manual reset is: reconcile is update-first, so
+  only true surplus is cancelled and out-of-grid orders are held per the
+  out-of-bounds policy. Live orders are re-slotted — the same net effect the
+  operator would get from `dexbot reset`, which is why `'halt'` exists.
+- **`'halt'`** — refuse to start; a human must run a manual grid reset. Strongest
+  fund safety (nothing is cancelled without consent), but the bot stays down until
+  someone acts, which is why it is opt-in.
+
+Anything other than `'halt'` falls back to `'rebuild'`.
+
+### Routing per caller
+
+- **startup resume** — the E3 gate fires *before* the resume/regenerate decision,
+  so a ladder-less snapshot is regenerated rather than half-loaded.
+- **price-match resume** (`attemptResumePersistedGridByPriceMatch`) — the throw is
+  caught and reported as "not resumed", which routes to regeneration.
+- **recovery reload** — the throw is caught and logged with its reason. Under
+  `'rebuild'` it is returned as a failed reload, which is the existing signal for
+  "escalate to structural resync"; under `'halt'` the failure carries `halt: true`
+  so the maintenance resync path suppresses the automatic rebuild and waits for
+  the operator.
+- **runtime E2 assert** — never fatal; it exists to make a future bypass loud.
+
+Observability is part of the design, not an afterthought: the fault is recorded on
+the manager as `_missingGenesis` (reason, detail, mismatch ratio, policy) and
+cleared by the next successful load or grid build, so a log read tells an operator
+whether T2-T4 ever fire in the wild.
+
+### Rejected alternatives
+
+- **Adopt the config-derived ladder despite a >50% mismatch** (mass-virtualizing
+  live tracking and persisting a mismatched genesis) — corruption risk, rejected.
+- **Derive the ladder from the persisted slot prices** — a truncated persisted
+  array would permanently shrink it.
+- **Keep loading "as-is without a ladder"** — this is the state being removed.
+
 ## Key constants (`modules/constants.ts`, `TIMING`)
 
 | Constant | Value | Meaning |
 |---|---|---|
+| `MISSING_GENESIS_POLICY` | `'rebuild'` | `'rebuild'` (auto) or `'halt'` (manual reset) when a snapshot has no usable ladder |
+| `MISSING_GENESIS_MISMATCH_RATIO` | 0.5 | Share of slots that must match the config rail before a migrated ladder is adopted |
 | `GRID_PRICE_INVARIANT_RESYNC_THRESHOLD` | 3 | Consecutive rejecting batches per slot before a structural resync |
 | `GRID_PRICE_INVARIANT_RESYNC_COOLDOWN_MS` | 15 min | Bounds repeat resyncs for the same corruption |
 | `DEFERRED_HOLD_ESCALATE_MS` | 24 h | Age at which a stranded deferred hold escalates |
@@ -433,6 +512,7 @@ is divergence telemetry built on `calculateGridSideDivergenceMetric`.
 | `[HOLD]` enrichment + slow re-warn | **landed** |
 | Final pre-broadcast pivot gate re-checks BUILT ops on a refreshed pivot | **landed** |
 | Fill-guard pivot persisted with the grid snapshot (provenance: fills only) | **landed** |
+| Snapshot without a usable ladder refused at load; rebuild by default, `halt` opt-in | **landed** |
 | Pivot restored with the boundary (TTL → genesis → on-grid validation chain) | **landed** |
 | Pivot mutation behind one provenance-tagged writer (`setLastFillPivot`) | **landed** |
 | Grid generation invalidates the pivot (in-memory + persisted row) | **landed** |
@@ -469,6 +549,11 @@ reported.
 - **Unit:** pivot snapshot round-trip and its restore validation chain
   (`tests/test_last_fill_pivot_persistence.ts`, LFP-1..8) — shape gates,
   provenance, TTL, genesis binding, off-ladder refusal, full-family reset.
+- **Unit:** the missing-genesis policy — T1 adoption, T2/T3/T4 refusals, the
+  ratio boundary, policy resolution, `loadGrid` refusing before it mutates
+  anything (and honouring `'halt'`), the `loadGenesis` schema gate, and the E2
+  sync-entry assert and the `'halt'` suppression of the recovery resync
+  (`tests/test_missing_genesis_policy.ts`, GEN-01..21).
 - **External gate:** `analysis/grid_correction_check.ts` — target 0 sustained
   violations at 168h/720h. **The baseline is NOT clean:** 4 of 5 bots were
   non-zero over 7 days, so this is a live signal, not a historical one.

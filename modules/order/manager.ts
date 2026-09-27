@@ -496,6 +496,10 @@ class OrderManager {
     _committedOrderIdsBuiltAt: number;
     _orderIdAssignedAt: Map<string, number>;
     _gapSlots: number;
+    _genesis: any;
+    _missingGenesis: any;
+    _genesisInvariantViolations: number;
+    _genesisInvariantLoggedAt: number;
     _gridDirtyAt: number | null;
     _lastStaleTotalsWarnAt: Record<string, number>;
     _orphanFillsCreditedAt: number | null;
@@ -623,6 +627,14 @@ class OrderManager {
         this._committedOrderIdsBuiltAt = 0;
         this._orderIdAssignedAt = new Map();
         this._gapSlots = 0;
+        // Genesis (price-ladder) state. `_genesis` is established by
+        // loadGrid/initializeGrid; these records are the missing-genesis fault
+        // and the sync-entry invariant counter, reset with each new generation
+        // (initializeGrid) and read by the E2 assert (order/sync_engine).
+        this._genesis = null;
+        this._missingGenesis = null;
+        this._genesisInvariantViolations = 0;
+        this._genesisInvariantLoggedAt = 0;
         this._gridDirtyAt = null;
         this._orphanFillsCreditedAt = null;
         this._fundDriftLedger = null;
