@@ -525,6 +525,17 @@ async function checkAndApplyBotConfigChanges(bot: any, context: any = 'bots-conf
                 `Targeted maintenance will place missing / cancel excess orders.`,
                 'info'
             );
+            // Deliver the promise above instead of waiting for the next fill
+            // or the 240-min fetch: run the targeted drift reconciliation
+            // right away (same fire-and-forget shape as the poll tick — the
+            // callee owns its cooldown and pipeline gates; a busy pipeline
+            // skips and the next maintenance tick retries).
+            try {
+                const driftRun = maybeRunTargetedDriftReconciliation(bot, `${context} config pickup`);
+                driftRun?.catch?.((err: any) => {
+                    bot._log?.(`[TARGETED-SYNC] Config-pickup reconciliation failed: ${getErrorMessage(err)}`, 'debug');
+                });
+            } catch { /* never break the poll tick */ }
         }
         if (otherKeys.length > 0) {
             const shown = otherKeys.slice(0, 8).join(', ');
