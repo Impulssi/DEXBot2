@@ -170,7 +170,7 @@ All panels share aligned vertical time grid lines, and the bottom output panel s
 | **lb** | 1–32 | 9 | Logarithmic. Lookback bars for AMA slope calculation |
 | **ema** | 0–32 | 0 | AMA input EMA span in bars (0 = off). Low-pass filters the AMA before the slope is taken; the gray dashed Raw‰ line shows the unfiltered slope for comparison |
 | **amaS%** | 0.06–0.12 | 0.09 | Logarithmic. Gear ratio for average per-bar AMA slope saturation |
-| **kalS%** | 0.5–1.5 | 1.0 | Logarithmic. Gear ratio for Kalman composite saturation |
+| **kalS%** | 0.5–1.5 | 1.11 | Logarithmic. Gear ratio for Kalman composite saturation |
 | **clip%** | 0–55 | 10 | Percentile clip: filters extreme inputs (0 = off) |
 
 ### Output Controls
