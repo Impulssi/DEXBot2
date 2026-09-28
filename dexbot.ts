@@ -170,7 +170,7 @@ const CLI_EXAMPLES = [
     { title: 'Analyze persisted order grids', command: 'dexbot order', notes: 'Runs the order analyzer across the orders directory (<profiles>/orders) and prints spread/increment/funds/distribution metrics. Add a bot key to render only that bot, and --export for an HTML report.' },
     { title: 'Show live credit/MPA positions', command: 'dexbot credit', notes: 'Queries get_margin_positions + get_credit_deals_by_borrower per preferredAccount and prints debt/collateral sums plus one Curr. CR line per whitelisted pair (active CR, else borrow-now CR vs funds avail. on the offer) and one Avar. CR line per bot. CR covers only pairs whitelisted in bots.json and listed on the current credit offer. Add a bot key to render only that bot.' },
     { title: 'TradingView chart for a bot, pool, or pair', command: 'dexbot tv <bot|pool-id|AssetA/AssetB> --month 3', notes: 'Fetches 1h candles for N months (default 3, pool-first with orderbook fallback; --feed charts MPA price-feed history) and writes an auto-named HTML chart.' },
-    { title: 'Clear all bot log files', command: 'dexbot clear', notes: 'Runs scripts/clear-logs.sh to remove log files from the logs directory (<profiles>/logs).' },
+    { title: 'Clear all bot log files', command: 'dexbot clear', notes: 'Runs scripts/clear-logs.sh to remove *.log, rotated *.log.N and *.jsonl* from the logs directory (<profiles>/logs), including the credential audit trail daemon-audit.jsonl and its rotated siblings (named in the preview). Offline only: the scripts warn when a live runtime is detected, but a running bot keeps writing to unlinked files and the space is not freed until it restarts; dexbot clear-orders / clear-market-adapter / clear-all are undone within seconds (grid state is re-persisted, the adapter rewrites its state file and lock). Stop first with dexbot stop / dexbot pm2 stop all.' },
     { title: 'Reset settings to defaults', command: 'dexbot default', notes: 'Runs scripts/reset-settings.sh to delete general.settings.json, market_profiles.json, and market_adapter_settings.json.' }
 ];
 
@@ -236,10 +236,10 @@ function printCLIUsage() {
             ['dw <target>', 'Dynamic-weight research chart: same targets/flags as tv (see analysis/).'],
         ]],
         ['Files', [
-            ['clear', 'Remove all log files from <profiles>/logs/.'],
-            ['clear-orders', 'Remove all persisted order files from <profiles>/orders/.'],
-            ['clear-market-adapter', 'Remove market adapter data, state, and logs.'],
-            ['clear-all', 'Remove orders, logs, market adapter, and claw files (all of the above).'],
+            ['clear', 'Delete <profiles>/logs/*.log, *.log.N and *.jsonl* (audit trail included). Stop the runtime first.'],
+            ['clear-orders', 'Delete persisted grid state in <profiles>/orders (regenerated on next start).'],
+            ['clear-market-adapter', 'Delete market adapter data, state, lock, and adapter logs.'],
+            ['clear-all', 'All of the above, plus claw data. Stop the runtime first.'],
         ]],
     ];
     const width = Math.max(...groups.flatMap(([, entries]) => entries.map(([cmd]) => cmd.length))) + 2;

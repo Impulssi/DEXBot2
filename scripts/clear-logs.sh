@@ -2,6 +2,10 @@
 # Clear all log files from profiles/logs directory
 #
 # This script safely removes all log files while preserving the logs directory structure.
+# That includes the credential daemon's audit trail (daemon-audit.jsonl and its
+# rotated siblings), which is named in the preview so the wipe is never a surprise.
+# Advisory only: if a runtime is detected, a warning is printed (the deletion still
+# runs — stop with `dexbot stop` first if you want it to take effect).
 # Usage: ./scripts/clear-logs.sh or bash scripts/clear-logs.sh
 
 set -e
@@ -49,7 +53,7 @@ if [ ! -d "$LOGS_DIR" ]; then
 fi
 
 # Count log files
-LOG_COUNT=$(find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.log.*" -o -name "*.jsonl" \) 2>/dev/null | wc -l)
+LOG_COUNT=$(log_files "$LOGS_DIR" | wc -l)
 
 if [ "$LOG_COUNT" -eq 0 ]; then
     log_info "No log files found in $LOGS_DIR"
@@ -61,11 +65,16 @@ log_info ""
 
 # Show what will be deleted
 log_info "Log files to be deleted:"
-find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.log.*" -o -name "*.jsonl" \) 2>/dev/null | while read file; do
+log_files "$LOGS_DIR" | while read file; do
     SIZE=$(du -h "$file" | cut -f1)
     echo -e "${BLUE}  -${NC} $(basename "$file") ($SIZE)"
 done
 
+log_info ""
+
+# Warn (advisory) when a live runtime would undo the deletion
+warn_if_runtime_running
+note_audit_included "$LOGS_DIR"
 log_info ""
 
 # Ask for confirmation
@@ -77,11 +86,11 @@ if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
 fi
 
 # Delete log files
-find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.log.*" -o -name "*.jsonl" \) 2>/dev/null -delete
+log_files "$LOGS_DIR" | while read -r file; do rm -f "$file"; done
 DELETED=$?
 
 # Re-count to confirm
-REMAINING=$(find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.log.*" -o -name "*.jsonl" \) 2>/dev/null | wc -l)
+REMAINING=$(log_files "$LOGS_DIR" | wc -l)
 
 log_info "=========================================="
 if [ "$REMAINING" -eq 0 ]; then

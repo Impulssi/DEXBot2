@@ -342,7 +342,7 @@ dexbot credit [<bot>]      # Live summed MPA + borrowed-credit positions
 dexbot export <bot>        # Export trades + settings (CSV/JSON) for analysis/
 
 dexbot update              # Update DEXBot2
-dexbot clear               # Clear log files (also clear-orders, clear-market-adapter, clear-all)
+dexbot clear               # Delete log files in <profiles>/logs
 dexbot default             # Reset settings to defaults
 dexbot help                # Grouped command reference
 ```

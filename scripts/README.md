@@ -32,12 +32,37 @@ Env overrides: `DEXBOT_PROFILE_ROOT`, `DEXBOT_MARKET_ADAPTER_DATA_DIR`,
 `dexbot` CLI, the resolved runtime dirs are passed automatically, so the CLI
 always clears the same dirs the runtime uses.
 
+**Two behaviors are shared by all four `clear-*` scripts** (helpers in
+`scripts/lib/dexbot-paths.sh`):
+
+- **Advisory live-runtime warning.** Before the confirmation prompt, the scripts
+  read `<profiles>/{monolithic,monolithic-bot,monolithic-cred}.pid` and — only when
+  the PM2 daemon is already up, so a cleanup script can never spawn one — the
+  online PM2 apps belonging to this install (`pm2 jlist`, filtered to
+  `cwd`/`script_path` under the project or profiles root). If anything is found, a
+  `YELLOW` warning is printed. It is **advisory**: the prompt still runs, the
+  deletion still happens, and the exit code is unchanged. The reason it matters:
+  a live bot re-persists its grid within seconds, a live adapter rewrites its
+  state file *and* `market_adapter.lock` (a deleted lock lets a second adapter
+  start), and open log FDs mean the disk space is only reclaimed on restart. Stop
+  first with `dexbot stop` / `dexbot pm2 stop all`.
+- **One log predicate.** Every `find` over the logs directory goes through
+  `log_files` (`*.log`, rotated `*.log.*`, `*.jsonl*`), so the preview, the count,
+  the delete and the verification can never disagree. `*.jsonl*` also sweeps the
+  credential audit trail `logs/daemon-audit.jsonl` **and** its rotated
+  `daemon-audit.jsonl.1` siblings, which match no other pattern — they used to
+  survive a "clear" and leave a partial wipe. The audit trail is deleted with
+  everything else, with no extra prompt and no opt-in flag; it is only named in
+  the preview (`Includes the credential audit trail: daemon-audit.jsonl*`) so the
+  deletion is never a surprise.
+
 ### Wipe Logs
 **File:** `clear-logs.sh`
 **Purpose:** Delete all bot `.log` and `.jsonl` files, including `profiles/logs/market_adapter.log`.
 ```bash
 # IRREVERSIBLE: Deletes all files in profiles/logs/*.log and *.jsonl, including market_adapter.log
-# Prompts for confirmation before deleting.
+# (also the credential audit trail daemon-audit.jsonl and its rotated siblings)
+# Prompts for confirmation before deleting; warns first if a runtime is live.
 bash scripts/clear-logs.sh
 ```
 
@@ -67,7 +92,8 @@ bash scripts/clear-market-adapter.sh
 # IRREVERSIBLE: Deletes profiles/orders/*, profiles/logs/*.{log,jsonl},
 # market_adapter/{data,state}/*, and claw data (positions.json, watcher-health.json, memu/) under
 # <profiles>/claw/data (or <repo>/claw/data for source checkouts).
-# Prompts for confirmation before deleting.
+# Also deletes daemon-audit.jsonl and its rotated siblings.
+# Prompts for confirmation before deleting; warns first if a runtime is live.
 bash scripts/clear-all.sh
 ```
 

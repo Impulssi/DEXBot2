@@ -4,6 +4,8 @@
 # This script safely removes all bot order state files while preserving the orders directory.
 # Use this to reset bot order grids and start fresh (clears cached order data).
 # WARNING: This will lose all persisted grid information. Bots will regenerate grids on next run.
+# Advisory only: if a runtime is detected, a warning is printed (the deletion still
+# runs — stop with `dexbot stop` first, since a running bot re-persists its grid).
 # Usage: ./scripts/clear-orders.sh or bash scripts/clear-orders.sh
 
 set -e
@@ -73,6 +75,9 @@ find "$ORDERS_DIR" -type f 2>/dev/null | while read file; do
 done
 
 log_info ""
+
+# Warn (advisory) when a live runtime would undo the deletion
+warn_if_runtime_running
 
 # Ask for confirmation
 read -p "Delete these order files? (y/n): " -r CONFIRM
