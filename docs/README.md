@@ -210,6 +210,8 @@ While these docs explain the *why*, the *how* lives in the code. See the full [m
 - **`modules/order/processed_fill_store.ts`**: Processed fill dedupe tracker and persistence batching
 - **`modules/order/strategy.ts`**: Grid rebalancing, order activation, consolidation, rotation, and spread management
 - **`modules/order/sync_engine.ts`**: Blockchain synchronization, fill detection, order reconciliation
+- **`modules/order/genesis_policy.ts`**: Missing-ladder refusal and the `MISSING_GENESIS_POLICY` rebuild/halt decision ([GRID_PRICE_INVARIANT.md](GRID_PRICE_INVARIANT.md))
+- **`modules/version_notice.ts`**: Passive installed-vs-published version probe and the single status-line renderer used by `start`/`pm2`/`status`
 - **`modules/credit_runtime.ts`**: Bot-scoped debt workflow executor (MPA and credit offer accept/repay/reborrow)
 - **`modules/cr_planner.ts`**: Shared collateral-ratio math layer for debt-first planning
 - **`modules/order/utils/math.ts`**: Precision conversions, RMS divergence calculation, fund allocation math

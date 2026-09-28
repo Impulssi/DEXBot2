@@ -329,7 +329,7 @@ First-run details and common mistakes are covered in the [BitShares Onboarding T
 
 ```bash
 dexbot key                 # Master password/keyring
-dexbot bot                 # Interactive bot configurator (adapter flags: 2) Modify bot → 6) Adapter)
+dexbot bot                 # Interactive bot configurator
 
 dexbot reset {all|<bot>}   # Regenerate grid
 dexbot disable {all|<bot>} # Disable bot in config
@@ -338,7 +338,7 @@ dexbot enable {all|<bot>}  # Enable bot in config
 dexbot stat                # Runtime status (unlock or PM2)
 dexbot order [<bot>]       # Analyze order grids (--export → HTML to analysis/charts/)
 dexbot tv <bot|pool|A/B>   # TradingView 1h chart with AMA overlay (default: 3 months)
-dexbot credit [<bot>]      # Live summed MPA + borrowed-credit positions per asset per bot
+dexbot credit [<bot>]      # Live summed MPA + borrowed-credit positions
 dexbot export <bot>        # Export trades + settings (CSV/JSON) for analysis/
 
 dexbot update              # Update DEXBot2

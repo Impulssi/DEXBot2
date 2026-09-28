@@ -209,7 +209,7 @@ DEXBot2 runs as a **monolithic daemon** (`dexbot start`). This is the production
 recommended mode:
 
 - **Single process** — no PM2, no separate credential daemon management
-- **Auto-update** — detects new releases, builds, and restarts cleanly
+- **Optional auto-update** — `dexbot update` (or `UPDATER.ACTIVE` in general settings, **default off**) pulls, builds and restarts cleanly; by default the bot only *reports* that a newer release exists
 - **Crash restart** — background mode re-spawns on failure
 - **Per-bot log files** — each bot logs to `<profiles>/logs/<bot>.log` (`~/.config/dexbot2/profiles/logs` by default)
 - **Built-in daemon** — the credential daemon is managed internally

@@ -28,10 +28,16 @@ modules/
 ├── dexbot_state_recovery.ts       state recovery after restart
 ├── bitshares_client.ts            blockchain connection manager
 ├── node_manager.ts                multi-node health and failover
+├── node_connect_policy.ts         node connection/failover policy
 ├── chain_orders.ts                blockchain order operations
 ├── account_orders.ts              account order queries
 ├── credit_runtime.ts              MPA/credit deal workflow executor
+├── credit_pricing.ts              credit/debt pricing helpers
 ├── cr_planner.ts                  collateral-ratio planning
+├── version_notice.ts              passive npm-registry version check + status line
+├── cli_start_onboarding.ts        first-run setup routing for `dexbot start`
+├── cli_start_output.ts            launcher notice formatting
+├── cli_colors.ts                  shared CLI color helpers
 ├── credential_runtime.ts          credential daemon lifecycle
 ├── credential_policy.ts           signing policy validation
 ├── credential_session_cache.ts    encrypted session cache
@@ -48,6 +54,7 @@ modules/
 ├── authority_resolver.ts          signing key resolution
 ├── key_store.ts                   key storage (node-only)
 ├── process_discovery.ts           Linux /proc/* filesystem reads
+├── grid_price_source.ts           grid center price source resolution
 ├── validate_profiles.ts           profile validation
 ├── general_settings.ts            global settings loader
 ├── bot_settings.ts                per-bot settings loader
@@ -86,6 +93,7 @@ modules/
 │   ├── strategy.ts                grid rebalancing, consolidation, rotation
 │   ├── accounting.ts              fund tracking, fee accounting
 │   ├── sync_engine.ts             blockchain sync, fill detection, reconciliation
+│   ├── genesis_policy.ts          missing-ladder refusal + rebuild/halt policy ([doc](../docs/GRID_PRICE_INVARIANT.md))
 │   ├── grid_reconcile.ts          startup grid reconciliation ([doc](../docs/GRID_RECONCILE.md))
 │   ├── grid_reconcile_internal.ts  internal grid reconciliation helpers
 │   ├── index.ts                   barrel export
@@ -96,6 +104,13 @@ modules/
 │   ├── format.ts                  numeric formatting helpers
 │   ├── export.ts                  trade history export
 │   └── utils/                     math, order predicates, validation, system helpers
+│       ├── math.ts                precision conversion, RMS divergence, rail geometry
+│       ├── order.ts               order state predicates, grid indexing, reconciliation helpers
+│       ├── slot.ts                slot/price-level helpers
+│       ├── system.ts              system utilities, price derivation, fill deduplication
+│       ├── timeout.ts             bounded wait helpers
+│       ├── validate.ts            order validation, grid reconciliation, COW action building
+│       └── withPoolRef.ts         startPrice mode + poolRef resolution
 │
 ├── launcher/                      process lifecycle (PM2, unlock, isolated)
 │   ├── bot_supervisor.ts          per-bot process supervision
@@ -128,8 +143,10 @@ modules/
 └── utils/
     ├── base58check.ts             Base58Check encoding
     ├── build_dir.ts               BUILD_DIR constant helper
+    ├── chain_logs.ts              shared chain log helpers
     ├── errors.ts                  getErrorMessage helper
-    └── sanitize_key.ts            shared sanitizeKey helper
+    ├── sanitize_key.ts            shared sanitizeKey helper
+    └── text_width.ts              display-width-aware text measurement (CJK/emoji tables)
 ```
 
 ## Key Relationships
