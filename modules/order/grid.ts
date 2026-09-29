@@ -2998,26 +2998,68 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         // boundary-correct type so a SPREAD slot that, after a boundary shift, now sits
         // in the BUY or SELL zone is excluded — it would otherwise be placed on the
         // correction side at a price the grid already considers the opposite side.
-        // Candidate ordering: window-contiguous-first when the rail has live
-        // orders to extend (BUY lowest first, SELL highest first, both adjacent
-        // to the live window top).  A fully-empty rail has no window anchor —
-        // "lowest buy" would be the rail bottom, placing deep orders while the
-        // near-market gap stays open — so it falls back to spread-edge-first
-        // (BUY highest, SELL lowest) to close the spread near market first.
-        // The gap-band promotion path below stays edge-first by necessity
-        // (boundary derivation requires contiguity), so under fund shortage
-        // in-rail holes heal before band slots.
-        const railHasLiveOrders = allOrders.some((o: any) =>
-            getSlotCorrectType(o) === railType && isOrderPlaced(o)
-        );
-        const sortCandidates = (a: any, b: any): number => {
-            const edgeFirst = railType === ORDER_TYPES.BUY
-                ? b.price - a.price
-                : a.price - b.price;
-            const windowFirst = railType === ORDER_TYPES.BUY
-                ? a.price - b.price
-                : b.price - a.price;
-            return railHasLiveOrders ? windowFirst : edgeFirst;
+        //
+        // Candidate ordering: MARKET-NEAREST FIRST, one comparator for both
+        // rail states.  A correction is only useful if it tightens bestBuy/bestSell,
+        // which means it must land on the market side of the live window — the
+        // highest empty BUY (live window is the rail top) or the lowest empty
+        // SELL (live window is the rail bottom).  Empty slots always sit on the
+        // far side of the live window, so "adjacent to the window" and "closest
+        // to market" are the same slot, and the same comparator also gives the
+        // correct answer for a fully-empty rail (no window anchor, so the
+        // market-nearest slot is by definition the best one to create).
+        //
+        // This previously had two branches — windowFirst (windowed) vs
+        // edgeFirst (empty) — that were written as exact OPPOSITES, so a SELL
+        // rail with a live window sorted DESCENDING and picked the grid
+        // ceiling: an order ~50% above bestSell that cannot tighten the spread
+        // by a single tick, and that the next resync then cancels as surplus.
+        const sortCandidates = (a: any, b: any): number => railType === ORDER_TYPES.BUY
+            ? b.price - a.price
+            : a.price - b.price;
+
+        // SPREAD-TIGHTENING GUARD: on a rail that already has a live order, only
+        // a candidate that IMPROVES that rail's best price is a spread repair at
+        // all.  A SELL must land below the lowest live sell, a BUY above the
+        // highest live buy.  Anything else merely parks funds in a slot that sits
+        // beyond the live window and leaves bestBuy/bestSell — and therefore the
+        // measured spread — bit-for-bit unchanged.
+        //
+        // Sorting alone cannot enforce this: the orphan pool is rail-wide (every
+        // empty slot on the side), so market-nearest still resolves to the first
+        // empty slot PAST the window, which is on the wrong side of the live
+        // best.  Observed on a live market-pair bot whose live sells sat at
+        // 1071-1134 with 116 empty sell slots above them: correction kept
+        // creating orders at 1136, 1140, ... and eventually 1600/1605, none of
+        // which could narrow the spread, until the next resync cancelled them
+        // all as surplus.  This guard makes the grid edge structurally
+        // unreachable for a correction rather than merely sorted last.
+        //
+        // The reference is taken from `_getOnChainOrders` — the SAME input set
+        // `calculateCurrentSpread` measures the spread from — so "does this
+        // placement narrow the spread" is answered against literally the same
+        // book the flag was raised from, and there is no second definition of
+        // "counts as an on-chain order" to drift out of sync.
+        //
+        // Note the deliberate classifier asymmetry: the ANCHOR is matched by
+        // stored `o.type` (inherited from _getOnChainOrders), while CANDIDATES
+        // below are matched by `getSlotCorrectType` geometry.  That is right
+        // for both: an anchor is a live on-chain order whose side is what the
+        // spread is actually computed from, whereas an empty candidate slot has
+        // a normalized (often SPREAD) stored type and its intended side is the
+        // geometric one.
+        //
+        // With no live order on the side there is no reference to improve, so
+        // the market-nearest slot is by definition the best available and the
+        // guard stays open.
+        const { onChainBuys, onChainSells } = _getOnChainOrders(manager);
+        const railBestIsMax = railType === ORDER_TYPES.BUY;
+        const bestLiveOnRail = railBestIsMax
+            ? (onChainBuys.length ? Math.max(...onChainBuys.map((o: any) => o.price)) : null)
+            : (onChainSells.length ? Math.min(...onChainSells.map((o: any) => o.price)) : null);
+        const tightensSpread = (c: any): boolean => {
+            if (bestLiveOnRail == null || c?.price == null) return true;
+            return railBestIsMax ? c.price > bestLiveOnRail : c.price < bestLiveOnRail;
         };
         const typedSpreadCandidates = allOrders
             .filter((o: any) =>
@@ -3025,6 +3067,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
                 && isSlotAvailable(o)
                 && getSlotCorrectType(o) === railType
             )
+            .filter(tightensSpread)
             .sort(sortCandidates)
             .slice(0, missingSlots);
 
@@ -3060,6 +3103,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
                 && !o.orderId
                 && getSlotCorrectType(o) === railType
             )
+            .filter(tightensSpread)
             .sort(sortCandidates)
             .slice(0, missingSlots);
 
@@ -3117,16 +3161,40 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
                     `[SPREAD-CORRECTION] ${promotedCandidates.length} gap slot(s) available for boundary promotion on ${sideName}`,
                     'info'
                 );
+            } else {
+                // Promotion produced nothing. Name the BINDING constraint —
+                // the three are operationally different (a config change fixes
+                // one, a geometry change fixes the others) and a bare "skipped"
+                // makes all three look identical.
+                const bandSize = Math.max(0, sellStartIdx - buyEndIdx - 1);
+                const oppositeSide = railType === ORDER_TYPES.BUY ? 'sell' : 'buy';
+                const reason = maxPromotionDepth <= 0
+                    ? `stranding cap is 0 — a boundary slide would swallow a placed ${oppositeSide} order into the implied spread band`
+                    : (bandSize <= spreadReserve
+                        ? `gap band (${bandSize} slot(s)) is at or below the MIN_SPREAD_ORDERS reserve (${spreadReserve})`
+                        : 'no contiguous empty run from the rail edge into the band');
+                manager.logger?.log?.(
+                    `[SPREAD-CORRECTION] no gap slot available on ${sideName} — ${reason}; the spread is not correctable on this side this cycle`,
+                    'info'
+                );
             }
         }
 
-        // Merge: prefer orphaned virtuals (they already occupy correct grid positions) then
-        // fall back to SPREAD slots for any remaining quota.
+        // Merge, GAP BAND FIRST.  A boundary promotion is the only candidate
+        // kind that places INSIDE the empty spread band, so it is listed ahead
+        // of the rail pools.  In practice the promotion GATE above (only promote
+        // when the rail pools under-fill the quota) already keeps the two from
+        // competing: once the spread-tightening guard empties the rail pool of
+        // useless far-rail slots, the gate opens and the band is asked.  The
+        // ordering below is the belt to that braces — if the gate is ever
+        // relaxed, the band still wins by default rather than losing to a
+        // rail-wide pool that is capped at missingSlots on its own and so can
+        // consume the whole quota without ever entering the gap.
         const remainingQuota = Math.max(0, missingSlots - orphanedVirtualCandidates.length);
         let spreadCandidates: any[] = [
-            ...orphanedVirtualCandidates,
+            ...promotedCandidates,
             ...typedSpreadCandidates.slice(0, remainingQuota),
-            ...promotedCandidates
+            ...orphanedVirtualCandidates
         ];
 
         // Dedupe by slot id: an empty in-rail slot typed SPREAD (normalized) now
@@ -3134,8 +3202,8 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         // (both accept SPREAD type + rail geometry), so a single slot can be
         // planned twice.  Duplicate CREATEs would inflate the sizing denominator
         // (diluting every order), mislead the plan counts, and get dropped by the
-        // COW same-batch collision filter anyway.  Keep the first occurrence
-        // (orphaned-priority — those already occupy correct grid positions).
+        // COW same-batch collision filter anyway.  Keep the first occurrence —
+        // which under the gap-first merge is the band slot where one exists.
         {
             const seenSlotIds = new Set<string>();
             spreadCandidates = spreadCandidates.filter((c: any) => {
@@ -3174,7 +3242,12 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         }
 
         if (!edgePartial && spreadCandidates.length === 0) {
-            manager.logger?.log?.(`[SPREAD-CORRECTION] No suitable partials, orphaned virtual slots, or spread slots found. Skipping.`, 'warn');
+            manager.logger?.log?.(
+                bestLiveOnRail == null
+                    ? `[SPREAD-CORRECTION] No suitable partials, orphaned virtual slots, or spread slots found. Skipping.`
+                    : `[SPREAD-CORRECTION] No spread-tightening slot on ${sideName} (best live ${bestLiveOnRail}); every remaining empty slot sits beyond the live window and cannot narrow the spread. Skipping.`,
+                'warn'
+            );
             return { ordersToPlace: [], ordersToUpdate: [], origin: 'spread-correction' };
         }
 
