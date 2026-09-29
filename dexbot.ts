@@ -92,7 +92,6 @@ const { initializeFeeCache, ensureProfilesDirectory, readInput } = require('./mo
 const accountBots = require('./modules/account_bots');
 const SharedDEXBot = require('./modules/dexbot_class').default;
 const fundRegistry = require('./modules/fund_registry');
-const { maybePrintVersionStatus } = require('./modules/version_notice');
 
 /**
  * Resolve a collateral asset reference (symbol or ID) to its canonical asset ID.
@@ -1128,19 +1127,49 @@ async function handleCLICommands() {
             // Installed-vs-published version status, from the single shared
             // renderer in modules/version_notice.ts: green when current, orange
             // when a newer release exists, gray when the probe cannot answer.
-            // Nothing overlaps here, so await it inline — the probe is throttled
-            // to once per UPDATER.NOTICE_INTERVAL_MS and hard-timeouts at the
-            // shorter UPDATER.NOTICE_STATUS_TIMEOUT_MS so status output cannot
-            // stall. The status line names the installed version, so a bare
-            // header is only needed when the check is switched off entirely.
+            //
+            // The probe is STAGED around the report instead of being awaited
+            // inline (see startStagedVersionStatus):
+            //   top    1s grace. A valid cache or a quick registry answer lands
+            //          inside it and the report never notices the wait.
+            //   bottom 1s more for the probe still in flight, then a forced
+            //          re-probe with the full NOTICE_STATUS_TIMEOUT_MS budget.
+            //          If even that is silent, the verdict says so explicitly
+            //          rather than leaving a missing line to be read as
+            //          "you are up to date".
+            // So the report costs at most 1s up front, and the verdict is
+            // printed at exactly one terminal point, which no early
+            // `process.exit()` in a branch below can truncate.
             const { UPDATER } = require('./modules/constants');
-            const versionStatus = await maybePrintVersionStatus({
+            const { startStagedVersionStatus, printVersionStatusOrHeader } = require('./modules/version_notice');
+            const versionWait = startStagedVersionStatus({
+                graceMs: UPDATER.NOTICE_STAGE_GRACE_MS,
                 timeoutMs: UPDATER.NOTICE_STATUS_TIMEOUT_MS,
-                indent: '',
-                surround: false,
+                // DEXBOT_VERSION_CHECK_FORCE=1 re-probes instead of answering
+                // from the cache: the escape hatch when a cached failure is
+                // indistinguishable from a live one.
+                force: Config.DEXBOT_VERSION_CHECK_FORCE,
             });
-            if (!versionStatus) console.log(`DEXBot2 v${Config.VERSION}`);
+            // Top-of-report grace. The VALUE is unused on purpose, only the
+            // timing matters: `settled` is what gets displayed at the end.
+            await versionWait.quick;
             console.log();
+            // The ONE terminal point of this command: every branch below ends
+            // in `finish(...)` instead of `process.exit(...)`, so the deferred
+            // version line is always printed — including on the "no processes"
+            // and delegated-`unlock status` paths, which used to exit before
+            // the probe had anything to say.
+            const finish = async (code: number): Promise<true> => {
+                // Blank line, then the verdict: it is the last thing the
+                // operator reads, so it gets its own block at the bottom. With
+                // the check switched off, the shared helper falls back to the
+                // bare "DEXBot2 vX.Y.Z" header, so the running build is always
+                // named - the inline path's long-standing behaviour.
+                console.log();
+                printVersionStatusOrHeader(await versionWait.settled, { indent: '', surround: false });
+                process.exit(code);
+                return true;
+            };
             const { spawnSync, execSync } = require('child_process') as any as any;
             const MONOLITHIC_PID_FILE = PATHS.PROFILES.MONOLITHIC_PID;
             const MONOLITHIC_CRED_PID_FILE = PATHS.PROFILES.MONOLITHIC_CRED_PID;
@@ -1192,8 +1221,7 @@ async function handleCLICommands() {
                     cwd: PATHS.PROJECT_ROOT,
                     stdio: 'inherit',
                 });
-                process.exit(result.status ?? 0);
-                return true;
+                return finish(result.status ?? 0);
             }
 
             try {
@@ -1201,15 +1229,13 @@ async function handleCLICommands() {
                 const jsonStart = output.indexOf('[');
                 if (jsonStart === -1) {
                     console.log('No DEXBot2 processes running.');
-                    process.exit(0);
-                    return true;
+                    return finish(0);
                 }
 
                 const allProcs = JSON.parse(output.slice(jsonStart));
                 if (!Array.isArray(allProcs) || allProcs.length === 0) {
                     console.log('No DEXBot2 processes running.');
-                    process.exit(0);
-                    return true;
+                    return finish(0);
                 }
 
                 const serviceNames = new Set(['dexbot-cred', 'dexbot-adapter', 'dexbot-update']);
@@ -1229,8 +1255,7 @@ async function handleCLICommands() {
 
                 if (dexbotProcs.length === 0) {
                     console.log('No DEXBot2 processes running.');
-                    process.exit(0);
-                    return true;
+                    return finish(0);
                 }
 
                 console.log('='.repeat(50));
@@ -1278,8 +1303,7 @@ async function handleCLICommands() {
             } catch {
                 console.log('No DEXBot2 processes running.');
             }
-            process.exit(0);
-            return true;
+            return finish(0);
         }
         case 'delete':
         case 'stop':

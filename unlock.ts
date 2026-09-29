@@ -55,7 +55,7 @@ import { UPDATER, LAUNCHER } from './modules/constants.js';
 import { formatStartupNotice } from './modules/cli_start_output.js';
 import { runtime } from './modules/runtime.js';
 import { PATHS, printRelocationNotices } from './modules/paths.js';
-import { startVersionStatusCheck, flushVersionStatus, printVersionStatusWhenReady } from './modules/version_notice.js';
+import { startVersionStatusCheck, flushVersionStatusOrHeader, printVersionStatusWhenReady } from './modules/version_notice.js';
 import { buildRuntimeScriptArgs } from './modules/launcher/runtime_entry.js';
 import { sendControlCommand } from './modules/launcher/supervisor_control.js';
 import { registerCleanup, setupGracefulShutdown } from './modules/graceful_shutdown.js';
@@ -555,7 +555,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
             printLauncherHeader({ botName: effectiveBotName || botName, clawOnly, creditOnly, isolated, dryrun, headless });
             console.log(`DEXBot2 already running in background (PID ${pid}).`);
             console.log('Use `dexbot stat` to inspect it, or `dexbot restart` to restart it.');
-            await flushVersionStatus(versionStatus);
+            await flushVersionStatusOrHeader(versionStatus);
             process.exitCode = 0;
             return;
         }
@@ -607,7 +607,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
             if (pid > 0) {
                 console.log(`DEXBot2 already running in background (PID ${pid}).`);
                 console.log('Use `dexbot stat` to inspect it, or `dexbot restart` to restart it.');
-                await flushVersionStatus(versionStatus);
+                await flushVersionStatusOrHeader(versionStatus);
                 process.exitCode = 0;
                 return;
             }
@@ -647,13 +647,13 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
             storage.writeFile(MONOLITHIC_PID_FILE, String(child.pid), { mode: 0o600 });
 
             printLauncherStartupSummary({ botNames: launchedBotNames, mode: 'background' });
-            await flushVersionStatus(versionStatus);
+            await flushVersionStatusOrHeader(versionStatus);
             process.exit(0);
         }
 
         if (clawOnly) {
             printLauncherSuccess({ clawOnly });
-            await flushVersionStatus(versionStatus);
+            await flushVersionStatusOrHeader(versionStatus);
             const exitCode = await controller.waitForManagedDaemon();
             process.exitCode = exitCode || 0;
             return;
@@ -684,7 +684,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
             console.log(`Supervisor PID: ${supervisorPid}`);
             console.log(`Control socket: ${Config.DEXBOT_SUPERVISOR_SOCKET || SOCKET_PATH}`);
             console.log(`Supervisor logs: ${SUPERVISOR_OUT_LOG}`);
-            await flushVersionStatus(versionStatus);
+            await flushVersionStatusOrHeader(versionStatus);
             process.exitCode = 0;
             return;
         }
@@ -759,7 +759,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
                 if (!updater?.pendingRestart) {
                     if (!isMonolithicBgChild) {
                         printLauncherStartupSummary({ botNames: launchedBotNames, mode: 'foreground' });
-                        await flushVersionStatus(versionStatus);
+                        await flushVersionStatusOrHeader(versionStatus);
                     }
                 }
 

@@ -1610,19 +1610,46 @@ let UPDATER = {
     // switch means the default-off auto-updater does not also silence the
     // "you are running an outdated build" warning.
     NOTICE_ENABLED: true,
-    // Minimum gap between registry probes (24h). Also throttles failures, so an
-    // offline node pays the network timeout at most once a day, not per start.
-    // Set 0 to probe on every launcher start (an explicit opt-in to always-check).
-    NOTICE_INTERVAL_MS: 86_400_000,
-    // Hard timeout for the registry request. The check never blocks startup,
-    // but a hung socket must not keep the launcher alive either.
-    NOTICE_TIMEOUT_MS: 2_000,
-    // Shorter cap for `dexbot status`, which awaits the probe inline (no
-    // startup work overlaps it), so a stale/offline probe cannot stall the
-    // status output for the full NOTICE_TIMEOUT_MS.
-    NOTICE_STATUS_TIMEOUT_MS: 750,
-    // Registry document queried for the published `latest` version.
-    REGISTRY_URL: "https://registry.npmjs.org/dexbot/latest"
+    // Minimum gap between probes AFTER A SUCCESSFUL observation (12h). A
+    // successful answer is stable, so it is cached and costs no request on
+    // every run that consults it. Half a day rather than a full day: the
+    // published version does not move under us, but `dexbot stat` is the
+    // command an operator runs to ask "am I current?", and 24h let that answer
+    // come from an observation taken the previous morning. Set 0 to probe on
+    // every run (an explicit opt-in to always-check, which disables the
+    // failure backoff too).
+    NOTICE_INTERVAL_MS: 43_200_000,
+    // Backoff after a FAILED probe. A failure is the one observation that
+    // decays fastest: throttling it for the full NOTICE_INTERVAL_MS turned a
+    // 5s network hiccup into a permanent gray "?" for a day, with no retry to
+    // disprove it. A failure is therefore re-tried after 15 minutes while the
+    // last good answer is still served from the cache in the meantime.
+    NOTICE_RETRY_MS: 900_000,
+    // Total network budget for one probe, shared evenly across the configured
+    // sources. The check never blocks startup, but a hung socket must not keep
+    // the launcher alive either.
+    NOTICE_TIMEOUT_MS: 4_000,
+    // Budget for the final re-probe in `dexbot stat`. That command gives the
+    // probe 1s at the top of the report, 1s more at the end, and then this
+    // budget for a forced second attempt; when even that answers nothing the
+    // verdict says "no current version information" instead of leaving the
+    // operator to infer it from a missing line. Kept at 3s so the whole
+    // escalation costs ~4s of waiting, all of it at the bottom of the report.
+    NOTICE_STATUS_TIMEOUT_MS: 3_000,
+    // How long `dexbot stat` waits for an answer before printing the rest of
+    // the report. A valid cache or a quick registry answer lands inside this
+    // and the command never notices the wait.
+    NOTICE_STAGE_GRACE_MS: 1_000,
+    // Source 1 — the npm dist-tag document. Empty disables the source.
+    REGISTRY_URL: "https://registry.npmjs.org/dexbot/latest",
+    // Source 2 — the GitHub "latest release" document, the fallback for a host
+    // that cannot reach registry.npmjs.org. Empty DERIVES the URL from
+    // REPOSITORY_URL (so a fork/self-hosted mirror is honoured); set it to a
+    // non-GitHub value to pin the endpoint, or to 'off' to disable the source.
+    GITHUB_RELEASE_URL: "",
+    // Base for the derived GitHub source. Split out so a GitHub Enterprise
+    // mirror is a config change, not a code change.
+    GITHUB_API_BASE: "https://api.github.com"
 };
 
 let LAUNCHER = {

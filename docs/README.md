@@ -211,7 +211,7 @@ While these docs explain the *why*, the *how* lives in the code. See the full [m
 - **`modules/order/strategy.ts`**: Grid rebalancing, order activation, consolidation, rotation, and spread management
 - **`modules/order/sync_engine.ts`**: Blockchain synchronization, fill detection, order reconciliation
 - **`modules/order/genesis_policy.ts`**: Missing-ladder refusal and the `MISSING_GENESIS_POLICY` rebuild/halt decision ([GRID_PRICE_INVARIANT.md](GRID_PRICE_INVARIANT.md))
-- **`modules/version_notice.ts`**: Passive installed-vs-published version probe and the single status-line renderer used by `start`/`pm2`/`status`
+- **`modules/version_notice.ts`**: The single version probe and status-line renderer for every entry point (`stat`/`pm2`/`start`/`restart`). Two sources (npm, then GitHub releases), a 12h cache for successes and a 15min backoff for failures, an explicit reason when it cannot answer, and a staged wait in `dexbot stat` ending in "no current version information" rather than silence
 - **`modules/credit_runtime.ts`**: Bot-scoped debt workflow executor (MPA and credit offer accept/repay/reborrow)
 - **`modules/cr_planner.ts`**: Shared collateral-ratio math layer for debt-first planning
 - **`modules/order/utils/math.ts`**: Precision conversions, RMS divergence calculation, fund allocation math

@@ -64,6 +64,12 @@ const Config: {
     DEXBOT_LAUNCHER_WORKER: boolean;
     DEXBOT_UPDATE_SKIP_RELOAD: boolean;
     DEXBOT_SKIP_VERSION_NOTICE: boolean;
+    /** Bypass the version-probe cache for one run (`dexbot stat` with
+     *  DEXBOT_VERSION_CHECK_FORCE=1 re-probes instead of answering from the
+     *  12h cache). The diagnostic escape hatch for "is the registry reachable
+     *  right now?" — a stale cached failure otherwise looks identical to a
+     *  live one. */
+    DEXBOT_VERSION_CHECK_FORCE: boolean;
     NO_COLOR: string | undefined;
 
     // ── Paths ───────────────────────────────────────────────────────
@@ -136,6 +142,7 @@ const Config: {
     DEXBOT_LAUNCHER_WORKER: bool('DEXBOT_LAUNCHER_WORKER'),
     DEXBOT_UPDATE_SKIP_RELOAD: bool('DEXBOT_UPDATE_SKIP_RELOAD'),
     DEXBOT_SKIP_VERSION_NOTICE: bool('DEXBOT_SKIP_VERSION_NOTICE'),
+    DEXBOT_VERSION_CHECK_FORCE: bool('DEXBOT_VERSION_CHECK_FORCE'),
     NO_COLOR: str('NO_COLOR'),
 
     // ── Paths ───────────────────────────────────────────────────────

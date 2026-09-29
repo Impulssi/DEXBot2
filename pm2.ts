@@ -102,7 +102,7 @@ import * as readline from 'node:readline';
 import { getErrorMessage } from './modules/utils/errors.js';
 import { isSameBotName } from './modules/utils/sanitize_key.js';
 import { muteChainLogs } from './modules/utils/chain_logs.js';
-import { startVersionStatusCheck, printVersionStatus } from './modules/version_notice.js';
+import { startVersionStatusCheck, flushVersionStatusOrHeader } from './modules/version_notice.js';
 import { CLI_COLORS } from './modules/cli_colors.js';
 import { getStorage } from './modules/storage/index.js';
 import { usesAmaGridPrice } from './modules/dexbot_maintenance_runtime.js';
@@ -503,6 +503,10 @@ async function main({ botNameFilter = null, clawOnly = false, headless = false, 
         await ensureCredentialDaemonPM2({ headless, passwordFile });
     } catch (error: any) {
         console.error(pm2Error(`\n❌ ${getErrorMessage(error)}`));
+        // Surface the version state on the failure path too: a start that dies
+        // here is exactly when the operator wants to know which build they are
+        // on and whether it is current, and the probe is already in flight.
+        await flushVersionStatusOrHeader(versionStatus);
         process.exit(1);
     }
 
@@ -526,7 +530,10 @@ async function main({ botNameFilter = null, clawOnly = false, headless = false, 
     console.log('='.repeat(50));
     console.log();
 
-    printVersionStatus(await versionStatus);
+    // The status line names the installed version; with the check switched off
+    // the shared helper falls back to the bare header, so `dexbot pm2` reports
+    // the running build exactly as `dexbot stat` does.
+    await flushVersionStatusOrHeader(versionStatus);
 }
 
 function startPM2Process(args: any, env: any = buildScopedChildEnv()) {
