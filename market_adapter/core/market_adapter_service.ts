@@ -3,6 +3,7 @@
 import { calculateATR } from './strategies/atr/calculator.js';
 import { normalizeMarketSource, hasNumericStartPrice, resolveMarketSourceForBot } from '../utils/chain.js';
 import { computeRegimeMultiplier } from './strategies/regime_gate.js';
+import { noteJsonWritten, readCachedJson } from '../utils/file_json_cache.js';
 import { calculateAMA, getAmaWarmupBars } from './strategies/ama.js';
 import { computeDynamicWeightSeries } from './strategies/dynamic_weight_series.js';
 import { KalmanTrendAnalyzer } from './signals/kalman_trend_analyzer.js';
@@ -690,6 +691,12 @@ class MarketAdapterService {
                 regimeTable: cfg.regimeTable,
                 hurstZoneBand: cfg.hurstZoneBand,
                 peNodes: cfg.peNodes,
+                // Stable per-market key: lets the gate resume from the previous
+                // cycle's analyzer state instead of replaying the whole history.
+                // The gate still recomputes from scratch whenever the cached
+                // closes are not a prefix of the incoming window (gap repair,
+                // rewritten bar, shortened window) or a parameter changed.
+                cacheKey: `${bot?.botKey ?? 'bot'}:${cfg.intervalSeconds}`,
             });
             regimeMultiplier = regimeResult.isReady && Math.abs(regimeResult.multiplier - 1.0) >= absoluteThreshold
                 ? regimeResult.multiplier
@@ -1033,12 +1040,24 @@ class MarketAdapterService {
         }
 
         const botAma = deps.resolveAmaForBot(bot, ctx, cfg);
+        // `botAma.enabled` is a derived invariant (always true): `gridPrice` is
+        // the single switch that makes a bot AMA-driven, and
+        // usesAmaGridPrice(bot) below is what actually gates AMA work for this
+        // bot. This guard stays only so a future resolver that can fail to
+        // resolve an AMA config cannot silently trade on a missing one.
         if (!botAma.enabled) {
             return { ok: false, reason: 'ama disabled' };
         }
         const lookbackBars = normalizeAmaSlopeLookbackBars(cfg.amaSlope?.lookbackBars);
         const filePath = deps.candleFileForBot(bot.botKey, cfg.intervalSeconds);
-        const existing = deps.loadJson(filePath, null);
+        // mtime-validated read cache: the previous cycle serialized this very
+        // file, so re-parsing ~250 KiB of JSON per bot per hour is pure waste.
+        // The cache decides on the file's stat alone — an unstattable file (or a
+        // storage adapter that reports no mtime) is never served from the cache
+        // and always goes through the loader, so it can never serve stale data.
+        // Injecting deps.loadJson does not change that decision; it only changes
+        // what a cache miss parses.
+        const existing = readCachedJson(filePath, () => deps.loadJson(filePath, null));
         const existingMeta = existing?.meta && typeof existing.meta === 'object' ? existing.meta : {};
         let existingCandles = Array.isArray(existing?.candles) ? existing.candles : [];
         const existingMarketSource = normalizeMarketSource(existingMeta.marketSource);
@@ -1917,6 +1936,9 @@ class MarketAdapterService {
             candles: nextCandles,
         };
         deps.saveJson(filePath, candlePayload);
+        // The object just serialized IS the file's content now, so the next
+        // cycle's read can skip the parse.
+        noteJsonWritten(filePath, candlePayload);
 
         if (!hasNewClosedCandle) {
             const { staleData, staleAgeHours } = deps.computeCandleStaleness(lastClosedCandleTs, cfg.maxStaleHours);
@@ -2072,7 +2094,11 @@ class MarketAdapterService {
         // 4. Advisory collateral-ratio hint only; execution is owned by the debt runtime.
         const collateralRecommendation = canExposeDynamicWeights ? adjustCollateralRatio(slopeResult, 1.5, 2.0) : null;
 
-        const amaComparison = deps.calcAmaComparison(analysisCandles, bot, ctx);
+        // Reports the single AMA this bot trades on (its own resolved
+        // parameters, value already computed above as `amaPrice`). No extra
+        // calculateAMA pass: the AMA1..AMA4 preset sweep this replaced fed
+        // nothing but a log line.
+        const amaComparison = deps.buildAmaRecord(botAma, amaPrice);
         const closedCandleTs = lastCandle[0] || null;
         const { staleData, staleAgeHours } = deps.computeCandleStaleness(closedCandleTs, cfg.maxStaleHours);
 

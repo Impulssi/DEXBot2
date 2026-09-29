@@ -10,7 +10,6 @@ import { parseJsonWithComments, sleep, ensureDir } from '../modules/order/utils/
 import { readGeneralSettings } from '../modules/general_settings.js';
 import { DEFAULT_CONFIG, MARKET_ADAPTER, NATIVE_CLIENT, API_LIMITS, TIMING } from '../modules/constants.js';
 import { normalizeBotEntry } from '../modules/bot_settings.js';
-import { calculateAMA } from './core/strategies/ama.js';
 import * as kibanaSource from './inputs/kibana_source.js';
 import * as kibanaMarketSource from './core/kibana_market_candles.js';
 import { tradesToCandles, detectMissingCandleTimestamps, fillCandleGaps, detectStaleTail, pruneStaleTail, mergeCandles } from './candle_utils.js';
@@ -322,7 +321,6 @@ const DEFAULT_AMA_KEY = String(MARKET_ADAPTER.DEFAULT_AMA_KEY).toUpperCase();
 const BUILTIN_AMAS = MARKET_ADAPTER.AMAS;
 const DEFAULT_AMA = MARKET_ADAPTER.AMAS.AMA3;
 const AMA_KEYWORDS = new Set(['ama', 'ama1', 'ama2', 'ama3', 'ama4']);
-const AMA_PRESET_KEYS = ['AMA1', 'AMA2', 'AMA3', 'AMA4'];
 
 function normalizeAmaPreset(raw: any) {
     const erPeriod = Number(raw?.erPeriod);
@@ -410,26 +408,29 @@ function resolveErSmoothPeriodForBot(bot: any) {
     return globalErSmoothPeriod;
 }
 
-function buildAmaComparisonPresets(bot: any, ctx: any) {
-    const profile = findAmaProfileForBot(bot, ctx);
-    const erSmoothPeriod = resolveErSmoothPeriodForBot(bot);
-    return AMA_PRESET_KEYS
-        .map((key: any) => {
-            const preset = getAmaPresetForKey(key, profile);
-            if (!preset) return null;
-            return {
-                name: key,
-                erPeriod: preset.erPeriod,
-                fastPeriod: preset.fastPeriod,
-                slowPeriod: preset.slowPeriod,
-                erSmoothPeriod,
-            };
-        })
-        .filter(Boolean);
+function getAmaFromProfilesForBot(bot: any, ctx: any, cfg: any) {
+    const selected = resolveAmaPresetForBot(bot, ctx, cfg);
+    if (!selected) return null;
+    return {
+        enabled: true,
+        name: selected.name,
+        erPeriod: selected.erPeriod,
+        fastPeriod: selected.fastPeriod,
+        slowPeriod: selected.slowPeriod,
+        erSmoothPeriod: selected.erSmoothPeriod,
+    };
 }
 
-function getAmaFromProfilesForBot(bot: any, ctx: any, cfg: any) {
+/**
+ * Resolve which AMA preset key a bot actually trades on, and with what
+ * parameters. Returns null when no preset/profile entry applies.
+ *
+ * The chosen key rides along as `name` on the returned config so the cycle log
+ * and the state snapshot can say "this bot runs AMA2" without re-deriving it.
+ */
+function resolveAmaPresetForBot(bot: any, ctx: any, cfg: any) {
     const profile = findAmaProfileForBot(bot, ctx);
+    const erSmoothPeriod = resolveErSmoothPeriodForBot(bot);
     if (!profile) return null;
 
     const rawGridPrice = String(bot?.gridPrice || '').trim().toLowerCase();
@@ -439,18 +440,28 @@ function getAmaFromProfilesForBot(bot: any, ctx: any, cfg: any) {
         : (isAmaKeyword(rawGridPrice)
             ? normalizeAmaKey(rawGridPrice)
             : (overrideDefaultAmaKey || normalizeAmaKey(profile?.defaultAma)));
-    const selected = normalizeAmaPreset(profile?.amas?.[requestedKey])
-        || normalizeAmaPreset(profile?.amas?.[overrideDefaultAmaKey || DEFAULT_AMA_KEY])
-        || getAmaPresetForKey(requestedKey, profile)
-        || getAmaPresetForKey(overrideDefaultAmaKey || DEFAULT_AMA_KEY, profile);
+    // Keep the (key, preset) pair so the effective preset name is the one that
+    // actually won the fallback chain, not merely the one that was requested.
+    const selected =
+        pairAmaKey(requestedKey, normalizeAmaPreset(profile?.amas?.[requestedKey]))
+        || pairAmaKey(overrideDefaultAmaKey || DEFAULT_AMA_KEY, normalizeAmaPreset(profile?.amas?.[overrideDefaultAmaKey || DEFAULT_AMA_KEY]))
+        || pairAmaKey(requestedKey, getAmaPresetForKey(requestedKey, profile))
+        || pairAmaKey(overrideDefaultAmaKey || DEFAULT_AMA_KEY, getAmaPresetForKey(overrideDefaultAmaKey || DEFAULT_AMA_KEY, profile));
     if (!selected) return null;
 
     return {
         enabled: true,
-        erPeriod: selected.erPeriod,
-        fastPeriod: selected.fastPeriod,
-        slowPeriod: selected.slowPeriod,
+        name: selected.key,
+        erPeriod: selected.preset.erPeriod,
+        fastPeriod: selected.preset.fastPeriod,
+        slowPeriod: selected.preset.slowPeriod,
+        erSmoothPeriod,
     };
+}
+
+function pairAmaKey(key: any, preset: any) {
+    if (!preset) return null;
+    return { key: String(key), preset };
 }
 
 function sleepUntilAlignedBoundary(pollSeconds: number, referenceNowMs: any = Date.now(), nowMs: any = Date.now()) {
@@ -706,36 +717,69 @@ function computeCandleStaleness(lastCandleTs: any, maxStaleHours: any) {
     return { staleData, staleAgeHours };
 }
 
+/**
+ * Resolve the AMA configuration a bot trades on.
+ *
+ * Precedence, as implemented: when a market profile applies for the pair, the
+ * preset is chosen from the profile by the bot's `gridPrice` keyword, else the
+ * profile/`AMA3` default (a profile entry always wins over the bot's numeric
+ * `ama` block). Without a profile, the bot's own `ama` numbers are used, with
+ * the `gridPrice` keyword preset filling any missing period and AMA3 as the last
+ * resort.
+ *
+ * The winning preset key — or 'custom' when the numbers came from the bot's own
+ * `ama` block — rides along as `name`, so the cycle log and the state snapshot
+ * can state which AMA this bot runs without re-deriving it.
+ *
+ * `enabled` is a derived invariant, always true here. `gridPrice` is the single
+ * switch that decides whether a bot is AMA-driven — `usesAmaGridPrice()` reads
+ * it in the bot runtime, the maintenance runtime and the launcher — so an
+ * `ama.enabled` flag could only ever disagree with them. It used to: this
+ * function honoured it on the profile-less path and hardcoded `true` on the
+ * profile path, and because the bot side ignores the flag, honouring it froze
+ * the published center while the bot kept trading on it. Callers must gate AMA
+ * work on `usesAmaGridPrice(bot)`.
+ */
 function resolveAmaForBot(bot: any, ctx: any = null, cfg: any = null) {
     const raw = (bot && typeof bot.ama === 'object' && bot.ama !== null) ? bot.ama : {};
     const erSmoothPeriod = resolveErSmoothPeriodForBot(bot);
 
     const fromProfiles: any = getAmaFromProfilesForBot(bot, ctx, cfg);
-    if (fromProfiles) {
-        fromProfiles.erSmoothPeriod = erSmoothPeriod;
-        return fromProfiles;
-    }
+    if (fromProfiles) return fromProfiles;
 
-    const amaCfg = {
+    const amaCfg: any = {
         erPeriod: Number(raw.erPeriod),
         fastPeriod: Number(raw.fastPeriod),
         slowPeriod: Number(raw.slowPeriod),
         erSmoothPeriod,
-        enabled: raw.enabled !== false,
+        enabled: true,
+        name: 'custom',
     };
+    // Which preset the periods came from — tracked so the reported name
+    // describes the SOURCE, not merely the values (a bot that hand-writes the
+    // AMA3 numbers is still its own configuration, not "AMA3").
+    const botSuppliedPeriod = Number.isFinite(Number(raw.erPeriod))
+        || Number.isFinite(Number(raw.fastPeriod))
+        || Number.isFinite(Number(raw.slowPeriod));
+    let presetKey: string | null = null;
 
     if (isAmaKeyword(bot?.gridPrice)) {
-        const preset = getAmaPresetForKey(normalizeAmaKey(bot.gridPrice), null);
+        const key = normalizeAmaKey(bot.gridPrice);
+        const preset = getAmaPresetForKey(key, null);
         if (preset) {
             if (!Number.isFinite(amaCfg.erPeriod)) amaCfg.erPeriod = preset.erPeriod;
             if (!Number.isFinite(amaCfg.fastPeriod)) amaCfg.fastPeriod = preset.fastPeriod;
             if (!Number.isFinite(amaCfg.slowPeriod)) amaCfg.slowPeriod = preset.slowPeriod;
+            presetKey = key;
         }
     }
 
     if (!Number.isFinite(amaCfg.erPeriod) || amaCfg.erPeriod < 1) amaCfg.erPeriod = DEFAULT_AMA.erPeriod;
     if (!Number.isFinite(amaCfg.fastPeriod) || amaCfg.fastPeriod < 1) amaCfg.fastPeriod = DEFAULT_AMA.fastPeriod;
     if (!Number.isFinite(amaCfg.slowPeriod) || amaCfg.slowPeriod < 1) amaCfg.slowPeriod = DEFAULT_AMA.slowPeriod;
+    // Periods the bot supplied itself win, so the config is 'custom'; otherwise
+    // the name is the preset the periods came from (keyword, else the default).
+    amaCfg.name = botSuppliedPeriod ? 'custom' : (presetKey || DEFAULT_AMA_KEY);
     if (amaCfg.fastPeriod > amaCfg.slowPeriod) {
         const t = amaCfg.fastPeriod;
         amaCfg.fastPeriod = amaCfg.slowPeriod;
@@ -750,28 +794,39 @@ function pruneCandles(candles: any, keepCount: any) {
     return candles.slice(candles.length - keepCount);
 }
 
-function calcAmaComparison(candles: any, bot: any = null, ctx: any = null) {
-    const closes = (candles || []).map((c: any) => Number(c?.[4])).filter((v: any) => Number.isFinite(v) && v > 0);
-    const out: any[] = [];
-    const presets: any[] = buildAmaComparisonPresets(bot, ctx);
-
-    for (const p of presets) {
-        const minNeeded = p.erPeriod + 1;
-        if (closes.length < minNeeded) {
-            out.push({ ...p, value: null, ok: false });
-            continue;
-        }
-        const values = calculateAMA(closes, {
-            erPeriod: p.erPeriod,
-            fastPeriod: p.fastPeriod,
-            slowPeriod: p.slowPeriod,
-            erSmoothPeriod: p.erSmoothPeriod,
-        });
-        const value = values[values.length - 1];
-        out.push({ ...p, value: Number.isFinite(value) ? value : null, ok: Number.isFinite(value) });
+/**
+ * Build the per-bot AMA record that is logged and persisted in the state file.
+ *
+ * It reports the ONE AMA the bot actually trades on — the value the cycle has
+ * already computed as `amaValues` — instead of re-running `calculateAMA` for the
+ * AMA1..AMA4 preset sweep. Those four extra passes cost ~0.3 ms each per bot per
+ * hour and fed nothing but the old "AMA compare:" log line: the presets are
+ * research knobs, not a signal, and the bot's price always came from its own
+ * configured parameters. So the comparison was 4 duplications of work whose
+ * result no decision, log consumer or dashboard ever read.
+ *
+ * The array shape (one entry, same fields) is kept so the state schema and the
+ * cycle log stay stable; the field is still called `amaComparison` in the
+ * persisted state for backwards compatibility with existing snapshots.
+ */
+function buildAmaRecord(botAma: any, amaPrice: any) {
+    const erPeriod = Number(botAma?.erPeriod);
+    const fastPeriod = Number(botAma?.fastPeriod);
+    const slowPeriod = Number(botAma?.slowPeriod);
+    const erSmoothPeriod = Number(botAma?.erSmoothPeriod);
+    if (!Number.isFinite(erPeriod) || !Number.isFinite(fastPeriod) || !Number.isFinite(slowPeriod)) {
+        return [];
     }
-
-    return out;
+    const value = Number(amaPrice);
+    return [{
+        name: String(botAma?.name || 'active'),
+        erPeriod,
+        fastPeriod,
+        slowPeriod,
+        erSmoothPeriod: Number.isFinite(erSmoothPeriod) ? erSmoothPeriod : 0,
+        value: Number.isFinite(value) ? value : null,
+        ok: Number.isFinite(value),
+    }];
 }
 
 async function fetchNativeTradesSince(poolId: any, sinceMs: any, pageLimit: any, maxPages: any) {
@@ -1080,7 +1135,7 @@ const adapterService = new MarketAdapterService({
     pruneStaleTail,
     mergeCandles,
     pruneCandles,
-    calcAmaComparison,
+    buildAmaRecord,
     writeGridResetTrigger,
     writeBotDynamicGrid,
     isBotWhitelisted,
@@ -1260,7 +1315,7 @@ async function runOnce(cfg: any, state: any, contextCache: any) {
                     const erSmoothText = Number.isFinite(Number(a.erSmoothPeriod)) ? `/es${fixedTo(a.erSmoothPeriod, 0)}` : '';
                     return `${a.name}[${a.erPeriod}/${a.fastPeriod}/${a.slowPeriod}${erSmoothText}]=${val}`;
                 });
-                log(cfg, `  AMA compare: ${parts.join(' | ')}`);
+                log(cfg, `  AMA active: ${parts.join(' | ')}`);
             }
             results.push({
                 botName: bot.name,
@@ -1416,9 +1471,13 @@ async function main() {
         while (true) {
             const started = Date.now();
             log(cfg, `\n[cycle ${new Date(started).toISOString()}]`);
-            
-            // Connect for this cycle using the lightweight native read-only client.
-            // Tear down after runOnce so the connection never sits idle.
+
+            // Connect for this cycle using the lightweight native read-only
+            // client, and tear it down after runOnce so the connection never
+            // sits idle. A socket that outlives its cycle can be half-open when
+            // the next one starts (the peer drops it with no close frame, so
+            // readyState stays 1 and nothing notices); the per-cycle handshake
+            // re-validates chain id and api id before any RPC goes out on it.
             try {
                 const { connectClient } = getBitsharesClient();
                 await connectClient();
@@ -1451,5 +1510,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         });
 }
 
-export { main, runOnceForAma, DEFAULT_AMA, DEFAULTS, calculateBotThreshold, calcAmaComparison, computeCandleStaleness, normalizeMarketSource, sleepUntilAlignedBoundary, resolveAmaForBot, resolveDeltaThresholdPercentFromGeneralSettings, resolveAmaSlopeDeltaThresholdPercentFromGeneralSettings, applyRuntimeDefaultsFromGeneralSettings, resolveBotCfg, usesAmaGridPrice, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, _resetCycleCache, writeCenterSnapshot, writeBotDynamicGrid, writeGridResetTrigger, mergeGridResetMetadataFromDynamicGrid, normalizeNativeMarketHistoryCandles, fetchNativeMarketHistorySince, setBitsharesClientForTests as _setBitsharesClientForTests, loadMarketAdapterSettings, findPairForBot }
+export { main, runOnceForAma, DEFAULT_AMA, DEFAULTS, calculateBotThreshold, buildAmaRecord, computeCandleStaleness, normalizeMarketSource, sleepUntilAlignedBoundary, resolveAmaForBot, resolveDeltaThresholdPercentFromGeneralSettings, resolveAmaSlopeDeltaThresholdPercentFromGeneralSettings, applyRuntimeDefaultsFromGeneralSettings, resolveBotCfg, usesAmaGridPrice, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, _resetCycleCache, writeCenterSnapshot, writeBotDynamicGrid, writeGridResetTrigger, mergeGridResetMetadataFromDynamicGrid, normalizeNativeMarketHistoryCandles, fetchNativeMarketHistorySince, setBitsharesClientForTests as _setBitsharesClientForTests, loadMarketAdapterSettings, findPairForBot }
 

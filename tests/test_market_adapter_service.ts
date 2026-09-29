@@ -311,7 +311,7 @@ async function testTriggerHookCalledOnThreshold() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-0.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         root: process.cwd(),
@@ -502,7 +502,7 @@ async function testBookNativeFetchUsesBitsharesHistory() {
             return [...map.values()].sort((a, b) => a[0] - b[0]);
         },
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.book.trigger',
         isBotDynamicWeightWhitelisted: () => true,
         root: process.cwd(),
@@ -604,7 +604,7 @@ async function testBookIncrementalFillsVerifiedLongSilence() {
         pruneCandles: (candles) => candles,
         pruneStaleTail,
         detectStaleTail: require('../market_adapter/candle_utils').detectStaleTail,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.book-silence.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         logger: {
@@ -695,7 +695,7 @@ async function testBookIncrementalFillsBoundedNoTradeSilence() {
         pruneCandles: (candles) => candles,
         pruneStaleTail,
         detectStaleTail: require('../market_adapter/candle_utils').detectStaleTail,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.book-bounded-silence.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         root: process.cwd(),
@@ -788,7 +788,7 @@ async function testBookIncrementalFillsVerifiedLongSilenceBeforeLaterNativeActiv
         pruneCandles: (candles) => candles,
         pruneStaleTail,
         detectStaleTail: require('../market_adapter/candle_utils').detectStaleTail,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.book-silence-later-activity.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         root: process.cwd(),
@@ -881,7 +881,7 @@ async function testBookIncrementalIgnoresNativeOverlapWhenVerifyingSilenceBefore
         pruneCandles: (candles) => candles,
         pruneStaleTail,
         detectStaleTail: require('../market_adapter/candle_utils').detectStaleTail,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.book-silence-overlap-later-activity.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         root: process.cwd(),
@@ -939,7 +939,7 @@ async function testAmaWithFlatCandlesComputesValidPrice() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => {
             triggerWrites += 1;
             return '/tmp/recalculate.aaa-bbb-warmup.trigger';
@@ -1024,7 +1024,7 @@ async function testKibanaBackfillFillsHistoricalShortfall() {
             return candles.slice(candles.length - keepCount);
         },
         detectMissingCandleTimestamps: () => ({ gapCount: 0, missingTimestamps: [] }),
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-backfill.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         root: process.cwd(),
@@ -1134,7 +1134,7 @@ async function testRestartBackfillsOldAma3WindowBeforeWaitingForNextClosedCandle
         },
         pruneCandles: (candles, keepCount) => candles.length <= keepCount ? candles : candles.slice(candles.length - keepCount),
         detectMissingCandleTimestamps: () => ({ gapCount: 0, missingTimestamps: [] }),
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => {
             triggerWrites += 1;
             return '/tmp/recalculate.aaa-bbb-restart-wait.trigger';
@@ -1254,7 +1254,7 @@ async function testRestartBackfillsOldAma3WindowEvenWhenGapRepairWasAttempted() 
                 oldCandles[250][0] + (intervalSeconds * 2000),
             ],
         }),
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-restart-gap-backfill.trigger',
         writeBotDynamicGrid: () => true,
         isBotDynamicWeightWhitelisted: () => false,
@@ -1355,7 +1355,7 @@ async function testRestartBackfillsOldAma3WindowAndTriggersWhenDeltaThresholdIsE
         },
         pruneCandles: (candles, keepCount) => candles.length <= keepCount ? candles : candles.slice(candles.length - keepCount),
         detectMissingCandleTimestamps: () => ({ gapCount: 0, missingTimestamps: [] }),
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => {
             triggerWrites += 1;
             return '/tmp/recalculate.aaa-bbb-restart-trigger.trigger';
@@ -1454,7 +1454,7 @@ async function testBootstrapFallsBackWhenKibanaIsEmpty() {
         tradesToCandles: () => [[1700000000000, 100, 100, 100, 100, 1]],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-0.trigger',
         isBotDynamicWeightWhitelisted: () => true,
         root: process.cwd(),
@@ -1523,7 +1523,7 @@ async function testAmaGridPriceIsCaseInsensitive() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => {
             triggerWrites += 1;
             return '/tmp/recalculate.aaa-bbb-0.trigger';
@@ -1599,7 +1599,7 @@ async function testAmaTriggerSuppressedWhenCenterPersistFails() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => {
             triggerWrites += 1;
             return '/tmp/recalculate.aaa-bbb-0.trigger';
@@ -1675,7 +1675,7 @@ async function testAmaCenterPersistFailureBlocksSlopeTriggerFallback() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => {
             triggerWrites += 1;
             return '/tmp/recalculate.aaa-bbb-center-slope-fail.trigger';
@@ -1770,7 +1770,7 @@ async function testBootstrapCenterDoesNotAdvanceWhenPersistFails() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => {
             triggerWrites += 1;
             return '/tmp/recalculate.aaa-bbb-bootstrap.trigger';
@@ -1856,7 +1856,7 @@ async function testCenterEqualsAmaTriggeredByAmaDelta() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => {
             triggerWrites += 1;
             return '/tmp/recalculate.aaa-bbb-0.trigger';
@@ -1942,7 +1942,7 @@ async function testNoTriggerWhenCenterMatchesAma() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => {
             triggerWrites += 1;
             return '/tmp/recalculate.aaa-bbb-0.trigger';
@@ -2021,7 +2021,7 @@ async function testGridCenterPriceOnlyStateRestoresBaseline() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => {
             triggerWrites += 1;
             return '/tmp/recalculate.aaa-bbb-grid-center.trigger';
@@ -2098,7 +2098,7 @@ async function testCenterClampedByBotBounds() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => {
             triggerWrites += 1;
             return '/tmp/recalculate.aaa-bbb-1.trigger';
@@ -2194,7 +2194,7 @@ async function testCenterStableButSlopeDeltaTriggersReset() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: (_, payload) => {
             triggerWrites += 1;
             lastTrigger = payload;
@@ -2326,7 +2326,7 @@ async function testSlopeTriggerRecoversBaselineFromDynamicGridAfterStateClear() 
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: (_, payload) => {
             triggerWrites += 1;
             lastTrigger = payload;
@@ -2493,7 +2493,7 @@ async function testLegacyDynamicGridSlopeBaselineIsNormalizedBeforeComparison() 
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (input) => input,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-legacy-slope-baseline.trigger',
         writeBotDynamicGrid: () => true,
         isBotDynamicWeightWhitelisted: () => false,
@@ -2600,7 +2600,7 @@ async function testSlopePersistFailurePreservesRetryBaseline() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (values) => values,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => {
             triggerWrites += 1;
             return '/tmp/recalculate.aaa-bbb-slope-retry.trigger';
@@ -2695,7 +2695,7 @@ async function testContextCacheInvalidatesOnPoolChange() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-0.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         root: process.cwd(),
@@ -2776,7 +2776,7 @@ async function testKibanaGapRepairPatchesMissingCandles() {
         detectMissingCandleTimestamps,
         mergeCandles: (existing, incoming) => [...existing, ...incoming].sort((a, b) => a[0] - b[0]),
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-0.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         root: process.cwd(),
@@ -2889,7 +2889,7 @@ async function testInternalNoTradeGapsAreAutoFilledWithinTrustedThreshold() {
         detectMissingCandleTimestamps,
         mergeCandles: (existing, incoming) => [...existing, ...incoming].sort((a, b) => a[0] - b[0]),
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => {
             triggerWrites += 1;
             return '/tmp/recalculate.aaa-bbb-0.trigger';
@@ -2988,7 +2988,7 @@ async function testEmptyKibanaResponseResolvesAllGapsInWindow() {
         detectMissingCandleTimestamps,
         mergeCandles: (existing, incoming) => [...existing, ...incoming].sort((a, b) => a[0] - b[0]),
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => {
             triggerWrites += 1;
             return '/tmp/recalculate.aaa-bbb-windowed.trigger';
@@ -3079,7 +3079,7 @@ async function testNativeIncrementalFillsNoTradeGapsUpToStaleTailThreshold() {
         pruneCandles: (candles) => candles,
         pruneStaleTail,
         detectStaleTail: require('../market_adapter/candle_utils').detectStaleTail,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-native-gap.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         root: process.cwd(),
@@ -3161,7 +3161,7 @@ async function testNativeIncrementalDoesNotFillNoTradeGapsPastStaleTailThreshold
         pruneCandles: (candles) => candles,
         pruneStaleTail,
         detectStaleTail: require('../market_adapter/candle_utils').detectStaleTail,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-native-long-gap.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         root: process.cwd(),
@@ -3249,7 +3249,7 @@ async function testNativeIncrementalFillsVerifiedLongSilence() {
         pruneCandles: (candles) => candles,
         pruneStaleTail,
         detectStaleTail: require('../market_adapter/candle_utils').detectStaleTail,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-native-verified-silence.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         logger: {
@@ -3338,7 +3338,7 @@ async function testNativeIncrementalFillsVerifiedLongSilenceBeforeLaterActivity(
         pruneCandles: (candles) => candles,
         pruneStaleTail,
         detectStaleTail: require('../market_adapter/candle_utils').detectStaleTail,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-native-verified-silence-later-activity.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         root: process.cwd(),
@@ -3410,7 +3410,7 @@ async function testNativeIncrementalMergesKibanaActivityInsteadOfSilence() {
         detectMissingCandleTimestamps,
         mergeCandles,
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-native-kibana-activity.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         root: process.cwd(),
@@ -3485,7 +3485,7 @@ async function testStaleTailThresholdCanBeOverriddenPerConfig() {
         mergeCandles,
         pruneCandles: (candles) => candles,
         pruneStaleTail,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-stale-tail.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         root: process.cwd(),
@@ -3568,7 +3568,7 @@ async function testStaleTailVerificationRangeIsPersisted() {
         pruneCandles: (candles) => candles,
         pruneStaleTail,
         detectStaleTail: require('../market_adapter/candle_utils').detectStaleTail,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-stale-meta.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         root: process.cwd(),
@@ -3645,7 +3645,7 @@ async function testLegacyStaleTailVerificationTimestampIsHonored() {
         pruneCandles: (candles) => candles,
         pruneStaleTail,
         detectStaleTail: require('../market_adapter/candle_utils').detectStaleTail,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-legacy-stale-meta.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         root: process.cwd(),
@@ -3716,7 +3716,7 @@ async function testSourceMismatchClearsPersistedStaleTailVerificationRange() {
         mergeCandles,
         pruneCandles: (candles) => candles,
         pruneStaleTail,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-source-mismatch.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         root: process.cwd(),
@@ -3807,7 +3807,7 @@ async function testNativeIncrementalUsesTradeSequenceOverlap() {
         detectMissingCandleTimestamps,
         mergeCandles,
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-native-overlap.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         root: process.cwd(),
@@ -3909,7 +3909,7 @@ async function testNativeIncrementalFallsBackWhenOverlapNotReached() {
         detectMissingCandleTimestamps,
         mergeCandles,
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-native-overlap-fallback.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         logger: { warn: () => {} },
@@ -3989,7 +3989,7 @@ async function testTimeBasedNativeIncrementalDoesNotReaggregateExistingBuckets()
         detectMissingCandleTimestamps,
         mergeCandles,
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-native-time-window.trigger',
         isBotDynamicWeightWhitelisted: () => false,
         root: process.cwd(),
@@ -4074,8 +4074,8 @@ async function testClosedCandleGateSkipsCurrentPartialHour() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => {
-            throw new Error('calcAmaComparison should not run before a new closed candle exists');
+        buildAmaRecord: () => {
+            throw new Error('buildAmaRecord should not run before a new closed candle exists');
         },
         writeGridResetTrigger: () => {
             triggerWrites += 1;
@@ -4177,8 +4177,8 @@ async function testClosedCandleGateSurfacesStaleData() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => {
-            throw new Error('calcAmaComparison should not run while stale data blocks closed-candle processing');
+        buildAmaRecord: () => {
+            throw new Error('buildAmaRecord should not run while stale data blocks closed-candle processing');
         },
         getNowMs: () => Date.parse('2026-01-01T13:30:00Z'),
         root: process.cwd(),
@@ -4273,7 +4273,7 @@ async function testClosedCandlePruningRetainsFullDynamicWeightWarmup() {
             if (inputCandles.length <= keepCount) return inputCandles;
             return inputCandles.slice(inputCandles.length - keepCount);
         },
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-prune.trigger',
         writeBotDynamicGrid: (_botKey, _center, payload) => {
             writtenPayload = payload;
@@ -4399,7 +4399,7 @@ async function testIdOnlyBotIsNotRejected() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.id-bot.trigger',
         writeBotDynamicGrid: () => true,
         isBotDynamicWeightWhitelisted: () => false,
@@ -4458,7 +4458,7 @@ async function testDynamicWeightBelowMinOutputThresholdFallsBackToStaticWeights(
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-dw-0.trigger',
         writeBotDynamicGrid: (_botKey, _center, payload) => {
             writtenPayload = payload;
@@ -4530,7 +4530,7 @@ async function testDynamicWeightMinOutputThresholdZeroDisablesGate() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-dw-1.trigger',
         writeBotDynamicGrid: (_botKey, _center, payload) => {
             writtenPayload = payload;
@@ -4598,7 +4598,7 @@ async function testDynamicWeightGainScalesOutputLinearly() {
             tradesToCandles: () => [],
             mergeCandles: (existing, incoming) => [...existing, ...incoming],
             pruneCandles: (candles) => candles,
-            calcAmaComparison: () => [],
+            buildAmaRecord: () => [],
             writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-dw-gain-neutral.trigger',
             writeBotDynamicGrid: (_botKey, _center, payload) => {
                 writtenPayload = payload;
@@ -4676,7 +4676,7 @@ async function testFractionalAmaLookbackIsNormalizedBeforeSeriesLoops() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-dw-fractional-lookback.trigger',
         writeBotDynamicGrid: (_botKey, _center, payload) => {
             writtenPayload = payload;
@@ -4752,7 +4752,7 @@ async function testDynamicWeightSignalConfirmBarsCanLatchFlatState() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (series) => series,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-dw-confirm-flat.trigger',
         writeBotDynamicGrid: (_botKey, _center, payload) => {
             writtenPayload = payload;
@@ -4913,7 +4913,7 @@ async function testDynamicWeightChartParityMatchesLiveService() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (series) => series,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-dw-parity.trigger',
         writeBotDynamicGrid: (_botKey, _center, payload) => {
             writtenPayload = payload;
@@ -5013,7 +5013,7 @@ async function testDynamicWeightVolatilityOnlyPathRemainsReady() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-dw-vol.trigger',
         writeBotDynamicGrid: (_botKey, _center, payload) => {
             writtenPayload = payload;
@@ -5085,7 +5085,7 @@ async function testDynamicWeightVolatilityOverridesFlowIntoService() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-dw-override.trigger',
         writeBotDynamicGrid: (_botKey, _center, payload) => {
             writtenPayload = payload;
@@ -5154,7 +5154,7 @@ async function testDynamicWeightSuppressedTrendUsesFlatProfile() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-dw-flat-profile.trigger',
         writeBotDynamicGrid: (_botKey, _center, payload) => {
             writtenPayload = payload;
@@ -5226,7 +5226,7 @@ async function testDynamicWeightWeightOnlyWritesPersistOnClosedCandle() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-dw-persist.trigger',
         writeBotDynamicGrid: (_botKey, _center, payload) => {
             writeCount += 1;
@@ -5310,7 +5310,7 @@ async function testDynamicWeightWeightOnlyWriteFailureDoesNotAdvanceState() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-dw-fail.trigger',
         writeBotDynamicGrid: (_botKey, _center, payload) => {
             writeCount += 1;
@@ -5395,7 +5395,7 @@ async function testPlainAmaSnapshotRefreshFailureDoesNotConsumeClosedCandle() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-ama-refresh-fail.trigger',
         writeBotDynamicGrid: (_botKey, _center, payload) => {
             writeCount += 1;
@@ -5479,7 +5479,7 @@ async function testDynamicWeightWeightOnlyWritesAreSuppressedForStaleData() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-dw-stale.trigger',
         writeBotDynamicGrid: () => {
             writeCount += 1;
@@ -5550,7 +5550,7 @@ async function testDynamicWeightInvalidAtrPeriodAndClampAreSanitized() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-dw-sanitized.trigger',
         writeBotDynamicGrid: (_botKey, _center, payload) => {
             writtenPayload = payload;
@@ -5619,7 +5619,7 @@ async function testDynamicWeightDiagnosticsComputeWithoutWhitelistForAmaBots() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => {
             triggerWrites += 1;
             return '/tmp/recalculate.aaa-bbb-dw-diagnostic.trigger';
@@ -5703,7 +5703,7 @@ async function testDynamicWeightRequiresAmaAndDynamicWeightWhitelist() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-dw-ama-required.trigger',
         writeBotDynamicGrid: () => true,
         isBotWhitelisted: () => false,
@@ -5767,7 +5767,7 @@ async function testDynamicWeightDiagnosticsDoNotLeakIntoBootstrapState() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => [...existing, ...incoming],
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeGridResetTrigger: () => '/tmp/recalculate.aaa-bbb-dw-bootstrap-diagnostic.trigger',
         writeBotDynamicGrid: () => {
             dynamicGridWrites += 1;
@@ -5843,7 +5843,7 @@ async function testWeightOnlyUpdateInDryRunUpdatesState() {
         tradesToCandles: () => [],
         mergeCandles: (existing, incoming) => existing,
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeBotDynamicGrid: () => {
             dynamicGridWrites += 1;
             return true;
@@ -5940,7 +5940,7 @@ async function testNewerDynamicGridResetCenterOverridesStaleAdapterState() {
         tradesToCandles: () => [],
         mergeCandles: (existing) => existing,
         pruneCandles: (candles) => candles,
-        calcAmaComparison: () => [],
+        buildAmaRecord: () => [],
         writeBotDynamicGrid: (_botKey, center) => {
             writtenCenter = center;
             return true;

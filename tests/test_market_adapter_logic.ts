@@ -9,7 +9,7 @@ console.log('Running market_adapter logic tests');
 const {
     DEFAULT_AMA,
     calculateBotThreshold,
-    calcAmaComparison,
+    buildAmaRecord,
     computeCandleStaleness,
     resolveAmaForBot,
     resolveDeltaThresholdPercentFromGeneralSettings,
@@ -521,29 +521,42 @@ async function testNativeMarketHistoryDirectOrder() {
             ],
         });
 
-        const candles = Array.from({ length: 20 }, (_, i) => [1700000000000 + (i * 3600000), 100 + i, 101 + i, 99 + i, 100 + i, 1]);
-        const comparison = calcAmaComparison(candles, {
-            assetA: 'TESTA',
-            assetB: 'TESTB',
-            ama: { erSmoothPeriod: 3 },
-        });
-        assert.deepStrictEqual(
-            comparison.map((entry) => ({
-                name: entry.name,
-                erPeriod: entry.erPeriod,
-                fastPeriod: entry.fastPeriod,
-                slowPeriod: entry.slowPeriod,
-                erSmoothPeriod: entry.erSmoothPeriod,
-            })),
-            [
-                { name: 'AMA1', erPeriod: 2, fastPeriod: 2.1, slowPeriod: 6, erSmoothPeriod: 3 },
-                { name: 'AMA2', erPeriod: 3, fastPeriod: 3.3, slowPeriod: 7, erSmoothPeriod: 3 },
-                { name: 'AMA3', erPeriod: 4, fastPeriod: 4.4, slowPeriod: 8, erSmoothPeriod: 3 },
-                { name: 'AMA4', erPeriod: 5, fastPeriod: 5.5, slowPeriod: 9, erSmoothPeriod: 3 },
-            ],
-            'market_profiles comparison should use pair-specific profile presets when present'
+        const botAma = resolveAmaForBot(
+            { assetA: 'TESTA', assetB: 'TESTB', gridPrice: 'ama2', ama: { erSmoothPeriod: 3 } },
+            null,
+            null
         );
-        assert.ok(comparison.every((entry) => entry.ok), 'profile-based comparison presets should produce valid AMA values with enough candles');
+        assert.deepStrictEqual(
+            {
+                name: botAma.name,
+                erPeriod: botAma.erPeriod,
+                fastPeriod: botAma.fastPeriod,
+                slowPeriod: botAma.slowPeriod,
+                erSmoothPeriod: botAma.erSmoothPeriod,
+            },
+            { name: 'AMA2', erPeriod: 3, fastPeriod: 3.3, slowPeriod: 7, erSmoothPeriod: 3 },
+            'the resolved bot AMA should use the pair-specific profile preset for the requested keyword'
+        );
+
+        // The cycle records exactly ONE AMA — the one the bot trades on, reusing
+        // the value the cycle already computed. No AMA1..AMA4 sweep.
+        const record = buildAmaRecord(botAma, 42.5);
+        assert.strictEqual(record.length, 1, 'exactly one AMA record is produced per bot');
+        assert.deepStrictEqual(record[0], {
+            name: 'AMA2',
+            erPeriod: 3,
+            fastPeriod: 3.3,
+            slowPeriod: 7,
+            erSmoothPeriod: 3,
+            value: 42.5,
+            ok: true,
+        }, 'the record must mirror the bot-configured parameters and the price the cycle already computed');
+
+        // A bot on the profile default gets that preset, still exactly one record.
+        const defaultAma = resolveAmaForBot({ assetA: 'TESTA', assetB: 'TESTB', gridPrice: 'ama' }, null, null);
+        assert.strictEqual(defaultAma.name, 'AMA4', 'gridPrice "ama" should follow the profile default');
+        assert.strictEqual(defaultAma.slowPeriod, 9, 'profile default preset parameters must be used');
+        assert.strictEqual(buildAmaRecord(defaultAma, 1).length, 1, 'still a single record');
     } finally {
         if (hadOriginal) {
             fs.writeFileSync(MARKET_PROFILES_FILE, original, 'utf8');
@@ -551,6 +564,72 @@ async function testNativeMarketHistoryDirectOrder() {
             fs.unlinkSync(MARKET_PROFILES_FILE);
         }
     }
+}
+
+// Without a market profile the bot's own ama block decides, and the cycle still
+// calculates exactly that one AMA.
+{
+    const custom = resolveAmaForBot({
+        assetA: 'NOPROF_A',
+        assetB: 'NOPROF_B',
+        gridPrice: 'ama',
+        ama: { erPeriod: 10, fastPeriod: 11, slowPeriod: 30 },
+    });
+    assert.deepStrictEqual(
+        { name: custom.name, erPeriod: custom.erPeriod, fastPeriod: custom.fastPeriod, slowPeriod: custom.slowPeriod },
+        { name: 'custom', erPeriod: 10, fastPeriod: 11, slowPeriod: 30 },
+        'a bot with its own ama numbers must be reported as custom, not as a preset'
+    );
+    const customRecord = buildAmaRecord(custom, 7);
+    assert.strictEqual(customRecord.length, 1, 'custom bots still get exactly one AMA record');
+    assert.strictEqual(customRecord[0].erPeriod, 10, 'the record must use the bot\'s own erPeriod');
+
+    const keyword = resolveAmaForBot({ assetA: 'NOPROF_A', assetB: 'NOPROF_B', gridPrice: 'ama1' });
+    assert.strictEqual(keyword.name, 'AMA1', 'gridPrice keyword selects the built-in preset');
+    assert.deepStrictEqual(
+        { erPeriod: keyword.erPeriod, fastPeriod: keyword.fastPeriod, slowPeriod: keyword.slowPeriod },
+        { erPeriod: MARKET_ADAPTER.AMAS.AMA1.erPeriod, fastPeriod: MARKET_ADAPTER.AMAS.AMA1.fastPeriod, slowPeriod: MARKET_ADAPTER.AMAS.AMA1.slowPeriod },
+        'keyword-resolved parameters must match the built-in preset'
+    );
+
+    const bare = resolveAmaForBot({ assetA: 'NOPROF_A', assetB: 'NOPROF_B', gridPrice: 'ama' });
+    assert.strictEqual(bare.name, 'AMA3', 'an unconfigured bot falls back to the default AMA key');
+    assert.deepStrictEqual(
+        { erPeriod: bare.erPeriod, fastPeriod: bare.fastPeriod, slowPeriod: bare.slowPeriod },
+        { erPeriod: DEFAULT_AMA.erPeriod, fastPeriod: DEFAULT_AMA.fastPeriod, slowPeriod: DEFAULT_AMA.slowPeriod },
+        'default parameters must match DEFAULT_AMA'
+    );
+
+    // A hybrid (bot numbers + keyword) is the bot's own configuration.
+    const hybrid = resolveAmaForBot({
+        assetA: 'NOPROF_A', assetB: 'NOPROF_B', gridPrice: 'ama1', ama: { slowPeriod: 44 },
+    });
+    assert.strictEqual(hybrid.name, 'custom', 'a partial override is a custom configuration');
+    assert.strictEqual(hybrid.erPeriod, MARKET_ADAPTER.AMAS.AMA1.erPeriod, 'missing periods still come from the keyword preset');
+    assert.strictEqual(hybrid.slowPeriod, 44, 'the bot override wins where it is set');
+
+    // The name describes the SOURCE, not the values: a bot that hand-writes the
+    // default preset's numbers is still its own configuration.
+    const handwrittenDefault = resolveAmaForBot({
+        assetA: 'NOPROF_A',
+        assetB: 'NOPROF_B',
+        gridPrice: 'ama',
+        ama: { erPeriod: DEFAULT_AMA.erPeriod, fastPeriod: DEFAULT_AMA.fastPeriod, slowPeriod: DEFAULT_AMA.slowPeriod },
+    });
+    assert.strictEqual(handwrittenDefault.name, 'custom',
+        'bot-supplied numbers must stay custom even when they equal the default preset');
+    assert.deepStrictEqual(
+        { erPeriod: handwrittenDefault.erPeriod, fastPeriod: handwrittenDefault.fastPeriod, slowPeriod: handwrittenDefault.slowPeriod },
+        { erPeriod: DEFAULT_AMA.erPeriod, fastPeriod: DEFAULT_AMA.fastPeriod, slowPeriod: DEFAULT_AMA.slowPeriod },
+        'the values themselves are unchanged'
+    );
+
+    // Non-finite prices must not produce a bogus record.
+    assert.deepStrictEqual(buildAmaRecord({ erPeriod: Number.NaN }, 5), [], 'an unresolvable AMA yields no record');
+    const notReady = buildAmaRecord(keyword, Number.NaN);
+    assert.strictEqual(notReady.length, 1, 'the record is still reported when the value is not finite');
+    assert.strictEqual(notReady[0].value, null, 'a non-finite price is reported as null');
+    assert.strictEqual(notReady[0].ok, false, 'a non-finite price is flagged not ok');
 }
 
 // Explicit bot-level ER smoothing should accept 0 as disabled and reject sub-unit periods.
@@ -561,6 +640,7 @@ async function testNativeMarketHistoryDirectOrder() {
         ama: { erPeriod: 10, fastPeriod: 2, slowPeriod: 30, erSmoothPeriod: 0 },
     });
     assert.strictEqual(disabled.erSmoothPeriod, 0, 'explicit bot erSmoothPeriod=0 should disable smoothing');
+    assert.strictEqual(disabled.enabled, true, 'erSmoothPeriod=0 disables ER smoothing, not the whole AMA');
 
     const invalid = resolveAmaForBot({
         assetA: 'TESTA',
@@ -622,6 +702,121 @@ async function testNativeMarketHistoryDirectOrder() {
 
         const flippedAma = resolveAmaForBot({ assetA: 'TESTA', assetB: 'TESTB', gridPrice: 'ama1' });
         assert.strictEqual(flippedAma.fastPeriod, 2.2, 'flipped profile should remain a valid fallback when no exact profile exists');
+    } finally {
+        if (hadOriginal) {
+            fs.writeFileSync(MARKET_PROFILES_FILE, original, 'utf8');
+        } else if (fs.existsSync(MARKET_PROFILES_FILE)) {
+            fs.unlinkSync(MARKET_PROFILES_FILE);
+        }
+    }
+}
+
+// The AMA override layers, end to end. `profiles/market_profiles.json` supplies
+// the per-market preset, `gridPrice` selects which one, `cfg.defaultAmaKey`
+// overrides the profile default, the bot's own `ama` block is the fallback when
+// no profile matches, and `erSmoothPeriod` is the one bot knob that layers on top
+// of any preset. Every row is asserted on the resolved PARAMETERS, so a future
+// refactor cannot quietly change which layer wins.
+{
+    const hadOriginal = fs.existsSync(MARKET_PROFILES_FILE);
+    const original = hadOriginal ? fs.readFileSync(MARKET_PROFILES_FILE, 'utf8') : null;
+
+    try {
+        writeJSON(MARKET_PROFILES_FILE, {
+            profiles: [
+                {
+                    assetA: 'TESTA',
+                    assetB: 'TESTB',
+                    intervalSeconds: 3600,
+                    defaultAma: 'AMA3',
+                    updatedAt: '2026-03-07T00:00:00.000Z',
+                    amas: {
+                        AMA1: { erPeriod: 2, fastPeriod: 2.1, slowPeriod: 6 },
+                        AMA2: { erPeriod: 3, fastPeriod: 3.3, slowPeriod: 7 },
+                        AMA3: { erPeriod: 4, fastPeriod: 4.4, slowPeriod: 8 },
+                        AMA4: { erPeriod: 5, fastPeriod: 5.5, slowPeriod: 9 },
+                    },
+                },
+            ],
+        });
+
+        const PROFILED = { assetA: 'TESTA', assetB: 'TESTB' };
+        const UNPROFILED = { assetA: 'NOPROF_A', assetB: 'NOPROF_B' };
+        const BUILTIN = (key) => ({
+            name: key,
+            erPeriod: MARKET_ADAPTER.AMAS[key].erPeriod,
+            fastPeriod: MARKET_ADAPTER.AMAS[key].fastPeriod,
+            slowPeriod: MARKET_ADAPTER.AMAS[key].slowPeriod,
+        });
+        const cases = [
+            // [label, bot, cfg, expected]
+            ['profile wins: gridPrice keyword picks the profile preset',
+                { ...PROFILED, gridPrice: 'ama2' }, null, { name: 'AMA2', erPeriod: 3, fastPeriod: 3.3, slowPeriod: 7 }],
+            ['profile wins: gridPrice "ama" uses the profile default',
+                { ...PROFILED, gridPrice: 'ama' }, null, { name: 'AMA3', erPeriod: 4, fastPeriod: 4.4, slowPeriod: 8 }],
+            ['cfg.defaultAmaKey overrides the profile default',
+                { ...PROFILED, gridPrice: 'ama' }, { defaultAmaKey: 'AMA1' }, { name: 'AMA1', erPeriod: 2, fastPeriod: 2.1, slowPeriod: 6 }],
+            ['an unknown defaultAmaKey falls back to the profile default',
+                { ...PROFILED, gridPrice: 'ama' }, { defaultAmaKey: 'AMA9' }, { name: 'AMA3', erPeriod: 4, fastPeriod: 4.4, slowPeriod: 8 }],
+            ['a matched profile outranks the bot ama numbers (documented precedence)',
+                { ...PROFILED, gridPrice: 'ama2', ama: { erPeriod: 10, fastPeriod: 11, slowPeriod: 40 } }, null,
+                { name: 'AMA2', erPeriod: 3, fastPeriod: 3.3, slowPeriod: 7 }],
+            ['no profile: the bot ama block is the fallback',
+                { ...UNPROFILED, gridPrice: 'ama2', ama: { erPeriod: 10, fastPeriod: 11, slowPeriod: 40 } }, null,
+                { name: 'custom', erPeriod: 10, fastPeriod: 11, slowPeriod: 40 }],
+            ['no profile: gridPrice keyword uses the built-in preset',
+                { ...UNPROFILED, gridPrice: 'ama1' }, null, BUILTIN('AMA1')],
+            ['no profile: a partial bot override fills the rest from the keyword preset',
+                { ...UNPROFILED, gridPrice: 'ama4', ama: { erPeriod: 12 } }, null,
+                { name: 'custom', erPeriod: 12, fastPeriod: BUILTIN('AMA4').fastPeriod, slowPeriod: BUILTIN('AMA4').slowPeriod }],
+            ['no profile and no keyword: the built-in default preset',
+                { ...UNPROFILED, gridPrice: 'fixed' }, null, BUILTIN('AMA3')],
+        ];
+
+        for (const [label, bot, cfg, expected] of cases) {
+            const resolved = resolveAmaForBot(bot, null, cfg);
+            assert.deepStrictEqual({
+                name: resolved.name,
+                erPeriod: resolved.erPeriod,
+                fastPeriod: resolved.fastPeriod,
+                slowPeriod: resolved.slowPeriod,
+            }, expected, label);
+
+            // The single persisted/logged record must mirror the resolved config
+            // exactly — it is the same numbers the cycle computed the AMA with.
+            const record = buildAmaRecord(resolved, 12.5);
+            assert.strictEqual(record.length, 1, `${label}: exactly one AMA record`);
+            assert.deepStrictEqual({
+                name: record[0].name,
+                erPeriod: record[0].erPeriod,
+                fastPeriod: record[0].fastPeriod,
+                slowPeriod: record[0].slowPeriod,
+            }, expected, `${label}: the record must mirror the resolved config`);
+        }
+
+        // erSmoothPeriod is the per-bot knob that layers on top of ANY preset.
+        const smoothed = resolveAmaForBot({ ...PROFILED, gridPrice: 'ama2', ama: { erSmoothPeriod: 7 } }, null, null);
+        assert.deepStrictEqual(
+            { erPeriod: smoothed.erPeriod, fastPeriod: smoothed.fastPeriod, slowPeriod: smoothed.slowPeriod },
+            { erPeriod: 3, fastPeriod: 3.3, slowPeriod: 7 },
+            'erSmoothPeriod must not disturb the preset parameters'
+        );
+        assert.strictEqual(smoothed.erSmoothPeriod, 7, 'the bot erSmoothPeriod applies on top of a profile preset');
+        assert.strictEqual(buildAmaRecord(smoothed, 1)[0].erSmoothPeriod, 7, 'the record carries the bot erSmoothPeriod');
+
+        // `gridPrice` is the ONLY switch that makes a bot AMA-driven, so a
+        // leftover `ama.enabled: false` must not change what the adapter does.
+        // It used to: the no-profile path honoured it (freezing the published
+        // center while the bot kept trading on it) while the profile path
+        // hardcoded true, so the same config behaved differently per pair.
+        for (const [label, bot] of [
+            ['profiled pair', { ...PROFILED, gridPrice: 'ama2', ama: { enabled: false } }],
+            ['profile-less pair', { ...UNPROFILED, gridPrice: 'ama2', ama: { enabled: false } }],
+        ]) {
+            const resolved = resolveAmaForBot(bot, null, null);
+            assert.strictEqual(resolved.enabled, true,
+                `${label}: ama.enabled must not disable the adapter (gridPrice is the only switch)`);
+        }
     } finally {
         if (hadOriginal) {
             fs.writeFileSync(MARKET_PROFILES_FILE, original, 'utf8');

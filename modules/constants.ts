@@ -74,7 +74,7 @@
  *       AMA_DELTA_THRESHOLD_PERCENT: % change in AMA center price that triggers grid reset
  *       DEFAULT_AMA_KEY: Default AMA profile used for `gridPrice: "ama"`
  *       AMAS: Built-in AMA1..AMA4 presets for market adapter defaults
- *       Related to bot AMA configuration (profiles/bots.json: ama.enabled, erPeriod, etc.)
+ *       Related to bot AMA configuration (profiles/bots.json: gridPrice keyword, ama.erPeriod, etc.)
  *       Stored in: profiles/general.settings.json
  *
  * MAINTENANCE & MONITORING:

@@ -158,7 +158,6 @@ node dist/market_adapter/market_adapter.js --deltaPercent 2
 ```json
 {
   "ama": {
-    "enabled": true,
     "erPeriod": 10,      // Efficiency Ratio lookback period (candles)
     "fastPeriod": 2,     // Fast smoothing period for trending markets
     "slowPeriod": 30,    // Slow smoothing period for choppy markets
@@ -166,6 +165,12 @@ node dist/market_adapter/market_adapter.js --deltaPercent 2
   }
 }
 ```
+
+> **`gridPrice` is the only switch.** A bot is AMA-driven when `gridPrice` says
+> so — `usesAmaGridPrice()`, the source of truth shared by the bot, maintenance
+> and launcher runtimes. There is deliberately no `ama.enabled`: a second switch
+> could only disagree with them, freezing the center the bot still trades on. To
+> park a bot, set a non-AMA `gridPrice` (`"fixed"`, a number, `"pool"`, `"book"`).
 
 **Optional: `poolRef`** — pin a specific pool ID for price derivation when using `startPrice: "pool"`. Set in `bots.json` alongside the bot entry:
 ```json
@@ -184,7 +189,6 @@ The pool is fetched directly by ID, bypassing pool discovery. Useful when the tr
 - If no pair profile matches, the bot's `ama` block is used as the fallback
 
 **AMA Parameters:**
-- `enabled`: Whether to track AMA and trigger grid resets (true/false)
 - `erPeriod`: How many candles to look back for trend detection
   - Higher values: More stable, slower response (e.g. `erPeriod=781` very stable)
   - Lower values: More responsive, catches quick moves
