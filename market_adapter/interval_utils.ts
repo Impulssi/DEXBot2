@@ -21,5 +21,34 @@ function slugPart(value: any) {
         .replace(/^_+|_+$/g, '') || 'unknown';
 }
 
-export { toIntervalLabel, slugPart }
+/**
+ * Start of the interval bucket that contains `nowMs` (floor on the bucket
+ * grid), or null when the interval or clock is unusable.
+ *
+ * Single home for the candle-grid arithmetic shared by the closed-candle
+ * gate, the startup-sleep verdict, the aligned-boundary sleep and candle
+ * selection. Keeping one implementation matters because the closed-bucket
+ * gate and the startup sleep must agree on "the newest closed bucket" by
+ * construction, not by two copies happening to match.
+ */
+function bucketStartMs(nowMs: any, intervalSeconds: any) {
+    const bucketMs = Number(intervalSeconds) * 1000;
+    if (!Number.isFinite(bucketMs) || bucketMs <= 0) return null;
+    const now = Number(nowMs);
+    if (!Number.isFinite(now) || now <= 0) return null;
+    return Math.floor(now / bucketMs) * bucketMs;
+}
+
+/**
+ * Start of the newest FULLY CLOSED bucket as of `nowMs` — the bucket just
+ * before the one that contains `nowMs`. Null when `bucketStartMs` cannot
+ * evaluate the interval/clock.
+ */
+function latestClosedBucketStartMs(nowMs: any, intervalSeconds: any) {
+    const currentBucketStart = bucketStartMs(nowMs, intervalSeconds);
+    if (currentBucketStart === null) return null;
+    return currentBucketStart - Number(intervalSeconds) * 1000;
+}
+
+export { toIntervalLabel, slugPart, bucketStartMs, latestClosedBucketStartMs }
 

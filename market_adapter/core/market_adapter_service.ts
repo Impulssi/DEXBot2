@@ -32,6 +32,7 @@ import {
     computeAsymmetricBoundsMetrics,
 } from './asymmetric_bounds.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
+import { bucketStartMs, latestClosedBucketStartMs as latestClosedBucket } from '../interval_utils.js';
 const marketAdapterServiceLogger = new Logger('MarketAdapterService');
 
 const AMA_SLOPE_PERCENT_MODE_PER_BAR = 'perBar';
@@ -120,6 +121,31 @@ function computeGridPriceOffsetPlan(bot: any, amaSlope: any){
 }
 
 
+/**
+ * Standing repair verdict for a PERSISTED STATE entry — the summary the
+ * previous cycle wrote. Returns a reason string when repair is still owed,
+ * null when the cache is clean.
+ *
+ * State-side mirror of candleFileCoversClosedBucket: that gate judges the
+ * on-disk candle file, this one judges the state summary, and the two must
+ * describe the same standing conditions so the startup sleep and the in-cycle
+ * skip cannot silently disagree. When a new standing signal is added to one,
+ * add it to the other (source/newest-candle checks are file-only and cannot
+ * appear here; unresolvedGapCount and the warmup shortfall exist in both).
+ */
+function evaluateStateRepairVeto(entry: any) {
+    if (Number(entry?.unresolvedGapCount) > 0) return 'unresolved_gaps';
+    const keepTarget = Number(entry?.rawKeepCount);
+    if (!Number.isFinite(keepTarget) || keepTarget <= 0) return null;
+    const candleCount = Number(entry?.candleCount);
+    // Target known but current count unknown is NOT "nothing owed": an
+    // older or half-written row would otherwise read as healthy. Veto, and
+    // let the next full cycle rewrite the row with both fields.
+    if (!Number.isFinite(candleCount)) return 'cache_count_unknown';
+    if (candleCount < keepTarget) return 'cache_below_warmup_target';
+    return null;
+}
+
 class MarketAdapterService {
     deps: any;
     constructor(deps: any = {}) {
@@ -160,20 +186,119 @@ class MarketAdapterService {
         return Math.max(Number(cfg?.bootstrapLookbackHours) || 0, Number(keepCount) * intervalHours);
     }
 
+    /**
+     * Closed-bucket arithmetic shared by the off-hour skip logic.
+     *
+     * Thin instance wrapper around the shared bucket helper so the `getNowMs`
+     * injection used by tests and embedders keeps working. `intervalSeconds`
+     * is validated by the helper: a missing/invalid interval can never
+     * masquerade as "nothing new" — it returns null and the caller must fall
+     * through to the network path instead of skipping a cycle it cannot
+     * evaluate.
+     */
+    latestClosedBucketStartMs(intervalSeconds: any, nowMs: any = this.getNowMs()) {
+        return latestClosedBucket(nowMs, intervalSeconds);
+    }
+
+    /**
+     * Off-hour skip check: is there any closed candle this bot has not
+     * consumed yet? Runs on persisted state + the wall clock only — no
+     * chain RPC, no candle parse. Returns null when the answer cannot be
+     * determined (invalid interval, unknown state shape, one-shot mode), in
+     * which case the caller must run the full cycle instead of skipping.
+     *
+     * `once` (the `--once` CLI and the embedded runOnceForAma) always runs the
+     * full cycle: those entry points exist to *produce* a result on demand —
+     * the signal runner prints the AMA, an operator asks for a fresh cycle —
+     * and returning a state-only "skipped" record with null prices would
+     * quietly degrade their output. Only the long-running daemon, which has a
+     * schedule of its own, may answer "nothing new, skipping".
+     *
+     * The verdict requires the consumed marker to equal the newest closed
+     * bucket exactly. A marker AHEAD of that bucket means the two clocks
+     * disagree (clock skew, a state file carried across hosts, a synthetic
+     * fixture); skipping there would discard a candle the adapter may not
+     * actually have processed, so the conservative answer is always "run".
+     *
+     * Skipped bots still refresh `lastCycleAt`/`lastCycleSource` in state so
+     * monitoring can tell "idle by design" apart from "dead process".
+     */
+    shouldSkipBotForClosedCandle(_bot: any, botState: any, intervalSeconds: any, nowMs: any = this.getNowMs(), cfg: any = null) {
+        if (cfg?.once) return null;
+        if (!botState || typeof botState !== 'object' || Array.isArray(botState)) return null;
+        const latestClosed = this.latestClosedBucketStartMs(intervalSeconds, nowMs);
+        if (latestClosed === null) return null;
+        const previousClosedCandleTs = Number((botState as any).lastClosedCandleTs || 0);
+        // No consumed marker yet (fresh state / cleared state): the full
+        // cycle must run — bootstrap and warmup checks live there.
+        if (!Number.isFinite(previousClosedCandleTs) || previousClosedCandleTs <= 0) return null;
+        if (latestClosed === previousClosedCandleTs) {
+            return { latestClosedBucketStartMs: latestClosed, previousClosedCandleTs };
+        }
+        return null;
+    }
+
+    /**
+     * Does the cached candle file belong to a different market source than the
+     * bot is configured for?
+     *
+     * Single source of truth for the reset rule: the off-hour gate
+     * (candleFileCoversClosedBucket) and the full path must agree, otherwise a
+     * source switch could be skipped off-hour and the cache would keep serving
+     * candles from the old source until the next close forced a full run.
+     * The pool/book cross-checks matter for legacy caches that predate
+     * `meta.marketSource`: a stored pool id alongside a book-configured bot (or
+     * a book cache under a pool bot) is just as much a mismatch.
+     */
+    isCandleSourceMismatch(meta: any, marketSource: any) {
+        const storedSource = normalizeMarketSource(meta?.marketSource);
+        const hasStoredPoolContext = meta?.pool != null && String(meta.pool).trim() !== '';
+        return (!!storedSource && storedSource !== marketSource)
+            || (marketSource === 'book' && hasStoredPoolContext)
+            || (marketSource === 'pool' && storedSource === 'book');
+    }
+
+    /**
+     * Does the local candle cache already hold the data for a closed bucket?
+     *
+     * Second half of the off-hour skip verdict (see
+     * shouldSkipBotForClosedCandle): the full cycle repairs history even
+     * without a new close (Kibana backfill, gap fill), so skipping is only
+     * safe when the cache is healthy for that bucket. False whenever
+     * anything needs repair: a source switch, unresolved gaps, an empty or
+     * short file (fewer candles than the AMA warmup target — the exact case
+     * the backfill path exists for), or a newest candle that predates the
+     * bucket.
+     *
+     * The state-side mirror of the standing conditions (unresolved gaps, warmup
+     * shortfall) is evaluateStateRepairVeto above; keep the two in step.
+     */
+    candleFileCoversClosedBucket(candles: any, meta: any, marketSource: any, closedBucketStartMs: any, requiredCount: any = 0) {
+        if (!Number.isFinite(closedBucketStartMs) || closedBucketStartMs <= 0) return false;
+        if (this.isCandleSourceMismatch(meta, marketSource)) return false;
+        if (Number(meta?.unresolvedGapCount) > 0) return false;
+        if (!Array.isArray(candles) || candles.length === 0) return false;
+        // Short history means the warmup/backfill path still has work to do.
+        const required = Number(requiredCount);
+        if (Number.isFinite(required) && required > 0 && candles.length < required) return false;
+        const newestTs = Number(candles[candles.length - 1]?.[0]);
+        if (!Number.isFinite(newestTs)) return false;
+        return newestTs >= closedBucketStartMs;
+    }
+
     selectClosedCandles(candles: any, intervalSeconds: any, nowMs: any = this.getNowMs()) {
-        const bucketMs = Number(intervalSeconds) * 1000;
-        if (!Number.isFinite(bucketMs) || bucketMs <= 0) {
+        const currentBucketStart = bucketStartMs(nowMs, intervalSeconds);
+        if (currentBucketStart === null) {
             return {
                 closedCandles: Array.isArray(candles) ? candles.slice() : [],
                 currentBucketStartMs: null,
             };
         }
 
-        const currentBucketStartMs = Math.floor(Number(nowMs) / bucketMs) * bucketMs;
         const closedCandles = (Array.isArray(candles) ? candles : [])
-            .filter((c) => Array.isArray(c) && Number.isFinite(c[0]) && c[0] < currentBucketStartMs);
+            .filter((c) => Array.isArray(c) && Number.isFinite(c[0]) && c[0] < currentBucketStart);
 
-        return { closedCandles, currentBucketStartMs };
+        return { closedCandles, currentBucketStartMs: currentBucketStart };
     }
 
     buildBotContextSignature(bot: any){
@@ -1060,9 +1185,76 @@ class MarketAdapterService {
         const existing = readCachedJson(filePath, () => deps.loadJson(filePath, null));
         const existingMeta = existing?.meta && typeof existing.meta === 'object' ? existing.meta : {};
         let existingCandles = Array.isArray(existing?.candles) ? existing.candles : [];
-        const existingMarketSource = normalizeMarketSource(existingMeta.marketSource);
         const marketSource = resolveMarketSourceForBot(bot) || 'pool';
         const isBookSource = marketSource === 'book';
+        // Retention targets, derived from the bot's own AMA parameters. Pure and
+        // local, so they are computed before the off-hour gate below (which
+        // needs the warmup target) and reused by the full path unchanged.
+        const amaWarmupBars = getAmaWarmupBars(
+            botAma.erPeriod,
+            botAma.slowPeriod,
+            lookbackBars,
+            botAma.fastPeriod,
+            botAma.erSmoothPeriod ?? 0
+        );
+        const analysisKeepCount = amaWarmupBars + 1;
+        // Retain one extra raw candle so the closed-candle analysis window still keeps a
+        // full warmup/history set when the newest bucket is the current in-progress bar.
+        const rawKeepCount = analysisKeepCount + 1;
+        // Off-hour skip: the newest closed 1h bucket is already consumed, so
+        // this bot cannot produce a new AMA, trigger, or snapshot this cycle.
+        // Skip BEFORE the stale-tail Kibana verification and the native
+        // overlap fetch below — on a mid-hour restart those are pure waste
+        // (a per-bot RPC fetch, a Kibana round trip, and a ~250 KiB candle
+        // re-serialize) for zero new information. Every input is already
+        // local: persisted state, the candle file we just read, and the wall
+        // clock. Note the chain connection itself is NOT saved here — the
+        // daemon already opened it before runOnce; that socket is closed right
+        // after the cycle, and the startup sleep is what avoids opening one.
+        //
+        // The local candle file is part of the verdict on purpose. The full
+        // cycle also repairs history (Kibana backfill, gap fill) even when no
+        // new candle closed, so a bot whose cache does not yet COVER the
+        // newest closed bucket — short history, unresolved gaps, a source
+        // change — must still run. Only a bot that has demonstrably consumed
+        // that bucket and holds the data for it is skipped.
+        const persistedBotState = (state?.bots && typeof state.bots === 'object')
+            ? state.bots[bot.botKey]
+            : null;
+        const offHourSkip = this.shouldSkipBotForClosedCandle(bot, persistedBotState, cfg.intervalSeconds, undefined, cfg);
+        const offHourSkipCovered = !!offHourSkip && this.candleFileCoversClosedBucket(
+            existingCandles,
+            existingMeta,
+            marketSource,
+            offHourSkip.latestClosedBucketStartMs,
+            rawKeepCount
+        );
+        if (offHourSkip && offHourSkipCovered) {
+            const skipNowIso = new Date().toISOString();
+            const skipThreshold = typeof deps.calculateBotThreshold === 'function'
+                ? deps.calculateBotThreshold(cfg)
+                : null;
+            const skippedState = {
+                ...(persistedBotState && typeof persistedBotState === 'object' ? persistedBotState : {}),
+                botName: bot.name,
+                botKey: bot.botKey,
+                lastCycleSource: 'off-hour-skip',
+                lastCycleAt: skipNowIso,
+                pendingClosedCandle: true,
+                lastTriggerSuppressedReason: 'waiting_for_new_closed_candle',
+            };
+            state.bots[bot.botKey] = skippedState;
+            return this.buildDefaultResult(bot, {
+                dryRunMessages,
+                source: 'off-hour-skip',
+                thresholdPercent: skipThreshold,
+                triggerSuppressedReason: 'waiting_for_new_closed_candle',
+                lastCandleTs: (persistedBotState as any)?.lastCandleTs ?? null,
+                rawLastCandleTs: (persistedBotState as any)?.rawLastCandleTs ?? null,
+                lastClosedCandleTs: offHourSkip.previousClosedCandleTs || null,
+                pendingClosedCandle: true,
+            });
+        }
         const kibanaRequestTimeoutMs = Number.isFinite(cfg.kibanaRequestTimeoutMs) && cfg.kibanaRequestTimeoutMs > 0
             ? cfg.kibanaRequestTimeoutMs
             : MARKET_ADAPTER.KIBANA_REQUEST_TIMEOUT_MS;
@@ -1176,10 +1368,7 @@ class MarketAdapterService {
             applyStaleTailVerificationMeta(verified);
         }
 
-        const hasStoredPoolContext = existingMeta.pool != null && String(existingMeta.pool).trim() !== '';
-        const sourceMismatch = (existingMarketSource && existingMarketSource !== marketSource)
-            || (marketSource === 'book' && hasStoredPoolContext)
-            || (marketSource === 'pool' && existingMarketSource === 'book');
+        const sourceMismatch = this.isCandleSourceMismatch(existingMeta, marketSource);
         if (sourceMismatch) {
             existingCandles = [];
             existingMeta.nativeRecentTradeSequences = [];
@@ -1189,17 +1378,6 @@ class MarketAdapterService {
         }
 
         const needBootstrap = existingCandles.length === 0;
-        const amaWarmupBars = getAmaWarmupBars(
-            botAma.erPeriod,
-            botAma.slowPeriod,
-            lookbackBars,
-            botAma.fastPeriod,
-            botAma.erSmoothPeriod ?? 0
-        );
-        const analysisKeepCount = amaWarmupBars + 1;
-        // Retain one extra raw candle so the closed-candle analysis window still keeps a
-        // full warmup/history set when the newest bucket is the current in-progress bar.
-        const rawKeepCount = analysisKeepCount + 1;
         const nowIso = new Date().toISOString();
         const botThreshold = deps.calculateBotThreshold(cfg);
         if (!Number.isFinite(botThreshold) || botThreshold <= 0) {
@@ -2569,5 +2747,5 @@ class MarketAdapterService {
     }
 }
 
-export { MarketAdapterService, AMA_SLOPE_PERCENT_MODE_PER_BAR, normalizeAmaSlopePercentMode, convertSlopePercentToPerBar }
+export { MarketAdapterService, AMA_SLOPE_PERCENT_MODE_PER_BAR, normalizeAmaSlopePercentMode, convertSlopePercentToPerBar, evaluateStateRepairVeto }
 

@@ -13,7 +13,7 @@ import { normalizeBotEntry } from '../modules/bot_settings.js';
 import * as kibanaSource from './inputs/kibana_source.js';
 import * as kibanaMarketSource from './core/kibana_market_candles.js';
 import { tradesToCandles, detectMissingCandleTimestamps, fillCandleGaps, detectStaleTail, pruneStaleTail, mergeCandles } from './candle_utils.js';
-import { toIntervalLabel } from './interval_utils.js';
+import { toIntervalLabel, bucketStartMs, latestClosedBucketStartMs } from './interval_utils.js';
 import { loadMarketProfiles } from '../analysis/tradingview/tradingview_uplot_chart_generator.js';
 import { candleFileForBot as candleFilePathForLabel } from '../analysis/bot_key_utils.js';
 import { writeJsonAtomic } from './utils/atomic_write.js';
@@ -465,11 +465,196 @@ function pairAmaKey(key: any, preset: any) {
 }
 
 function sleepUntilAlignedBoundary(pollSeconds: number, referenceNowMs: any = Date.now(), nowMs: any = Date.now()) {
-    const intervalMs = Math.max(1, Math.floor(Number(pollSeconds) || 0)) * 1000;
+    const normalizedPollSeconds = Math.max(1, Math.floor(Number(pollSeconds) || 0));
+    const intervalMs = normalizedPollSeconds * 1000;
     const bufferMs = 1000;
-    const targetBoundaryMs = Math.floor(Number(referenceNowMs) / intervalMs) * intervalMs + intervalMs;
+    // The bucket containing the reference instant; its immediate successor is
+    // the boundary to align to. Shared bucket helper keeps this on the same
+    // grid as the closed-candle gate and the startup sleep.
+    const referenceBucketMs = bucketStartMs(referenceNowMs, normalizedPollSeconds);
+    // null (unusable reference clock/interval) means "do not wait": treat the
+    // reference as the first boundary, so the delay collapses to the buffer
+    // floor below. Never interpret it as an extra period, which would postpone
+    // a cycle instead of running it.
+    const targetBoundaryMs = (referenceBucketMs === null ? 0 : referenceBucketMs) + intervalMs;
     const delayMs = targetBoundaryMs - Number(nowMs) + bufferMs;
     return Math.max(bufferMs, delayMs);
+}
+
+/**
+ * Sleep-first startup decision for the daemon.
+ *
+ * Returns `{ delayMs, veto }`: `delayMs` is how long to wait before the first
+ * cycle (0 = run a catch-up cycle now); `veto` is null when the adapter may
+ * sleep, otherwise `{ reason, botKeys }` saying why not. The wait uses the
+ * SAME poll boundary the loop aligns to (sleepUntilAlignedBoundary with
+ * cfg.pollSeconds, default 3600s), so the timing setting is honoured, not
+ * hardcoded.
+ *
+ * `veto` is non-null — and `delayMs` 0 — when:
+ * - state is fresh/empty (first run, cleared state — bootstrap lives in the
+ *   cycle),
+ * - no in-scope bot has a consumed closed-candle marker yet,
+ * - ANY in-scope bot's consumed marker is not exactly the newest closed bucket
+ *   (older = that bot still owes a cycle; newer = the clocks disagree, so do
+ *   not trust the marker). Evaluated per bot, never aggregated: one lagging
+ *   bot is invisible behind a max() over the others, and that bot is exactly
+ *   what a catch-up cycle is for.
+ * - the candle interval is not the poll cadence, or the clock cannot be
+ *   evaluated,
+ * - an active bot's last cycle left repair work still outstanding
+ *   (unresolved gaps, or a cache shorter than its own warmup target),
+ * - an active bot has never been processed (no state row, or no consumed
+ *   marker) — its bootstrap is still owed,
+ * - the active bot list cannot be read (then every state entry counts).
+ *
+ * The interval guard matters: the newest closed bucket is computed on the
+ * poll grid, while the markers in state are candle-bucket starts. With a
+ * mismatch (e.g. 2h candles polled hourly) the two grids only coincide by
+ * accident, and "coincide" here would delay a real cycle by up to one poll
+ * period. Refuse to sleep unless the grids are identical, i.e. unless one
+ * cycle per poll actually is one cycle per candle.
+ *
+ * One grid for every bot is correct because `intervalSeconds` is not in the
+ * per-pair/per-bot override whitelist, so all bots in a cycle share a bucket
+ * size. If that ever changes, the comparison has to become per bot.
+ *
+ * Otherwise it returns the wait until the next poll boundary. Mid-hour
+ * respawns (the common case: wrapper restart, crash recovery) therefore sleep
+ * instead of running a full cycle that the closed-candle gate would discard
+ * anyway. That wait is always shorter than one poll period, so at most one
+ * boundary is ever passed over: a candle that closes during the sleep is
+ * picked up by the very next cycle, never skipped.
+ *
+ * Only entries for bots the adapter would actually process are considered
+ * (activeBotKeys). A removed bot's leftover row, or a fixed-price bot, must
+ * not be able to defeat the sleep for everyone else — such an entry either
+ * has no marker at all or a marker that is months old. An active bot with NO
+ * row is treated exactly like an active bot with a row but no marker: both owe
+ * a bootstrap, so both veto the sleep and that bot goes live on the next cycle
+ * rather than up to a poll period later.
+ *
+ * Repair work is judged from the state entry, which records how the previous
+ * cycle ended. Two of its fields are deliberately distinguished:
+ *
+ * - `unresolvedGapCount` is a STANDING condition — it is measured on the final
+ *   candle set, so a non-zero value means gaps are still missing right now.
+ * - `candleCount < rawKeepCount` is standing too: the cache has not reached
+ *   the bot's own warmup target.
+ *
+ * `kibanaBackfillCount` is deliberately NOT consulted. It is an action count —
+ * how many candles the last completed cycle happened to fetch — and that cycle
+ * already applied them. A non-zero value means "repair was needed and was
+ * done", not "repair is owed". Because a skip carries the persisted entry
+ * forward, treating it as outstanding would keep vetoing the sleep after every
+ * backfill until some full cycle happened to rewrite the field with a zero.
+ * Cache shortness is the real signal, and it is checked directly above. The
+ * standing verdict is computed by evaluateStateRepairVeto in
+ * market_adapter_service.ts, immediately before the candle-file mirror
+ * (candleFileCoversClosedBucket), so a new standing signal is added once.
+ *
+ * None of this can see a config change made after that cycle (a grown AMA
+ * window, for instance): the backfill for that is then deferred to the next
+ * boundary, bounded by one poll period. Reading the state entry costs no extra
+ * I/O — no candle file is re-read and no connection is opened (the startup
+ * decision reads bots.json to build the active list, and each cycle reads it
+ * again).
+ *
+ * Known consequence of the "active bot with no row vetoes" rule: an active bot
+ * that can never reach a state write (unresolvable market, persistent
+ * pre-persist failure) keeps the sleep disabled for the whole daemon. That is
+ * intentional and fail-safe — healthy bots still take the in-cycle off-hour
+ * skip, so only the startup sleep is lost — and the veto is reported with its
+ * reason and bot keys so the situation is visible instead of silent.
+ */
+function evaluateStartupSleep(cfg: any, state: any, nowMs: any = Date.now(), activeBotKeys: any = null) {
+    const vetoes: { [reason: string]: string[] } = {};
+    const veto = (reason: string, key?: any) => {
+        if (key == null) return;
+        if (!vetoes[reason]) vetoes[reason] = [];
+        vetoes[reason].push(key);
+    };
+    // Whole-fleet refusals: the condition is about the configuration or the
+    // inputs, not about a particular bot, so there is nothing to attribute and
+    // botKeys stays empty. Per-bot refusals are collected in `vetoes` by the
+    // loop below and returned with their bot list. Deliberately NOT reading
+    // `vetoes[reason]` here — that would silently return another bot's keys if
+    // a denied() call were ever made after the loop has populated it.
+    const denied = (reason: string) => ({ delayMs: 0, veto: { reason, botKeys: [] as string[] } });
+
+    // Deliberate normalization asymmetry: pollSeconds is clamped to >=1 because
+    // it is the grid the sleep aligns to, while intervalSeconds is left as a
+    // bare floor so an invalid interval (0, negative, NaN) can NEVER equal the
+    // clamped poll value and therefore always takes interval_mismatch below —
+    // i.e. runs a catch-up cycle. Do not "simplify" by clamping both: that
+    // would let an unconfigured interval match and authorize a sleep on a grid
+    // the persisted markers were not written on.
+    const pollSeconds = Math.max(1, Math.floor(Number(cfg?.pollSeconds) || 0));
+    const intervalSeconds = Math.floor(Number(cfg?.intervalSeconds) || 0);
+    if (intervalSeconds !== pollSeconds) return denied('interval_mismatch');
+    const now = Number(nowMs);
+    if (!Number.isFinite(now) || now <= 0) return denied('clock_unusable');
+    const bots = state?.bots;
+    if (!bots || typeof bots !== 'object') return denied('state_unusable');
+    // An empty active-bot list means the adapter has nothing to do; do not
+    // interpret it as "unknown scope" and fall back to scanning every row.
+    if (Array.isArray(activeBotKeys) && activeBotKeys.length === 0) return denied('no_active_bots');
+    // Newest fully closed bucket: its start. A cycle that consumed it has
+    // done all the work available until the next bucket closes. Shared helper
+    // so the startup sleep and the in-cycle gate agree by construction.
+    const latestClosed = latestClosedBucketStartMs(now, pollSeconds);
+    if (latestClosed === null) return denied('clock_unusable');
+    // With a known active set, every one of those bots is judged on its own.
+    // Unknown set (bot list unreadable) falls back to the state rows present.
+    const scope = Array.isArray(activeBotKeys) ? activeBotKeys : Object.keys(bots);
+    if (scope.length === 0) return denied('no_state_rows');
+
+    for (const key of scope) {
+        const entry = (bots as any)[key];
+        // An active bot with no state row at all still owes its first cycle.
+        if (!entry || typeof entry !== 'object') {
+            veto('no_state_row', key);
+            continue;
+        }
+        const consumed = Number(entry.lastClosedCandleTs || 0);
+        // No consumed marker yet: this bot still owes a bootstrap/warmup cycle.
+        if (!Number.isFinite(consumed) || consumed <= 0) {
+            veto('no_consumed_marker', key);
+            continue;
+        }
+        // Per bot, never aggregated across bots: one lagging bot is exactly the
+        // reason a catch-up cycle is needed, and a max() would hide it.
+        if (consumed !== latestClosed) {
+            veto(consumed < latestClosed ? 'behind_latest_closed_candle' : 'marker_ahead_of_clock', key);
+            continue;
+        }
+        // Standing repair conditions, as measured by the previous cycle. Shared
+        // with candleFileCoversClosedBucket's state-side mirror so the two gates
+        // cannot drift apart.
+        const repairReason = evaluateStateRepairVeto(entry);
+        if (repairReason) {
+            veto(repairReason, key);
+            continue;
+        }
+    }
+
+    if (Object.keys(vetoes).length > 0) {
+        // Every distinct reason is reported, so a permanent veto (an active bot
+        // that can never be persisted) is diagnosable from the log alone.
+        const reason = Object.keys(vetoes).sort().join('+');
+        return { delayMs: 0, veto: { reason, botKeys: [...new Set(Object.values(vetoes).flat())] } };
+    }
+    return { delayMs: sleepUntilAlignedBoundary(pollSeconds, now, now), veto: null };
+}
+
+/**
+ * Numeric form of evaluateStartupSleep: the wait before the daemon's first
+ * cycle, or 0 to run a catch-up cycle now. The decision rules — and the reasons
+ * it can refuse — are documented there; this wrapper exists so callers that
+ * only need the wait do not have to unpack a verdict object.
+ */
+function computeStartupDelayMs(cfg: any, state: any, nowMs: any = Date.now(), activeBotKeys: any = null) {
+    return evaluateStartupSleep(cfg, state, nowMs, activeBotKeys).delayMs;
 }
 
 function withRetries(fn: () => Promise<any>, attempts: number, baseDelayMs: number, label: string) {
@@ -1112,6 +1297,7 @@ import {
     AMA_SLOPE_PERCENT_MODE_PER_BAR,
     normalizeAmaSlopePercentMode,
     convertSlopePercentToPerBar,
+    evaluateStateRepairVeto,
 } from './core/market_adapter_service.js';
 import { getErrorMessage } from '../modules/utils/errors.js';
 const adapterService = new MarketAdapterService({
@@ -1246,6 +1432,19 @@ async function runOnce(cfg: any, state: any, contextCache: any) {
                     botKey: bot.botKey,
                     ok: false,
                     reason: r.reason,
+                });
+                continue;
+            }
+
+            // Off-hour skip: nothing to compute, so log one compact line
+            // instead of the full signal block (which would print n/a for
+            // every field and bury the hourly cycle in noise).
+            if (r.source === 'off-hour-skip') {
+                log(cfg, `skip (no new closed candle, last processed ${Number.isFinite(r.lastClosedCandleTs) ? new Date(r.lastClosedCandleTs).toISOString() : 'n/a'})`);
+                results.push({
+                    botName: bot.name,
+                    botKey: bot.botKey,
+                    ...r,
                 });
                 continue;
             }
@@ -1434,6 +1633,53 @@ async function main() {
             return 0;
         }
 
+        // Read state before the sleep: the lock guarantees no other adapter can
+        // rewrite it in the meantime, and the same object is then used by the
+        // first cycle, so the file is parsed exactly once per start.
+        const state = loadJson(STATE_FILE, { meta: {}, bots: {} });
+        const contextCache = new Map();
+
+        // Sleep-first startup, decided BEFORE the first connection: a respawned
+        // daemon (wrapper restart, crash recovery, manual start) must not run a
+        // full cycle immediately — mid-hour that cycle can only hit the
+        // closed-candle gate after paying the chain handshake + per-bot native
+        // fetch. Instead, align to the SAME boundary the loop uses
+        // (pollSeconds, default 3600s) and only run early when some active bot
+        // still owes a cycle.
+        //
+        // Ordering matters: connecting first and sleeping afterwards would hold
+        // an idle socket for the whole hour, which is exactly what the
+        // per-cycle connect/disconnect below exists to avoid. The lock is
+        // already held (and its heartbeat is unref'd but armed), so a sleeping
+        // adapter still looks alive to the watchdog, which decides staleness by
+        // holder liveness rather than by lock age.
+        if (!cfg.once) {
+            // Only bots the adapter would actually process may veto the sleep:
+            // a removed bot's leftover state row (or a fixed-price bot) must
+            // not force a full cycle on every restart. If the bot list cannot be
+            // read, every state row is judged instead (conservative).
+            let activeAmaBotKeys = null;
+            try {
+                activeAmaBotKeys = loadActiveBots()
+                    .filter((bot: any) => usesAmaGridPrice(bot))
+                    .map((bot: any) => bot.botKey);
+            } catch (_: any) {
+                activeAmaBotKeys = null;
+            }
+            const verdict = evaluateStartupSleep(cfg, state, Date.now(), activeAmaBotKeys);
+            if (verdict.delayMs > 0) {
+                log(cfg, `Startup: every active bot consumed the newest closed candle and no repair is outstanding — sleeping ${(verdict.delayMs / 1000).toFixed(0)}s until the next ${cfg.pollSeconds}s boundary (no connection held).`);
+                await sleep(verdict.delayMs);
+            } else {
+                // Name the reason and the bots: a veto caused by one
+                // unprocessable bot would otherwise look like "the adapter just
+                // never sleeps" with nothing in the log to explain it.
+                const v = verdict.veto || { reason: 'unknown', botKeys: [] };
+                const who = v.botKeys.length > 0 ? ` [${v.botKeys.join(', ')}]` : '';
+                log(cfg, `Startup: running a catch-up cycle now — ${v.reason}${who}.`);
+            }
+        }
+
         {
             const maxRetries = 5;
             let lastErr = null;
@@ -1458,9 +1704,6 @@ async function main() {
             }
         }
         log(cfg, 'Connected to BitShares');
-
-        const state = loadJson(STATE_FILE, { meta: {}, bots: {} });
-        const contextCache = new Map();
 
         if (cfg.once) {
             const run = await runOnce(cfg, state, contextCache);
@@ -1493,6 +1736,17 @@ async function main() {
                 disconnectClient();
             } catch (_: any) {}
 
+            const cycleMs = Date.now() - started;
+            const pollMs = Math.max(1, Number(cfg.pollSeconds) || 0) * 1000;
+            if (cycleMs >= pollMs) {
+                // The cadence is slipping: this cycle alone consumed a full
+                // period, so the next one starts immediately (1000ms floor) and
+                // the backlog drains one cycle at a time. Surfaced explicitly,
+                // because a silent backlog is indistinguishable from an adapter
+                // that "runs every hour" in the log.
+                logger.warn(`Cycle took ${(cycleMs / 1000).toFixed(0)}s, at or beyond the ${cfg.pollSeconds}s poll period — running the next cycle immediately to catch up.`);
+            }
+
             const sleepMs = sleepUntilAlignedBoundary(cfg.pollSeconds, started, Date.now());
             await sleep(sleepMs);
         }
@@ -1510,5 +1764,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         });
 }
 
-export { main, runOnceForAma, DEFAULT_AMA, DEFAULTS, calculateBotThreshold, buildAmaRecord, computeCandleStaleness, normalizeMarketSource, sleepUntilAlignedBoundary, resolveAmaForBot, resolveDeltaThresholdPercentFromGeneralSettings, resolveAmaSlopeDeltaThresholdPercentFromGeneralSettings, applyRuntimeDefaultsFromGeneralSettings, resolveBotCfg, usesAmaGridPrice, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, _resetCycleCache, writeCenterSnapshot, writeBotDynamicGrid, writeGridResetTrigger, mergeGridResetMetadataFromDynamicGrid, normalizeNativeMarketHistoryCandles, fetchNativeMarketHistorySince, setBitsharesClientForTests as _setBitsharesClientForTests, loadMarketAdapterSettings, findPairForBot }
+export { main, runOnceForAma, DEFAULT_AMA, DEFAULTS, calculateBotThreshold, buildAmaRecord, computeCandleStaleness, normalizeMarketSource, sleepUntilAlignedBoundary, computeStartupDelayMs, evaluateStartupSleep, resolveAmaForBot, resolveDeltaThresholdPercentFromGeneralSettings, resolveAmaSlopeDeltaThresholdPercentFromGeneralSettings, applyRuntimeDefaultsFromGeneralSettings, resolveBotCfg, usesAmaGridPrice, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, _resetCycleCache, writeCenterSnapshot, writeBotDynamicGrid, writeGridResetTrigger, mergeGridResetMetadataFromDynamicGrid, normalizeNativeMarketHistoryCandles, fetchNativeMarketHistorySince, setBitsharesClientForTests as _setBitsharesClientForTests, loadMarketAdapterSettings, findPairForBot }
 

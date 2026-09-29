@@ -292,6 +292,33 @@ Pair-specific AMA profiles live in `profiles/market_profiles.json`:
 }
 ```
 
+## Off-Hour Idle Behavior
+
+The adapter only has work once per closed candle, so it stays quiet in between:
+
+| Phase | Behavior |
+|-------|----------|
+| Startup | **Sleep-first, before any connection.** A respawned daemon checks whether every active AMA bot already consumed the newest closed candle; if so it sleeps to the next `pollSeconds` boundary (default 3600) without opening a socket, otherwise a catch-up cycle runs immediately. |
+| Per bot, per cycle | **Closed-bucket gate before any fetch.** If the bot already consumed the newest closed bucket and its candle cache covers it (right source, no unresolved gaps, warmup target met), the bot is skipped before the native overlap fetch, the Kibana stale-tail check, and the candle re-serialize. |
+| Between cycles | The BitShares socket is torn down after every cycle; the process sleeps with only an unref'd lock heartbeat. |
+
+Both gates fail **open**: any input they cannot evaluate — fresh or unusable state, an interval that differs from the poll cadence (e.g. 2h candles polled hourly), a marker ahead of the clock (clock skew), an active bot with no row or no consumed marker (bootstrap owed), a bot whose last cycle left repair outstanding (`unresolvedGapCount > 0`, or `candleCount < rawKeepCount`, including an unknown count next to a known target) — runs the full cycle instead. Per-bot verdicts are never aggregated, so one lagging bot triggers a catch-up for everyone, and the veto is logged with its reason and bot keys:
+
+```
+Startup: running a catch-up cycle now — no_state_row [broken-bot].
+```
+
+Only bots the adapter would actually process are in scope, so a removed bot's leftover state row cannot keep the daemon awake. `kibanaBackfillCount`/`kibanaGapRepairCount` are deliberately ignored: they are action counts from a cycle that already applied its repair, not owed work.
+
+Two deliberate trade-offs:
+
+- An active bot that can *never* write state (unresolvable market, persistent pre-persist failure) disables the startup sleep for the whole daemon indefinitely — fail-safe by design, since healthy bots still take the per-bot skip; fixing or deactivating the bot restores the sleep.
+- A config change made *after* the last cycle (e.g. a grown AMA window) waits for the next boundary. That backfill is bounded by one poll period, and no candle can close while the adapter sleeps, so no market value is ever late.
+
+One-shot entry points (`--once`, and `runOnceForAma` behind `ama_signal_runner`) always run a full cycle — they exist to produce a computed AMA on demand, not a state-only "skipped" record with null prices.
+
+Skipped work is visible in state: skipped bots record `lastCycleSource: "off-hour-skip"` with a fresh `lastCycleAt`, so monitoring can tell an idle-by-design adapter from a dead process. A skip record is a last-known snapshot, not an epoch reset: `amaPrice`, `amaCenterPrice`, `lastCandleTs` and the other data fields keep the values from the last full cycle, and only `lastCycleSource`/`lastCycleAt`/`pendingClosedCandle`/`lastTriggerSuppressedReason` are refreshed. Between-cycle consumers therefore read the most recent computed values rather than a hole.
+
 ## Live Writes and Dry-Run
 
 The whitelist controls what the adapter may write. Non-whitelisted bots are
@@ -980,6 +1007,7 @@ Important fields in `market_adapter/state/market_adapter_state.json`:
 | Field | Meaning |
 |-------|---------|
 | `meta.updatedAt` | Last completed adapter cycle (ISO timestamp) |
+| `lastCycleSource` | How the last cycle ended the bot: a fetch source (`native-incremental-overlap`, `kibana-backfill`, …) or `off-hour-skip` when the closed-candle gate skipped the work |
 | `meta.metrics.processedBots` | Number of bots evaluated this cycle |
 | `meta.metrics.durationMs` | Cycle wall-clock duration in milliseconds |
 | `lastCycleAt` | Last cycle timestamp for a bot |

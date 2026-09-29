@@ -12,6 +12,8 @@ import {
     writeBotDynamicGrid,
     writeGridResetTrigger,
     sleepUntilAlignedBoundary,
+    computeStartupDelayMs,
+    evaluateStartupSleep,
 } from './market_adapter.js';
 
 import {
@@ -20,5 +22,5 @@ import {
     resolveMarketSourceForBot,
 } from './utils/chain.js';
 
-export { writeCenterSnapshot, writeBotDynamicGrid, writeGridResetTrigger, sleepUntilAlignedBoundary, resolveMarketSourceForBot, resolveAsset, resolveBotContext }
+export { writeCenterSnapshot, writeBotDynamicGrid, writeGridResetTrigger, sleepUntilAlignedBoundary, computeStartupDelayMs, evaluateStartupSleep, resolveMarketSourceForBot, resolveAsset, resolveBotContext }
 

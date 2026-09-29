@@ -18,7 +18,7 @@ const { calculateAMA, getAmaWarmupBars } = require('../market_adapter/core/strat
 const { KalmanTrendAnalyzer } = require('../analysis/trend_detection/kalman_trend_analyzer');
 const { buildKalmanVelocitySeries, computeAbsolutePercentileThreshold } = require('../analysis/trend_detection/kalman_velocity_smoothing');
 const { computeDynamicWeightSeries } = require('../market_adapter/core/strategies/dynamic_weight_series');
-const { sleepUntilAlignedBoundary } = require('../market_adapter/test_helpers');
+const { sleepUntilAlignedBoundary, computeStartupDelayMs, evaluateStartupSleep } = require('../market_adapter/test_helpers');
 const { roundToDecimals } = require('../modules/order/utils/math');
 
 function generateCandles(count, price) {
@@ -4343,6 +4343,344 @@ function testSleepUntilAlignedBoundaryAnchorsToCycleStart() {
     assert.strictEqual(midCycleDelay, 2401000, 'sleep should still target the next aligned boundary from the cycle start');
 }
 
+function testComputeStartupDelayMsHonorsPollBoundary() {
+    const pollSeconds = 3600;
+    const cfg = { pollSeconds, intervalSeconds: pollSeconds };
+    // Mid-hour respawn: 24 minutes into the hour, previous cycle consumed the
+    // newest closed bucket (23:00).
+    const now = Date.parse('2026-09-28T00:24:30.000Z');
+    const current = { bots: { 'aaa-bbb': { lastClosedCandleTs: Date.parse('2026-09-27T23:00:00.000Z') } } };
+
+    const delay = computeStartupDelayMs(cfg, current, now);
+    assert.strictEqual(
+        delay,
+        sleepUntilAlignedBoundary(pollSeconds, now, now),
+        'a current state must sleep to the same aligned boundary the loop uses'
+    );
+    assert.ok(delay > 0 && delay <= pollSeconds * 1000, 'sleep must never exceed one poll period');
+
+    // Behind (adapter was down during its slot) → catch up immediately.
+    const behind = { bots: { 'aaa-bbb': { lastClosedCandleTs: Date.parse('2026-09-27T22:00:00.000Z') } } };
+    assert.strictEqual(computeStartupDelayMs(cfg, behind, now), 0, 'a missed cycle must run a catch-up cycle at once');
+
+    // Fresh / cleared / unusable state → bootstrap now, never sleep.
+    assert.strictEqual(computeStartupDelayMs(cfg, { bots: {} }, now), 0, 'empty state must bootstrap immediately');
+    assert.strictEqual(computeStartupDelayMs(cfg, null, now), 0, 'missing state must bootstrap immediately');
+    assert.strictEqual(
+        computeStartupDelayMs(cfg, { bots: { 'aaa-bbb': {} } }, now),
+        0,
+        'state without a consumed marker must bootstrap immediately'
+    );
+
+    // Marker ahead of the wall clock: clocks disagree, so do not trust it.
+    const ahead = { bots: { 'aaa-bbb': { lastClosedCandleTs: Date.parse('2026-09-27T23:00:00.000Z') + 3600000 } } };
+    assert.strictEqual(computeStartupDelayMs(cfg, ahead, now), 0, 'a marker ahead of the clock must run, not sleep');
+
+    // A deleted bot's stale state entry is ignored when the active set is
+    // known (the daemon always passes it). Without an active set we cannot
+    // tell a removed bot from a lagging one, so every row is judged and the
+    // old marker vetoes — conservative, and never wrong.
+    const withStaleEntry = {
+        bots: {
+            'deleted-bot': { lastClosedCandleTs: Date.parse('2026-06-01T00:00:00.000Z') },
+            'aaa-bbb': { lastClosedCandleTs: Date.parse('2026-09-27T23:00:00.000Z') },
+        },
+    };
+    assert.ok(
+        computeStartupDelayMs(cfg, withStaleEntry, now, ['aaa-bbb']) > 0,
+        'an older entry for a removed bot must not defeat the sleep-first path'
+    );
+    assert.strictEqual(
+        computeStartupDelayMs(cfg, withStaleEntry, now, null),
+        0,
+        'without an active bot set, a stale row is indistinguishable from a lagging bot and must veto'
+    );
+
+    // The poll setting is honoured, not hardcoded: a 10-minute cadence sleeps
+    // within 10 minutes.
+    const shortPoll = computeStartupDelayMs(
+        { pollSeconds: 600, intervalSeconds: 600 },
+        { bots: { 'aaa-bbb': { lastClosedCandleTs: Math.floor(now / 600000) * 600000 - 600000 } } },
+        now
+    );
+    assert.ok(shortPoll > 0 && shortPoll <= 600 * 1000, 'a 10-minute poll must sleep at most 10 minutes');
+}
+
+function testStartupSleepIsPerBotNeverAggregated() {
+    // A max() over the bots hides a lagging one behind a current sibling, and
+    // that lagging bot is exactly what a catch-up cycle exists for: runOnce
+    // leaves its marker un-advanced after a per-bot failure, so a closed
+    // candle can already be waiting for it.
+    const pollSeconds = 3600;
+    const cfg = { pollSeconds, intervalSeconds: pollSeconds };
+    const now = Date.parse('2026-09-28T00:24:30.000Z'); // newest closed bucket 23:00
+    const current = Date.parse('2026-09-27T23:00:00.000Z');
+    const hour = 3600000;
+    const clean = (ts: number) => ({ lastClosedCandleTs: ts, candleCount: 1800, rawKeepCount: 1800, unresolvedGapCount: 0 });
+
+    const mixed = { bots: { 'a-current': clean(current), 'b-behind': clean(current - hour) } };
+    assert.strictEqual(
+        computeStartupDelayMs(cfg, mixed, now, ['a-current', 'b-behind']),
+        0,
+        'one lagging bot must veto the sleep even when a sibling is current'
+    );
+    assert.ok(
+        computeStartupDelayMs(cfg, mixed, now, ['a-current']) > 0,
+        'a fleet where every bot is current may still sleep'
+    );
+
+    // A marker ahead of the clock is equally a veto, and is reported apart.
+    const ahead = evaluateStartupSleep(cfg, { bots: { 'a-skewed': clean(current + hour) } }, now, ['a-skewed']);
+    assert.strictEqual(ahead.delayMs, 0, 'a marker ahead of the clock must run');
+    assert.strictEqual(ahead.veto?.reason, 'marker_ahead_of_clock', 'skew must be distinguishable from lagging');
+
+    const behind = evaluateStartupSleep(cfg, mixed, now, ['a-current', 'b-behind']);
+    assert.strictEqual(behind.veto?.reason, 'behind_latest_closed_candle', 'lagging must be named in the veto');
+    assert.deepStrictEqual(behind.veto?.botKeys, ['b-behind'], 'the veto must name the bot that caused it');
+
+    // Several distinct problems are all reported, so a permanent veto is
+    // diagnosable from the log instead of looking like "never sleeps".
+    const messy = {
+        bots: {
+            'a-current': clean(current),
+            'b-behind': clean(current - hour),
+            'c-gaps': { ...clean(current), unresolvedGapCount: 2 },
+        },
+    };
+    const verdict = evaluateStartupSleep(cfg, messy, now, ['a-current', 'b-behind', 'c-gaps', 'd-new']);
+    assert.strictEqual(verdict.delayMs, 0, 'any outstanding problem vetoes the sleep');
+    assert.strictEqual(
+        verdict.veto?.reason,
+        'behind_latest_closed_candle+no_state_row+unresolved_gaps',
+        'all distinct reasons must be reported, in a stable order'
+    );
+    assert.deepStrictEqual(
+        verdict.veto?.botKeys.sort(),
+        ['b-behind', 'c-gaps', 'd-new'],
+        'every offending bot must be named once'
+    );
+
+    // Whole-fleet refusals carry NO bot list: the condition is about config or
+    // inputs, not a bot. A per-bot reason must never inherit another bot's
+    // keys, so the two shapes stay distinguishable. One case per denied() call
+    // site, each with the inputs that actually reach it.
+    const goodState = { bots: { 'a-current': clean(current) } };
+    const fleetCases: any[] = [
+        ['interval_mismatch', { pollSeconds: 3600, intervalSeconds: 7200 }, goodState, now, ['a-current']],
+        ['clock_unusable', cfg, goodState, NaN, ['a-current']],
+        ['state_unusable', cfg, null, now, ['a-current']],
+        ['no_active_bots', cfg, goodState, now, []],
+        // Only reachable on the unreadable-bot-list fallback (null scope) with
+        // an empty state: an empty list is caught earlier by no_active_bots.
+        ['no_state_rows', cfg, { bots: {} }, now, null],
+    ];
+    assert.strictEqual(
+        fleetCases.length,
+        5,
+        'every denied() call site must be covered: adding one without a case here is a silent gap'
+    );
+    for (const [reason, caseCfg, caseState, caseNow, caseKeys] of fleetCases) {
+        const fleet = evaluateStartupSleep(caseCfg, caseState, caseNow, caseKeys);
+        assert.strictEqual(fleet.delayMs, 0, `${reason} must run a catch-up cycle`);
+        assert.strictEqual(fleet.veto?.reason, reason, `${reason} must be reported as itself`);
+        assert.deepStrictEqual(fleet.veto?.botKeys, [], `${reason} is a fleet-level refusal and must name no bot`);
+    }
+}
+
+function testStartupSleepIgnoresInactiveStateRows() {
+    const pollSeconds = 3600;
+    const cfg = { pollSeconds, intervalSeconds: pollSeconds };
+    const now = Date.parse('2026-09-28T00:24:30.000Z');
+    const current = Date.parse('2026-09-27T23:00:00.000Z');
+    const healthy = { lastClosedCandleTs: current, candleCount: 1800, rawKeepCount: 1800, unresolvedGapCount: 0 };
+
+    // A removed bot whose row has no marker at all (never bootstrapped, or a
+    // cleared state entry) must not veto the sleep for the live bots.
+    const withMarkerlessGhost = {
+        bots: {
+            'removed-bot': { botName: 'Removed' },
+            'aaa-bbb': healthy,
+        },
+    };
+    assert.ok(
+        computeStartupDelayMs(cfg, withMarkerlessGhost, now, ['aaa-bbb']) > 0,
+        'a markerless row for a bot that is no longer active must not defeat the sleep'
+    );
+
+    // Without an active bot list (unreadable bots.json) every row counts again.
+    assert.strictEqual(
+        computeStartupDelayMs(cfg, withMarkerlessGhost, now, null),
+        0,
+        'an unknown active set must stay conservative'
+    );
+
+    // An active bot that has never run — with or without a state row — owes a
+    // bootstrap, so it vetoes the sleep and goes live on the next cycle.
+    assert.strictEqual(
+        computeStartupDelayMs(cfg, { bots: { 'aaa-bbb': { botName: 'AAA-BBB' } } }, now, ['aaa-bbb']),
+        0,
+        'an active bot without a consumed marker must run now'
+    );
+    assert.strictEqual(
+        computeStartupDelayMs(cfg, { bots: { 'aaa-bbb': healthy } }, now, ['aaa-bbb', 'brand-new-bot']),
+        0,
+        'a brand-new active bot with no state row must run now, same as a markerless row'
+    );
+    assert.strictEqual(
+        computeStartupDelayMs(cfg, { bots: { 'aaa-bbb': healthy } }, now, []),
+        0,
+        'an empty active set means nothing to do, not an unknown scope'
+    );
+}
+
+function testStartupSleepDefersToRepairWhenOutstanding() {
+    const pollSeconds = 3600;
+    const cfg = { pollSeconds, intervalSeconds: pollSeconds };
+    const now = Date.parse('2026-09-28T00:24:30.000Z');
+    const current = Date.parse('2026-09-27T23:00:00.000Z');
+    const base = { lastClosedCandleTs: current, candleCount: 1800, rawKeepCount: 1800, unresolvedGapCount: 0 };
+
+    assert.ok(
+        computeStartupDelayMs(cfg, { bots: { 'aaa-bbb': base } }, now, ['aaa-bbb']) > 0,
+        'a bot whose last cycle finished clean may sleep'
+    );
+    assert.strictEqual(
+        computeStartupDelayMs(cfg, { bots: { 'aaa-bbb': { ...base, unresolvedGapCount: 4 } } }, now, ['aaa-bbb']),
+        0,
+        'unresolved gaps from the last cycle must be repaired now, not after a sleep'
+    );
+    assert.strictEqual(
+        computeStartupDelayMs(cfg, { bots: { 'aaa-bbb': { ...base, candleCount: 900 } } }, now, ['aaa-bbb']),
+        0,
+        'a cache below its warmup target must not sleep'
+    );
+    // kibanaBackfillCount / kibanaGapRepairCount are ACTION counts from a cycle
+    // that already applied their work, and a skip carries the entry forward —
+    // so they must NOT veto the sleep. Standing signals are checked above.
+    assert.ok(
+        computeStartupDelayMs(cfg, { bots: { 'aaa-bbb': { ...base, kibanaBackfillCount: 120 } } }, now, ['aaa-bbb']) > 0,
+        'a completed backfill must not keep vetoing the sleep'
+    );
+    assert.ok(
+        computeStartupDelayMs(cfg, { bots: { 'aaa-bbb': { ...base, kibanaGapRepairCount: 7 } } }, now, ['aaa-bbb']) > 0,
+        'a completed gap repair must not keep vetoing the sleep'
+    );
+    // Absent counters (older state files) are not treated as outstanding.
+    assert.ok(
+        computeStartupDelayMs(cfg, { bots: { 'aaa-bbb': { lastClosedCandleTs: current } } }, now, ['aaa-bbb']) > 0,
+        'missing repair counters must not block the sleep'
+    );
+    // A known warmup target with an UNKNOWN current count is not "nothing
+    // owed": an older or half-written row would otherwise read as healthy.
+    const unknownCount = evaluateStartupSleep(
+        cfg,
+        { bots: { 'aaa-bbb': { lastClosedCandleTs: current, rawKeepCount: 1800 } } },
+        now,
+        ['aaa-bbb']
+    );
+    assert.strictEqual(unknownCount.delayMs, 0, 'a target without a candle count must not sleep');
+    assert.strictEqual(
+        unknownCount.veto?.reason,
+        'cache_count_unknown',
+        'an unknown candle count must be distinguishable from a short cache'
+    );
+    // Neither field set at all (very old row) stays non-blocking.
+    assert.ok(
+        computeStartupDelayMs(cfg, { bots: { 'aaa-bbb': { lastClosedCandleTs: current } } }, now, ['aaa-bbb']) > 0,
+        'a row with no retention fields at all must not block the sleep'
+    );
+}
+
+function testStartupSleepNeverDelaysTheHourlyCandle() {
+    // Property: for a respawn at any moment T with a current state, the first
+    // cycle lands on the same boundary the steady loop would have used, so the
+    // sleep-first path adds NO latency to the newest closed candle. If this
+    // ever regresses, a respawn would silently push an hourly candle one full
+    // period (or more) into the future.
+    const hourMs = 3600000;
+    const cfg = { pollSeconds: 3600, intervalSeconds: 3600 };
+    let checked = 0;
+    for (let minutes = 0; minutes < 60; minutes += 7) {
+        for (const hour of [0, 5, 17]) {
+            const respawnAt = Date.parse('2026-09-28T00:00:00.000Z') + ((hour * 60 + minutes) * 60000);
+            // State is current: the last cycle consumed the newest closed bucket.
+            const marker = Math.floor(respawnAt / hourMs) * hourMs - hourMs;
+            const state = { bots: { 'aaa-bbb': { lastClosedCandleTs: marker } } };
+
+            const delay = computeStartupDelayMs(cfg, state, respawnAt);
+            assert.ok(delay > 0, `respawn at ${new Date(respawnAt).toISOString()} should sleep`);
+            const firstCycleAt = respawnAt + delay;
+
+            // Same instant the always-running loop would have reached.
+            const steadyLoopDelay = sleepUntilAlignedBoundary(3600, respawnAt, respawnAt);
+            assert.strictEqual(
+                firstCycleAt,
+                respawnAt + steadyLoopDelay,
+                'sleep-first must reach the identical boundary as the steady loop'
+            );
+
+            // The candle the first cycle processes is the newest closed one at
+            // that boundary — i.e. it is exactly as fresh as in steady state,
+            // and never older than one poll period.
+            const bucketAtCycle = Math.floor(firstCycleAt / hourMs) * hourMs - hourMs;
+            assert.ok(
+                bucketAtCycle >= marker,
+                'the first cycle must not be asked to reprocess an already consumed candle'
+            );
+            assert.ok(
+                bucketAtCycle - marker <= hourMs,
+                'a respawn must not leave more than one poll period of candles unprocessed'
+            );
+
+            // And it must be ahead of where the previous cycle stopped, unless
+            // the respawn happened before the previous cycle could have closed.
+            const ageAtCycle = bucketAtCycle - marker;
+            assert.ok(
+                ageAtCycle === 0 || ageAtCycle === hourMs,
+                `unexpected unprocessed span: ${ageAtCycle}ms`
+            );
+            checked++;
+        }
+    }
+    assert.ok(checked >= 24, `expected a broad sweep of respawn times, checked ${checked}`);
+}
+
+function testComputeStartupDelayMsNeverSleepsOnMismatchedGrids() {
+    // 2h candles polled hourly: the newest closed bucket (poll grid) and the
+    // state markers (candle grid) only coincide by accident, and sleeping on
+    // that coincidence would delay a real cycle by up to a full period. The
+    // adapter must fall back to running a cycle at startup instead.
+    const now = Date.parse('2026-09-28T01:30:00.000Z');
+    const twoHourMarker = Date.parse('2026-09-28T00:00:00.000Z'); // newest closed 2h bucket
+    const state = { bots: { 'aaa-bbb': { lastClosedCandleTs: twoHourMarker } } };
+
+    assert.strictEqual(
+        computeStartupDelayMs({ pollSeconds: 3600, intervalSeconds: 7200 }, state, now),
+        0,
+        'hourly polling of 2h candles must not sleep'
+    );
+    assert.strictEqual(
+        computeStartupDelayMs({ pollSeconds: 7200, intervalSeconds: 3600 }, state, now),
+        0,
+        '2h polling of 1h candles must not sleep'
+    );
+    // An unconfigured interval (older state/config) also stays on the safe side.
+    assert.strictEqual(
+        computeStartupDelayMs({ pollSeconds: 3600 }, state, now),
+        0,
+        'a missing interval must not sleep'
+    );
+    // Aligned grids still sleep, so the guard does not disable the feature.
+    assert.ok(
+        computeStartupDelayMs(
+            { pollSeconds: 3600, intervalSeconds: 3600 },
+            { bots: { 'aaa-bbb': { lastClosedCandleTs: Date.parse('2026-09-27T23:00:00.000Z') } } },
+            Date.parse('2026-09-28T00:24:30.000Z')
+        ) > 0,
+        'aligned 1h candles polled hourly must still sleep'
+    );
+}
+
 function testAppliedAsymmetryMetricsClampToSafeBounds() {
     const service = new MarketAdapterService();
     const metrics = service.computeAppliedAsymmetryMetrics({
@@ -5897,6 +6235,374 @@ async function testWeightOnlyUpdateInDryRunUpdatesState() {
     assert.ok((state.bots['aaa-bbb-dry-run'] as any).effectiveWeights, 'state should be updated with effective weights even in dry run');
 }
 
+async function testOffHourSkipAvoidsNetworkWhenClosedCandleConsumed() {
+    // Newest CLOSED bucket is 11:00; the adapter is inspected at 12:24, i.e.
+    // 24 minutes into the following hour, exactly like a mid-hour respawn.
+    const hour = 3600000;
+    const newestClosedTs = Date.parse('2026-01-01T11:00:00Z');
+    const nowMs = newestClosedTs + hour + 24 * 60 * 1000;
+    let avoidableWork = 0;
+    // Healthy cache: enough history for the (tiny) AMA warmup, and covering
+    // the newest closed bucket — that is what makes the off-hour skip safe.
+    const cachedCandles = Array.from({ length: 400 }, (_, idx) => {
+        const ts = newestClosedTs - ((399 - idx) * hour);
+        return [ts, 100, 100, 100, 100, 1];
+    });
+    // The still-forming 12:00 bar, as a live cache would hold it.
+    cachedCandles.push([newestClosedTs + hour, 100, 100, 100, 100, 1]);
+
+    const service = new MarketAdapterService({
+        // Context resolution stays (it is what yields the real AMA config the
+        // warmup target depends on) and only costs a couple of lookups on the
+        // already-open connection, so it is NOT charged as avoidable work.
+        resolveBotContext: async () => ({
+            assetA: { id: '1.3.1', precision: 4, symbol: 'IOB.XRP' },
+            assetB: { id: '1.3.0', precision: 5, symbol: 'BTS' },
+            poolId: '1.19.133',
+        }),
+        resolveAmaForBot: () => ({ enabled: true, name: 'AMA1', erPeriod: 1, fastPeriod: 1, slowPeriod: 1, erSmoothPeriod: 0 }),
+        candleFileForBot: () => path.join('/tmp', 'market_adapter_off_hour_skip.json'),
+        loadJson: (filePath) => {
+            // The local candle read is expected; the dynamic-grid snapshot load
+            // is charged, because the skip must not need it.
+            if (String(filePath).includes('dynamicgrid')) {
+                avoidableWork++;
+                return null;
+            }
+            return { meta: { marketSource: 'pool' }, candles: cachedCandles };
+        },
+        saveJson: () => { avoidableWork++; },
+        calculateBotThreshold: () => 1,
+        computeCandleStaleness: () => ({ staleData: false, staleAgeHours: 0.1 }),
+        withRetries: async (fn) => { avoidableWork++; return fn(); },
+        kibanaSource: { getLpCandlesForPool: async () => { avoidableWork++; return []; } },
+        fetchNativeTradesSince: async () => { avoidableWork++; return { trades: [], truncated: false, pages: 1 }; },
+        tradesToCandles: () => [],
+        mergeCandles: (existing) => existing,
+        pruneCandles: (candles) => candles,
+        detectMissingCandleTimestamps: () => ({ gapCount: 0, missingTimestamps: [] }),
+        buildAmaRecord: () => [],
+        writeBotDynamicGrid: () => { avoidableWork++; return true; },
+        getNowMs: () => nowMs,
+        root: process.cwd(),
+        path,
+    });
+
+    const bot = {
+        name: 'AAA-BBB',
+        botKey: 'aaa-bbb-off-hour-skip',
+        assetA: 'IOB.XRP',
+        assetB: 'BTS',
+        gridPrice: 'ama',
+    };
+
+    const state = {
+        bots: {
+            'aaa-bbb-off-hour-skip': {
+                botName: 'AAA-BBB',
+                botKey: 'aaa-bbb-off-hour-skip',
+                gridCenterPrice: 100,
+                centerPrice: 100,
+                lastClosedCandleTs: newestClosedTs,
+            },
+        },
+    };
+
+    const cfg = { intervalSeconds: 3600 };
+    const result = await service.processBot(bot, state, cfg, new Map(), {});
+
+    assert.strictEqual(result.ok, true, 'off-hour skip should succeed');
+    assert.strictEqual(result.source, 'off-hour-skip', 'consumed closed candle should skip before any fetch');
+    assert.strictEqual(result.pendingClosedCandle, true, 'skip should report the pending closed candle');
+    assert.strictEqual(result.triggerSuppressedReason, 'waiting_for_new_closed_candle', 'skip should use the closed-candle gate reason');
+    assert.strictEqual(avoidableWork, 0, 'skip must not fetch candles, verify gaps, or write snapshots/state files');
+    assert.strictEqual((state.bots['aaa-bbb-off-hour-skip'] as any).gridCenterPrice, 100, 'skip must preserve the stored center');
+    assert.strictEqual((state.bots['aaa-bbb-off-hour-skip'] as any).lastCycleSource, 'off-hour-skip', 'skip should mark the cycle source');
+}
+
+async function testOffHourSkipIsDisabledForOneShotRuns() {
+    // --once / runOnceForAma exist to produce a result on demand (the signal
+    // runner prints the AMA, an operator asks for a fresh cycle). A
+    // state-only "skipped" record would report nulls instead, so one-shot
+    // entry points must always run the full cycle.
+    const hour = 3600000;
+    const newestClosedTs = Date.parse('2026-01-01T11:00:00Z');
+    const nowMs = newestClosedTs + hour + 24 * 60 * 1000;
+    const cachedCandles = Array.from({ length: 400 }, (_, idx) => {
+        const ts = newestClosedTs - ((399 - idx) * hour);
+        return [ts, 100, 100, 100, 100, 1];
+    });
+    cachedCandles.push([newestClosedTs + hour, 100, 100, 100, 100, 1]);
+
+    const service = new MarketAdapterService({
+        resolveBotContext: async () => ({
+            assetA: { id: '1.3.1', precision: 4, symbol: 'IOB.XRP' },
+            assetB: { id: '1.3.0', precision: 5, symbol: 'BTS' },
+            poolId: '1.19.133',
+        }),
+        resolveAmaForBot: () => ({ enabled: true, name: 'AMA1', erPeriod: 1, fastPeriod: 1, slowPeriod: 1, erSmoothPeriod: 0 }),
+        candleFileForBot: () => path.join('/tmp', 'market_adapter_once_full_cycle.json'),
+        loadJson: () => ({ meta: { marketSource: 'pool' }, candles: cachedCandles }),
+        saveJson: () => {},
+        calculateBotThreshold: () => 1000,
+        computeCandleStaleness: () => ({ staleData: false, staleAgeHours: 0.1 }),
+        withRetries: async (fn) => fn(),
+        kibanaSource: { getLpCandlesForPool: async () => [] },
+        fetchNativeTradesSince: async () => ({ trades: [], truncated: false, pages: 1 }),
+        tradesToCandles: () => [],
+        mergeCandles: (existing) => existing,
+        pruneCandles: (candles) => candles,
+        detectMissingCandleTimestamps: () => ({ gapCount: 0, missingTimestamps: [] }),
+        buildAmaRecord: () => [],
+        writeBotDynamicGrid: () => true,
+        getNowMs: () => nowMs,
+        root: process.cwd(),
+        path,
+    });
+
+    const bot = { name: 'AAA-BBB', botKey: 'aaa-bbb-once', assetA: 'IOB.XRP', assetB: 'BTS', gridPrice: 'ama' };
+    const state = {
+        bots: { 'aaa-bbb-once': { gridCenterPrice: 100, centerPrice: 100, lastClosedCandleTs: newestClosedTs } },
+    };
+
+    const onceResult = await service.processBot(bot, state, { intervalSeconds: 3600, once: true }, new Map(), {});
+    assert.strictEqual(onceResult.ok, true, 'one-shot run should succeed');
+    assert.notStrictEqual(onceResult.source, 'off-hour-skip', '--once must always run a full cycle');
+
+    // Same state, same clock — the daemon cycle is allowed to skip.
+    const daemonResult = await service.processBot(
+        bot,
+        state,
+        { intervalSeconds: 3600 },
+        new Map(),
+        {}
+    );
+    assert.strictEqual(daemonResult.source, 'off-hour-skip', 'the long-running daemon may still skip');
+}
+
+async function testOffHourSkipDeclinedWhenCacheNeedsRepair() {
+    const hour = 3600000;
+    const newestClosedTs = Date.parse('2026-01-01T11:00:00Z');
+    const nowMs = newestClosedTs + hour + 24 * 60 * 1000;
+    // Cache stops BEFORE the newest closed bucket: the backfill path still has
+    // work to do, so the cycle must run even though the state marker already
+    // equals the newest closed bucket.
+    const shortCandles = Array.from({ length: 400 }, (_, idx) => {
+        const ts = newestClosedTs - ((400 - idx) * hour);
+        return [ts, 100, 100, 100, 100, 1];
+    });
+    let ran = false;
+
+    const service = new MarketAdapterService({
+        resolveBotContext: async () => {
+            ran = true;
+            return {
+                assetA: { id: '1.3.1', precision: 4, symbol: 'IOB.XRP' },
+                assetB: { id: '1.3.0', precision: 5, symbol: 'BTS' },
+                poolId: '1.19.133',
+            };
+        },
+        resolveAmaForBot: () => ({ enabled: true, name: 'AMA1', erPeriod: 1, fastPeriod: 1, slowPeriod: 1, erSmoothPeriod: 0 }),
+        candleFileForBot: () => path.join('/tmp', 'market_adapter_off_hour_repair.json'),
+        loadJson: () => ({ meta: { marketSource: 'pool' }, candles: shortCandles }),
+        saveJson: () => {},
+        calculateBotThreshold: () => 1000,
+        computeCandleStaleness: () => ({ staleData: false, staleAgeHours: 0.1 }),
+        withRetries: async (fn) => fn(),
+        kibanaSource: { getLpCandlesForPool: async () => [] },
+        fetchNativeTradesSince: async () => ({ trades: [], truncated: false, pages: 1 }),
+        tradesToCandles: () => [],
+        mergeCandles: (existing) => existing,
+        pruneCandles: (candles) => candles,
+        detectMissingCandleTimestamps: () => ({ gapCount: 0, missingTimestamps: [] }),
+        buildAmaRecord: () => [],
+        writeBotDynamicGrid: () => true,
+        getNowMs: () => nowMs,
+        root: process.cwd(),
+        path,
+    });
+
+    const bot = {
+        name: 'AAA-BBB',
+        botKey: 'aaa-bbb-off-hour-repair',
+        assetA: 'IOB.XRP',
+        assetB: 'BTS',
+        gridPrice: 'ama',
+    };
+    const state = {
+        bots: {
+            'aaa-bbb-off-hour-repair': { gridCenterPrice: 100, centerPrice: 100, lastClosedCandleTs: newestClosedTs },
+        },
+    };
+
+    const result = await service.processBot(bot, state, { intervalSeconds: 3600 }, new Map(), {});
+
+    assert.strictEqual(result.ok, true, 'repair cycle should succeed');
+    assert.notStrictEqual(result.source, 'off-hour-skip', 'a cache that misses the newest closed bucket must not skip');
+    assert.ok(ran, 'a cache that needs repair must reach the full path');
+}
+
+async function testOffHourSkipFallsThroughWhenClosedCandleIsNew() {
+    const closedTs = Date.parse('2026-01-01T12:00:00Z');
+    const hour = 3600000;
+
+    const service = new MarketAdapterService({
+        resolveBotContext: async () => ({
+            assetA: { id: '1.3.1', precision: 4, symbol: 'IOB.XRP' },
+            assetB: { id: '1.3.0', precision: 5, symbol: 'BTS' },
+            poolId: '1.19.133',
+        }),
+        resolveAmaForBot: () => ({ enabled: true, erPeriod: 1, fastPeriod: 1, slowPeriod: 1 }),
+        candleFileForBot: () => path.join('/tmp', 'market_adapter_off_hour_run.json'),
+        loadJson: () => ({
+            candles: [
+                [closedTs - 3 * hour, 100, 100, 100, 100, 1],
+                [closedTs - 2 * hour, 100, 100, 100, 100, 1],
+                [closedTs - hour, 100, 100, 100, 100, 1],
+                [closedTs, 100, 100, 100, 100, 1],
+            ],
+        }),
+        saveJson: () => {},
+        calculateBotThreshold: () => 1000,
+        computeCandleStaleness: () => ({ staleData: false, staleAgeHours: 0.1 }),
+        withRetries: async (fn) => fn(),
+        kibanaSource: { getLpCandlesForPool: async () => [] },
+        fetchNativeTradesSince: async () => ({ trades: [], truncated: false, pages: 1 }),
+        tradesToCandles: () => [],
+        mergeCandles: (existing) => existing,
+        pruneCandles: (candles) => candles,
+        buildAmaRecord: () => [],
+        writeBotDynamicGrid: () => true,
+        getNowMs: () => closedTs + hour + 60 * 1000,
+        root: process.cwd(),
+        path,
+    });
+
+    const bot = {
+        name: 'AAA-BBB',
+        botKey: 'aaa-bbb-off-hour-run',
+        assetA: 'IOB.XRP',
+        assetB: 'BTS',
+        gridPrice: 'ama',
+    };
+
+    const state = {
+        bots: {
+            'aaa-bbb-off-hour-run': {
+                gridCenterPrice: 100,
+                centerPrice: 100,
+                lastClosedCandleTs: closedTs - hour,
+            },
+        },
+    };
+
+    const cfg = {
+        intervalSeconds: 3600,
+        bootstrapLookbackHours: 100,
+        nativeBackfillHours: 6,
+        pageLimit: 100,
+        maxPages: 80,
+        sourceRetries: 1,
+        retryDelayMs: 0,
+        maxStaleHours: 6,
+    };
+
+    const result = await service.processBot(bot, state, cfg, new Map(), {});
+
+    assert.strictEqual(result.ok, true, 'new closed candle should run the full cycle');
+    assert.notStrictEqual(result.source, 'off-hour-skip', 'new closed candle must not take the skip path');
+}
+
+function testLatestClosedBucketStartMsArithmetic() {
+    const service = new MarketAdapterService({});
+    const now = Date.parse('2026-09-28T00:24:30.000Z');
+    assert.strictEqual(
+        service.latestClosedBucketStartMs(3600, now),
+        Date.parse('2026-09-27T23:00:00.000Z'),
+        'latest closed bucket at :24 past the hour is the previous hour'
+    );
+    assert.strictEqual(service.latestClosedBucketStartMs(0, now), null, 'invalid interval must not evaluate');
+    assert.strictEqual(service.latestClosedBucketStartMs(3600, NaN), null, 'invalid clock must not evaluate');
+}
+
+function testShouldSkipBotForClosedCandleVerdicts() {
+    const service = new MarketAdapterService({});
+    const now = Date.parse('2026-09-28T00:24:30.000Z');
+    const consumed = Date.parse('2026-09-27T23:00:00.000Z');
+    const skip = service.shouldSkipBotForClosedCandle({}, { lastClosedCandleTs: consumed }, 3600, now);
+    assert.ok(skip, 'consumed newest closed bucket should skip');
+    assert.strictEqual(skip.previousClosedCandleTs, consumed, 'skip should report the consumed marker');
+    assert.strictEqual(
+        service.shouldSkipBotForClosedCandle({}, { lastClosedCandleTs: consumed - 3600000 }, 3600, now),
+        null,
+        'older marker means a new candle is available: run'
+    );
+    assert.strictEqual(
+        service.shouldSkipBotForClosedCandle({}, { lastClosedCandleTs: consumed + 3600000 }, 3600, now),
+        null,
+        'marker ahead of the wall clock must not skip (clock skew / carried state)'
+    );
+    assert.strictEqual(service.shouldSkipBotForClosedCandle({}, {}, 3600, now), null, 'fresh state must run bootstrap');
+    assert.strictEqual(service.shouldSkipBotForClosedCandle(null, null, 3600, now), null, 'unknown state must run');
+    assert.strictEqual(service.shouldSkipBotForClosedCandle({}, { lastClosedCandleTs: consumed }, 0, now), null, 'invalid interval must run');
+}
+
+function testCandleFileCoversClosedBucketGuards() {
+    const service = new MarketAdapterService({});
+    const closed = Date.parse('2026-09-27T23:00:00.000Z');
+    const covering = [[closed, 1, 1, 1, 1, 1]];
+    assert.strictEqual(
+        service.candleFileCoversClosedBucket(covering, { marketSource: 'pool' }, 'pool', closed, 1),
+        true,
+        'a cache holding the newest closed bucket covers it'
+    );
+    assert.strictEqual(
+        service.candleFileCoversClosedBucket(covering, { marketSource: 'book' }, 'pool', closed, 1),
+        false,
+        'a source switch must never be skipped'
+    );
+    assert.strictEqual(
+        service.candleFileCoversClosedBucket(covering, { marketSource: 'pool', pool: '1.19.133' }, 'book', closed, 1),
+        false,
+        'a legacy pool cache under a book-configured bot must never be skipped'
+    );
+    assert.strictEqual(
+        service.candleFileCoversClosedBucket(covering, { marketSource: 'book' }, 'pool', closed, 1),
+        false,
+        'a book cache under a pool-configured bot must never be skipped'
+    );
+    assert.strictEqual(
+        service.candleFileCoversClosedBucket(covering, { marketSource: 'pool', unresolvedGapCount: 3 }, 'pool', closed, 1),
+        false,
+        'unresolved gaps must still be repaired'
+    );
+    assert.strictEqual(
+        service.candleFileCoversClosedBucket(covering, { marketSource: 'pool' }, 'pool', closed, 5),
+        false,
+        'history shorter than the warmup target must still be backfilled'
+    );
+    assert.strictEqual(
+        service.candleFileCoversClosedBucket([[closed - 3600000, 1, 1, 1, 1, 1]], { marketSource: 'pool' }, 'pool', closed, 1),
+        false,
+        'a cache that stops before the closed bucket does not cover it'
+    );
+    assert.strictEqual(
+        service.candleFileCoversClosedBucket([], { marketSource: 'pool' }, 'pool', closed, 1),
+        false,
+        'an empty cache does not cover anything'
+    );
+}
+
+function testCandleSourceMismatchIsSharedWithFullPath() {
+    const service = new MarketAdapterService({});
+    // The predicate the gate uses must be the same one the full path resets on.
+    assert.strictEqual(service.isCandleSourceMismatch({ marketSource: 'book' }, 'pool'), true, 'book cache under a pool bot');
+    assert.strictEqual(service.isCandleSourceMismatch({ marketSource: 'pool', pool: '1.19.133' }, 'book'), true, 'pool context under a book bot');
+    assert.strictEqual(service.isCandleSourceMismatch({ marketSource: 'pool' }, 'pool'), false, 'matching pool source');
+    assert.strictEqual(service.isCandleSourceMismatch({ marketSource: 'book' }, 'book'), false, 'matching book source');
+    assert.strictEqual(service.isCandleSourceMismatch({}, 'pool'), false, 'no stored source is not a mismatch');
+}
+
 async function testNewerDynamicGridResetCenterOverridesStaleAdapterState() {
     const botKey = 'aaa-bbb-newer-reset-center';
     const closedTs = Date.parse('2026-01-01T12:00:00Z');
@@ -6043,6 +6749,12 @@ async function run() {
     await testClosedCandleGateSurfacesStaleData();
     await testClosedCandlePruningRetainsFullDynamicWeightWarmup();
     testSleepUntilAlignedBoundaryAnchorsToCycleStart();
+    testComputeStartupDelayMsHonorsPollBoundary();
+    testComputeStartupDelayMsNeverSleepsOnMismatchedGrids();
+    testStartupSleepIsPerBotNeverAggregated();
+    testStartupSleepIgnoresInactiveStateRows();
+    testStartupSleepDefersToRepairWhenOutstanding();
+    testStartupSleepNeverDelaysTheHourlyCandle();
     testAppliedAsymmetryMetricsClampToSafeBounds();
     testAppliedAsymmetryMetricsPreferRawSlopeOffset();
     await testDynamicWeightBelowMinOutputThresholdFallsBackToStaticWeights();
@@ -6073,6 +6785,14 @@ async function run() {
     await testDynamicWeightDiagnosticsDoNotLeakIntoBootstrapState();
     await testWeightOnlyUpdateInDryRunUpdatesState();
     await testNewerDynamicGridResetCenterOverridesStaleAdapterState();
+    await testOffHourSkipAvoidsNetworkWhenClosedCandleConsumed();
+    await testOffHourSkipIsDisabledForOneShotRuns();
+    await testOffHourSkipDeclinedWhenCacheNeedsRepair();
+    await testOffHourSkipFallsThroughWhenClosedCandleIsNew();
+    testLatestClosedBucketStartMsArithmetic();
+    testShouldSkipBotForClosedCandleVerdicts();
+    testCandleFileCoversClosedBucketGuards();
+    testCandleSourceMismatchIsSharedWithFullPath();
 }
 
 run()
