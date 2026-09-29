@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.6.8 release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.6.9 release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
-- **Growth Phase**: 2,300 commits over ~9 active months
+- **Growth Phase**: 2,306 commits over ~9 active months
 - **Code Maturity**: Evolution from basic utilities to a ~100,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 305 automated test files
-- **Releases**: 140 version entries in the changelog (v0.1.0 to v1.6.8)
+- **Releases**: 141 version entries in the changelog (v0.1.0 to v1.6.9)
 
 > **Post-1.0.0 "why":** the thematic story behind the hardening releases — root cause, recurring
 > bug families, and lessons — lives in
@@ -149,7 +149,7 @@ Evolved from a basic README to a comprehensive framework (50+ docs entries, 80%+
 
 ## Version History
 
-Compact, era-level view; commit counts are `git rev-list --count <tag>..<tag>` over the current history (2026-09-28), so the column sums to 2,194 — the 106 commits before the `v0.1.0` tag are not attributed to an era (2,194 + 106 = 2,300). Per-release detail lives in [CHANGELOG.md](../CHANGELOG.md); the thematic post-1.0.0 story in [ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md](ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md).
+Compact, era-level view; commit counts are `git rev-list --count <tag>..<tag>` over the current history (2026-09-30), so the column sums to 2,200 — the 106 commits before the `v0.1.0` tag are not attributed to an era (2,200 + 106 = 2,306). Per-release detail lives in [CHANGELOG.md](../CHANGELOG.md); the thematic post-1.0.0 story in [ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md](ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md).
 
 | Era | Commits | Theme |
 |-----|--------:|-------|
@@ -161,16 +161,17 @@ Compact, era-level view; commit counts are `git rev-list --count <tag>..<tag>` o
 | v1.4.25 → v1.5.3 | 45 | Credit overview + whitelist-scoped CR, TradingView tooling, daemon-safe reload, gap-evacuation/rail-hole hardening, sync adoption hardening, boundary ownership |
 | v1.5.3 → v1.6.0 | 39 | Node-failure ledger, grid regeneration, reserve ladder, live-config pickup, owed-crawl persistence, fill-anchored boundary recovery, TradingView overlay |
 | v1.6.0 → v1.6.3 | 17 | Never-run-stale hardening, whitelist range-scaling opt-in, grid-price invariant, shard candle cache, correction-queue staleness, final pre-broadcast pivot gate |
-| v1.6.3 → v1.6.4 | 19 | Fund-driven spread correction, gapSlots+1 batch cap, VIRTUAL RMS divergence, sync-lock log fix, invariant-doc contract, analysis shared modules, window-aware profitability annualisation, portable chart exports, range-threshold restore, dead-code purge, doc consolidation |
-| v1.6.4 → v1.6.5 | 16 | Editor-managed whitelist flags + legacy generator removal, centralized bot defaults/settings docs, log-symmetric range-scaling tilt, AMA gridPrice default + unset → startPrice normalization, Pool default/warn-color cues, Grid Health AMA-slope Δ knob, dynamic-weight chart CLI, update dist-freshness self-heal, launcher worker rename, RMS log tagging |
-| v1.6.5 → v1.6.6 | 13 | Stale-cancellation guard hardening (live ownership, per-plan startup revalidation, COW orphan protection, settlement safety), editor label/menu realignment + colored bot list, grouped CLI help, poolRef aliases + startPrice priority, legacy SMA/MACD/RSI analyzer archived, run-relative candle-cache migration dropped, update dist-freshness tsconfig-exclude fix |
-| v1.6.6 → v1.6.7 | 11 | Native session/fill-channel recovery (dead-but-open forced reconnect, stale api_id self-heal, COW stale-plan recheck) + clean-process ecosystem regen, `dexbot start` onboarding redirect, key-manager cancellation + empty-vault onboarding link, LAST-FILL-GUARD pivot persistence (provenance-gated snapshot mirror, genesis-bound + TTL + on-grid restore with the boundary, centralized writer, generation invalidation mirroring the owed-crawl ledger) |
-| v1.6.7 → v1.6.8 | 12 | Correction-drain budget + broadcast-region timer/fill deferral (bounded `_gridLock` hold, backlog alarm, stale-flag-safe maintenance deferral, defer bound tied to the watchdog, per-group create yield) and its wall-clock follow-up, PM2 log-capture restore + `pm2-logrotate` enablement, passive new-version notice (bounded registry probe, notify-once latch committed only on display, install-kind hint, independent NOTICE kill switches) + review hardening (dryrun silence, status timeout, latch regression guard, terminal-path flushes, non-blocking print on the isolated-foreground launch path, AbortController-independent hard timeout backstop, centralized flush), changelog-gap close + stale-reference realignment, the genesis-less-snapshot refusal (ladder required at load; `MISSING_GENESIS_POLICY` rebuild/halt, sync-entry assert, persisted-row schema gate), and reserve window-exclusion classification (window members no longer read as reserves at any no-crawl/refill-wire site; legacy numeric `reserveOrders` read-time migration; retained-vs-dropped crawl log fix; shared rail-center helper), plus the legacy tolerance-matcher removal (frozen ladder the only price authority), the npm-tarball trim (explicit analysis asset list, sourcemaps dropped, test sources excluded, legacy Kalman suites rewired into `test:legacy`), the AMA grid-reset replay in the bot charts (with the slope-baseline, non-positive-threshold and config read-back runtime fixes), the `kalS%` default bump (1.0 → 1.11), the incremental/bounded Kibana tail refresh (timestamped coverage, per-gap settle horizon, gap merging, span cap, 48h ceiling), and the 1.4x range-threshold widening |
+| v1.6.3 → v1.6.4 | 19 | Fund-driven spread correction, batched correction cap, RMS divergence, invariant-doc contract, shared analysis modules, window-aware profitability, portable chart exports, range-threshold restore, dead-code purge |
+| v1.6.4 → v1.6.5 | 16 | Editor-managed whitelist flags, centralized bot defaults/settings, log-symmetric range tilt, AMA gridPrice normalization, Pool/Health cues, AMA-slope Δ knob, dynamic-weight CLI, update self-heal, RMS log tagging |
+| v1.6.5 → v1.6.6 | 13 | Stale-cancellation guard hardening, editor/CLI realignment, poolRef aliases + startPrice priority, legacy SMA/MACD/RSI analyzer archived, run-relative candle-cache migration dropped, dist-freshness exclude fix |
+| v1.6.6 → v1.6.7 | 11 | Session/fill-channel recovery, clean-process ecosystem regen, onboarding redirect and key-manager link fixes, LAST-FILL-GUARD pivot persistence |
+| v1.6.7 → v1.6.8 | 12 | Correction-drain budget + broadcast-deferral bounds, PM2 log capture + rotation, passive version notice, genesis-ladder refusal, reserve window exclusion, legacy tolerance-matcher removal, npm-tarball trim, TV grid-reset replay, bounded Kibana tail refresh, 1.4x range-threshold widening |
+| v1.6.8 → v1.6.9 | 6 | Market-adapter cycle-CPU cuts, candle-boundary off-hour idle, spread-correction spread-tightening guard |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: September 28, 2026
-**Total Commits**: 2,300
-**Date Range**: December 2, 2025 – September 28, 2026
+**Last Updated**: September 30, 2026
+**Total Commits**: 2,306
+**Date Range**: December 2, 2025 – September 30, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)
