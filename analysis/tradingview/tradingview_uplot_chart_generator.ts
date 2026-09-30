@@ -735,6 +735,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         let pendingRangeRaf = 0;
         let rangePanelRaf = 0;
         let yRefitRaf = 0;
+        let pendingViewY = null;
         let xMin = 0;
         let xMax = 0;
         let smaWorker = null;
@@ -3397,18 +3398,20 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             currentRangeEnabled = nextEnabled;
             setControls();
             if (!currentRangeEnabled) {
-                hideRangeBandImmediate();
+                preserveView(hideRangeBandImmediate);
                 return;
             }
-            rerender(false);
+            preserveView(() => rerender(true));
         });
         document.getElementById('range-scale-toggle').addEventListener('change', () => {
             const nextEnabled = document.getElementById('range-scale-toggle').checked;
             if (currentRangeScaleEnabled === nextEnabled) return;
             currentRangeScaleEnabled = nextEnabled;
-            manualYRange = null;
+            // No manualYRange reset: the price axis keeps the window it had,
+            // so un/setting Scale never refits the view (the band still
+            // draws, the legend readout still updates).
             setControls();
-            rerender(false);
+            preserveView(() => rerender(true));
         });
         ['sma-period', 'ama-er', 'ama-fast', 'ama-slow', 'vwap-bars'].forEach((id) => {
             document.getElementById(id).addEventListener('change', syncInputs);
@@ -3463,7 +3466,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         document.getElementById('range-span').addEventListener('input', () => {
             const input = document.getElementById('range-span');
             document.getElementById('range-span-val').textContent = Number(input.value).toFixed(2) + 'x';
-            syncInputs();
+            preserveView(syncInputs);
         });
 
         // Room to the right past the last bar (~12%): for the market panel
@@ -3643,6 +3646,39 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const span = Math.max(1e-12, Math.abs(vis[1] - vis[0]));
             return Math.abs(s.min - vis[0]) / span > 1e-9 || Math.abs(s.max - vis[1]) / span > 1e-9;
         }
+        // Snapshot/restore of the visible window across a control toggle.
+        // Y needs an explicit put back because the auto-fit follows the range
+        // band — switching the band (or Scale) on/off would otherwise refit
+        // the price axis and jump the view under the cursor. The restore is
+        // applied from the same rAF as the refit (and after it) so a toggle
+        // only ever paints the original window, and it does NOT set
+        // manualYRange: panning afterwards still autofits as before.
+        function captureView() {
+            if (!priceChart) return null;
+            const x = priceChart.scales.x || {};
+            const y = priceChart.scales.y || {};
+            const view = {
+                x: Number.isFinite(x.min) && Number.isFinite(x.max) ? { min: x.min, max: x.max } : null,
+                y: Number.isFinite(y.min) && Number.isFinite(y.max) ? { min: y.min, max: y.max } : null,
+            };
+            return view.x || view.y ? view : null;
+        }
+        function preserveView(fn) {
+            const view = captureView();
+            const res = fn();
+            if (!view || !priceChart) return res;
+            // X: re-assert the captured window (rerender/setData already keep
+            // it) so the full view survives whatever path the callback took.
+            if (view.x) {
+                const next = clampRange(view.x.min, view.x.max);
+                if (next) charts.forEach((chart) => chart.batch(() => chart.setScale('x', next)));
+            }
+            if (view.y) {
+                pendingViewY = view.y;
+                scheduleYRefit();
+            }
+            return res;
+        }
         function scheduleYRefit() {
             if (yRefitRaf) return;
             yRefitRaf = requestAnimationFrame(() => {
@@ -3654,6 +3690,15 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 if (volumeChart) {
                     const vvis = visibleVolumeRange(volumeChart);
                     if (vvis && yRangeDirty(volumeChart, vvis)) volumeChart.setScale('y', { min: vvis[0], max: vvis[1] });
+                }
+                // View lock from preserveView(): win over the refit above.
+                const keep = pendingViewY;
+                pendingViewY = null;
+                if (keep && priceChart && Number.isFinite(keep.min) && Number.isFinite(keep.max) && keep.max > keep.min) {
+                    const s = priceChart.scales.y || {};
+                    if (!Number.isFinite(s.min) || Math.abs(s.min - keep.min) > 1e-12 || Math.abs(s.max - keep.max) > 1e-12) {
+                        priceChart.setScale('y', { min: keep.min, max: keep.max });
+                    }
                 }
             });
         }

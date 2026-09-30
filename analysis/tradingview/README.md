@@ -40,7 +40,7 @@ The sections below cover manual usage (explicit candle files, direct runner flag
 - AMA preset buttons `1–4` (one-click AMA1–4, active preset highlighted); numeric inputs kept
 - Bot-grid range highlight, off by default (the bot's min/max around AMA with live asymmetric tilt; red above AMA, green below)
 - Grid-reset simulation (AMA bots, on by default): replays the market adapter's two recentering triggers over the candle history — the accepted grid center as a step line, the simulated grid range around it, and a marker per reset (`init` = first AMA snapshot, `Δ1` = AMA-price Δ, `Δs` = AMA-slope Δ). Thresholds come from the live config chain; a bottom-left panel shows the values, where they came from, and the reset counts (see [Grid-Reset Simulation](#grid-reset-simulation))
-- Range-scale switch: fit the price axis to the range band
+- Range-scale switch: fit the price axis to the range band. Toggling `Range` / `Scale` (or dragging the grid-span slider) keeps the current view — the price axis is not refitted under the cursor; the band-fit applies on the next autofit (reload, timeframe switch, x pan) or immediately on a double-click of the price axis
 - VWMA overlay
 - Order overlay for bot charts (active grid buys/sells as dashed levels, reserve line at the lowest grid buy, ceiling line at the highest grid sell, spread label; pair-aware, toggle in-chart)
 - Market panel (top-right): `SELL` / `Market` / `BUY` rows with distance-to-market %
@@ -193,7 +193,7 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 | `--no-vwap` | Disable VWMA | — |
 | `--range` | Enable range highlight (off by default; toggle in-chart) | off |
 | `--no-range` | Disable range highlight | — |
-| `--range-scale` | Range Scaling: size the band by AMA slope like the grid build + fit price axis to it | — |
+| `--range-scale` | Range Scaling: size the band by AMA slope like the grid build + fit price axis to it (on the next autofit, not on toggle) | — |
 | `--no-grid-reset` | Render without the grid-reset simulation (toggle it back in the chart) | on for AMA bots |
 | `--grid-delta-pct <n>` | Override the AMA-price Δ threshold for the simulation (skips config resolution) | config |
 | `--grid-slope-delta-pct <n>` | Override the AMA-slope Δ threshold for the simulation, in %/bar | config |
