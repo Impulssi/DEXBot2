@@ -172,7 +172,7 @@ check('the price trigger is evaluated first and re-seeds the slope baseline', ()
     assert.ok(sim.stats.priceResets >= 3, 'price trigger fires on every bar');
     assert.strictEqual(sim.stats.slopeResets, 0, 'the re-seeded slope baseline blocks trigger B');
     for (let i = 0; i < sim.center.length; i++) {
-        assert.ok(sim.acceptedSlopePct[i] == null || Math.abs(sim.acceptedSlopePct[i] - 0.2) < 1e-9);
+        assert.ok(sim.acceptedSlopePct[i] == null || Math.abs(sim.acceptedSlopePct[i] - Math.log(1.002) * 100) < 1e-9);
     }
     assert.ok(Math.abs(sim.slopeDeltaPct[4]) < 1e-9, 'measured against the bar it was seeded from');
 });

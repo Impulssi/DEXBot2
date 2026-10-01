@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { calculateAMA, getAmaWarmupBars } from '../../market_adapter/core/strategies/ama.js';
-import { computeAverageAmaSlopePct } from '../../market_adapter/core/strategies/ama_slope_model.js';
+import { computeHuberWindowSlopePct } from '../../market_adapter/core/strategies/ama_slope_model.js';
 import { range } from '../math_utils.js';
 import { parseListOrRange, loadLpData, fmt } from './shared_utils.js';
 import { getStorage } from '../../modules/storage/index.js';
@@ -47,8 +47,8 @@ const DEFAULT_REPOSITION_PCT = MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT;
 // bot): --asymmetric-bounds enables slope-delta resets AND slope-ratio offset.
 // Trigger B fires when |slopePct_now − baseline| reaches
 // (AMA_SLOPE_DELTA_THRESHOLD_PERCENT / 100) × DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT,
-// where slopePct is the average per-bar AMA change over
-// DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS (computeAverageAmaSlopePct) and the
+// where slopePct is the Huber-robust per-bar AMA slope over
+// DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS (computeHuberWindowSlopePct) and the
 // baseline mirrors botState.gridRangeScalingAmaSlope (re-seeded every reset).
 const SLOPE_TRIGGER_FACTOR = MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT;
 const SLOPE_MAX_PCT = MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT;
@@ -439,7 +439,7 @@ function simulateForParams(candles: any, amaValues: any, params: any) {
     // Evaluated over full history like the live adapter (only bar-index guards).
     const slopeAt: (number | null)[] = new Array(candles.length).fill(null);
     for (let j = SLOPE_LOOKBACK_BARS; j < candles.length; j++) {
-        const s = computeAverageAmaSlopePct(amaValues[j], amaValues[j - SLOPE_LOOKBACK_BARS], SLOPE_LOOKBACK_BARS);
+        const s = computeHuberWindowSlopePct(amaValues, j, SLOPE_LOOKBACK_BARS);
         if (s != null && Number.isFinite(s)) slopeAt[j] = s;
     }
 

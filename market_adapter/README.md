@@ -688,7 +688,7 @@ This uses `dynamicWeights.trend`, `dynamicWeights.slopeOffset`, and
 weight shift. The whitelist flag is `asymmetricBounds`.
 
 ```
-slope = average AMA slope percent per bar over the lookback window
+slope = Huber-robust regression of ln(AMA) over the lookback window, in percent per bar
 slopeOffset = slope normalized to the configured dynamic-weight slope cap
 asymmetry = min(|slopeOffset| / maxSlopeOffset, 1) × maxAsymmetryFactor
 
@@ -805,7 +805,7 @@ Main override knobs live in `profiles/market_adapter_settings.json`:
 | `alpha` | AMA vs Kalman blend |
 | `dw` | Kalman displacement weighting |
 | `gain` | Output amplitude |
-| `amaSlopePercentMode` | Slope override units: `perBar` for average percent per bar, or `window`/unset for legacy cumulative percent over the lookback |
+| `amaSlopePercentMode` | Slope override units: `perBar` for percent per bar, or `window`/unset for legacy cumulative percent over the lookback |
 | `amaSlope.lookbackBars` | AMA slope lookback; slope is averaged per bar over this window |
 | `amaSlope.neutralZonePct` | Dead band around flat average AMA slope |
 | `amaSlope.maxSlopePct` | Average AMA slope saturation |

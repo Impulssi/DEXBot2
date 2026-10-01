@@ -3,7 +3,7 @@
 import { DEFAULT_CONFIG, MARKET_ADAPTER } from '../../modules/constants.js';
 import { getAmaWarmupBars } from '../../market_adapter/core/strategies/ama.js';
 import { bilinearInterpolate } from '../../market_adapter/core/strategies/regime_interp.js';
-import { computeDynamicWeightSeries, computeAverageAmaSlopePct, computeAmaSlopeClipThreshold, echoLatchSeries, roundToN } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
+import { computeDynamicWeightSeries, computeAverageAmaSlopePct, computeHuberWindowSlopePct, computeAmaSlopeClipThreshold, echoLatchSeries, roundToN } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
 import {
     buildKalmanVelocitySeries,
     computeAbsolutePercentileThreshold,
@@ -18,6 +18,7 @@ import { Y_AXIS_SIZE, makeCursorConfig, bindHoverStateFn, wireChartEvents, zoomR
 // pure logic as the live market adapter service instead of a hand-copied copy.
 const EMBEDDED_SHARED_FUNCS = embedFunctionSources([
     computeAverageAmaSlopePct,
+    computeHuberWindowSlopePct,
     computeAmaSlopeClipThreshold,
     bilinearInterpolate,
     echoLatchSeries,
@@ -404,6 +405,10 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
     <script>
         const data = JSON.parse(document.getElementById('payload').textContent);
 
+        // Canonical Huber-slope parameters, injected from MARKET_ADAPTER so the
+        // embedded estimator runs the same values as the live adapter.
+        const AMA_SLOPE_HUBER = ${serializeJsonForScript(MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER)};
+
         ${EMBEDDED_SHARED_FUNCS}
 
         const SYNC_KEY = "dyn-wt-res-v4";
@@ -628,8 +633,8 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         }
 
         function computeSlopeAtIndex(idx, lb, values) {
-            // Canonical AMA slope % (computeAverageAmaSlopePct injected above).
-            const sp = computeAverageAmaSlopePct(values[idx], values[idx - lb], lb);
+            // Canonical AMA slope % (computeHuberWindowSlopePct injected above).
+            const sp = computeHuberWindowSlopePct(values, idx, lb);
             return sp == null ? 0 : sp;
         }
 

@@ -283,9 +283,28 @@ The snapshot fields involved are:
 `profiles/general.settings.json` and editable via `dexbot bot` → `1) Grid
 Drift` (`AMA-Slope Δ`). An explicit `amaSlopeDeltaThresholdPercent` in
 `profiles/market_adapter_settings.json` bypasses the factor and is used
-directly as an average percent-per-bar threshold.
+directly as a percent-per-bar threshold (the same unit as the slope value
+described below — no averaging is implied by the unit).
 
-AMA slope values are stored and compared as average percent per bar. Older
+AMA slope values are stored and compared in percent per bar. The value itself
+is a **Huber-robust linear regression of `ln(AMA)` over the lookback window**
+(`computeHuberWindowSlopePct` in
+`core/strategies/dynamic_weight_series.ts`; its tuning lives in
+`MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER`) — a smooth, robust fit whose influence
+function is bounded, so one outlier bar cannot drag it, which is what a plain
+mean (and the older two-point endpoint difference it is equivalent to) would do.
+Because the fit reports the log-return, a reading is ~`ln(1+r)` rather than the
+arithmetic `r`: negligible at the sub-0.1 %/bar magnitudes the defaults use, but
+~3% lower at a 6%/bar saturation (`ln(1.06)*100 = 5.83`). A pre-existing user
+override of `amaSlope.maxSlopePct` or `neutralZonePct` was tuned against the
+arithmetic reading, so treat a saturated override as a hair tighter than before.
+
+Changing the estimator changes the stored value: after a deploy, the first
+cycle compares a new-algorithm reading against the baseline persisted by the
+previous one (`botState.gridRangeScalingAmaSlope`). The magnitudes agree
+closely, so the delta stays under the reset gate on ~98% of bars — a rare,
+single extra recenter for whitelisted bots. No version marker is persisted to
+suppress it. Older
 settings that used cumulative percent over the full lookback can either be
 divided by `amaSlope.lookbackBars`, or marked with
 `"amaSlopePercentMode": "window"` in `profiles/market_adapter_settings.json`

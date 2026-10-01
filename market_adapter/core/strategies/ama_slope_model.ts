@@ -12,6 +12,7 @@ import { computeVolatilityShift } from './volatility_shift.js';
 // chart generators can embed its exact source); re-exported here for compat.
 import {
     computeAverageAmaSlopePct,
+    computeHuberWindowSlopePct,
     computeAmaSlopeClipThreshold,
     createAmaSlopeClipTracker,
 } from './dynamic_weight_series.js';
@@ -89,16 +90,17 @@ function computeAmaSlopeWeights(amaValues: any, weightVariance: any, opts: any =
     }
 
     const N = amaValues.length;
-    const last = amaValues[N - 1];
-    const past = amaValues[N - 1 - lookbackBars];
 
-    if (!Number.isFinite(last) || !Number.isFinite(past) || past === 0) {
-        return notReady;
-    }
-
-    // 2. Average slope percent per bar over the lookback window. This keeps
-    // lookback as a smoothing/lag knob instead of adding gain in sustained trends.
-    const slopePct = computeAverageAmaSlopePct(last, past, lookbackBars);
+    // 2. Slope percent per bar over the lookback window, as a Huber-robust
+    // linear regression of ln(AMA) (canonical: computeHuberWindowSlopePct). The
+    // two-point endpoint difference is kept in dynamic_weight_series as the
+    // reference definition, but it gives the window-edge bar full weight: a
+    // single-bar impulse moves it 7x-70x the reset gate while the robust fit
+    // bounds that influence without the lag of a rank-based estimator.
+    // lookback stays a smoothing/lag knob rather than adding gain in sustained
+    // trends. The estimator validates every bar in the window (both ends
+    // strictly positive), so it subsumes the old two-endpoint guard here.
+    const slopePct = computeHuberWindowSlopePct(amaValues, N - 1, lookbackBars);
     if (!Number.isFinite(slopePct)) {
         return notReady;
     }
@@ -156,6 +158,7 @@ function computeAmaSlopeWeights(amaValues: any, weightVariance: any, opts: any =
 export {
     computeAmaSlopeWeights,
     computeAverageAmaSlopePct,
+    computeHuberWindowSlopePct,
     computeAmaSlopeClipThreshold,
     createAmaSlopeClipTracker,
 }

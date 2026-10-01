@@ -146,31 +146,38 @@ function simParams(extra = {}) {
 
 // ── Trigger B: slope moving away from the last-reset baseline (whitelist-gated) ──
 {
-    // Single step up: slope jumps to +0.111%/bar for the 9 bars the lookback
-    // window straddles the step, then returns to 0. Ratchet semantics mean the
-    // trigger fires on onset AND on decay (each move away from the current
-    // baseline crosses the threshold once) and stays silent while slope holds.
-    const n = 40;
+    // The slope is the HUBER regression of ln(AMA) over the window, so a
+    // single-step AMA reads as ~0%/bar and the fixture is flat -> a steady
+    // geometric ramp -> flat at the new level. The fitted slope ramps 0 -> +r
+    // over ~one window, holds at +r while the series climbs, then decays to 0.
+    //
+    // The ratchet baseline is re-seeded on every reset, so a monotonic slope
+    // move of total |delta| fires ~|delta|/gate times. Keeping r (0.01 %/bar)
+    // between one and two gates (gate = 0.0072 %/bar) makes the onset and decay
+    // crossings single: 1 at onset, 1 at decay, silent while it holds.
+    const n = 100;
+    const rampFrom = 20, rampTo = 59, perBarPct = 0.01;
     const candles = Array.from({ length: n }, () => makeCandle(100));
     const amaValues = new Array(n).fill(100);
-    for (let i = 20; i < n; i++) amaValues[i] = 101;
+    for (let i = rampFrom; i <= rampTo; i++) amaValues[i] = 100 * Math.pow(1 + perBarPct / 100, i - rampFrom + 1);
+    for (let i = rampTo + 1; i < n; i++) amaValues[i] = amaValues[rampTo];
 
     const r = simulateForParams(candles, amaValues, simParams({
         repositionThresholdPct: 50, // drift can never fire; isolate slope path
         asymmetricBounds: true,
     }));
     assert.strictEqual(r.driftTriggerCount, 0, 'drift trigger disabled by huge threshold');
-    assert.strictEqual(r.slopeTriggerCount, 2, 'fires on slope onset and decay only');
+    assert.strictEqual(r.slopeTriggerCount, 2, 'fires once on slope onset and once on decay (smooth regression)');
     assert.strictEqual(r.repositionCount, 2);
-    assert.strictEqual(r.offsetAppliedCount, 1, 'asymmetric bounds applies the price offset on the onset reset (decay bar slope is neutral)');
+    assert.strictEqual(r.offsetAppliedCount, 2, 'both crossings apply the asymmetric offset: unlike the old step, the smooth fit reads a non-neutral slope at the decay bar');
 }
 
 // ── Trigger B stays OFF without the whitelist gate (production default) ─────
 {
-    const n = 40;
+    const n = 80;
     const candles = Array.from({ length: n }, () => makeCandle(100));
     const amaValues = new Array(n).fill(100);
-    for (let i = 20; i < n; i++) amaValues[i] = 101;
+    for (let i = 20; i <= 41; i++) amaValues[i] = 100 * Math.pow(1 + (1 / 9) / 100, i - 20 + 1);
 
     const r = simulateForParams(candles, amaValues, simParams({ repositionThresholdPct: 50 }));
     assert.strictEqual(r.slopeTriggerCount, 0, 'non-whitelisted bot: slope reset gated off');

@@ -276,13 +276,15 @@ at generation time. One slope window is shared by every consumer: the resolved
 `lookbackBars` drives both the replayed `Δs` trigger and the `Scale` band tilt,
 so a bot-configured lookback can no longer leave the plotted band measuring a
 different slope than the trigger does (the shared constant remains the fallback
-for pool/pair charts, which carry no grid-sim data). The replay uses the
+for pool/pair charts, which carry no grid-sim data), and both average with the
+chart's selected slope model (see Notes). The replay uses the
 canonical `simulateGridResetSeries()` from
 `analysis/tradingview/grid_reset_sim.ts`, embedded verbatim via
 `embedFunctionSources` — not a hand copy of the adapter logic.
 
 ## Notes
 
+- **Slope averaging.** The AMA slope is a **Huber-robust linear regression of `ln(AMA)` over the lookback window** — `computeHuberWindowSlopePct` in `market_adapter/core/strategies/dynamic_weight_series.ts`, which is the live adapter's own definition and is embedded here verbatim, so the chart and the bot run one logic path. Its tuning (`C`, `ITERATIONS`, `SCALE_FLOOR`, `ZERO_EPSILON`) is centralized in `MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER` and injected into the page as `const AMA_SLOPE_HUBER`, so a constant change flows to both. The output is in %/bar over the same window, so the tilt scale (`clamp(slope/maxSlopePct) * maxSlopeOffset`) and the `Δs` gate (`|Δslope| >= 8% of maxSlopePct`) keep their existing units. Measured on the repo's 1h pools with the shipped AMA preset at a 20-bar window: a single-bar AMA impulse is **strongly bounded** (a 1%/3%/5%/10% one-bar spike shifts the endpoint reading by 0.050/0.150/0.250/0.499 %/bar — 7x to 70x the reset gate — while the robust fit barely moves), and the fit is the smoothest robust option measured (second-difference energy ~25x lower than the old median's). Set `CHART_SLOPE_ESTIMATOR = 'endpoint'` in the page to render the reference two-point definition instead (kept in the core for comparison); the live adapter does not use it.
 - The chart embeds the vendored `uPlot` runtime inline (no CDN, no sibling `uplot/` dir, no DEXBot2 install needed). Each export is a single self-contained HTML file that renders anywhere, even after being copied or mailed to a machine without DEXBot2.
 - The displayed indicators are computed from the 1h base candles and then sampled onto the selected timeframe.
 - The current volume-weighted overlay is a rolling `VWMA`, not a session-reset VWAP.

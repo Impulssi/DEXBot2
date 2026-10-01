@@ -9,7 +9,7 @@ const { calculateATR } = require('../market_adapter/core/strategies/atr/calculat
 const { getErrorMessage } = require('../modules/utils/errors');
 const {
     computeAmaSlopeWeights,
-    computeAverageAmaSlopePct,
+    computeHuberWindowSlopePct,
 } = require('../market_adapter/core/strategies/ama_slope_model');
 const { normalizeAtrPeriod, normalizeMaxVolatilityOffset, normalizeVolatilityThreshold } = require('../market_adapter/core/config_normalizers');
 const { computeRegimeMultiplier } = require('../market_adapter/core/strategies/regime_gate');
@@ -140,9 +140,7 @@ function buildDynamicWeightParityInputs(candles, cfg, botAma) {
     if (clipPercentile > 0 && amaValues.length > amaSlopeReadyBars) {
         const amaSlopes = [];
         for (let i = amaSlopeReadyBars; i < amaValues.length; i++) {
-            const last = amaValues[i];
-            const past = amaValues[i - lookbackBars];
-            const slopePct = computeAverageAmaSlopePct(last, past, lookbackBars);
+            const slopePct = computeHuberWindowSlopePct(amaValues, i, lookbackBars);
             if (Number.isFinite(slopePct)) amaSlopes.push(Math.abs(slopePct));
         }
         if (amaSlopes.length > 0) {

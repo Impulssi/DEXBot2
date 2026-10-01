@@ -251,6 +251,10 @@ function testDynamicWeightChartKeepsGainLinearAtEnd() {
         /function computeDynamicWeightSeries\(/,
         'chart should embed the canonical dynamic weight pipeline'
     );
+    assert.ok(
+        html.includes(`const AMA_SLOPE_HUBER = ${JSON.stringify(MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER)};`),
+        'chart should inject the centralized Huber params from constants'
+    );
 
     const embedded = evalEmbeddedSharedFunctions(html);
 
@@ -417,7 +421,12 @@ function extractEmbeddedSharedFunctions(html) {
 
 function evalEmbeddedSharedFunctions(html) {
     const block = extractEmbeddedSharedFunctions(html);
-    const f = new Function(block + '\nreturn { computeDynamicWeightSeries, echoLatchSeries, computeAverageAmaSlopePct, bilinearInterpolate, buildKalmanVelocitySeries };');
+    // The generated page declares the centralized Huber params before the
+    // embedded functions; the estimator's default `hub` reads that const, so
+    // the eval scope must define it too (empty when a chart omits it).
+    const hubMatch = /const AMA_SLOPE_HUBER = (\{[^;]*\});/.exec(html);
+    const hubPrefix = hubMatch ? `const AMA_SLOPE_HUBER = ${hubMatch[1]};\n` : '';
+    const f = new Function(hubPrefix + block + '\nreturn { computeDynamicWeightSeries, echoLatchSeries, computeAverageAmaSlopePct, bilinearInterpolate, buildKalmanVelocitySeries, computeHuberWindowSlopePct };');
     return f();
 }
 

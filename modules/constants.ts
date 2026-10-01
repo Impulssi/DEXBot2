@@ -1251,6 +1251,25 @@ let MARKET_ADAPTER = {
     // nob: nz% (Neutral Zone %)
     DYNAMIC_WEIGHT_AMA_NEUTRAL_ZONE_PCT: 0,
 
+    // DYNAMIC_WEIGHT_AMA_HUBER: Single source of truth for the canonical AMA-slope
+    // estimator (computeHuberWindowSlopePct in strategy/dynamic_weight_series.ts).
+    // Every consumer — live market adapter, grid-reset replay, bot-fitting
+    // backtests, both browser-embedded research charts — reads these values:
+    // Node callers via the module import, generated HTML via an injected
+    // `const AMA_SLOPE_HUBER = {...}` literal. Change a value here and every
+    // slope computation follows; do not re-declare them per caller.
+    //   C            Huber tuning constant (1.345 ~= 95% Gaussian efficiency)
+    //   ITERATIONS   IRLS passes (converges in a few at the 20-bar window)
+    //   SCALE_FLOOR  Floor for the 1.4826*MAD robust scale, in log units
+    //   ZERO_EPSILON Slopes below this (%/bar) snap to exactly 0
+    // nob: n/a (algorithm-internal)
+    DYNAMIC_WEIGHT_AMA_HUBER: {
+        C: 1.345,
+        ITERATIONS: 5,
+        SCALE_FLOOR: 1e-6,
+        ZERO_EPSILON: 1e-9,
+    },
+
     // DYNAMIC_WEIGHT_ALPHA: Blend between AMA trend and Kalman trend.
     // 0 = pure Kalman, 1 = pure AMA.
     // Higher values trust AMA more, lower values trust Kalman more.

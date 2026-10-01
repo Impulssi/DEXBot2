@@ -11,7 +11,7 @@ import { getStorage } from '../../modules/storage/index.js';
 const { readJSON } = getStorage();
 import { getErrorMessage } from '../../modules/utils/errors.js';
 import { parseRelativeMultiplier } from '../../modules/order/utils/math.js';
-import { computeAverageAmaSlopePct, computeAmaSlopeClipThreshold, createAmaSlopeClipTracker, percentileFromSorted } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
+import { computeAverageAmaSlopePct, computeHuberWindowSlopePct, computeAmaSlopeClipThreshold, createAmaSlopeClipTracker, percentileFromSorted } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
 import {
     resolveBaseBounds,
     computeAsymmetricBoundsMetrics,
@@ -23,6 +23,7 @@ import {
     gridSimSlopeSignal,
     gridSimPositiveNumber,
     gridSimNonNegativeInt,
+    gridSimResolveSlopeEstimator,
     GRID_RESET_NONE,
     GRID_RESET_BOOTSTRAP,
     GRID_RESET_PRICE,
@@ -37,7 +38,6 @@ import {
 const RANGE_SPAN_MIN = 1.3;
 const RANGE_SPAN_MAX = 2.1;
 const RANGE_SPAN_DEFAULT = 1.55;
-
 
 function inferBaseIntervalSeconds(candles: any[], fallback: any = 3600) {
     if (!Array.isArray(candles) || candles.length < 2) return fallback;
@@ -1516,7 +1516,10 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         // red [AMA, upper], green [lower, AMA].
         // Never reads candles, pair-display mapping, or axis/zoom state —
         // inversion and timeframe sampling apply to the AMA first.
-        ${embedFunctionSources([computeAverageAmaSlopePct, computeAmaSlopeClipThreshold, resolveBaseBounds, computeAsymmetricBoundsMetrics, applyAsymmetricBounds, applyNarrowingSideGuard, parseRelativeMultiplier, percentileFromSorted, createAmaSlopeClipTracker, gridSimPositiveNumber, gridSimNonNegativeInt, gridSimSlopeSignal, simulateGridResetSeries])}
+        // Canonical Huber-slope parameters, injected from MARKET_ADAPTER so the
+        // embedded estimator runs the same values as the live adapter.
+        const AMA_SLOPE_HUBER = ${serializeJsonForScript(MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER)};
+        ${embedFunctionSources([computeAverageAmaSlopePct, computeAmaSlopeClipThreshold, resolveBaseBounds, computeAsymmetricBoundsMetrics, applyAsymmetricBounds, applyNarrowingSideGuard, parseRelativeMultiplier, percentileFromSorted, createAmaSlopeClipTracker, gridSimPositiveNumber, gridSimNonNegativeInt, gridSimSlopeSignal, gridSimResolveSlopeEstimator, computeHuberWindowSlopePct, simulateGridResetSeries])}
         // One slope window for every consumer on this page. The band must not
         // stay pinned to the shared constant while the replay honours a
         // bot-configured lookbackBars: that split let the plotted range and the
@@ -1527,7 +1530,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const fromGridSim = Number(gridSimCfg && gridSimCfg.lookbackBars);
             const fromConstants = Number(payload.rangeSlope && payload.rangeSlope.lookbackBars);
             const value = Number.isFinite(fromGridSim) && fromGridSim > 0 ? fromGridSim : fromConstants;
-            return Number.isFinite(value) && value > 0 ? Math.max(1, Math.round(value)) : 9;
+            return Number.isFinite(value) && value > 0
+                ? Math.max(1, Math.round(value))
+                : ${MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS};
         }
         // ── Grid-reset simulation ──
         // Replays the two market-adapter recentering triggers (docs/GRID_RECALCULATION.md
@@ -1536,6 +1541,23 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         // reset (the advanceTriggeredBotState chain). Thresholds arrive pre-resolved
         // through the live config chain in payload.gridSim. The replay itself is the
         // canonical simulateGridResetSeries() embedded above — not a hand copy.
+        // The chart plots the SAME slope the live adapter computes: the embedded
+        // canonical estimator (computeHuberWindowSlopePct), used for BOTH the
+        // replayed delta-s reset trigger and the plotted band tilt, so the chart
+        // cannot diverge from the runtime or from itself. 'endpoint' (the old
+        // two-point difference: same magnitude, far jitterier) remains a
+        // chart-only comparison mode.
+        const CHART_SLOPE_ESTIMATOR = 'canonical';
+        function resolveChartSlopeEstimator() {
+            if (CHART_SLOPE_ESTIMATOR === 'endpoint') {
+                // Wrap to the seam signature (series, index, bars): the raw
+                // helper takes two endpoints and would be mis-called directly.
+                return function (series, index, bars) {
+                    return computeAverageAmaSlopePct(Number(series[index]), Number(series[index - bars]), bars);
+                };
+            }
+            return computeHuberWindowSlopePct;
+        }
         const GRID_RESET_NONE = ${GRID_RESET_NONE};
         const GRID_RESET_BOOTSTRAP = ${GRID_RESET_BOOTSTRAP};
         const GRID_RESET_PRICE = ${GRID_RESET_PRICE};
@@ -1572,7 +1594,12 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             // comes straight from gridSimCfg, i.e. from the same resolved value
             // the Range tilt reads through resolveSlopeLookbackBars(), so both
             // consumers sample the identical window.
-            const cfg = Object.assign({}, gridSimCfg, { warmupBars: warmupBars });
+            const cfg = Object.assign({}, gridSimCfg, {
+                warmupBars: warmupBars,
+                // Same averaging model as the band above, so the replayed Δs
+                // trigger and the plotted tilt keep measuring one quantity.
+                slopeEstimator: resolveChartSlopeEstimator(),
+            });
             return simulateGridResetSeries(baseAma, cfg);
         }
         // Simulated grid range for each bar: the accepted center with the accepted
@@ -1670,11 +1697,14 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const clipThreshold = computeAmaSlopeClipThreshold(baseAma, clipEr, lookback, clipPct);
             const slopeScaling = !!currentRangeScaleEnabled;
             if (!currentAmaEnabled || n === 0) return { upper, lower, trend };
+            const bandSlopeEstimator = resolveChartSlopeEstimator();
             for (let i = 0; i < n; i++) {
                 const ama = baseAma[i];
-                const past = i - lookback >= 0 ? baseAma[i - lookback] : null;
-                if (!Number.isFinite(ama) || ama <= 0 || !Number.isFinite(past) || past <= 0) continue;
-                const slopePct = computeAverageAmaSlopePct(ama, past, lookback);
+                if (!Number.isFinite(ama) || ama <= 0) continue;
+                // Same estimator object the replay uses, so the band and the
+                // delta-s trigger measure one quantity. The endpoint wrapper and
+                // the windowed estimators both return null on an unusable window.
+                const slopePct = bandSlopeEstimator(baseAma, i, lookback);
                 if (slopePct == null || !Number.isFinite(slopePct)) continue;
                 const csp = Math.max(-clipThreshold, Math.min(clipThreshold, slopePct));
                 const dir = Math.abs(csp) <= neutral ? 0 : (csp > 0 ? 1 : -1);

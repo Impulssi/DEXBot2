@@ -46,7 +46,7 @@
  */
 
 import {
-    computeAverageAmaSlopePct,
+    computeHuberWindowSlopePct,
     createAmaSlopeClipTracker,
 } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
 import { clamp } from '../../modules/order/utils/math.js';
@@ -102,6 +102,21 @@ function gridSimSlopeSignal(slopePct: any, clipThreshold: any, cfg: any) {
         trend,
         slopeOffset: clamp(clipped / maxSlopePct, -1, 1) * maxSlopeOffset,
     };
+}
+
+/**
+ * Resolve the per-bar slope estimator for a replay.
+ *
+ * Default is the canonical estimator the live adapter uses
+ * (computeHuberWindowSlopePct), so the replay keeps tracking the runtime.
+ * `cfg.slopeEstimator` exists so a caller can render a different averaging
+ * model without touching this module — it takes the whole series plus the index
+ * because windowed estimators need the window, not just the two endpoints.
+ */
+function gridSimResolveSlopeEstimator(cfg: any) {
+    const custom = cfg?.slopeEstimator;
+    if (typeof custom === 'function') return custom;
+    return computeHuberWindowSlopePct;
 }
 
 /**
@@ -178,6 +193,7 @@ function simulateGridResetSeries(amaSeries: any, cfg: any) {
     }
 
     const clipTracker = createAmaSlopeClipTracker(erPeriod, lookbackBars, clipPercentile);
+    const estimateSlope = gridSimResolveSlopeEstimator(cfg);
     const readyBars = erPeriod + lookbackBars;
     let acceptedCenter: number | null = null;
     let acceptedSlope: number | null = null;
@@ -200,12 +216,9 @@ function simulateGridResetSeries(amaSeries: any, cfg: any) {
         // only the range tilt, never reset timing.
         const clipThreshold = clipTracker.push(hasAma ? ama : NaN);
         let slopePct: number | null = null;
-        if (i >= readyBars) {
-            const past = Number(amaSeries[i - lookbackBars]);
-            if (hasAma && Number.isFinite(past) && past !== 0) {
-                const s = computeAverageAmaSlopePct(ama, past, lookbackBars);
-                if (Number.isFinite(s)) slopePct = s;
-            }
+        if (hasAma && i >= readyBars) {
+            const s = estimateSlope(amaSeries, i, lookbackBars);
+            if (Number.isFinite(s)) slopePct = s as number;
         }
         slopePctSeries[i] = slopePct;
 
@@ -325,6 +338,7 @@ export {
     gridSimSlopeSignal,
     gridSimPositiveNumber,
     gridSimNonNegativeInt,
+    gridSimResolveSlopeEstimator,
     GRID_RESET_NONE,
     GRID_RESET_BOOTSTRAP,
     GRID_RESET_PRICE,
