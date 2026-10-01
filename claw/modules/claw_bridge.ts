@@ -6,6 +6,7 @@ import { createClawInfrastructure } from './claw_infra.js';
 import { describeClawBridge } from './claw_manifest.js';
 import { describeMemuBridge, runMemuCommand } from './memu_bridge.js';
 import { clone } from './utils.js';
+import { splitPairTarget } from '../../modules/utils/asset_symbols.js';
 import { adjustMpaCollateral, borrowMpa, cancelLimitOrder, createLimitOrder, executeBatch, getMpaPosition, getOpenOrders, repayMpaDebt, buildUpdateLimitOrderOperation, updateLimitOrder, settleMpa } from './chain_actions.js';
 import { buildCloseShortPlan, buildOpenShortPlan, buildTakeProfitPlan, closeShortOnBts, openShortOnBts, placeTakeProfitBuyOrderOnBts } from './short_mpa_strategy.js';
 import { launcherRun, launcherDrystart, launcherReset, launcherDisable, launcherPm2Start, launcherPm2Stop, launcherPm2Delete, launcherPm2Restart } from './claw_launcher.js';
@@ -24,20 +25,19 @@ function stripPrivateKey(options: ClawBridgeOptions = {}): ClawBridgeOptions {
  * Split a "BASE/QUOTE" pair string into { baseSymbol, quoteSymbol }.
  * Throws if the value is not a two-segment BASE/QUOTE string — extra segments
  * are rejected instead of being silently dropped.
+ * Both assetA and assetB are canonicalized to UPPERCASE (BitShares' on-chain
+ * spelling) by the shared splitter, so a lowercase pair and its uppercase
+ * spelling are one pair; only the error contract is claw's own.
  */
 function splitPair(pairValue: string) {
-  if (typeof pairValue !== 'string' || !pairValue.includes('/')) {
-    throw new Error('pair must be provided as BASE/QUOTE');
-  }
-
-  const segments = pairValue.split('/');
-  if (segments.length !== 2 || !segments[0] || !segments[1]) {
+  const segments = splitPairTarget(pairValue);
+  if (segments.length !== 2) {
     throw new Error('pair must be provided as BASE/QUOTE');
   }
 
   return {
-    baseSymbol: segments[0].trim(),
-    quoteSymbol: segments[1].trim()
+    baseSymbol: segments[0],
+    quoteSymbol: segments[1]
   };
 }
 
@@ -399,5 +399,5 @@ async function runClawCommand(command: string, options: ClawBridgeOptions = {}):
   }
 }
 
-export { createClawBridge, describeClawBridge, describeRuntimeManifest, runClawCommand }
+export { createClawBridge, describeClawBridge, describeRuntimeManifest, runClawCommand, splitPair }
 

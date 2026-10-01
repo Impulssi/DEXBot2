@@ -12,6 +12,7 @@ import { PATHS } from '../../modules/paths.js';
 import { ensureDir } from '../../modules/order/utils/system.js';
 import { range } from '../math_utils.js';
 import { getStorage } from '../../modules/storage/index.js';
+import { normalizeAssetSymbol } from '../../modules/utils/asset_symbols.js';
 const { readJSON, writeJSON } = getStorage();
 
 import {
@@ -260,7 +261,7 @@ function boundaryFlags(winner: Record<string, any> | null, erValues: number[], f
 // ── Data loaders ──────────────────────────────────────────────────────────────
 
 function normalizeSymbol(value: string | null | undefined): string {
-    return String(value || '').trim().toUpperCase();
+    return normalizeAssetSymbol(value);
 }
 
 function inferIntervalLabel(dataFile: string | null, meta: Record<string, any> | null): string {

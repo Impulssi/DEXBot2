@@ -100,19 +100,23 @@ const fundRegistry = require('./modules/fund_registry');
  */
 const _collateralAssetIdCache = new Map<string, string | null>();
 async function _resolveCollateralAssetId(ref: string): Promise<string | null> {
-    if (_collateralAssetIdCache.has(ref)) return _collateralAssetIdCache.get(ref) ?? null;
+    // The collateral ref is free-text input from the fund-registration flow
+    // ("tokena" resolves on the chain without error). Canonicalize before the
+    // lookup AND before the cache key, so one asset never occupies two slots.
+    const key = normalizeAssetRef(ref);
+    if (_collateralAssetIdCache.has(key)) return _collateralAssetIdCache.get(key) ?? null;
     let result: string | null = null;
     try {
-        if (typeof ref === 'string' && ref.startsWith('1.3.')) {
-            result = ref;
-        } else if (typeof ref === 'string') {
-            const res = await BitShares.db.lookup_asset_symbols([ref]);
+        if (key.startsWith('1.3.')) {
+            result = key;
+        } else if (key) {
+            const res = await BitShares.db.lookup_asset_symbols([key]);
             if (res && res[0] && res[0].id) result = String(res[0].id);
         }
     } catch (_err: any) {
         result = null;
     }
-    _collateralAssetIdCache.set(ref, result);
+    _collateralAssetIdCache.set(key, result);
     return result;
 }
 
@@ -131,6 +135,7 @@ const credentialPolicy = require('./modules/credential_policy');
 const { Config } = require('./modules/config');
 const { getErrorMessage } = require('./modules/utils/errors');
 const { isSameBotName } = require('./modules/utils/sanitize_key');
+const { normalizeAssetRef } = require('./modules/utils/asset_symbols');
 
 // Setup graceful shutdown handlers
 
@@ -629,7 +634,7 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
                         for (const item of dp.lending) {
                             const collateralRef = item.collateralAsset;
                             if (!collateralRef) continue;
-                            const collateralAssetId = _collateralAssetIdCache.get(collateralRef) ?? null;
+                            const collateralAssetId = _collateralAssetIdCache.get(normalizeAssetRef(collateralRef)) ?? null;
                             if (!collateralAssetId) {
                                 console.error(`  ERROR: unable to resolve collateral asset '${collateralRef}' for credit bot ${botName}. Credit bot will run WITHOUT proportional allocation. Check chain connectivity and asset configuration.`);
                                 continue;

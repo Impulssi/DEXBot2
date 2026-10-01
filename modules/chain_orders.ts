@@ -116,6 +116,7 @@ import { BroadcastUncertainError } from './dexbot_credential_client.js';
 import { classifyBroadcastFailure } from './broadcast_failure.js';
 import Logger from './order/logger.js';
 import { getErrorMessage } from './utils/errors.js';
+import { normalizeAssetRef } from './utils/asset_symbols.js';
 function getNodeManager() { return require('./bitshares_client').getNodeManager(); }
 const { toFiniteNumber } = Format;
 
@@ -1482,7 +1483,7 @@ async function getOnChainAssetBalances(accountRef: any, assets: any, options: Re
             try {
                 if (!/^1\.3\./.test(String(a))) {
                     // symbol -> asset
-                    const res = await BitShares.db.lookup_asset_symbols([String(a)]).catch(() => null);
+                    const res = await BitShares.db.lookup_asset_symbols([normalizeAssetRef(a)]).catch(() => null);
                     if (res && res[0] && res[0].id) aid = res[0].id;
                 }
             } catch (e: any) {

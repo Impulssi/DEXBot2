@@ -9,6 +9,7 @@ import { parseJsonWithComments } from '../modules/order/utils/system.js';
 import { MARKET_ADAPTER } from '../modules/constants.js';
 import { loadMarketProfiles } from './tradingview/tradingview_uplot_chart_generator.js';
 import { sanitizeKey } from '../modules/utils/sanitize_key.js';
+import { isSameAssetSymbol, canonicalizeBotAssetSymbols } from '../modules/utils/asset_symbols.js';
 // Single source of truth for bot keys (named AND unnamed bots) so analysis
 // tools resolve the same files production writes.
 import { createBotKey } from '../modules/account_orders.js';
@@ -71,10 +72,16 @@ function loadBotMeta(botKey: any, filePath = PATHS.PROFILES.BOTS_JSON) {
     const entries = Array.isArray(settings?.bots) ? settings.bots : [];
     if (!botKey) return null;
     const normalizedKey = String(botKey).toLowerCase();
+    // Analysis-side twin of modules/bot_settings.normalizeBotEntry: hand out
+    // the pair in BitShares' canonical UPPERCASE so a hand-edited lowercase
+    // bots.json cannot leak into titles, overlays or symbol comparisons. The
+    // same single definition of the symbol-carrying keys is reused (no second
+    // copy of the rule), and persistBotAccountId patches the raw file by
+    // index, so nothing here can rewrite the operator's JSON.
     const exact = entries.find((bot: any, index: number) => computeBotKey(bot, index) === normalizedKey);
-    if (exact) return exact;
+    if (exact) return canonicalizeBotAssetSymbols(exact);
     const loose = entries.find((bot: any) => sanitizeKey(bot?.name) === normalizedKey.replace(/-\d+$/, ''));
-    return loose || null;
+    return loose ? canonicalizeBotAssetSymbols(loose) : null;
 }
 
 /**
@@ -385,10 +392,13 @@ function resolveAmaConfig(botKey: any) {
     }
 
     const marketProfiles = loadMarketProfiles();
+    // Pair match is case-insensitive: market_profiles.json and bots.json are
+    // hand-edited, and a case-only difference must not silently drop the
+    // profile (a strict === here made the AMA/grid config vanish).
     const selectedProfile = marketProfiles?.profiles
         ? marketProfiles.profiles.find((entry: any) =>
-            String(entry.assetA) === String(botMeta.assetA) &&
-            String(entry.assetB) === String(botMeta.assetB) &&
+            isSameAssetSymbol(entry.assetA, botMeta.assetA) &&
+            isSameAssetSymbol(entry.assetB, botMeta.assetB) &&
             Number(entry.intervalSeconds) === 3600)
         : null;
 

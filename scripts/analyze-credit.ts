@@ -36,6 +36,7 @@ const { FEE_PARAMETERS } = require('../modules/constants');
 const { PATHS } = require('../modules/paths');
 const { getErrorMessage } = require('../modules/utils/errors');
 const { sanitizeKey } = require('../modules/utils/sanitize_key');
+const { normalizeAssetRef, normalizeAssetSymbol, isSameAssetSymbol } = require('../modules/utils/asset_symbols');
 const { loadSettingsFile, resolveRawBotEntries, normalizeBotEntries } = require('../modules/bot_settings');
 import { pathToFileURL } from 'node:url';
 // Terminal colors: centralized palette (modules/cli_colors.ts), shared with
@@ -239,7 +240,9 @@ async function main() {
     return (await assetInfo(assetId)).symbol;
   }
   async function resolveLendingRef(ref: string): Promise<{ id: string | null; symbol: string }> {
-    const s = String(ref);
+    // Refs come from bots.json debtPolicy.lending AND from --mpa/--collateral
+    // filters; canonicalize so a lowercase filter still matches the pair.
+    const s = normalizeAssetRef(ref);
     if (/^1\.3\.\d+$/.test(s)) {
       try { return { id: s, symbol: await symbolOf(s) }; } catch { return { id: s, symbol: s }; }
     }
@@ -372,9 +375,9 @@ async function main() {
     const resolvedMpa = await Promise.all(mpaFilterRefs.map(resolveLendingRef));
     const resolvedCredit = await Promise.all(creditFilterRefs.map(resolveLendingRef));
     const mpaIds = new Set(resolvedMpa.map((r) => r.id).filter(Boolean) as string[]);
-    const mpaSyms = new Set(resolvedMpa.map((r) => r.symbol.toUpperCase()));
+    const mpaSyms = new Set(resolvedMpa.map((r) => normalizeAssetSymbol(r.symbol)));
     const creditIds = new Set(resolvedCredit.map((r) => r.id).filter(Boolean) as string[]);
-    const creditSyms = new Set(resolvedCredit.map((r) => r.symbol.toUpperCase()));
+    const creditSyms = new Set(resolvedCredit.map((r) => normalizeAssetSymbol(r.symbol)));
     const filterActive = unionRefs.length > 0;
 
     async function debtMatches(debtAssetId: string | null, ids: Set<string>, syms: Set<string>): Promise<boolean> {
@@ -382,7 +385,7 @@ async function main() {
       if (!debtAssetId) return false;
       if (ids.has(debtAssetId)) return true;
       try {
-        const sym = (await symbolOf(debtAssetId)).toUpperCase();
+        const sym = normalizeAssetSymbol(await symbolOf(debtAssetId));
         return syms.has(sym);
       } catch { return false; }
     }
@@ -398,7 +401,7 @@ async function main() {
       if (!filterActive) symOk = true;
       else if (debtId && creditIds.has(debtId)) symOk = true;
       else if (debtId) {
-        try { symOk = creditSyms.has((await symbolOf(debtId)).toUpperCase()); } catch { symOk = false; }
+        try { symOk = creditSyms.has(normalizeAssetSymbol(await symbolOf(debtId))); } catch { symOk = false; }
       }
       if (symOk) creditDeals.push(d);
     }
@@ -497,7 +500,7 @@ async function main() {
       creditPairs.filter((p) => p.debtId && p.collId).map((p) => `${p.debtId}←${p.collId}`),
     );
     const pairSymKeys = new Set(
-      creditPairs.map((p) => `${p.debtSym.toUpperCase()}←${p.collSym.toUpperCase()}`),
+      creditPairs.map((p) => `${normalizeAssetSymbol(p.debtSym)}←${normalizeAssetSymbol(p.collSym)}`),
     );
 
     // Offer objects for the deals' conversion rates (debt per collateral).
@@ -613,7 +616,7 @@ async function main() {
       const walletRaw = await fetchWalletRaw(account);
       const matchPair = (pair: { debtId: string | null; debtSym: string; collId: string | null; collSym: string }, r: CrRow): boolean =>
         (pair.debtId !== null && r.debtId !== null && pair.debtId === r.debtId && pair.collId !== null && r.collId !== null && pair.collId === r.collId) ||
-        (pair.debtSym.toUpperCase() === r.debtSym.toUpperCase() && pair.collSym.toUpperCase() === r.collSym.toUpperCase());
+        (isSameAssetSymbol(pair.debtSym, r.debtSym) && isSameAssetSymbol(pair.collSym, r.collSym));
       if (avgCr !== null) {
         // Label in orange to distinguish from Curr. CR; value keeps the
         // original health color (single shared max → green/red, mixed or

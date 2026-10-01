@@ -3,6 +3,7 @@
 import { NATIVE_CLIENT } from '../constants.js';
 import { LRUCache } from './lru_cache.js';
 import { getErrorMessage } from '../utils/errors.js';
+import { normalizeAssetRef } from '../utils/asset_symbols.js';
 
 const { RESOLVERS } = NATIVE_CLIENT;
 
@@ -30,6 +31,10 @@ function createResolvers(chainClient: ChainClient) {
     async function resolveAsset(idOrSymbol: string): Promise<any> {
         if (!idOrSymbol) throw new Error('asset id or symbol required');
 
+        // Canonicalize before the cache key and the chain call: a lowercase
+        // symbol would otherwise occupy a second cache slot and be echoed back
+        // lowercase to every caller.
+        idOrSymbol = normalizeAssetRef(idOrSymbol);
         const cacheKey = `asset:${idOrSymbol}`;
         const cached = assetCache.get(cacheKey);
         if (cached) return cached;

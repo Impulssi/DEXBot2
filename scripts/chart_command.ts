@@ -33,6 +33,7 @@ const __dirname = path.dirname(__filename);
 import { loadBotMeta, loadBotSettings, computeBotKey } from '../analysis/bot_key_utils.js';
 import { PATHS } from '../modules/paths.js';
 import { normalizePoolId, resolveAsset, findPoolByAssets } from '../market_adapter/utils/chain.js';
+import { normalizeAssetSymbol, splitPairTarget } from '../modules/utils/asset_symbols.js';
 import { fetchCandlesSequentially, outputPath } from '../market_adapter/inputs/fetch_lp_data.js';
 import { fetchMarketCandlesSequentially } from '../market_adapter/inputs/fetch_book_data.js';
 import { fetchFeedCandlesSequentially } from '../market_adapter/inputs/kibana_feed_source.js';
@@ -91,6 +92,7 @@ function printUsage(cmd: ChartCmd = 'tv'): void {
     console.log('  <bot>          Bot name or key from profiles/bots.json');
     console.log('  <pool-id>      Liquidity pool id, e.g. 133 or 1.19.133 (always pool candles)');
     console.log('  AssetA/AssetB  Pair symbols, e.g. TOKENA/TOKENB (pool-first, orderbook fallback)');
+    console.log('                 Case-insensitive: assetA/assetB is uppercased before it reaches the chain');
     console.log('                 MPA pairs (e.g. BTS/HONEST.USD) can chart price-feed history via --feed');
     console.log('');
     console.log('Options:');
@@ -104,6 +106,9 @@ function printUsage(cmd: ChartCmd = 'tv'): void {
 async function resolveMpaBacking(mpaSymbol: string, bitsharesClient: any): Promise<{ mpa: any; backing: any; isPredictionMarket: boolean; feedPublicationTime: string | null } | null> {
     const db = bitsharesClient.BitShares?.db;
     if (!db || typeof db.lookup_asset_symbols !== 'function') return null;
+    // Canonical UPPERCASE symbol for the chain call and for every message
+    // below, so a lowercase assetA/assetB pair is reported UPPERCASE.
+    mpaSymbol = normalizeAssetSymbol(mpaSymbol);
     let mpa: any = null;
     try {
         const found = await db.lookup_asset_symbols([mpaSymbol]);
@@ -324,14 +329,17 @@ async function run(cmd: ChartCmd): Promise<void> {
     const botHit = findBotByTarget(target as string);
     const poolTarget = !botHit && isPoolIdTarget(target as string);
     const pairTarget = !botHit && !poolTarget && (target as string).includes('/');
-    const pairParts = pairTarget ? (target as string).split('/').map((s) => s.trim()).filter(Boolean) : [];
+    // A pair target may be typed in any case ("assetb/asseta"); the legs are
+    // canonicalized here so the chain call, the cache keys, the chart title and
+    // the exported HTML all speak the same UPPERCASE symbols.
+    const pairParts = pairTarget ? splitPairTarget(target) : [];
     if (!botHit && !poolTarget && !pairTarget) {
         const settings = loadBotSettings();
         const entries = Array.isArray((settings as any)?.bots) ? (settings as any).bots : [];
         const keys = entries.map((b: any, i: number) => computeBotKey(b, i)).filter(Boolean);
         throw new Error(`Unknown target "${target}". Use a bot name/key${keys.length ? ` (${keys.slice(0, 8).join(', ')}${keys.length > 8 ? ', …' : ''})` : ''}, a pool id (e.g. 133), or AssetA/AssetB.`);
     }
-    if (pairTarget && pairParts.length !== 2) throw new Error(`Invalid pair "${target}". Use AssetA/AssetB, e.g. TOKENA/TOKENB`);
+    if (pairTarget && pairParts.length !== 2) throw new Error(`Invalid pair "${target}". Use AssetA/AssetB, e.g. TOKENA/TOKENB (case is normalized to uppercase)`);
 
     const bitsharesClient = await import('../modules/bitshares_client.js');
     const { waitForConnected } = bitsharesClient;
@@ -349,8 +357,8 @@ async function run(cmd: ChartCmd): Promise<void> {
         if (botHit) {
             botKey = botHit.botKey;
             botMeta = botHit.meta;
-            const symA = botMeta.assetA;
-            const symB = botMeta.assetB;
+            const symA = normalizeAssetSymbol(botMeta.assetA);
+            const symB = normalizeAssetSymbol(botMeta.assetB);
             if (!symA || !symB) throw new Error(`Bot '${target}' has no assetA/assetB pair in profiles/bots.json`);
             const [metaA, metaB] = await Promise.all([resolveAsset(symA, bitsharesClient), resolveAsset(symB, bitsharesClient)]);
             assetA = { id: metaA.id, precision: metaA.precision, symbol: symA };

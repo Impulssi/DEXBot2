@@ -101,6 +101,7 @@ import { getWhitelistFlags, setWhitelistFlags, renameWhitelistEntry, removeWhite
 import { BOT_LIVE_CONFIG_KEYS } from './runtime_settings.js';
 import { mergeSettings } from './settings_merge.js';
 import { getErrorMessage } from './utils/errors.js';
+import { normalizeAssetSymbol } from './utils/asset_symbols.js';
 import { roundToDecimals, parseRelativeMultiplier } from './order/utils/math.js';
 import { CLI_COLORS } from './cli_colors.js';
 import { displayWidth, padDisplay } from './utils/text_width.js';
@@ -368,7 +369,7 @@ async function askLogLevel(promptText: string, defaultValue: string): Promise<an
  */
 async function askAsset(promptText: string, defaultValue?: any): Promise<any> {
     while (true) {
-        const displayDefault = defaultValue ? String(defaultValue).toUpperCase() : undefined;
+        const displayDefault = defaultValue ? normalizeAssetSymbol(defaultValue) : undefined;
         const suffix = displayDefault !== undefined && displayDefault !== null ? ` [${displayDefault}]` : '';
 
         const answer = await readInput(`${promptText}${suffix}: `);
@@ -380,7 +381,7 @@ async function askAsset(promptText: string, defaultValue?: any): Promise<any> {
             continue;
         }
 
-        return answer.toUpperCase().trim();
+        return normalizeAssetSymbol(answer);
     }
 }
 
@@ -393,7 +394,7 @@ async function askAsset(promptText: string, defaultValue?: any): Promise<any> {
  */
 async function askAssetB(promptText: string, defaultValue?: any, assetA?: string): Promise<any> {
     while (true) {
-        const displayDefault = defaultValue ? String(defaultValue).toUpperCase() : undefined;
+        const displayDefault = defaultValue ? normalizeAssetSymbol(defaultValue) : undefined;
         const suffix = displayDefault !== undefined && displayDefault !== null ? ` [${displayDefault}]` : '';
 
         const answer = await readInput(`${promptText}${suffix}: `);
@@ -405,7 +406,7 @@ async function askAssetB(promptText: string, defaultValue?: any, assetA?: string
             continue;
         }
 
-        const assetB = answer.toUpperCase().trim();
+        const assetB = normalizeAssetSymbol(answer);
 
         // Validate that Asset B is different from Asset A
         if (assetB === assetA) {

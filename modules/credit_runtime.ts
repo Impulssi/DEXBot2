@@ -14,6 +14,7 @@ import { createBotKey } from './account_orders.js';
 import * as fundRegistry from './fund_registry.js';
 import { writeJsonFileAtomic } from './bots_file_lock.js';
 import { resolveAssetByRef, nowIso } from './order/utils/system.js';
+import { normalizeAssetRef } from './utils/asset_symbols.js';
 import { FEE_PARAMETERS, DEFAULT_TARGET_CR, TIMING, NATIVE_CLIENT } from './constants.js';
 import { PATHS } from './paths.js';
 import {
@@ -448,7 +449,10 @@ class CreditRuntime {
 
     async _resolveAsset(assetRef: any): Promise<any> {
         if (!assetRef) return null;
-        const cacheKey = String(assetRef);
+        // Canonical key: debtPolicy.lending refs and the --asset/--collateral
+        // overrides of scripts/test-credit-renewal.ts would otherwise each get
+        // their own cache slot for the same asset.
+        const cacheKey = normalizeAssetRef(assetRef);
         if (this._assetCache.has(cacheKey)) {
             return this._assetCache.get(cacheKey);
         }

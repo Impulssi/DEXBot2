@@ -8,6 +8,7 @@ import { isSameBotName } from './utils/sanitize_key.js';
 import { isPositiveNumber, isPositiveNumberOrPercent, toDecimal } from './order/utils/math.js';
 import { resolveMinCollateralIncreaseThreshold } from './cr_planner.js';
 import { getErrorMessage } from './utils/errors.js';
+import { canonicalizeBotAssetSymbols } from './utils/asset_symbols.js';
 const storage = getStorage();
 const { writeJSON } = storage;
 
@@ -53,7 +54,18 @@ function normalizeBotEntry(entry: any, index: number = 0): any {
     // active default + raw passthrough live in modules/bot_defaults.ts
     // (shared with the claw copy — one semantics for both).
     const normalized = seedBotEntry(entry);
-    return { ...normalized, botIndex: index, botKey: createBotKey(normalized, index) };
+    // Asset symbols are canonical UPPERCASE on BitShares. A hand-edited
+    // lowercase "assetA": "tokena" is accepted by the chain without error but
+    // breaks every strict symbol comparison downstream (e.g. the core-asset
+    // side check that reads `assetA === 'CORE'`,
+    // getBtsSide, fee/pool cache keys), so canonicalize at this single read
+    // funnel — which key names hold a symbol is defined once, in
+    // modules/utils/asset_symbols.canonicalizeBotAssetSymbols, shared with
+    // analysis/bot_key_utils.loadBotMeta. botKey is unaffected: createBotKey
+    // runs the pair through sanitizeKey, which is case-insensitive.
+    const out: any = canonicalizeBotAssetSymbols({ ...normalized, botIndex: index });
+    out.botKey = createBotKey(out, index);
+    return out;
 }
 
 function normalizeBotEntries(rawEntries: any[]): any[] {

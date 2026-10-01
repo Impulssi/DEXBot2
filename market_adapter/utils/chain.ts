@@ -4,6 +4,7 @@ const require = createRequire(import.meta.url);
 
 
 import { API_LIMITS } from '../../modules/constants.js';
+import { normalizeAssetSymbol } from '../../modules/utils/asset_symbols.js';
 
 let _bitsharesClient: any = null;
 
@@ -23,13 +24,17 @@ async function resolveAsset(symbol: any, bitsharesClient: any = null) {
     if (!symbol || typeof symbol !== 'string') {
         throw new Error(`Cannot resolve asset: invalid or missing symbol "${symbol}"`);
     }
+    // BitShares symbols are canonical UPPERCASE; nodes answer lowercase lookups
+    // silently, so normalize here and hand the canonical symbol downstream
+    // (cache keys, Kibana terms, chart labels) instead of the raw input.
+    const canonical = normalizeAssetSymbol(symbol);
     const client = bitsharesClient || getBitsharesClient();
-    const results = await client.BitShares.db.lookup_asset_symbols([symbol]);
+    const results = await client.BitShares.db.lookup_asset_symbols([canonical]);
     const asset = results?.[0];
     if (!asset?.id || typeof asset.precision !== 'number') {
-        throw new Error(`Cannot resolve asset "${symbol}": lookup failed`);
+        throw new Error(`Cannot resolve asset "${canonical}": lookup failed`);
     }
-    return { id: asset.id, precision: asset.precision, symbol };
+    return { id: asset.id, precision: asset.precision, symbol: String(asset.symbol || canonical) };
 }
 
 async function findPoolByAssets(assetAId: any, assetBId: any, options: any = {}) {
@@ -115,10 +120,6 @@ async function findPoolByAssets(assetAId: any, assetBId: any, options: any = {})
     }
 
     throw new Error(`No liquidity pool found for ${assetAId}/${assetBId}`);
-}
-
-function normalizeAssetSymbol(value: any) {
-    return String(value || '').trim().toUpperCase();
 }
 
 function isExactPair(a: any, b: any, targetA: any, targetB: any) {

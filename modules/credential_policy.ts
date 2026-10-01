@@ -25,6 +25,7 @@ import { getStorage } from './storage/index.js';
 import { runtime } from './runtime.js';
 import { LRUCache } from './bitshares-native/lru_cache.js';
 import { getErrorMessage } from './utils/errors.js';
+import { normalizeAssetRef } from './utils/asset_symbols.js';
 const { RESOLVERS } = NATIVE_CLIENT;
 const storage = getStorage();
 const { readJSON } = storage;
@@ -92,7 +93,9 @@ function setExternalAssetResolver(resolver: AssetResolver | null): void {
 
 async function resolveAssetRefToId(assetRef: string): Promise<string | null> {
     if (!assetRef || typeof assetRef !== 'string') return null;
-    const cacheKey = String(assetRef);
+    // Canonical key + canonical ref for the external/native resolver, so the
+    // daemon and this process agree on one entry per asset.
+    const cacheKey = normalizeAssetRef(assetRef);
     const cached = assetRefResolutionCache.get(cacheKey);
     if (cached !== undefined) return cached;
 

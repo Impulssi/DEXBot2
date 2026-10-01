@@ -60,6 +60,7 @@ import * as OrderUtils from './order.js';
 import Logger from '../../order/logger.js';
 import { runtime } from '../../runtime.js';
 import { getErrorMessage } from '../../utils/errors.js';
+import { normalizeAssetRef } from '../../utils/asset_symbols.js';
 import { withTimeout } from './timeout.js';
 const { ensureDir, readJSON } = storage;
 const systemLogger = new Logger('System');
@@ -121,6 +122,12 @@ const poolIdCache = new Map();
  */
 export const lookupAsset = async (BitShares: any, s: string): Promise<any> => {
     if (!BitShares) return null;
+    // BitShares symbols are canonical UPPERCASE and object ids ("1.3.x") are
+    // passed through; normalizing here means every caller (price derivation,
+    // fee cache, pool lookup) hits the chain with the canonical spelling.
+    // Only real symbols are rewritten: a blank/non-string ref must keep its
+    // original spelling in the CRITICAL error below.
+    if (typeof s === 'string' && s.trim()) s = normalizeAssetRef(s);
     let cached: any = null;
     if (BitShares?.assets) {
         try {
@@ -166,7 +173,9 @@ export const lookupAsset = async (BitShares: any, s: string): Promise<any> => {
  */
 export const resolveAssetByRef = async (BitShares: any, ref: any): Promise<any> => {
     if (!BitShares?.db) return null;
-    const cacheKey = String(ref);
+    // Same rule as lookupAsset: canonicalize real symbols, leave anything else
+    // (object ids pass through, junk keeps its original spelling) untouched.
+    const cacheKey = typeof ref === 'string' ? normalizeAssetRef(ref) : String(ref);
     const method = /^1\.3\.\d+$/.test(cacheKey) ? 'get_assets' : 'lookup_asset_symbols';
     const camelMethod = method.replace(/_([a-z])/g, (_: any, c: string) => c.toUpperCase());
     try {
