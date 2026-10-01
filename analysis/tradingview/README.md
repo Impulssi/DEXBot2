@@ -272,8 +272,13 @@ so the chart cannot drift from the runtime. The panel labels the winning layer;
 The replay runs in the page, so the AMA series (and therefore the trigger
 points) follows the AMA inputs and preset buttons; the gating parameters that
 would come from config (`erPeriod`, lookback, warmup, clip percentile) are fixed
-at generation time. The replay uses the canonical `simulateGridResetSeries()`
-from `analysis/tradingview/grid_reset_sim.ts`, embedded verbatim via
+at generation time. One slope window is shared by every consumer: the resolved
+`lookbackBars` drives both the replayed `Δs` trigger and the `Scale` band tilt,
+so a bot-configured lookback can no longer leave the plotted band measuring a
+different slope than the trigger does (the shared constant remains the fallback
+for pool/pair charts, which carry no grid-sim data). The replay uses the
+canonical `simulateGridResetSeries()` from
+`analysis/tradingview/grid_reset_sim.ts`, embedded verbatim via
 `embedFunctionSources` — not a hand copy of the adapter logic.
 
 ## Notes

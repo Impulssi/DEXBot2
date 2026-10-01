@@ -9,6 +9,7 @@ const {
     TRADINGVIEW_PREFS_KEY_PREFIX,
     TRADINGVIEW_SYNC_KEY,
 } = require('../analysis/tradingview/tradingview_uplot_chart_generator');
+const { MARKET_ADAPTER } = require('../modules/constants');
 
 let passed = 0;
 let failed = 0;
@@ -122,6 +123,47 @@ check('fit: simulated band extension tracks the upper edge with max', () => {
     assert.ok(html.includes('if (su > simMax) simMax = su;'), 'simMax must track the band upper bound');
     assert.ok(!html.includes('if (su < simMax) simMax = su;'), 'inverted simMax comparison must not return');
     assert.ok(html.includes('SIM_FIT_MAX_STRETCH'), 'the stretch guard must stay wired');
+});
+
+// ── Shared AMA-slope lookback window ──────────────────────────────
+check('slope window: the band and the reset replay resolve one shared lookback', () => {
+    const html = generateHTML({
+        candles: [
+            [1710000000000, 1, 1.1, 0.9, 1.02, 10],
+            [1710003600000, 1.02, 1.2, 0.98, 1.08, 12],
+            [1710007200000, 1.08, 1.22, 1.01, 1.15, 9],
+        ],
+        meta: { assetA: { symbol: 'A' }, assetB: { symbol: 'B' } },
+        gridSim: { enabled: true, lookbackBars: 32 },
+    });
+    assert.ok(html.includes('function resolveSlopeLookbackBars()'), 'the shared resolver must exist');
+    assert.ok(
+        html.includes('const lookback = resolveSlopeLookbackBars();'),
+        'the range band must consume the shared resolver',
+    );
+    assert.ok(
+        !html.includes('slopeCfg.lookbackBars'),
+        'the band must not stay pinned to the constant while the replay uses the config',
+    );
+    assert.ok(
+        html.includes('Object.assign({}, gridSimCfg, { warmupBars: warmupBars })'),
+        'the replay must keep using its own already-resolved lookbackBars',
+    );
+});
+
+check('slope window: a bot-configured lookback reaches the band through the payload', () => {
+    const html = generateHTML({
+        candles: [[1710000000000, 1, 1.1, 0.9, 1.02, 10]],
+        meta: { assetA: { symbol: 'A' }, assetB: { symbol: 'B' } },
+        gridSim: { enabled: true, lookbackBars: 32 },
+    });
+    const payload = JSON.parse(/<script id="payload"[^>]*>([\s\S]*?)<\/script>/.exec(html)![1]);
+    assert.strictEqual(payload.gridSim.lookbackBars, 32, 'the config-resolved window must reach the page');
+    assert.strictEqual(
+        payload.rangeSlope.lookbackBars,
+        MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS,
+        'the constant stays embedded as the fallback',
+    );
 });
 
 if (failed > 0) {

@@ -1517,6 +1517,18 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         // Never reads candles, pair-display mapping, or axis/zoom state —
         // inversion and timeframe sampling apply to the AMA first.
         ${embedFunctionSources([computeAverageAmaSlopePct, computeAmaSlopeClipThreshold, resolveBaseBounds, computeAsymmetricBoundsMetrics, applyAsymmetricBounds, applyNarrowingSideGuard, parseRelativeMultiplier, percentileFromSorted, createAmaSlopeClipTracker, gridSimPositiveNumber, gridSimNonNegativeInt, gridSimSlopeSignal, simulateGridResetSeries])}
+        // One slope window for every consumer on this page. The band must not
+        // stay pinned to the shared constant while the replay honours a
+        // bot-configured lookbackBars: that split let the plotted range and the
+        // replayed \u0394s trigger disagree about how far back to measure the
+        // slope. The replay's already-resolved value wins; the constant is the
+        // fallback for charts that carry no grid-sim data (pool/pair charts).
+        function resolveSlopeLookbackBars() {
+            const fromGridSim = Number(gridSimCfg && gridSimCfg.lookbackBars);
+            const fromConstants = Number(payload.rangeSlope && payload.rangeSlope.lookbackBars);
+            const value = Number.isFinite(fromGridSim) && fromGridSim > 0 ? fromGridSim : fromConstants;
+            return Number.isFinite(value) && value > 0 ? Math.max(1, Math.round(value)) : 9;
+        }
         // ── Grid-reset simulation ──
         // Replays the two market-adapter recentering triggers (docs/GRID_RECALCULATION.md
         // §3 AMA Δ / §4 AMA-Slope Δ) over the 1h AMA series: the accepted grid center
@@ -1556,6 +1568,10 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const warmupBars = (override != null && Number.isFinite(Number(override)) && Number(override) >= 0)
                 ? Math.ceil(Number(override))
                 : warmup;
+            // warmupBars stays config-derived (getAmaWarmupBars); lookbackBars
+            // comes straight from gridSimCfg, i.e. from the same resolved value
+            // the Range tilt reads through resolveSlopeLookbackBars(), so both
+            // consumers sample the identical window.
             const cfg = Object.assign({}, gridSimCfg, { warmupBars: warmupBars });
             return simulateGridResetSeries(baseAma, cfg);
         }
@@ -1632,7 +1648,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const trend = new Array(n).fill(0);
             const slopeCfg = payload.rangeSlope || {};
             const gridCfg = payload.grid || null;
-            const lookback = Math.max(1, Math.round(Number(slopeCfg.lookbackBars) || 9));
+            const lookback = resolveSlopeLookbackBars();
             const maxSlope = Number(slopeCfg.maxSlopePct) > 0 ? Number(slopeCfg.maxSlopePct) : 0.09;
             const neutral = Number(slopeCfg.neutralZonePct) >= 0 ? Number(slopeCfg.neutralZonePct) : 0;
             const maxSlopeOffset = Number(slopeCfg.maxSlopeOffset) > 0 ? Number(slopeCfg.maxSlopeOffset) : 0.5;
