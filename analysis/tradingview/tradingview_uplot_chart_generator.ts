@@ -186,8 +186,11 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         vwapEnabled: data.vwapEnabled === true,
         vwapBars: Math.max(5, Math.round(data.vwapBars ?? 500)),
         priceScale: data.priceScale === 'linear' ? 'linear' : 'log',
-        rangeEnabled: data.rangeEnabled === true,
-        rangeScaleEnabled: data.rangeScaleEnabled === true,
+        // Range / Scale always start off: they are AMA-derived in-chart toggles
+        // with an auto opt-in chain, and the user's choice is persisted per
+        // chart in localStorage, so no generation-time default is needed.
+        rangeEnabled: false,
+        rangeScaleEnabled: false,
         rangeWidthPct: Number.isFinite(Number(data.rangeWidthPct)) && Number(data.rangeWidthPct) > 0
             ? Number(data.rangeWidthPct)
             : 2,

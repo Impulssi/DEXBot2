@@ -175,6 +175,8 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 
 ## CLI Flags
 
+Indicator on/off state is not a generation-time flag: `SMA`, `VWMA`, `AMA`, `Range` and `Scale` are in-chart toolbar toggles, persisted per chart in `localStorage`, and `Range` / `Scale` opt into the AMA they are derived from. The `--range`, `--no-range`, `--range-scale` and `--no-ama` flags were removed — they duplicated the toolbar and could disagree with it (`--no-ama` on a chart with a range band produced a dead band). Nothing in this table sets an indicator on or off; only `--range-span` sizes the band.
+
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--source <json\|market_adapter>` | Data source type | `json` |
@@ -189,11 +191,7 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 | `--ama-slow-period <n>` | AMA slow period | `83.6` |
 | `--vwap-bars <n>` | Rolling VWMA window | `500` |
 | `--no-sma` | Disable SMA | — |
-| `--no-ama` | Disable AMA | — |
 | `--no-vwap` | Disable VWMA | — |
-| `--range` | Enable range highlight (off by default; toggle in-chart) | off |
-| `--no-range` | Disable range highlight | — |
-| `--range-scale` | Range Scaling: size the band by AMA slope like the grid build + fit price axis to it (on the next autofit, not on toggle) | — |
 | `--no-grid-reset` | Render without the grid-reset simulation (toggle it back in the chart) | on for AMA bots |
 | `--grid-delta-pct <n>` | Override the AMA-price Δ threshold for the simulation (skips config resolution) | config |
 | `--grid-slope-delta-pct <n>` | Override the AMA-slope Δ threshold for the simulation, in %/bar | config |

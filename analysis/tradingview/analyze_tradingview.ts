@@ -34,11 +34,8 @@ function parseArgs() {
         amaFastPeriod: number | undefined;
         amaSlowPeriod: number | undefined;
         smaEnabled: boolean;
-        amaEnabled: boolean;
         vwapEnabled: boolean;
         vwapBars: number;
-        rangeEnabled: boolean;
-        rangeScaleEnabled: boolean;
         rangeSpan: number | undefined;
         ordersFile: string | null;
         noOrders: boolean;
@@ -61,11 +58,8 @@ function parseArgs() {
         amaFastPeriod: undefined,
         amaSlowPeriod: undefined,
         smaEnabled: false,
-        amaEnabled: true,
         vwapEnabled: false,
         vwapBars: 500,
-        rangeEnabled: false,
-        rangeScaleEnabled: false,
         rangeSpan: undefined,
         ordersFile: null,
         noOrders: false,
@@ -96,12 +90,8 @@ function parseArgs() {
         else if (arg === '--ama-fast-period') config.amaFastPeriod = Math.max(0.1, parseFloat(args[++i]) || DEFAULT_AMA.fastPeriod);
         else if (arg === '--ama-slow-period') config.amaSlowPeriod = Math.max(0.1, parseFloat(args[++i]) || DEFAULT_AMA.slowPeriod);
         else if (arg === '--no-sma') config.smaEnabled = false;
-        else if (arg === '--no-ama') config.amaEnabled = false;
         else if (arg === '--no-vwap') config.vwapEnabled = false;
         else if (arg === '--vwap-bars') config.vwapBars = Math.max(5, parseInt(args[++i], 10) || 500);
-        else if (arg === '--range') config.rangeEnabled = true;
-        else if (arg === '--no-range') config.rangeEnabled = false;
-        else if (arg === '--range-scale') config.rangeScaleEnabled = true;
         else if (arg === '--range-span') config.rangeSpan = parseFloat(args[++i]);
         else if (arg === '--orders-file') config.ordersFile = String(args[++i] || '');
         else if (arg === '--no-orders') config.noOrders = true;
@@ -232,7 +222,9 @@ async function main() {
         } : null);
         const title = config.title || inferTitle(jsonMeta, path.basename(filePath || 'tradingview'));
         const hasAmaGridPrice = AMA_KEYWORDS.has(String(botMeta?.gridPrice || '').trim().toLowerCase());
-        const amaEnabled = hasAmaGridPrice ? config.amaEnabled : false;
+        // AMA is auto-enabled for gridPrice "ama"/"ama1-4" bots; there is no
+        // CLI switch any more (the in-chart AMA toggle owns that choice).
+        const amaEnabled = hasAmaGridPrice;
 
         // Bot grid bounds for the range highlight: mirrors the runtime grid
         // (center = AMA, min "Nx" = center/N, max "Nx" = center*N) with the
@@ -300,8 +292,6 @@ async function main() {
             amaEnabled,
             vwapEnabled: config.vwapEnabled,
             vwapBars: config.vwapBars,
-            rangeEnabled: config.rangeEnabled,
-            rangeScaleEnabled: config.rangeScaleEnabled,
             rangeSpan: config.rangeSpan,
             grid,
             gridSim,
