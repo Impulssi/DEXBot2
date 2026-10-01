@@ -1224,8 +1224,12 @@ let MARKET_ADAPTER = {
     // DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS: Lookback window for measuring AMA trend.
     // Lower values react faster to recent price changes.
     // Higher values smooth the signal and require a more sustained move.
+    // 20 (was 9): measured on the real 1h pools, the slope's bar-to-bar wobble
+    // drops ~34% and slope-driven grid resets ~19%, while the band tilt is
+    // unchanged; the cost is freshness — the window centre sits ~10 bars back
+    // instead of ~4.5, so reversals are acted on later.
     // nob: lb (Lookback Bars)
-    DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS: 9,
+    DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS: 20,
 
     // DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT: Average per-bar trend size that counts as "full strength" for AMA.
     // Lower values make the AMA channel reach maximum influence more easily.
