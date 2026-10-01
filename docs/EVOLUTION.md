@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.6.9 release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.6.10 release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
-- **Growth Phase**: 2,306 commits over ~9 active months
+- **Growth Phase**: 2,315 commits over ~9 active months
 - **Code Maturity**: Evolution from basic utilities to a ~100,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 305 automated test files
-- **Releases**: 141 version entries in the changelog (v0.1.0 to v1.6.9)
+- **Releases**: 142 version entries in the changelog (v0.1.0 to v1.6.10)
 
 > **Post-1.0.0 "why":** the thematic story behind the hardening releases — root cause, recurring
 > bug families, and lessons — lives in
@@ -149,7 +149,7 @@ Evolved from a basic README to a comprehensive framework (50+ docs entries, 80%+
 
 ## Version History
 
-Compact, era-level view; commit counts are `git rev-list --count <tag>..<tag>` over the current history (2026-09-30), so the column sums to 2,200 — the 106 commits before the `v0.1.0` tag are not attributed to an era (2,200 + 106 = 2,306). Per-release detail lives in [CHANGELOG.md](../CHANGELOG.md); the thematic post-1.0.0 story in [ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md](ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md).
+Compact, era-level view; commit counts are `git rev-list --count <tag>..<tag>` over the current history (2026-10-01), so the column sums to 2,209 — the 106 commits before the `v0.1.0` tag are not attributed to an era (2,209 + 106 = 2,315). Per-release detail lives in [CHANGELOG.md](../CHANGELOG.md); the thematic post-1.0.0 story in [ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md](ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md).
 
 | Era | Commits | Theme |
 |-----|--------:|-------|
@@ -165,13 +165,14 @@ Compact, era-level view; commit counts are `git rev-list --count <tag>..<tag>` o
 | v1.6.4 → v1.6.5 | 16 | Editor-managed whitelist flags, centralized bot defaults/settings, log-symmetric range tilt, AMA gridPrice normalization, Pool/Health cues, AMA-slope Δ knob, dynamic-weight CLI, update self-heal, RMS log tagging |
 | v1.6.5 → v1.6.6 | 13 | Stale-cancellation guard hardening, editor/CLI realignment, poolRef aliases + startPrice priority, legacy SMA/MACD/RSI analyzer archived, run-relative candle-cache migration dropped, dist-freshness exclude fix |
 | v1.6.6 → v1.6.7 | 11 | Session/fill-channel recovery, clean-process ecosystem regen, onboarding redirect and key-manager link fixes, LAST-FILL-GUARD pivot persistence |
-| v1.6.7 → v1.6.8 | 12 | Correction-drain budget + broadcast-deferral bounds, PM2 log capture + rotation, passive version notice, genesis-ladder refusal, reserve window exclusion, legacy tolerance-matcher removal, npm-tarball trim, TV grid-reset replay, bounded Kibana tail refresh, 1.4x range-threshold widening |
+| v1.6.7 → v1.6.8 | 14 | Correction-drain budget + broadcast-deferral bounds, PM2 log capture + rotation, passive version notice, genesis-ladder refusal, reserve window exclusion, legacy tolerance-matcher removal, npm-tarball trim, TV grid-reset replay, bounded Kibana tail refresh, 1.4x range-threshold widening |
 | v1.6.8 → v1.6.9 | 6 | Market-adapter cycle-CPU cuts, candle-boundary off-hour idle, spread-correction spread-tightening guard |
+| v1.6.9 → v1.6.10 | 7 | Huber-robust AMA slope, asset-pair uppercase canonicalization, TradingView indicator ownership (auto opt-in, span bounds) and chart-view preservation |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
-**Last Updated**: September 30, 2026
-**Total Commits**: 2,306
-**Date Range**: December 2, 2025 – September 30, 2026
+**Last Updated**: October 1, 2026
+**Total Commits**: 2,315
+**Date Range**: December 2, 2025 – October 1, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)
