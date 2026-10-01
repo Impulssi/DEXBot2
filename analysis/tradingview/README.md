@@ -38,9 +38,9 @@ The sections below cover manual usage (explicit candle files, direct runner flag
 - Pair-orientation switcher for `A/B` and `B/A`
 - SMA overlay
 - AMA preset buttons `1–4` (one-click AMA1–4, active preset highlighted); numeric inputs kept
-- Bot-grid range highlight, off by default (the bot's min/max around AMA with live asymmetric tilt; red above AMA, green below)
+- Bot-grid range highlight, off by default (the bot's min/max around AMA with live asymmetric tilt; red above AMA, green below). `Range` and `Scale` are AMA-derived, so turning one on opts into what it needs: `Range` → `AMA`, `Scale` → `Range` + `AMA`; turning `AMA` off takes `Range` and `Scale` back down with it, so the toggles never sit in a dead state. One-way opt-in is re-applied on load, so a chart saved with `Scale` on renders its band.
 - Grid-reset simulation (AMA bots, on by default): replays the market adapter's two recentering triggers over the candle history — the accepted grid center as a step line, the simulated grid range around it, and a marker per reset (`init` = first AMA snapshot, `Δ1` = AMA-price Δ, `Δs` = AMA-slope Δ). Thresholds come from the live config chain; a bottom-left panel shows the values, where they came from, and the reset counts (see [Grid-Reset Simulation](#grid-reset-simulation))
-- Range-scale switch: fit the price axis to the range band. Toggling `Range` / `Scale` (or dragging the grid-span slider) keeps the current view — the price axis is not refitted under the cursor; the band-fit applies on the next autofit (reload, timeframe switch, x pan) or immediately on a double-click of the price axis
+- Range-scale switch: fit the price axis to the range band. Toggling `Range` / `Scale` (or dragging the grid-span slider) keeps the current view — the price axis is not refitted under the cursor; the band-fit applies on the next autofit (reload, timeframe switch, x pan) or immediately on a double-click of the price axis. Opting into `Scale`/`Range` also opts into the indicators they need (see above)
 - VWMA overlay
 - Order overlay for bot charts (active grid buys/sells as dashed levels, reserve line at the lowest grid buy, ceiling line at the highest grid sell, spread label; pair-aware, toggle in-chart)
 - Market panel (top-right): `SELL` / `Market` / `BUY` rows with distance-to-market %
@@ -198,7 +198,7 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 | `--grid-delta-pct <n>` | Override the AMA-price Δ threshold for the simulation (skips config resolution) | config |
 | `--grid-slope-delta-pct <n>` | Override the AMA-slope Δ threshold for the simulation, in %/bar | config |
 | `--grid-warmup <bars>` | Override the simulation start bar (skipped before the first accepted center) | AMA warmup |
-| `--range-span <mult>` | x-range around AMA, 1.2–2 (default: bot grid setting) | bot grid |
+| `--range-span <mult>` | x-range around AMA, 1.3–2.1 (default: bot grid setting) | bot grid |
 | `--orders-file <path>` | Order-grid JSON override for the overlay (default: `profiles/orders/<botKey>.json`) | bot orders |
 | `--no-orders` | Disable the order overlay (levels, reserve/ceiling lines, spread label) | — |
 | `--update-marker-ts <sec>` | Draw an "updated from here" line at the given unix timestamp | — |

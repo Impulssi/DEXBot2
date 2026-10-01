@@ -30,6 +30,15 @@ import {
 } from './grid_reset_sim.js';
 
 
+// x-range (span) around the AMA price, in chart x-units. One slider (0.05 step)
+// drives the band, the price-axis fit and the grid-reset sim, so the bounds
+// live here and are interpolated into the generated page (slider markup,
+// state hydration and the two compute paths all clamp to the same numbers).
+const RANGE_SPAN_MIN = 1.3;
+const RANGE_SPAN_MAX = 2.1;
+const RANGE_SPAN_DEFAULT = 1.55;
+
+
 function inferBaseIntervalSeconds(candles: any[], fallback: any = 3600) {
     if (!Array.isArray(candles) || candles.length < 2) return fallback;
     const deltas: number[] = [];
@@ -152,19 +161,22 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         minScaleSlots: MARKET_ADAPTER.ASYMMETRIC_BOUNDS_MIN_SCALE_SLOTS,
         clipPercentile: MARKET_ADAPTER.DYNAMIC_WEIGHT_CLIP_PERCENTILE,
     };
+    // Slider bounds for the x-range around AMA live in RANGE_SPAN_MIN/MAX above
+    // and are interpolated into the generated page; the clamps here and there
+    // must not drift apart.
     function defaultRangeSpan(input: { rangeSpan?: unknown; grid?: { minPrice?: unknown; maxPrice?: unknown } | null }): number {
         const cli = Number(input.rangeSpan);
-        if (Number.isFinite(cli)) return Math.min(2, Math.max(1.2, cli));
+        if (Number.isFinite(cli)) return Math.min(RANGE_SPAN_MAX, Math.max(RANGE_SPAN_MIN, cli));
         const down = parseRelativeMultiplier(input.grid?.minPrice);
         const up = parseRelativeMultiplier(input.grid?.maxPrice);
-        if (down != null && down > 1 && up != null && up > 1) return Math.min(2, Math.max(1.2, (down + up) / 2));
+        if (down != null && down > 1 && up != null && up > 1) return Math.min(RANGE_SPAN_MAX, Math.max(RANGE_SPAN_MIN, (down + up) / 2));
         const vd = Number(input.grid?.minPrice);
         const vu = Number(input.grid?.maxPrice);
         if (Number.isFinite(vd) && Number.isFinite(vu) && vd > 0 && vu > vd) {
             const ref = Math.sqrt(vd * vu);
-            return Math.min(2, Math.max(1.2, (ref / vd + vu / ref) / 2));
+            return Math.min(RANGE_SPAN_MAX, Math.max(RANGE_SPAN_MIN, (ref / vd + vu / ref) / 2));
         }
-        return 1.55;
+        return RANGE_SPAN_DEFAULT;
     }
     const defaults = {
         smaPeriod: Math.max(1, Math.round(data.smaPeriod ?? 500)),
@@ -594,11 +606,11 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                         <button type="button" class="reset-btn ama-preset-btn" data-ama-preset="AMA3" title="AMA3 (slow 83.6)">3</button>
                         <button type="button" class="reset-btn ama-preset-btn" data-ama-preset="AMA4" title="AMA4 (slow 96.9)">4</button>
                     </div>
-                    <div class="indicator" title="Range min/max built only from the live AMA price (red above, green below); Scale sizes it by AMA slope like the grid build">
+                    <div class="indicator" title="Range min/max built only from the live AMA price (red above, green below); Scale sizes it by AMA slope like the grid build. Turning either on also turns on what it needs (Range → AMA, Scale → Range + AMA)">
                         <label><input type="checkbox" id="range-toggle"${defaults.rangeEnabled ? ' checked' : ''}> Range</label>
-                        <label title="Range Scaling: size the band by AMA slope like the grid build (trend side widens, opposite tightens) and fit the price axis to it"><input type="checkbox" id="range-scale-toggle"${defaults.rangeScaleEnabled ? ' checked' : ''}> Scale</label>
-                        <span id="range-grid-wrap" style="display:inline" title="x-range around AMA (1.2x–2.0x)">
-                            <input type="range" id="range-span" min="1.2" max="2" step="0.05" value="${defaults.rangeSpan.toFixed(2)}" style="width:90px;vertical-align:middle">
+                        <label title="Range Scaling: size the band by AMA slope like the grid build (trend side widens, opposite tightens) and fit the price axis to it. Turning it on also turns on Range and AMA"><input type="checkbox" id="range-scale-toggle"${defaults.rangeScaleEnabled ? ' checked' : ''}> Scale</label>
+                        <span id="range-grid-wrap" style="display:inline" title="x-range around AMA (${RANGE_SPAN_MIN}x–${RANGE_SPAN_MAX}x)">
+                            <input type="range" id="range-span" min="${RANGE_SPAN_MIN}" max="${RANGE_SPAN_MAX}" step="0.05" value="${defaults.rangeSpan.toFixed(2)}" style="width:90px;vertical-align:middle">
                             <span id="range-span-val" style="font-size:11px;color:#8b949e;width:40px;display:inline-block;text-align:right">${defaults.rangeSpan.toFixed(2)}x</span>
                         </span>
                     </div>
@@ -670,12 +682,18 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         let currentVwapBars = Number.isFinite(state.vwapBars) ? state.vwapBars : Number(payload.vwapBars || 500);
         let currentRangeEnabled = state.rangeEnabled ?? !!payload.rangeEnabled;
         let currentRangeScaleEnabled = state.rangeScaleEnabled ?? !!payload.rangeScaleEnabled;
+        // Dependency chain: the band is built from the AMA price, and Scale sizes
+        // the band by AMA slope, so Scale needs Range and both need AMA. A
+        // persisted state (or CLI default) that enabled Scale without them would
+        // render a dead toggle, so re-apply the same auto opt-in on load.
+        if (currentRangeScaleEnabled) currentRangeEnabled = true;
+        if (currentRangeEnabled || currentRangeScaleEnabled) currentAmaEnabled = true;
         let currentRangeWidthPct = Number.isFinite(state.rangeWidthPct) && Number(state.rangeWidthPct) > 0
             ? Number(state.rangeWidthPct)
             : (Number.isFinite(Number(payload.rangeWidthPct)) && Number(payload.rangeWidthPct) > 0 ? Number(payload.rangeWidthPct) : 2);
         let currentRangeSpan = Number.isFinite(state.rangeSpan) && Number(state.rangeSpan) > 0
-            ? Math.min(2, Math.max(1.2, Number(state.rangeSpan)))
-            : (Number.isFinite(Number(payload.rangeSpan)) && Number(payload.rangeSpan) > 0 ? Math.min(2, Math.max(1.2, Number(payload.rangeSpan))) : 1.55);
+            ? Math.min(${RANGE_SPAN_MAX}, Math.max(${RANGE_SPAN_MIN}, Number(state.rangeSpan)))
+            : (Number.isFinite(Number(payload.rangeSpan)) && Number(payload.rangeSpan) > 0 ? Math.min(${RANGE_SPAN_MAX}, Math.max(${RANGE_SPAN_MIN}, Number(payload.rangeSpan))) : ${RANGE_SPAN_DEFAULT});
         let currentOrdersVisible = state.ordersVisible ?? true;
         // Grid-reset simulation (AMA-price Δ / AMA-slope Δ). Static per
         // generation: payload.gridSim is null for non-AMA charts, which removes
@@ -1562,7 +1580,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 ? Number(gridCfg.maxAsymmetryFactor)
                 : (Number(gridSimCfg.maxAsymmetryFactor) > 0 ? Number(gridSimCfg.maxAsymmetryFactor) : 0.333);
             const maxSlopeOffset = gridSimPositiveNumber(gridSimCfg.maxSlopeOffset, 0.5);
-            const span = Math.min(2, Math.max(1.2, Number(currentRangeSpan) > 0 ? Number(currentRangeSpan) : 1.55));
+            const span = Math.min(${RANGE_SPAN_MAX}, Math.max(${RANGE_SPAN_MIN}, Number(currentRangeSpan) > 0 ? Number(currentRangeSpan) : ${RANGE_SPAN_DEFAULT}));
             // Absolute bot bounds are fixed price levels; relative ("Nx") bounds
             // travel with the accepted center. Each side resolves independently so
             // a mixed absolute/"Nx" config matches the runtime grid build.
@@ -1620,9 +1638,9 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                 : (Number(slopeCfg.maxAsymmetryFactor) > 0 ? Number(slopeCfg.maxAsymmetryFactor) : 0.333);
             const inc = gridCfg && Number(gridCfg.incrementPercent) > 0 ? Number(gridCfg.incrementPercent) : null;
             const minSlots = Math.floor(Number(gridCfg && gridCfg.minScaleSlots) > 0 ? Number(gridCfg.minScaleSlots) : (Number(slopeCfg.minScaleSlots) || 0));
-            // User x-range span (slider 1.2x–2.0x, default 1.55x): the only
+            // User x-range span (slider ${RANGE_SPAN_MIN}x–${RANGE_SPAN_MAX}x, default ${RANGE_SPAN_DEFAULT}x): the only
             // width input — symmetric base min = AMA/span, max = AMA*span.
-            const span = Math.min(2, Math.max(1.2, Number(currentRangeSpan) > 0 ? Number(currentRangeSpan) : 1.55));
+            const span = Math.min(${RANGE_SPAN_MAX}, Math.max(${RANGE_SPAN_MIN}, Number(currentRangeSpan) > 0 ? Number(currentRangeSpan) : ${RANGE_SPAN_DEFAULT}));
             // Canonical grid pipeline (ama_slope_model): adaptive percentile
             // clip over the AMA history, then offset + trend — the same numbers
             // the live grid build feeds into applyAsymmetricBounds.
@@ -1835,6 +1853,17 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             setIndicatorSeriesVisible(5, false);
             refreshLegend();
             saveState();
+        }
+        // Range and Scale are AMA-derived: the band min/max come from the AMA
+        // price and Scale additionally reads the AMA slope. Turning either on
+        // therefore opts AMA in as well. One-way only — switching an indicator
+        // off never switches off the ones it depends on. Returns true when AMA
+        // was actually turned on, so the caller can pick the AMA-toggle render
+        // path (full rerender, series added) instead of the keep-view one.
+        function autoOptInAma() {
+            if (currentAmaEnabled) return false;
+            currentAmaEnabled = true;
+            return true;
         }
         function hideRangeBandImmediate() {
             currentRangeUpper = new Array(currentCandles.length).fill(null);
@@ -3350,7 +3379,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             currentVwapBars = clamp(Math.round(Number(document.getElementById('vwap-bars').value) || 500), 24, 2000);
             currentRangeEnabled = document.getElementById('range-toggle').checked;
             currentRangeScaleEnabled = document.getElementById('range-scale-toggle').checked;
-            currentRangeSpan = Math.min(2, Math.max(1.2, Math.round((Number(document.getElementById('range-span').value) || 1.55) * 20) / 20));
+            currentRangeSpan = Math.min(${RANGE_SPAN_MAX}, Math.max(${RANGE_SPAN_MIN}, Math.round((Number(document.getElementById('range-span').value) || ${RANGE_SPAN_DEFAULT}) * 20) / 20));
             const ordersEl = document.getElementById('orders-toggle');
             if (ordersEl) currentOrdersVisible = ordersEl.checked;
             setControls();
@@ -3373,6 +3402,13 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const nextEnabled = document.getElementById('ama-toggle').checked;
             if (currentAmaEnabled === nextEnabled) return;
             currentAmaEnabled = nextEnabled;
+            if (!currentAmaEnabled) {
+                // AMA is the base of the band and of its slope scaling: the
+                // mirror image of the auto opt-in, so the toggles never sit in
+                // the dead state Scale/Range-without-AMA would be.
+                currentRangeEnabled = false;
+                currentRangeScaleEnabled = false;
+            }
             setControls();
             if (!currentAmaEnabled) {
                 hideAmaSeriesImmediate();
@@ -3396,21 +3432,39 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const nextEnabled = document.getElementById('range-toggle').checked;
             if (currentRangeEnabled === nextEnabled) return;
             currentRangeEnabled = nextEnabled;
-            setControls();
-            if (!currentRangeEnabled) {
-                preserveView(hideRangeBandImmediate);
+            if (currentRangeEnabled) {
+                // Range draws from the AMA price: opting in opts AMA in too.
+                const enabledAma = autoOptInAma();
+                setControls();
+                if (enabledAma) {
+                    rerender(false);
+                    return;
+                }
+                preserveView(() => rerender(true));
                 return;
             }
-            preserveView(() => rerender(true));
+            setControls();
+            preserveView(hideRangeBandImmediate);
         });
         document.getElementById('range-scale-toggle').addEventListener('change', () => {
             const nextEnabled = document.getElementById('range-scale-toggle').checked;
             if (currentRangeScaleEnabled === nextEnabled) return;
             currentRangeScaleEnabled = nextEnabled;
+            if (currentRangeScaleEnabled) {
+                // Scale is the Range band sized by AMA slope: opt into both.
+                currentRangeEnabled = true;
+                const enabledAma = autoOptInAma();
+                setControls();
+                if (enabledAma) {
+                    rerender(false);
+                    return;
+                }
+            } else {
+                setControls();
+            }
             // No manualYRange reset: the price axis keeps the window it had,
             // so un/setting Scale never refits the view (the band still
             // draws, the legend readout still updates).
-            setControls();
             preserveView(() => rerender(true));
         });
         ['sma-period', 'ama-er', 'ama-fast', 'ama-slow', 'vwap-bars'].forEach((id) => {
