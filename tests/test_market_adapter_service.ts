@@ -1729,6 +1729,7 @@ async function testAmaCenterPersistFailureBlocksSlopeTriggerFallback() {
         retryDelayMs: 0,
         maxStaleHours: 6,
         amaSlopeDeltaThresholdPercent: 0.12,
+        amaSlopePersistBars: 1,
     };
 
     const result = await service.processBot(bot, state, cfg, new Map(), {});
@@ -2164,6 +2165,41 @@ async function testCenterClampedByBotBounds() {
     assert.strictEqual(triggerWrites, 1, 'only the initial clamp move should have triggered');
 }
 
+// The slope-delta persistence gate: fires only after K consecutive confirming
+// bars, clears on a broken candidate, and honors an explicit per-bot override.
+async function testAmaSlopePersistenceGate() {
+    const service = new MarketAdapterService({});
+    const cfg = { amaSlopeDeltaThresholdPercent: 0.1 };
+    const details = service.buildAmaSlopeResetDetails(
+        { slopePct: 1.0, isReady: true },
+        { slopePct: 0.5, isReady: true },
+        cfg,
+    );
+    assert.strictEqual(details.thresholdCrossed, true, 'raw slope threshold crossed');
+
+    const bars = Number(MARKET_ADAPTER.AMA_SLOPE_PERSIST_BARS);
+    const state: any = {};
+    for (let i = 1; i <= bars; i++) {
+        const gate = service.advanceAmaSlopePersistence(details, cfg, state);
+        assert.strictEqual(gate.persistBars, bars, 'gate length follows the global default');
+        assert.strictEqual(gate.shouldTrigger, i >= bars, `gate fires on confirming bar ${i} of ${bars}`);
+    }
+
+    // A single-bar blip (candidate then cleared) must not fire.
+    const blipState: any = {};
+    service.advanceAmaSlopePersistence(details, cfg, blipState);
+    const cleared = service.advanceAmaSlopePersistence({ ...details, thresholdCrossed: false }, cfg, blipState);
+    assert.strictEqual(cleared.shouldTrigger, false, 'a cleared candidate does not fire');
+    assert.strictEqual(blipState.amaSlopePersistCount, 0, 'counter resets when the candidate clears');
+
+    // Explicit per-bot override of 1 restores legacy immediate firing.
+    const legacy = service.advanceAmaSlopePersistence(details, { amaSlopePersistBars: 1 }, {});
+    assert.strictEqual(legacy.shouldTrigger, true, 'explicit persistBars:1 fires immediately');
+    assert.strictEqual(legacy.persistBars, 1, 'explicit persistBars:1 is honored');
+
+    console.log(' - AMA slope persistence gate ok');
+}
+
 // A stable AMA center should still reset when the AMA slope delta crosses the threshold.
 async function testCenterStableButSlopeDeltaTriggersReset() {
     let triggerWrites = 0;
@@ -2249,6 +2285,7 @@ async function testCenterStableButSlopeDeltaTriggersReset() {
         retryDelayMs: 0,
         maxStaleHours: 6,
         amaSlopeDeltaThresholdPercent: 0.12,
+        amaSlopePersistBars: 1,
     };
 
     const result = await service.processBot(bot, state, cfg, new Map(), {});
@@ -2361,6 +2398,7 @@ async function testSlopeTriggerRecoversBaselineFromDynamicGridAfterStateClear() 
         retryDelayMs: 0,
         maxStaleHours: 6,
         amaSlopeDeltaThresholdPercent: 0.12,
+        amaSlopePersistBars: 1,
     };
 
     const result = await service.processBot(bot, state, cfg, new Map(), {});
@@ -2512,6 +2550,7 @@ async function testLegacyDynamicGridSlopeBaselineIsNormalizedBeforeComparison() 
         retryDelayMs: 0,
         maxStaleHours: 6,
         amaSlopeDeltaThresholdPercent: 0.5,
+        amaSlopePersistBars: 1,
     };
     const baselineResult = await baselineService.processBot(bot, baselineState, baselineCfg, new Map(), {});
     const currentSlopePct = Number(baselineResult.amaSlope?.slopePct);
@@ -2552,6 +2591,7 @@ async function testLegacyDynamicGridSlopeBaselineIsNormalizedBeforeComparison() 
     const cfg = {
         ...baselineCfg,
         amaSlopeDeltaThresholdPercent: falseDelta / 2,
+        amaSlopePersistBars: 1,
     };
     const result = await comparisonService.processBot(bot, state, cfg, new Map(), {});
 
@@ -2646,6 +2686,7 @@ async function testSlopePersistFailurePreservesRetryBaseline() {
         retryDelayMs: 0,
         maxStaleHours: 6,
         amaSlopeDeltaThresholdPercent: 0.12,
+        amaSlopePersistBars: 1,
     };
 
     const failed = await service.processBot(bot, state, cfg, new Map(), {});
@@ -6002,6 +6043,7 @@ async function testDynamicWeightDiagnosticsComputeWithoutWhitelistForAmaBots() {
         signalConfirmBars: 0,
         maxVolatilityOffset: 0,
         amaSlopeDeltaThresholdPercent: 0.01,
+        amaSlopePersistBars: 1,
     };
 
     const result = await service.processBot(bot, state, cfg, new Map(), {});
@@ -6761,6 +6803,7 @@ async function run() {
     await testFractionalAmaLookbackIsNormalizedBeforeSeriesLoops();
     await testDynamicWeightSignalConfirmBarsCanLatchFlatState();
     await testCenterStableButSlopeDeltaTriggersReset();
+    await testAmaSlopePersistenceGate();
     await testSlopeTriggerRecoversBaselineFromDynamicGridAfterStateClear();
     testSlopeDirectionChangeDoesNotTriggerBelowDeltaThreshold();
     testNonPositiveSlopeThresholdDisablesTrigger();

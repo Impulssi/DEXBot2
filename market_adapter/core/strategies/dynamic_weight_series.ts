@@ -46,7 +46,7 @@ function computeAverageAmaSlopePct(current: any, past: any, lookbackBars: any) {
  * continuous and bounded rather than an order statistic.
  *
  * The fit is local linear over `lookbackBars` intervals (bars+1 points, the same
- * 20h span the endpoint uses), so a window-wide regime change tilts the line
+ * 16h span the endpoint uses), so a window-wide regime change tilts the line
  * continuously instead of waiting for a majority, and a lone off-trend spike is
  * bounded rather than given full endpoint weight. Output is the log-return per
  * bar x 100. That differs from the arithmetic per-bar return by ~beta^2/2,
@@ -70,7 +70,7 @@ function computeAverageAmaSlopePct(current: any, past: any, lookbackBars: any) {
  *
  * @param amaValues Full AMA series (index-addressable).
  * @param index     Bar to measure at (evaluated at the window edge).
- * @param lookbackBars Window length in bars (fixed at 20 for every estimator).
+ * @param lookbackBars Window length in bars (fixed at 16 for every estimator).
  * @param hub       Parameter block; defaults to the centralized constant.
  * @returns %/bar, or null when the window is unusable.
  */

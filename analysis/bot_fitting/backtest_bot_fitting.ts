@@ -4,6 +4,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { calculateAMA, getAmaWarmupBars } from '../../market_adapter/core/strategies/ama.js';
 import { computeHuberWindowSlopePct } from '../../market_adapter/core/strategies/ama_slope_model.js';
+import { applyAsymmetricBounds } from '../../market_adapter/core/asymmetric_bounds.js';
 import { range } from '../math_utils.js';
 import { parseListOrRange, loadLpData, fmt } from './shared_utils.js';
 import { getStorage } from '../../modules/storage/index.js';
@@ -426,6 +427,20 @@ function simulateForParams(candles: any, amaValues: any, params: any) {
     const slopeDeltaThresholdPct = (SLOPE_TRIGGER_FACTOR / 100) * SLOPE_MAX_PCT;
     const makerCreateFeeBts = btsCreateFee * makerCreateFactor;
     const stepUpFrac = 1 + incrementPct; // one-rail-step rotation distance
+    // Optional gate/band overrides. `slopePersistBars` follows the production
+    // default (constants) unless the caller pins a value, so the fill model's
+    // reset path matches live whenever asymmetricBounds enables trigger B.
+    //   slopePersistBars persistence gate on trigger B
+    //   bandTilt         apply applyAsymmetricBounds to the built band
+    const slopeLookbackBars = Number.isFinite(params.slopeLookbackBars) && params.slopeLookbackBars >= 2
+        ? Math.round(params.slopeLookbackBars) : SLOPE_LOOKBACK_BARS;
+    const slopePersistBars = Number.isFinite(params.slopePersistBars) && params.slopePersistBars >= 1
+        ? Math.round(params.slopePersistBars)
+        : (MARKET_ADAPTER.AMA_SLOPE_PERSIST_ENABLED === true && Number(MARKET_ADAPTER.AMA_SLOPE_PERSIST_BARS) >= 1
+            ? Math.round(Number(MARKET_ADAPTER.AMA_SLOPE_PERSIST_BARS)) : 1);
+    const bandTilt = params.bandTilt === true;
+    const maxAsymmetryFactor = Number.isFinite(params.maxAsymmetryFactor)
+        ? Number(params.maxAsymmetryFactor) : MARKET_ADAPTER.ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR;
 
     // First tradable bar: need a finite positive AMA to anchor the chain.
     let startIdx = Math.min(skip, candles.length - 1);
@@ -438,8 +453,8 @@ function simulateForParams(candles: any, amaValues: any, params: any) {
     // Production AMA slope series (%/bar averaged over the lookback window).
     // Evaluated over full history like the live adapter (only bar-index guards).
     const slopeAt: (number | null)[] = new Array(candles.length).fill(null);
-    for (let j = SLOPE_LOOKBACK_BARS; j < candles.length; j++) {
-        const s = computeHuberWindowSlopePct(amaValues, j, SLOPE_LOOKBACK_BARS);
+    for (let j = slopeLookbackBars; j < candles.length; j++) {
+        const s = computeHuberWindowSlopePct(amaValues, j, slopeLookbackBars);
         if (s != null && Number.isFinite(s)) slopeAt[j] = s;
     }
 
@@ -462,7 +477,25 @@ function simulateForParams(candles: any, amaValues: any, params: any) {
             ? computeGridPriceOffsetPct(slopePct, spreadPct)
             : 0;
         if (offsetPct !== 0) offsetAppliedCount++;
-        const effCenter = center * (1 + offsetPct / 100);
+        // applyAsymmetricBounds scales BOTH base bounds by one factor, so the
+        // tilted band is exactly a same-ratio band centred at center*scale
+        // (when the narrowing-side guard does not bind).
+        let scale = 1;
+        if (bandTilt && slopePct != null && Math.abs(slopePct) > SLOPE_NEUTRAL_ZONE_PCT) {
+            const trend = slopePct > 0 ? 'UP' : 'DOWN';
+            const tilt = applyAsymmetricBounds({
+                centerPrice: center,
+                minPrice: center / maxMinRatio,
+                maxPrice: center * maxMinRatio,
+                trend,
+                slopeOffset: Math.abs(slopePct),
+                maxSlopeOffset: SLOPE_MAX_PCT,
+                maxAsymmetryFactor,
+            });
+            const baseMax = center * maxMinRatio;
+            if (Number.isFinite(tilt.resolvedMaxPrice) && baseMax > 0) scale = tilt.resolvedMaxPrice / baseMax;
+        }
+        const effCenter = center * scale * (1 + offsetPct / 100);
         const built = buildProductionGrid(effCenter, spreadPct, incrementPct, maxMinRatio, activeOrders);
         activeRail = built.rail;
         orders.clear();
@@ -507,6 +540,9 @@ function simulateForParams(candles: any, amaValues: any, params: any) {
     for (let j = startIdx + 1; j < candles.length; j++) {
         if (slopeAt[j] != null) { slopeBaseline = slopeAt[j]; break; }
     }
+    // Persistence-gate state for trigger B.
+    let slopePersistCount = 0;
+    let slopePersistDir = 0;
 
     for (let i = startIdx + 1; i < candles.length; i++) {
         const ama = amaValues[i];
@@ -521,11 +557,23 @@ function simulateForParams(candles: any, amaValues: any, params: any) {
             if (driftPct >= repositionThresholdPct) { shouldReset = true; driftTriggerCount++; }
         }
         if (!shouldReset && asymmetricBounds && slopeBaseline != null && slopeAt[i] != null) {
-            const slopeDeltaPct = Math.abs(slopeAt[i]! - slopeBaseline);
-            if (slopeDeltaPct >= slopeDeltaThresholdPct) { shouldReset = true; slopeTriggerCount++; }
+            const crossed = Math.abs(slopeAt[i]! - slopeBaseline) >= slopeDeltaThresholdPct;
+            if (slopePersistBars <= 1) {
+                if (crossed) { shouldReset = true; slopeTriggerCount++; }
+            } else if (!crossed) {
+                slopePersistCount = 0;
+                slopePersistDir = 0;
+            } else {
+                const dir = Math.sign(slopeAt[i]! - slopeBaseline);
+                if (dir !== 0 && dir === slopePersistDir) slopePersistCount++;
+                else { slopePersistDir = dir; slopePersistCount = 1; }
+                if (slopePersistCount >= slopePersistBars) { shouldReset = true; slopeTriggerCount++; }
+            }
         }
 
         if (shouldReset && Number.isFinite(ama) && ama > 0) {
+            slopePersistCount = 0;
+            slopePersistDir = 0;
             canceledOnReposition += orders.size;
             btsFeesBts += orders.size * btsCancelFee;
             orders.clear(); // inventory survives — resync never market-sells

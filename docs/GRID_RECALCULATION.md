@@ -286,9 +286,19 @@ Drift` (`AMA-Slope Δ`). An explicit `amaSlopeDeltaThresholdPercent` in
 directly as a percent-per-bar threshold (the same unit as the slope value
 described below — no averaging is implied by the unit).
 
+**Persistence gate.** The slope-delta trigger is gated by default: it fires only
+after `AMA_SLOPE_PERSIST_BARS` (default `3`) consecutive bars cross the threshold
+in the same direction, so a 1–2 bar excursion is ignored. A sustained move is
+confirmed K bars after onset — up to K−1 bars later than the ungated trigger;
+the independent price/Drift trigger is unaffected.
+`AMA_SLOPE_PERSIST_ENABLED` (default `true`) is the master switch; a
+bot/market can override via `amaSlope.persistBars` or `amaSlope.persistEnabled`.
+Versus the ungated path this cuts resets ~35% and whipsaws (~52%→~17%) with lag
+and range tilt unchanged.
+
 AMA slope values are stored and compared in percent per bar. The value itself
 is a **Huber-robust linear regression of `ln(AMA)` over the lookback window**
-(`computeHuberWindowSlopePct` in
+(`DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS`, default `16` bars; `computeHuberWindowSlopePct` in
 `core/strategies/dynamic_weight_series.ts`; its tuning lives in
 `MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER`) — a smooth, robust fit whose influence
 function is bounded, so one outlier bar cannot drag it, which is what a plain

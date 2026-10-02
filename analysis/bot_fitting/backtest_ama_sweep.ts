@@ -276,6 +276,14 @@ function simulatePersistentGrid(candles: any[], amaValues: number[], params: any
     const { spreadPct, incrementPct, maxMinRatio, feeRoundtripPct,
             capital, repositionThreshold, asymmetricBounds, btsCreateFee, btsCancelFee,
             makerCreateFactor, txFeePrice } = params;
+    // Slope-delta persistence gate: follow the production default (constants)
+    // unless the caller pins a value, so the sweep's reset path matches live
+    // whenever asymmetricBounds enables trigger B.
+    const slopePersistBars = Number.isFinite(params.slopePersistBars) && params.slopePersistBars >= 1
+        ? Math.round(params.slopePersistBars)
+        : (MARKET_ADAPTER.AMA_SLOPE_PERSIST_ENABLED === true && Number(MARKET_ADAPTER.AMA_SLOPE_PERSIST_BARS) >= 1
+            ? Math.round(Number(MARKET_ADAPTER.AMA_SLOPE_PERSIST_BARS))
+            : 1);
     // Warmup follows production AMA seeding/convergence (getAmaWarmupBars,
     // passed via params.warmupBars from sweepOneAma) instead of an arbitrary
     // fraction of the dataset. Direct callers that omit warmupBars fall back
@@ -378,6 +386,9 @@ function simulatePersistentGrid(candles: any[], amaValues: number[], params: any
     // Slope-delta baseline: mirrors botState.gridRangeScalingAmaSlope —
     // seeded at bootstrap and re-seeded on every reset.
     let slopeBaseline: number | null = null;
+    // Persistence-gate state for trigger B.
+    let slopePersistCount = 0;
+    let slopePersistDir = 0;
     for (let j = startIdx + 1; j < candles.length; j++) {
         if (slopeAt[j] != null) { slopeBaseline = slopeAt[j]; break; }
     }
@@ -401,11 +412,23 @@ function simulatePersistentGrid(candles: any[], amaValues: number[], params: any
         let shouldReposition = drift >= repositionThreshold;
         if (shouldReposition) { triggerDriftSumPct += driftPct; driftTriggerCount++; }
         if (!shouldReposition && asymmetricBounds && slopeBaseline != null && slopeAt[i] != null) {
-            const slopeDeltaPct = Math.abs(slopeAt[i]! - slopeBaseline);
-            if (slopeDeltaPct >= slopeDeltaThresholdPct) { shouldReposition = true; slopeTriggerCount++; }
+            const crossed = Math.abs(slopeAt[i]! - slopeBaseline) >= slopeDeltaThresholdPct;
+            if (slopePersistBars <= 1) {
+                if (crossed) { shouldReposition = true; slopeTriggerCount++; }
+            } else if (!crossed) {
+                slopePersistCount = 0;
+                slopePersistDir = 0;
+            } else {
+                const dir = Math.sign(slopeAt[i]! - slopeBaseline);
+                if (dir !== 0 && dir === slopePersistDir) slopePersistCount++;
+                else { slopePersistDir = dir; slopePersistCount = 1; }
+                if (slopePersistCount >= slopePersistBars) { shouldReposition = true; slopeTriggerCount++; }
+            }
         }
 
         if (shouldReposition && Number.isFinite(ama) && ama > 0) {
+            slopePersistCount = 0;
+            slopePersistDir = 0;
             canceledOnReposition += orders.size;
             btsFeesBts += orders.size * btsCancelFee;
             orders.clear(); // inventory survives — resync never market-sells

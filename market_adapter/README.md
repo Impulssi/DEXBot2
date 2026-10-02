@@ -806,7 +806,8 @@ Main override knobs live in `profiles/market_adapter_settings.json`:
 | `dw` | Kalman displacement weighting |
 | `gain` | Output amplitude |
 | `amaSlopePercentMode` | Slope override units: `perBar` for percent per bar, or `window`/unset for legacy cumulative percent over the lookback |
-| `amaSlope.lookbackBars` | AMA slope lookback; slope is averaged per bar over this window |
+| `amaSlope.lookbackBars` | AMA slope lookback; slope is averaged per bar over this window (default 16) |
+| `amaSlope.persistBars` | Slope-delta persistence gate: consecutive confirming bars required before the slope reset fires (default 3; `1` = legacy fire-on-first-crossing). Values `< 1` fall through to the global default, so use `1` (or `persistEnabled: false`) to disable, not `0`. Global default in `MARKET_ADAPTER.AMA_SLOPE_PERSIST_*` |
 | `amaSlope.neutralZonePct` | Dead band around flat average AMA slope |
 | `amaSlope.maxSlopePct` | Average AMA slope saturation |
 | `amaSlopeDeltaThresholdPercent` | Average AMA slope delta threshold for slope-based resets |

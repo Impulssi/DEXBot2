@@ -165,6 +165,8 @@ function simParams(extra = {}) {
     const r = simulateForParams(candles, amaValues, simParams({
         repositionThresholdPct: 50, // drift can never fire; isolate slope path
         asymmetricBounds: true,
+        // Isolate the raw slope trigger; production gates it (default K=3).
+        slopePersistBars: 1,
     }));
     assert.strictEqual(r.driftTriggerCount, 0, 'drift trigger disabled by huge threshold');
     assert.strictEqual(r.slopeTriggerCount, 2, 'fires once on slope onset and once on decay (smooth regression)');

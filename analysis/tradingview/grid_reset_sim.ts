@@ -146,6 +146,10 @@ function simulateGridResetSeries(amaSeries: any, cfg: any) {
     const clipPercentile = Number(cfg?.clipPercentile);
     const clampMinValue = Number(cfg?.clampMin);
     const clampMaxValue = Number(cfg?.clampMax);
+    // Persistence gate on the slope-delta trigger (trigger B): consecutive
+    // confirming bars required before it fires. 1 = legacy behavior (fire on the
+    // first threshold crossing); >1 filters short-lived slope excursions.
+    const slopePersistBars = gridSimNonNegativeInt(cfg?.slopePersistBars, 1);
     // Mirrors clampGridPriceToBounds: only absolute bot bounds pin the center,
     // and each side binds independently (a mixed absolute/"Nx" config clamps
     // only on the absolute side).
@@ -187,6 +191,7 @@ function simulateGridResetSeries(amaSeries: any, cfg: any) {
                 warmupBars,
                 priceDeltaThresholdPercent: priceTriggerArmed ? priceThreshold : null,
                 slopeDeltaThresholdPercent: slopeTriggerArmed ? slopeThreshold : null,
+                slopePersistBars,
                 slopeTriggerArmed,
             },
         };
@@ -203,6 +208,9 @@ function simulateGridResetSeries(amaSeries: any, cfg: any) {
     let resetCount = 0;
     let priceResets = 0;
     let slopeResets = 0;
+    // Persistence-gate state for trigger B.
+    let slopePersistCount = 0;
+    let slopePersistDir = 0;
 
     for (let i = 0; i < n; i++) {
         const ama = Number(amaSeries[i]);
@@ -260,11 +268,34 @@ function simulateGridResetSeries(amaSeries: any, cfg: any) {
             fired = GRID_RESET_BOOTSTRAP;
         } else if (priceTriggerArmed && driftPct[i] >= priceThreshold) {
             fired = GRID_RESET_PRICE;
-        } else if (slopeTriggerArmed && slopeDeltaPct[i] != null && slopeDeltaPct[i] >= slopeThreshold) {
-            fired = GRID_RESET_SLOPE;
+        } else {
+            // Trigger B, now persistence-gated: require the threshold to be
+            // crossed for `slopePersistBars` consecutive bars in the same
+            // direction before firing. A single-bar excursion never charges the
+            // counter; a sustained move is confirmed K bars after onset (up to
+            // K-1 bars later than the ungated trigger).
+            const delta = slopeDeltaPct[i];
+            const candidate = slopeTriggerArmed && delta != null && delta >= slopeThreshold;
+            if (!candidate) {
+                slopePersistCount = 0;
+                slopePersistDir = 0;
+            } else {
+                const dir = acceptedSlope != null && slopePct != null ? Math.sign(slopePct - acceptedSlope) : 0;
+                if (slopePersistBars <= 1) {
+                    fired = GRID_RESET_SLOPE;
+                } else if (dir !== 0 && dir === slopePersistDir) {
+                    slopePersistCount++;
+                    if (slopePersistCount >= slopePersistBars) fired = GRID_RESET_SLOPE;
+                } else {
+                    slopePersistDir = dir;
+                    slopePersistCount = 1;
+                }
+            }
         }
 
         if (fired !== GRID_RESET_NONE) {
+            slopePersistCount = 0;
+            slopePersistDir = 0;
             const previousCenter = acceptedCenter;
             acceptedCenter = currentCenter;
             // Re-seed the accepted slope on EVERY reset (price and slope alike),
@@ -328,6 +359,7 @@ function simulateGridResetSeries(amaSeries: any, cfg: any) {
             warmupBars,
             priceDeltaThresholdPercent: priceTriggerArmed ? priceThreshold : null,
             slopeDeltaThresholdPercent: slopeTriggerArmed ? slopeThreshold : null,
+            slopePersistBars,
             slopeTriggerArmed,
         },
     };

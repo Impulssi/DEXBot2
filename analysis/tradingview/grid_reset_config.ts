@@ -170,6 +170,19 @@ function resolveGridResetSimConfig({ botKey, bot, ama, overrides }: any = {}) {
 
     const erPeriod = firstPositive([ama?.erPeriod, botCfg?.erPeriod], MARKET_ADAPTER.AMAS.AMA3.erPeriod);
     const lookbackBars = firstPositive([botCfg?.amaSlope?.lookbackBars], MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS);
+    // Slope-delta persistence gate: mirror resolveAmaSlopePersistBars in the
+    // adapter service so the chart replay fires the same Δs resets production
+    // does. Per-bot override wins; else the global enable + value; else legacy 1.
+    const resolveSlopePersistBars = () => {
+        const explicit = Number(botCfg?.amaSlope?.persistBars ?? botCfg?.amaSlopePersistBars);
+        if (Number.isFinite(explicit) && explicit >= 1) return Math.round(explicit);
+        const enabled = botCfg?.amaSlope?.persistEnabled === true
+            || botCfg?.amaSlopePersistEnabled === true
+            || MARKET_ADAPTER.AMA_SLOPE_PERSIST_ENABLED === true;
+        if (!enabled) return 1;
+        const bars = Number(MARKET_ADAPTER.AMA_SLOPE_PERSIST_BARS);
+        return Number.isFinite(bars) && bars >= 1 ? Math.round(bars) : 1;
+    };
     let warmupBars = 0;
     try {
         warmupBars = getAmaWarmupBars(
@@ -212,6 +225,7 @@ function resolveGridResetSimConfig({ botKey, bot, ama, overrides }: any = {}) {
         slopeEnabled,
         dynamicWeightEnabled,
         lookbackBars,
+        slopePersistBars: resolveSlopePersistBars(),
         maxSlopePct: firstPositive([botCfg?.amaSlope?.maxSlopePct], MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT),
         neutralZonePct: Number.isFinite(Number(botCfg?.amaSlope?.neutralZonePct))
             ? Number(botCfg.amaSlope.neutralZonePct)
@@ -257,6 +271,7 @@ function toGridSimPayload(cfg: any) {
         slopeEnabled: cfg.slopeEnabled === true,
         dynamicWeightEnabled: cfg.dynamicWeightEnabled === true,
         lookbackBars: cfg.lookbackBars,
+        slopePersistBars: cfg.slopePersistBars,
         maxSlopePct: cfg.maxSlopePct,
         neutralZonePct: cfg.neutralZonePct,
         maxSlopeOffset: cfg.maxSlopeOffset,

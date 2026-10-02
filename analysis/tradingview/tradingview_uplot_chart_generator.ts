@@ -3716,7 +3716,8 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             let html = '<div style="color:#c084fc">sim grid resets: ' + st.resets + ' <span style="color:#f59e0b">\u03941 ' + st.priceResets + '</span> <span style="color:#22d3ee">\u0394s ' + st.slopeResets + '</span></div>';
             html += '<div style="color:#e8eef5">AMA \u0394 ' + (Number.isFinite(priceThr) ? Number(priceThr).toFixed(2) + '%' : '-') + ' <span style="color:#8b949e">(' + fmtSimSource(gridSimCfg.priceSource) + ')</span></div>';
             html += '<div style="color:#e8eef5">Slope \u0394 ' + (Number.isFinite(slopeThr) ? Number(slopeThr).toFixed(4) + '%/bar' : '-')
-                + ' <span style="color:#8b949e">(' + fmtSimSource(gridSimCfg.slopeSource) + (st.slopeTriggerArmed ? '' : ', off') + ')</span></div>';
+                + ' <span style="color:#8b949e">(' + fmtSimSource(gridSimCfg.slopeSource) + (st.slopeTriggerArmed ? '' : ', off')
+                + (Number(gridSimCfg.slopePersistBars) > 1 ? ', persist ' + Number(gridSimCfg.slopePersistBars) : '') + ')</span></div>';
             if (st.lastResetIndex != null) {
                 const last = currentCandles[Math.max(0, Math.min(currentCandles.length - 1, currentSimLastIdx ?? 0))];
                 html += '<div style="color:#8b949e">last ' + (last ? fmtTime(last.time) : '-') + ' (' + st.barsSinceLastReset + ' bars ago)</div>';

@@ -88,6 +88,11 @@ function normalizePersistedAmaSlopeDiagnostics(data: any, lookbackBars: any){
     const thresholdPercent = convertSlopePercentToPerBar(data.amaSlopeThresholdPercent, lookbackBars, mode);
     normalized.amaSlopeDeltaPercent = Number.isFinite(deltaPercent) ? deltaPercent : null;
     normalized.amaSlopeThresholdPercent = Number.isFinite(thresholdPercent) ? thresholdPercent : null;
+    // Persistence-gate state carried across restarts (see advanceAmaSlopePersistence).
+    const persistCount = Number(data.amaSlopePersistCount);
+    normalized.amaSlopePersistCount = Number.isFinite(persistCount) && persistCount > 0 ? Math.floor(persistCount) : 0;
+    const persistDir = Number(data.amaSlopePersistDir);
+    normalized.amaSlopePersistDir = persistDir === 1 ? 1 : (persistDir === -1 ? -1 : 0);
     return normalized;
 }
 
@@ -693,6 +698,53 @@ class MarketAdapterService {
             thresholdCrossed,
             shouldTrigger: thresholdCrossed,
         };
+    }
+
+    /**
+     * Number of consecutive confirming bars the slope-delta trigger requires.
+     * Resolves per-bot/market override, else the global enable + value, else 1
+     * (legacy fire-on-first-crossing).
+     */
+    resolveAmaSlopePersistBars(cfg: any){
+        const explicit = Number(cfg?.amaSlope?.persistBars ?? cfg?.amaSlopePersistBars);
+        if (Number.isFinite(explicit) && explicit >= 1) return Math.round(explicit);
+        const enabled = cfg?.amaSlope?.persistEnabled === true
+            || cfg?.amaSlopePersistEnabled === true
+            || MARKET_ADAPTER.AMA_SLOPE_PERSIST_ENABLED === true;
+        if (!enabled) return 1;
+        const bars = Number(MARKET_ADAPTER.AMA_SLOPE_PERSIST_BARS);
+        return Number.isFinite(bars) && bars >= 1 ? Math.round(bars) : 1;
+    }
+
+    /**
+     * Advance the slope-delta persistence counter on one actionable cycle and
+     * report whether the gate is satisfied. Mutates botState counters (persisted
+     * across restarts). Caller clears them on any successful reset.
+     */
+    advanceAmaSlopePersistence(details: any, cfg: any, botState: any){
+        const persistBars = this.resolveAmaSlopePersistBars(cfg);
+        const crossed = !!details?.thresholdCrossed;
+        if (persistBars <= 1) {
+            botState.amaSlopePersistCount = 0;
+            botState.amaSlopePersistDir = 0;
+            return { shouldTrigger: crossed, persistBars };
+        }
+        if (!crossed) {
+            botState.amaSlopePersistCount = 0;
+            botState.amaSlopePersistDir = 0;
+            return { shouldTrigger: false, persistBars };
+        }
+        const current = Number(details?.currentSlopePct);
+        const previous = Number(details?.previousSlopePct);
+        const dir = Number.isFinite(current) && Number.isFinite(previous) ? Math.sign(current - previous) : 0;
+        const storedDirRaw = Number(botState.amaSlopePersistDir);
+        const storedDir = storedDirRaw === 1 ? 1 : (storedDirRaw === -1 ? -1 : 0);
+        const storedCountRaw = Number(botState.amaSlopePersistCount);
+        const storedCount = Number.isFinite(storedCountRaw) && storedCountRaw > 0 ? Math.floor(storedCountRaw) : 0;
+        const count = (dir !== 0 && dir === storedDir) ? storedCount + 1 : 1;
+        botState.amaSlopePersistDir = dir;
+        botState.amaSlopePersistCount = count;
+        return { shouldTrigger: count >= persistBars, persistBars };
     }
 
     normalizePersistedBotState(botState: any, lookbackBars: any){
@@ -2324,6 +2376,14 @@ class MarketAdapterService {
             triggerSuppressedReason = 'stale_candle_data';
         }
 
+        // Slope-delta persistence gate (trigger B). Advances only on actionable
+        // cycles; any successful reset clears it via advanceTriggeredBotState.
+        const amaSlopePersistence = (!staleData && !hasUnresolvedCandleGaps)
+            ? this.advanceAmaSlopePersistence(amaSlopeResetDetails, cfg, botState)
+            : { shouldTrigger: false, persistBars: this.resolveAmaSlopePersistBars(cfg) };
+        const amaSlopeShouldTrigger = amaSlopePersistence.shouldTrigger;
+        const amaSlopePersistBars = amaSlopePersistence.persistBars;
+
         const buildDynamicGridOptions = (options: any = {}) => {
             const payload: any = {
                 gridCenterPrice: options.gridCenterPrice ?? null, // explicit baseline if provided
@@ -2388,6 +2448,8 @@ class MarketAdapterService {
                 : botState.amaSlopeDeltaPercent ?? null;
             botState.amaSlopeThresholdPercent = amaSlopeThresholdPercent;
             botState.amaSlopePercentMode = AMA_SLOPE_PERCENT_MODE_PER_BAR;
+            botState.amaSlopePersistCount = 0;
+            botState.amaSlopePersistDir = 0;
             botState.triggerCount = Number(botState.triggerCount || 0) + 1;
             if (canApplyDynamicWeights && dynamicWeightsPayload) {
                 botState.effectiveWeights = dynamicWeightsPayload.effectiveWeights || null;
@@ -2509,7 +2571,7 @@ class MarketAdapterService {
                 }
             }
 
-            if (!triggered && !triggerSuppressedReason && isGridRangeScalingWhitelisted && amaSlopeResetDetails.shouldTrigger) {
+            if (!triggered && !triggerSuppressedReason && isGridRangeScalingWhitelisted && amaSlopeShouldTrigger) {
                 const amaSlopePersisted = persistDynamicGridSnapshot(centerPrice);
 
                 if (!amaSlopePersisted) {
@@ -2521,6 +2583,7 @@ class MarketAdapterService {
                             reason: 'market_adapter_ama_slope_delta_threshold',
                             thresholdPercent: amaSlopeThresholdPercent,
                             deltaPercent: amaSlopeDeltaPercent,
+                            amaSlopePersistBars,
                             previousAmaSlope,
                             previousGridResetAmaSlope,
                             amaSlope,

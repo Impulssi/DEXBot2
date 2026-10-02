@@ -1224,12 +1224,15 @@ let MARKET_ADAPTER = {
     // DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS: Lookback window for measuring AMA trend.
     // Lower values react faster to recent price changes.
     // Higher values smooth the signal and require a more sustained move.
-    // 20 (was 9): measured on the real 1h pools, the slope's bar-to-bar wobble
-    // drops ~34% and slope-driven grid resets ~19%, while the band tilt is
-    // unchanged; the cost is freshness — the window centre sits ~10 bars back
-    // instead of ~4.5, so reversals are acted on later.
+    // 16 (was 20): the shorter window's slope is ~8% noisier (bar-to-bar wobble
+    // and zero-crossings), which by itself would add slope resets; the
+    // persistence gate (K=3) absorbs that, so resets/day stay matched — 962 vs
+    // 960 on the sample, 0.95/day either way. It buys a cleaner signal where it
+    // matters: AMA group delay 10→8 bars, reversal lag 22→20, and range-tilt
+    // wrong-way 13.7%→12.6%. Measured on the real 1h pools; see
+    // docs/AMA_SLOPE_WINDOW.md.
     // nob: lb (Lookback Bars)
-    DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS: 20,
+    DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS: 16,
 
     // DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT: Average per-bar trend size that counts as "full strength" for AMA.
     // Lower values make the AMA channel reach maximum influence more easily.
@@ -1259,7 +1262,7 @@ let MARKET_ADAPTER = {
     // `const AMA_SLOPE_HUBER = {...}` literal. Change a value here and every
     // slope computation follows; do not re-declare them per caller.
     //   C            Huber tuning constant (1.345 ~= 95% Gaussian efficiency)
-    //   ITERATIONS   IRLS passes (converges in a few at the 20-bar window)
+    //   ITERATIONS   IRLS passes (converges in a few at the ~16-bar window)
     //   SCALE_FLOOR  Floor for the 1.4826*MAD robust scale, in log units
     //   ZERO_EPSILON Slopes below this (%/bar) snap to exactly 0
     // nob: n/a (algorithm-internal)
@@ -1269,6 +1272,21 @@ let MARKET_ADAPTER = {
         SCALE_FLOOR: 1e-6,
         ZERO_EPSILON: 1e-9,
     },
+
+    // AMA_SLOPE_PERSIST_ENABLED: slope-delta persistence gate (trigger B).
+    // When true, the slope reset requires AMA_SLOPE_PERSIST_BARS consecutive
+    // confirming bars, filtering short-lived excursions. Enabled by default
+    // (was legacy fire-on-first-crossing): measured over the real 1h pools it
+    // cuts resets ~35% and whipsaw ~52%→~17%, leaving lag and range-tilt
+    // unchanged. Per bot/market override via `amaSlope.persistBars` /
+    // `amaSlope.persistEnabled`. See docs/AMA_SLOPE_WINDOW.md.
+    AMA_SLOPE_PERSIST_ENABLED: true,
+
+    // AMA_SLOPE_PERSIST_BARS: consecutive confirming bars required before the
+    // slope-delta grid reset (trigger B) fires once enabled. 1 = legacy behavior
+    // (no persistence). Filters short-lived slope excursions without adding trend
+    // latency.
+    AMA_SLOPE_PERSIST_BARS: 3,
 
     // DYNAMIC_WEIGHT_ALPHA: Blend between AMA trend and Kalman trend.
     // 0 = pure Kalman, 1 = pure AMA.
