@@ -1246,8 +1246,7 @@ class MarketAdapterService {
             botAma.erPeriod,
             botAma.slowPeriod,
             lookbackBars,
-            botAma.fastPeriod,
-            botAma.erSmoothPeriod ?? 0
+            botAma.fastPeriod
         );
         const analysisKeepCount = amaWarmupBars + 1;
         // Retain one extra raw candle so the closed-candle analysis window still keeps a
@@ -2234,7 +2233,6 @@ class MarketAdapterService {
                     erPeriod: botAma.erPeriod,
                     fastPeriod: botAma.fastPeriod,
                     slowPeriod: botAma.slowPeriod,
-                    erSmoothPeriod: botAma.erSmoothPeriod ?? 0,
                 },
                 pendingClosedCandle,
             });
@@ -2708,7 +2706,6 @@ class MarketAdapterService {
                 erPeriod: botAma.erPeriod,
                 fastPeriod: botAma.fastPeriod,
                 slowPeriod: botAma.slowPeriod,
-                erSmoothPeriod: botAma.erSmoothPeriod ?? 0,
             },
             amaComparison,
             lastDeltaPercent: deltaPercent,
@@ -2798,7 +2795,6 @@ class MarketAdapterService {
                 erPeriod: botAma.erPeriod,
                 fastPeriod: botAma.fastPeriod,
                 slowPeriod: botAma.slowPeriod,
-                erSmoothPeriod: botAma.erSmoothPeriod ?? 0,
             },
             atr,
             weightVariance,

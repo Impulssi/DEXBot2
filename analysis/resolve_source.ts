@@ -20,7 +20,7 @@ interface SourceConfig {
 interface SourceResolution {
     source: ReturnType<typeof createSource>;
     botKey?: string;
-    amaConfig: { erPeriod: number; fastPeriod: number; slowPeriod: number; erSmoothPeriod: number };
+    amaConfig: { erPeriod: number; fastPeriod: number; slowPeriod: number };
     amaKey: string;
     // Candle-file meta when the source is backed by a JSON file (pool id,
     // asset ids/symbols, intervalSeconds); null for the centers-file fallback.

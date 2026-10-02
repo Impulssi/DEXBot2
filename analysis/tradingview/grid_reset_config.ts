@@ -190,7 +190,6 @@ function resolveGridResetSimConfig({ botKey, bot, ama, overrides }: any = {}) {
             firstPositive([ama?.slowPeriod], MARKET_ADAPTER.AMAS.AMA3.slowPeriod),
             lookbackBars,
             firstPositive([ama?.fastPeriod], MARKET_ADAPTER.AMAS.AMA3.fastPeriod),
-            Number(ama?.erSmoothPeriod) > 0 ? Number(ama.erSmoothPeriod) : 0,
         );
     } catch (_err: any) {
         // getAmaWarmupBars validates strictly; a research-only AMA tweak must

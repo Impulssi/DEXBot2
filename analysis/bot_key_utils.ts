@@ -348,21 +348,11 @@ function findBotKeyByAccountRef(ref: any, filePath = PATHS.PROFILES.BOTS_JSON): 
 
 function resolveAmaConfig(botKey: any) {
     const botMeta = loadBotMeta(botKey);
-    // Unknown bot key: fall back to the global erSmoothPeriod default (same
-    // resolution path production uses) instead of forcing 0 — a typo'd
-    // --bot-key must not silently research with different ER smoothing.
-    if (!botMeta) return { ...MARKET_ADAPTER.AMAS.AMA3, erSmoothPeriod: Number(MARKET_ADAPTER.AMA_ER_SMOOTH_FAST_PERIOD) };
+    if (!botMeta) return { ...MARKET_ADAPTER.AMAS.AMA3 };
 
     const rawGridPrice = String(botMeta?.gridPrice || '').trim().toLowerCase();
     const isAmaKeyword = AMA_KEYWORDS.has(rawGridPrice);
-
-    // erSmoothPeriod: bot.ama inline > global default (matches production resolveErSmoothPeriodForBot)
     const botAmaInline = (botMeta?.ama && typeof botMeta.ama === 'object') ? botMeta.ama : null;
-    const rawErSmooth = botAmaInline && Object.prototype.hasOwnProperty.call(botAmaInline, 'erSmoothPeriod')
-        ? Number(botAmaInline.erSmoothPeriod)
-        : Number(MARKET_ADAPTER.AMA_ER_SMOOTH_FAST_PERIOD);
-    const erSmoothPeriod = rawErSmooth === 0 ? 0
-        : (Number.isFinite(rawErSmooth) && rawErSmooth >= 1 ? rawErSmooth : 0);
 
     // Priority: inline bot.ama overrides market profile for analysis visibility.
     // Production inverts this (profiles first, inline as fallback — market_adapter.ts:694-730).
@@ -371,7 +361,6 @@ function resolveAmaConfig(botKey: any) {
             erPeriod: Number(botAmaInline.erPeriod),
             fastPeriod: Number(botAmaInline.fastPeriod),
             slowPeriod: Number(botAmaInline.slowPeriod),
-            erSmoothPeriod,
         };
         if (isAmaKeyword) {
             const key = rawGridPrice === 'ama' ? DEFAULT_AMA_KEY : rawGridPrice.toUpperCase();
@@ -411,7 +400,7 @@ function resolveAmaConfig(botKey: any) {
         const fromBuiltin = BUILTIN_AMAS[requestedKey] || BUILTIN_AMAS[fallbackKey];
         const base = fromProfile || fromBuiltin;
         if (base) {
-            return { erPeriod: base.erPeriod, fastPeriod: base.fastPeriod, slowPeriod: base.slowPeriod, erSmoothPeriod };
+            return { erPeriod: base.erPeriod, fastPeriod: base.fastPeriod, slowPeriod: base.slowPeriod };
         }
     }
 
@@ -419,7 +408,7 @@ function resolveAmaConfig(botKey: any) {
         ? (rawGridPrice === 'ama' ? DEFAULT_AMA_KEY : rawGridPrice.toUpperCase())
         : DEFAULT_AMA_KEY;
     const builtin = BUILTIN_AMAS[key] || MARKET_ADAPTER.AMAS.AMA3;
-    return { erPeriod: builtin.erPeriod, fastPeriod: builtin.fastPeriod, slowPeriod: builtin.slowPeriod, erSmoothPeriod };
+    return { erPeriod: builtin.erPeriod, fastPeriod: builtin.fastPeriod, slowPeriod: builtin.slowPeriod };
 }
 
 function resolveAmaKey(botKey: any) {

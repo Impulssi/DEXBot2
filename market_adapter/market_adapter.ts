@@ -21,7 +21,7 @@ import { acquireFileLockSync, releaseFileLockSync } from './utils/file_lock.js';
 import { updateDynamicGridSnapshotSync } from './utils/dynamic_grid_snapshot.js';
 import { PATHS, getRecalculateTriggerFile } from '../modules/paths.js';
 import Logger from '../modules/order/logger.js';
-import { fixedTo, roundTo } from '../modules/order/utils/math.js';
+import { roundTo } from '../modules/order/utils/math.js';
 import { usesAmaGridPrice } from '../modules/dexbot_maintenance_runtime.js';
 import {
     normalizeAtrPeriod,
@@ -390,24 +390,6 @@ function getAmaPresetForKey(key: string, profile: any) {
     return normalizeAmaPreset(profile?.amas?.[key]) || normalizeAmaPreset((BUILTIN_AMAS as Record<string, any>)[key]) || null;
 }
 
-function normalizeErSmoothPeriod(raw: any, fallback: any = 0) {
-    const value = Number(raw);
-    if (value === 0) return 0;
-    if (Number.isFinite(value) && value >= 1) return value;
-
-    const fallbackValue = Number(fallback);
-    return Number.isFinite(fallbackValue) && fallbackValue >= 1 ? fallbackValue : 0;
-}
-
-function resolveErSmoothPeriodForBot(bot: any) {
-    const raw = (bot && typeof bot.ama === 'object' && bot.ama !== null) ? bot.ama : {};
-    const globalErSmoothPeriod = normalizeErSmoothPeriod(MARKET_ADAPTER.AMA_ER_SMOOTH_FAST_PERIOD, 0);
-    if (Object.prototype.hasOwnProperty.call(raw, 'erSmoothPeriod')) {
-        return normalizeErSmoothPeriod(raw.erSmoothPeriod, globalErSmoothPeriod);
-    }
-    return globalErSmoothPeriod;
-}
-
 function getAmaFromProfilesForBot(bot: any, ctx: any, cfg: any) {
     const selected = resolveAmaPresetForBot(bot, ctx, cfg);
     if (!selected) return null;
@@ -417,7 +399,6 @@ function getAmaFromProfilesForBot(bot: any, ctx: any, cfg: any) {
         erPeriod: selected.erPeriod,
         fastPeriod: selected.fastPeriod,
         slowPeriod: selected.slowPeriod,
-        erSmoothPeriod: selected.erSmoothPeriod,
     };
 }
 
@@ -430,7 +411,6 @@ function getAmaFromProfilesForBot(bot: any, ctx: any, cfg: any) {
  */
 function resolveAmaPresetForBot(bot: any, ctx: any, cfg: any) {
     const profile = findAmaProfileForBot(bot, ctx);
-    const erSmoothPeriod = resolveErSmoothPeriodForBot(bot);
     if (!profile) return null;
 
     const rawGridPrice = String(bot?.gridPrice || '').trim().toLowerCase();
@@ -455,7 +435,6 @@ function resolveAmaPresetForBot(bot: any, ctx: any, cfg: any) {
         erPeriod: selected.preset.erPeriod,
         fastPeriod: selected.preset.fastPeriod,
         slowPeriod: selected.preset.slowPeriod,
-        erSmoothPeriod,
     };
 }
 
@@ -927,7 +906,6 @@ function computeCandleStaleness(lastCandleTs: any, maxStaleHours: any) {
  */
 function resolveAmaForBot(bot: any, ctx: any = null, cfg: any = null) {
     const raw = (bot && typeof bot.ama === 'object' && bot.ama !== null) ? bot.ama : {};
-    const erSmoothPeriod = resolveErSmoothPeriodForBot(bot);
 
     const fromProfiles: any = getAmaFromProfilesForBot(bot, ctx, cfg);
     if (fromProfiles) return fromProfiles;
@@ -936,7 +914,6 @@ function resolveAmaForBot(bot: any, ctx: any = null, cfg: any = null) {
         erPeriod: Number(raw.erPeriod),
         fastPeriod: Number(raw.fastPeriod),
         slowPeriod: Number(raw.slowPeriod),
-        erSmoothPeriod,
         enabled: true,
         name: 'custom',
     };
@@ -998,7 +975,6 @@ function buildAmaRecord(botAma: any, amaPrice: any) {
     const erPeriod = Number(botAma?.erPeriod);
     const fastPeriod = Number(botAma?.fastPeriod);
     const slowPeriod = Number(botAma?.slowPeriod);
-    const erSmoothPeriod = Number(botAma?.erSmoothPeriod);
     if (!Number.isFinite(erPeriod) || !Number.isFinite(fastPeriod) || !Number.isFinite(slowPeriod)) {
         return [];
     }
@@ -1008,7 +984,6 @@ function buildAmaRecord(botAma: any, amaPrice: any) {
         erPeriod,
         fastPeriod,
         slowPeriod,
-        erSmoothPeriod: Number.isFinite(erSmoothPeriod) ? erSmoothPeriod : 0,
         value: Number.isFinite(value) ? value : null,
         ok: Number.isFinite(value),
     }];
@@ -1511,8 +1486,7 @@ async function runOnce(cfg: any, state: any, contextCache: any) {
             if (Array.isArray(r.amaComparison) && r.amaComparison.length > 0) {
                 const parts = r.amaComparison.map((a: any) => {
                     const val = Number.isFinite(a.value) ? a.value.toFixed(8) : 'n/a';
-                    const erSmoothText = Number.isFinite(Number(a.erSmoothPeriod)) ? `/es${fixedTo(a.erSmoothPeriod, 0)}` : '';
-                    return `${a.name}[${a.erPeriod}/${a.fastPeriod}/${a.slowPeriod}${erSmoothText}]=${val}`;
+                    return `${a.name}[${a.erPeriod}/${a.fastPeriod}/${a.slowPeriod}]=${val}`;
                 });
                 log(cfg, `  AMA active: ${parts.join(' | ')}`);
             }

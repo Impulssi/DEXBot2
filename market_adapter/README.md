@@ -95,12 +95,6 @@ the pair's `defaultAma` from
 `gridPrice: "ama4"` force a specific preset. If no pair profile matches, the
 bot's `ama` block is used as the fallback.
 
-Bots can optionally add `ama.erSmoothPeriod` to smooth Kaufman's raw Efficiency
-Ratio before it enters the AMA smoothing-constant formula. The default is `0`,
-which disables this DEXBot2 extension and preserves raw Kaufman behavior. Useful
-values start around `3` to `5` when a faster AMA is desired but raw ER spikes
-cause abrupt grid-center changes.
-
 ### Empirical Divergence Risk Management
 
 The adapter uses tiered clamping thresholds to manage inventory risk during extreme price divergence from the AMA trend center. These thresholds are derived from historical pool volatility and replace static 'fit cap' multipliers. The specific clamping limits and exit parameters are calculated per pair and preset using the AMA fitting toolchain:
@@ -877,27 +871,11 @@ bias_remaining(K) ≈ bias_initial × ∏ (1 − SC_i)      for i = 1..K
 Kaufman's smoothing constant is the ER-scaled value, squared:
 
 ```
-SC_i = [ER_effective_i × (fastSC − slowSC) + slowSC]²
+SC_i = [ER_i × (fastSC − slowSC) + slowSC]²
 
 where  fastSC = 2 / (fastPeriod + 1)
       slowSC = 2 / (slowPeriod + 1)
 ```
-
-By default, `ER_effective_i` is Kaufman's raw `ER_i`. If `ama.erSmoothPeriod`
-or `MARKET_ADAPTER.AMA_ER_SMOOTH_FAST_PERIOD` is set to `1` or higher, DEXBot2
-first applies EMA smoothing to the ER stream:
-
-```
-ER_effective_i = ER_effective_(i-1) + erSmoothAlpha × (ER_i − ER_effective_(i-1))
-
-where  erSmoothAlpha = 2 / (erSmoothPeriod + 1)
-```
-
-This ER smoothing is not part of canonical Kaufman AMA/KAMA. It is an optional
-DEXBot2 stabilizer for fast AMAs: it can reduce false or jerky re-centering
-caused by one-window ER spikes, at the cost of slower recognition when the
-market genuinely changes regime. `erSmoothPeriod = 0` disables it; `1` is
-effectively no extra smoothing; `3` to `5` are typical light/moderate values.
 
 Because `ER_i` varies bar-by-bar, a **typical-market ER** (`ER_avg`) is used to
 estimate an average decay rate:
@@ -916,14 +894,13 @@ The adapter keeps the **full warmup window** in candle history so the AMA seed
 and convergence bias are retained for downstream calculations:
 
 ```
-amaWarmupBars = erPeriod + convergenceBars + erSmoothConvergenceBars + lookbackBars
+amaWarmupBars = erPeriod + convergenceBars + lookbackBars
 ```
 
 | Component | Role |
 |-----------|------|
 | `erPeriod` | Bars for the first Efficiency Ratio value to become available |
 | `convergenceBars` | Bars to decay 99 % of the cold-start initialisation bias |
-| `erSmoothConvergenceBars` | Extra ER EMA convergence bars when `erSmoothPeriod >= 1`; `0` when ER smoothing is disabled |
 | `lookbackBars` | Extra lookback for slope/trend analysis (AMA slope, ATR) |
 
 For **AMA slope readiness and percentile clipping**, the earlier gate is:

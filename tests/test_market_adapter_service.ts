@@ -131,8 +131,7 @@ function buildDynamicWeightParityInputs(candles, cfg, botAma) {
         amaErPeriod,
         amaSlowPeriod,
         lookbackBars,
-        amaFastPeriod,
-        botAma.erSmoothPeriod ?? 0
+        amaFastPeriod
     );
     const amaSlopeReadyBars = Math.ceil(amaErPeriod) + lookbackBars;
 
@@ -5189,7 +5188,7 @@ async function testDynamicWeightChartParityMatchesLiveService() {
     let writtenPayload = null;
 
     const candles = generateTrendShiftCandles(360, 100);
-    const botAma = { enabled: true, erPeriod: 10, fastPeriod: 2, slowPeriod: 30, erSmoothPeriod: 3 };
+    const botAma = { enabled: true, erPeriod: 10, fastPeriod: 2, slowPeriod: 30 };
     const staticWeights = { sell: 0.6, buy: 0.4 };
     const cfg = {
         intervalSeconds: 3600,
@@ -5333,7 +5332,6 @@ async function testDynamicWeightChartParityMatchesLiveService() {
     assert.strictEqual(dw.regimeSensitivity, cfg.regimeSensitivity, 'persisted payload should retain regimeSensitivity for snapshot parity');
     assert.strictEqual(dw.absoluteThreshold, MARKET_ADAPTER.DYNAMIC_WEIGHT_ABSOLUTE_THRESHOLD_DEFAULT,
         'persisted payload should retain absoluteThreshold for snapshot parity');
-    assert.strictEqual(result.amaConfig.erSmoothPeriod, botAma.erSmoothPeriod, 'service result should expose ER smoothing in amaConfig');
     assert.strictEqual(result.weights.meta.rawFinalOffset, liveSeries.rawFinalOff, 'service metadata should expose the same raw final offset');
     assert.strictEqual(result.weights.meta.finalOffset, liveSeries.finalOff, 'service metadata should expose the same final offset');
     assert.strictEqual(result.weights.meta.belowMinOutputThreshold, expectedBelowThreshold, 'service metadata should expose the same threshold decision');
@@ -6300,7 +6298,7 @@ async function testOffHourSkipAvoidsNetworkWhenClosedCandleConsumed() {
             assetB: { id: '1.3.0', precision: 5, symbol: 'BTS' },
             poolId: '1.19.133',
         }),
-        resolveAmaForBot: () => ({ enabled: true, name: 'AMA1', erPeriod: 1, fastPeriod: 1, slowPeriod: 1, erSmoothPeriod: 0 }),
+        resolveAmaForBot: () => ({ enabled: true, name: 'AMA1', erPeriod: 1, fastPeriod: 1, slowPeriod: 1 }),
         candleFileForBot: () => path.join('/tmp', 'market_adapter_off_hour_skip.json'),
         loadJson: (filePath) => {
             // The local candle read is expected; the dynamic-grid snapshot load
@@ -6380,7 +6378,7 @@ async function testOffHourSkipIsDisabledForOneShotRuns() {
             assetB: { id: '1.3.0', precision: 5, symbol: 'BTS' },
             poolId: '1.19.133',
         }),
-        resolveAmaForBot: () => ({ enabled: true, name: 'AMA1', erPeriod: 1, fastPeriod: 1, slowPeriod: 1, erSmoothPeriod: 0 }),
+        resolveAmaForBot: () => ({ enabled: true, name: 'AMA1', erPeriod: 1, fastPeriod: 1, slowPeriod: 1 }),
         candleFileForBot: () => path.join('/tmp', 'market_adapter_once_full_cycle.json'),
         loadJson: () => ({ meta: { marketSource: 'pool' }, candles: cachedCandles }),
         saveJson: () => {},
@@ -6442,7 +6440,7 @@ async function testOffHourSkipDeclinedWhenCacheNeedsRepair() {
                 poolId: '1.19.133',
             };
         },
-        resolveAmaForBot: () => ({ enabled: true, name: 'AMA1', erPeriod: 1, fastPeriod: 1, slowPeriod: 1, erSmoothPeriod: 0 }),
+        resolveAmaForBot: () => ({ enabled: true, name: 'AMA1', erPeriod: 1, fastPeriod: 1, slowPeriod: 1 }),
         candleFileForBot: () => path.join('/tmp', 'market_adapter_off_hour_repair.json'),
         loadJson: () => ({ meta: { marketSource: 'pool' }, candles: shortCandles }),
         saveJson: () => {},

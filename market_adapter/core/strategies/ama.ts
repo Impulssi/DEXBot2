@@ -8,9 +8,6 @@ import { MARKET_ADAPTER } from '../../../modules/constants.js';
  */
 class AMA {
     erPeriod: any;
-    erSmoothPeriod: any;
-    erSmoothAlpha: any;
-    erSmoothValue: any;
     fastSC: any;
     slowSC: any;
     prevAMA: any;
@@ -19,7 +16,7 @@ class AMA {
     smaSum: any;
     smaCount: any;
 
-    constructor(erPeriod: any, fastPeriod: any, slowPeriod: any, erSmoothPeriod: any) {
+    constructor(erPeriod: any, fastPeriod: any, slowPeriod: any) {
         if (!Number.isFinite(erPeriod) || erPeriod <= 0) {
             throw new TypeError(`AMA erPeriod must be a positive finite number, got ${erPeriod}`);
         }
@@ -30,11 +27,6 @@ class AMA {
             throw new TypeError(`AMA slowPeriod must be a positive finite number, got ${slowPeriod}`);
         }
         this.erPeriod = Math.ceil(erPeriod);
-
-        const esPeriod = Number(erSmoothPeriod);
-        this.erSmoothPeriod = Number.isFinite(esPeriod) && esPeriod >= 1 ? esPeriod : 0;
-        this.erSmoothAlpha = this.erSmoothPeriod > 0 ? 2 / (this.erSmoothPeriod + 1) : 0;
-        this.erSmoothValue = null;
 
         this.fastSC = 2 / (fastPeriod + 1);
         this.slowSC = 2 / (slowPeriod + 1);
@@ -77,16 +69,7 @@ class AMA {
 
         const er = volatility === 0 ? 0 : direction / volatility;
 
-        const effectiveER = this.erSmoothAlpha > 0
-            ? (this.erSmoothValue === null
-                ? er
-                : this.erSmoothValue + this.erSmoothAlpha * (er - this.erSmoothValue))
-            : er;
-        if (this.erSmoothAlpha > 0) {
-            this.erSmoothValue = effectiveER;
-        }
-
-        const smooth = (effectiveER * (this.fastSC - this.slowSC) + this.slowSC) ** 2;
+        const smooth = (er * (this.fastSC - this.slowSC) + this.slowSC) ** 2;
         const ama = this.prevAMA + smooth * (price - this.prevAMA);
 
         this.prevAMA = ama;
@@ -94,7 +77,7 @@ class AMA {
     }
 }
 
-function getAmaWarmupBars(erPeriod: any, slowPeriod: any, lookbackBars: any, fastPeriod: any, erSmoothPeriod = 0) {
+function getAmaWarmupBars(erPeriod: any, slowPeriod: any, lookbackBars: any, fastPeriod: any) {
     if (!Number.isFinite(erPeriod) || erPeriod <= 0) {
         throw new TypeError(`getAmaWarmupBars erPeriod must be a positive finite number, got ${erPeriod}`);
     }
@@ -107,14 +90,10 @@ function getAmaWarmupBars(erPeriod: any, slowPeriod: any, lookbackBars: any, fas
     if (!Number.isFinite(fastPeriod) || fastPeriod <= 0) {
         throw new TypeError(`getAmaWarmupBars fastPeriod must be a positive finite number, got ${fastPeriod}`);
     }
-    if (!Number.isFinite(erSmoothPeriod) || erSmoothPeriod < 0) {
-        throw new TypeError(`getAmaWarmupBars erSmoothPeriod must be a non-negative finite number, got ${erSmoothPeriod}`);
-    }
 
     const safeErPeriod = Math.ceil(erPeriod);
     const safeSlowPeriod = Math.ceil(slowPeriod);
     const safeLookbackBars = Math.ceil(lookbackBars);
-    const safeErSmoothPeriod = erSmoothPeriod >= 1 ? erSmoothPeriod : 0;
     const fastSC = 2 / (fastPeriod + 1);
     const slowSC = 2 / (safeSlowPeriod + 1);
     const deltaSC = fastSC - slowSC;
@@ -122,14 +101,8 @@ function getAmaWarmupBars(erPeriod: any, slowPeriod: any, lookbackBars: any, fas
     const convergenceBars = Math.ceil(
         Math.log(MARKET_ADAPTER.AMA_CONVERGENCE_EPSILON) / Math.log(1 - scAvg)
     );
-    const erSmoothConvergenceBars = safeErSmoothPeriod > 0
-        ? Math.ceil(
-            Math.log(MARKET_ADAPTER.AMA_CONVERGENCE_EPSILON)
-            / Math.log(1 - (2 / (safeErSmoothPeriod + 1)))
-        )
-        : 0;
 
-    return safeErPeriod + convergenceBars + erSmoothConvergenceBars + safeLookbackBars;
+    return safeErPeriod + convergenceBars + safeLookbackBars;
 }
 
 function calculateAMA(closes: any, params: any) {
@@ -149,7 +122,7 @@ function calculateAMA(closes: any, params: any) {
         throw new TypeError('calculateAMA closes must be an array');
     }
 
-    const indicator = new AMA(params.erPeriod, params.fastPeriod, params.slowPeriod, params.erSmoothPeriod);
+    const indicator = new AMA(params.erPeriod, params.fastPeriod, params.slowPeriod);
     return closes.map(price => indicator.update(price));
 }
 

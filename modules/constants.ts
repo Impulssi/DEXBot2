@@ -1531,15 +1531,6 @@ let MARKET_ADAPTER = {
     // AMA_CONVERGENCE_EPSILON: Target fraction of initialization bias remaining
     // after convergence. 0.01 = 99 % of the initial bias has decayed.
     AMA_CONVERGENCE_EPSILON: 0.01,
-
-    // AMA_ER_SMOOTH_FAST_PERIOD: Fast-period equivalent for smoothing the raw
-    // Efficiency Ratio via EMA before it enters the SC formula. Raw ER can spike
-    // at regime boundaries (trending ↔ ranging), causing jerky AMA transitions
-    // and false grid re-centering triggers.
-    // 0 = disabled (raw ER used directly, backward compatible).
-    // Enabled alpha = 2 / (AMA_ER_SMOOTH_FAST_PERIOD + 1).
-    // Overridable per bot via bots.json inline `ama.erSmoothPeriod` field.
-    AMA_ER_SMOOTH_FAST_PERIOD: 0,
 };
 
 // Logging Level Configuration

@@ -160,8 +160,7 @@ node dist/market_adapter/market_adapter.js --deltaPercent 2
   "ama": {
     "erPeriod": 10,      // Efficiency Ratio lookback period (candles)
     "fastPeriod": 2,     // Fast smoothing period for trending markets
-    "slowPeriod": 30,    // Slow smoothing period for choppy markets
-    "erSmoothPeriod": 0  // Optional ER smoothing; 0 disables it
+    "slowPeriod": 30     // Slow smoothing period for choppy markets
   }
 }
 ```
@@ -199,22 +198,10 @@ The pool is fetched directly by ID, bypassing pool discovery. Useful when the tr
 - `slowPeriod`: Smoothing constant for choppy/sideways markets
   - Higher = more lag, filters noise
   - Built-in presets range from `AMA1` (fastest) to `AMA4` (slowest) — see `MARKET_ADAPTER.AMAS` in `modules/constants.ts` for the exact `slowPeriod` values
-- `erSmoothPeriod`: Optional DEXBot2 extension that smooths Kaufman's raw Efficiency Ratio before the AMA smoothing constant is calculated
-  - `0`: Disabled, raw Kaufman ER is used directly
-  - `1`: Effectively no extra smoothing
-  - `3` to `5`: Light to moderate damping for faster AMAs that re-center too abruptly
-  - Higher values: More stable ER, but delayed trend/chop recognition
-  - Values between `0` and `1` are invalid and fall back to the configured default
 
 AMA parameters are resolved exclusively from **presets** (`AMA1`–`AMA4`): a matched
 pair profile in `profiles/market_profiles.json` wins, otherwise the built-in defaults
 (`MARKET_ADAPTER.AMAS` in `modules/constants.ts`, default key `AMA3`) are used.
-
-`erSmoothPeriod` is not part of canonical Kaufman AMA/KAMA. It is a bot-level
-stabilizer for cases where a faster AMA is useful but raw ER spikes cause false
-grid re-centering triggers. Market-profile presets still provide `erPeriod`,
-`fastPeriod`, and `slowPeriod`; an inline bot `ama.erSmoothPeriod` can be used
-with those presets.
 
 ### How It Works
 

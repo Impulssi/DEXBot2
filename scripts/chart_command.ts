@@ -475,8 +475,7 @@ async function run(cmd: ChartCmd): Promise<void> {
         // Both renderers resolve bot-scoped config themselves from the SAME
         // --bot-key (AMA config via resolveAmaConfig; tv additionally grid
         // bounds + order overlay). Explicit --ama-*-period forwarding was
-        // dropped on purpose: it duplicated that resolution and forwarded only
-        // 3 of 4 fields (silently losing erSmoothPeriod).
+        // dropped on purpose: it duplicated that resolution.
         if (botKey) analyzerArgs.push('--bot-key', botKey);
         const result = spawnSync(process.execPath, [analyzer, ...analyzerArgs], { stdio: 'inherit' });
         if (result.status !== 0) throw new Error(`${renderer.exporterName} exited with status ${result.status}`);

@@ -65,7 +65,6 @@ function parseArgs() {
         listBots: boolean;
         lookbackBars?: number;
         dispScaleMinPct?: number;
-        amaEmaSpan?: number;
     } = {
         source: { type: 'market_adapter', config: { botKey: '' } },
         chartFile: path.join(PATHS.ANALYSIS.CHARTS_DIR, 'dynamic_weight_chart.html'),
@@ -92,7 +91,6 @@ function parseArgs() {
         else if (arg === '--gain') config.gain = parseFloat(args[++i]);
         else if (arg === '--dw') config.dispWeight = parseFloat(args[++i]);
         else if (arg === '--lb') config.lookbackBars = parseInt(args[++i], 10);
-        else if (arg === '--ema') config.amaEmaSpan = parseInt(args[++i], 10);
         else if (arg === '--clip') config.clipPct = parseFloat(args[++i]);
         else if (arg === '--list-bots') config.listBots = true;
         else if (arg === '--quiet') config.quiet = true;
@@ -206,7 +204,6 @@ async function main() {
                 ...AMA_WEIGHT_CONFIG,
                 lookbackBars: config.lookbackBars ?? AMA_WEIGHT_CONFIG.lookbackBars,
             },
-            amaEmaSpan: config.amaEmaSpan,
             alpha: config.alpha,
             gain: config.gain,
             dispWeight: config.dispWeight,

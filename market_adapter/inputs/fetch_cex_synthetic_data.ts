@@ -172,8 +172,7 @@ function computeRequiredCandles(amaConfig: any = null, cfg: any = null) {
         ama.erPeriod,
         ama.slowPeriod,
         cfg?.amaSlope?.lookbackBars ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS,
-        ama.fastPeriod,
-        MARKET_ADAPTER.AMA_ER_SMOOTH_FAST_PERIOD
+        ama.fastPeriod
     );
     const analysisKeepCount = warmupBars + 1;
     return Math.max(DEFAULT_BOOTSTRAP_LOOKBACK_HOURS, analysisKeepCount);
@@ -1212,7 +1211,6 @@ async function main() {
                 erPeriod: botAma.erPeriod,
                 fastPeriod: botAma.fastPeriod,
                 slowPeriod: botAma.slowPeriod,
-                erSmoothPeriod: botAma.erSmoothPeriod ?? null,
             } : null,
             bot: botContext ? {
                 name: botContext.bot.name || null,
