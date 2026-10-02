@@ -89,11 +89,12 @@ const ASSETS: Record<string, AssetInfo> = {
     '1.3.6627': { symbol: 'XBTSX.LINK',   precision: 6 },
 };
 
-/** Precisions learned on-chain this run (populated by resolveAssetPrecisions). */
+/** Precisions/symbols learned on-chain this run (populated by resolveAssetPrecisions). */
 const resolvedPrecisions: Record<string, number> = {};
+const resolvedSymbols: Record<string, string> = {};
 
 function assetSymbol(id: string): string {
-    return ASSETS[id]?.symbol ?? id;
+    return ASSETS[id]?.symbol ?? resolvedSymbols[id] ?? id;
 }
 
 function assetPrec(id: string): number | undefined {
@@ -130,6 +131,7 @@ async function resolveAssetPrecisions(fills: FillRecord[]): Promise<void> {
                 for (const asset of assets) {
                     if (asset?.id && asset.precision != null) {
                         resolvedPrecisions[asset.id] = asset.precision;
+                        if (asset.symbol) resolvedSymbols[asset.id] = String(asset.symbol);
                         console.log(`    ${asset.id} → ${asset.symbol || '?'} (precision ${asset.precision})`);
                     }
                 }

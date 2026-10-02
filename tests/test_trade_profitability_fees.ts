@@ -395,7 +395,8 @@ function testDrawdownStablePeakMonotonic() {
 
 function testDrawdownStablePeakEarly() {
     // 6 all-winning trades → fewer than MIN_TRADES_FOR_PEAK (10),
-    // hadStablePeak should be false, mddPct should be absolute min equity
+    // hadStablePeak should be false: mddPct stays a percentage (0) and the
+    // pre-peak equity low is reported separately as prePeakMinEquity.
     const trades = [];
     for (let i = 0; i < 6; i++) {
         const base = i % 2 === 0 ? 10 : 11;
@@ -414,9 +415,11 @@ function testDrawdownStablePeakEarly() {
     const m = computeMetrics(pair);
     assert.strictEqual(m.mddHadStablePeak, false,
         `early 6 trades: hadStablePeak should be false, got ${m.mddHadStablePeak}`);
+    assert.strictEqual(m.mddPct, 0,
+        `early 6 trades: mddPct should be 0 (percentage-only when no stable peak), got ${m.mddPct}`);
     // Min equity should be positive (equity after first profitable trade)
-    assert.ok(m.mddPct > 0,
-        `early 6 trades: mddPct (absolute min equity) should be > 0, got ${m.mddPct}`);
+    assert.ok(m.prePeakMinEquity > 0,
+        `early 6 trades: prePeakMinEquity should be > 0, got ${m.prePeakMinEquity}`);
 }
 
 // ─── Window-aware annualisation ───────────────────────────────────────────

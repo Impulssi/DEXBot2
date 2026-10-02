@@ -155,7 +155,7 @@ if (typeof credentialPolicy.checkPolicyFileSecurity === 'function') credentialPo
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
 
-const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'tv', 'dw', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'unlock', 'delete', 'stop', 'restart', 'reload', 'help'];
+const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'tv', 'dw', 'pnl', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'unlock', 'delete', 'stop', 'restart', 'reload', 'help'];
 const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', stat: 'status', stats: 'status', start: 'unlock', defaults: 'default', stp: 'stop', stopall: 'stop', restartall: 'restart', reloadall: 'reload' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
@@ -174,6 +174,7 @@ const CLI_EXAMPLES = [
     { title: 'Analyze persisted order grids', command: 'dexbot order', notes: 'Runs the order analyzer across the orders directory (<profiles>/orders) and prints spread/increment/funds/distribution metrics. Add a bot key to render only that bot, and --export for an HTML report.' },
     { title: 'Show live credit/MPA positions', command: 'dexbot credit', notes: 'Queries get_margin_positions + get_credit_deals_by_borrower per preferredAccount and prints debt/collateral sums plus one Curr. CR line per whitelisted pair (active CR, else borrow-now CR vs funds avail. on the offer) and one Avar. CR line per bot. CR covers only pairs whitelisted in bots.json and listed on the current credit offer. Add a bot key to render only that bot.' },
     { title: 'TradingView chart for a bot, pool, or pair', command: 'dexbot tv <bot|pool-id|AssetA/AssetB> --month 3', notes: 'Fetches 1h candles for N months (default 3, pool-first with orderbook fallback; --feed charts MPA price-feed history) and writes an auto-named HTML chart.' },
+    { title: 'PnL report for a bot or blockchain account', command: 'dexbot pnl <bot|account|1.2.x> --month 3 [--pair BASE/QUOTE]', notes: 'Resolves a local bot profile first, then the chain account, analyzes its fills for the requested window and writes a self-contained HTML PnL report.' },
     { title: 'Clear all bot log files', command: 'dexbot clear', notes: 'Runs scripts/clear-logs.sh to remove *.log, rotated *.log.N and *.jsonl* from the logs directory (<profiles>/logs), including the credential audit trail daemon-audit.jsonl and its rotated siblings (named in the preview). Offline only: the scripts warn when a live runtime is detected, but a running bot keeps writing to unlinked files and the space is not freed until it restarts; dexbot clear-orders / clear-market-adapter / clear-all are undone within seconds (grid state is re-persisted, the adapter rewrites its state file and lock). Stop first with dexbot stop / dexbot pm2 stop all.' },
     { title: 'Reset settings to defaults', command: 'dexbot default', notes: 'Runs scripts/reset-settings.sh to delete general.settings.json, market_profiles.json, and market_adapter_settings.json.' }
 ];
@@ -238,6 +239,7 @@ function printCLIUsage() {
             ['credit [<bot>]', 'Live summed MPA + borrowed-credit positions per asset per bot.'],
             ['tv <target>', 'TradingView chart: 1h candles for <bot|pool-id|AssetA/AssetB> over --month N (default 3).'],
             ['dw <target>', 'Dynamic-weight research chart: same targets/flags as tv (see analysis/).'],
+            ['pnl <account>', 'PnL HTML report for a bot/account over --month N, optional --pair BASE/QUOTE filter.'],
         ]],
         ['Files', [
             ['clear', 'Delete <profiles>/logs/*.log, *.log.N and *.jsonl* (audit trail included). Stop the runtime first.'],
@@ -278,7 +280,7 @@ if (cliArgs.some(arg => CLI_HELP_FLAGS.includes(arg))) {
     // so the script prints its usage. Only scripts with offline help handling
     // belong here — forwarding to a script without it could misinterpret the
     // flag as input (e.g. a bot-name filter triggering live work).
-    const HELP_OWNING_COMMANDS = new Set(['credit', 'tv', 'dw']);
+    const HELP_OWNING_COMMANDS = new Set(['credit', 'tv', 'dw', 'pnl']);
     const requestedCommand = COMMAND_ALIASES[cliArgs[0]] ?? cliArgs[0];
     if (!HELP_OWNING_COMMANDS.has(requestedCommand)) {
         printCLIUsage();
@@ -1060,7 +1062,8 @@ async function handleCLICommands() {
             return true;
         }
         case 'tv':
-        case 'dw': {
+        case 'dw':
+        case 'pnl': {
             const { spawnSync } = require('child_process') as any as any;
             const scriptArgs = buildRuntimeScriptArgs({
                 codeRoot: __dirname,

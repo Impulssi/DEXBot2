@@ -417,6 +417,20 @@ dexbot dw BTS/HONEST.USD --feed --month 1
 ```
 Research knobs (`--alpha`, `--gain`, `--dw`, `--lb`, `--clip`) stay on the analyzer itself — call `node dist/analysis/analyze_dynamic_weight.js` directly for parameter sweeps (see `analysis/README.md`).
 
+### PnL Report (`dexbot pnl`)
+**File:** `pnl.ts` (thin entry; analyzer + HTML renderer: `analysis/trade_profitability.ts` + `analysis/pnl_report.ts`)
+**Purpose:** Resolve a bot profile (local-first), account name, or `1.2.x` id, fetch the account's fills for the requested window, and write a self-contained HTML PnL report (summary cards, performance metrics, realized-lot table). Terminal tables stay available by running the analyzer directly.
+**Output:** `analysis/charts/pnl_<bot|account>[_<pair>]_<range>.html`
+**Cache:** per-account fill shards under `analysis/cache/fills/` (settled months are reused; the unsettled tail is re-queried). `--refresh-account` bypasses it.
+```bash
+# HTML PnL report for a local bot, last 3 months
+dexbot pnl <bot> --month 3
+# Filter a multi-pair account to one pair
+dexbot pnl 1.2.123456 --month 6 --pair TOKENA/BTS
+# Custom output path
+dexbot pnl <bot> --month 1 --report analysis/charts/custom-pnl.html
+```
+
 ### LP Chart
 **File:** `generate_lp_chart.ts`
 **Purpose:** Generate the standard uPlot LP chart output.

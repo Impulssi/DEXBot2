@@ -12,7 +12,7 @@
  * handling — all of it lives here now.
  */
 
-import { findBotKeyByAccountRef, loadBotMeta, persistBotAccountId } from './bot_key_utils.js';
+import { findBotKeyByAccountRef, loadBotMeta, persistBotAccountId, resolveBotKey } from './bot_key_utils.js';
 import { withReadOnlyClient } from './chain_pool.js';
 
 const ACCOUNT_ID_RE = /^1\.2\.\d+$/;
@@ -138,6 +138,17 @@ async function resolveAccountRef(accountRef: string, options: ResolveOptions = {
     const ref = String(accountRef ?? '').trim();
     if (ACCOUNT_ID_RE.test(ref)) {
         return { accountId: ref, botKey: null, botMeta: null, source: 'typed-id', reason: null };
+    }
+
+    // Local profile first: a bot whose profile name/key matches the reference
+    // resolves through its stored accountId/preferredAccount without any chain
+    // lookup. This is what lets `dexbot pnl <bot>` work offline and avoids
+    // treating a bot name as a chain account name.
+    try {
+        const botKey = resolveBotKey(ref, options.botsFile);
+        if (botKey) return resolveBotAccount(botKey, options);
+    } catch (_) {
+        // bots.json issues must never break resolution; fall through to chain.
     }
 
     // A bot claiming this name is the persist target; its preferredAccount is

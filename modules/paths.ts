@@ -245,6 +245,8 @@ function resolveAnalysisDirs(profilesDir = PROFILES_DIR, projectRoot = PROJECT_R
         DIR: outRoot,
         CHARTS_DIR: path.join(outRoot, 'charts'),
         RESULTS_DIR: path.join(outRoot, 'results'),
+        // Persistent query caches (e.g. analysis/fills_cache month shards).
+        CACHE_DIR: path.join(outRoot, 'cache'),
         // Vendored read-only assets always live with the code (repo checkout
         // or npm package), never under the relocated output root.
         ASSETS_DIR: path.join(sourceDir, 'uplot'),

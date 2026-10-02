@@ -36,7 +36,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **AMA Fitting**: Parameter fitting, comparison charts, and LP data workflows
 - **Bot Fitting**: Grid parameter sweep backtests for AMA winners
 - **TradingView Exports**: Chart export utilities for visual analysis
-- **Trade Profitability**: FIFO-based PnL analysis from Kibana fill data (`trade_profitability.ts`)
+- **Trade Profitability**: FIFO-based PnL analysis from Kibana fill data (`trade_profitability.ts`), plus the self-contained HTML report behind `dexbot pnl` (`pnl_report.ts`) with a per-account month-shard fill cache (`fills_cache.ts`)
 - **Bot Usage Discovery**: On-chain bot account finder and Kibana query helpers (`bot_usage/`)
 
 ### 🦀 [Claw](../claw/README.md)
