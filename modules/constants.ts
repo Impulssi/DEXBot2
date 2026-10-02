@@ -1261,7 +1261,15 @@ let MARKET_ADAPTER = {
     // Node callers via the module import, generated HTML via an injected
     // `const AMA_SLOPE_HUBER = {...}` literal. Change a value here and every
     // slope computation follows; do not re-declare them per caller.
-    //   C            Huber tuning constant (1.345 ~= 95% Gaussian efficiency)
+    //   C            Huber tuning constant. Nominal 1.345 ~= 95% Gaussian
+    //                efficiency, but the plug-in 1.4826*MAD scale is biased low
+    //                (residual degrees of freedom), so the EFFECTIVE C is
+    //                ~1.25 at the 16-bar window — more robust, less efficient
+    //                than nominal. The detune grows ~1/(bars-1) at short
+    //                windows and vanishes at long ones; deliberately NOT
+    //                compensated (the bias points the robust way, and a
+    //                sqrt(n/(n-2)) correction is decision-neutral). See
+    //                analysis/trend_detection/huber_scale_variants.ts.
     //   ITERATIONS   IRLS passes (converges in a few at the ~16-bar window)
     //   SCALE_FLOOR  Floor for the 1.4826*MAD robust scale, in log units
     //   ZERO_EPSILON Slopes below this (%/bar) snap to exactly 0

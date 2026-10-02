@@ -92,6 +92,7 @@ function parseArgs() {
         makerCreateFactor: number;
         txFeePrice: number;
         topN: number;
+        lookbackBars: number | null;
     } = {
         dataPath: null,
         resultsPath: null,
@@ -109,6 +110,7 @@ function parseArgs() {
         makerCreateFactor: DEFAULT_BTS_MAKER_CREATE_FACTOR,
         txFeePrice: DEFAULT_TX_FEE_PRICE,
         topN: 15,
+        lookbackBars: null,
     };
 
     for (let i = 0; i < args.length; i++) {
@@ -133,6 +135,7 @@ function parseArgs() {
             case '--maker-create-factor': out.makerCreateFactor = Number(val); i++; break;
             case '--tx-fee-price': out.txFeePrice = Number(val); i++; break;
             case '--top': out.topN = Number(val); i++; break;
+            case '--lookback': out.lookbackBars = Math.max(1, Math.round(Number(val))); i++; break;
         }
     }
     if (!out.dataPath) {
@@ -167,6 +170,7 @@ function printHelp() {
     console.log('  --maker-create-factor   Maker share of create fee (default: 0.10)');
     console.log('  --tx-fee-price <n>      Convert BTS fees into backtest units (default: 1.0)');
     console.log('  --top <n>               Show top N results (default: 15)');
+    console.log(`  --lookback <bars>       Huber slope lookback override (default: ${SLOPE_LOOKBACK_BARS})`);
 }
 
 function loadAmaStrategies(resultsPath: string) {
@@ -306,9 +310,14 @@ function simulatePersistentGrid(candles: any[], amaValues: number[], params: any
 
     // Production AMA slope series (%/bar averaged over the lookback window) —
     // feeds trigger B and the grid price offset when asymmetricBounds is on.
+    // Lookback is overridable for research (params.lookbackBars); production
+    // callers leave it unset and get the centralized constant.
+    const slopeLookbackBars = Number.isFinite(params.lookbackBars) && params.lookbackBars >= 1
+        ? Math.round(params.lookbackBars)
+        : SLOPE_LOOKBACK_BARS;
     const slopeAt: (number | null)[] = new Array(candles.length).fill(null);
-    for (let j = SLOPE_LOOKBACK_BARS; j < candles.length; j++) {
-        const s = computeHuberWindowSlopePct(amaValues, j, SLOPE_LOOKBACK_BARS);
+    for (let j = slopeLookbackBars; j < candles.length; j++) {
+        const s = computeHuberWindowSlopePct(amaValues, j, slopeLookbackBars);
         if (s != null && Number.isFinite(s)) slopeAt[j] = s;
     }
 
@@ -673,6 +682,7 @@ function sweepOneAma(strategy: any, candles: any[], closes: number[], weightEntr
                         makerCreateFactor: cfg.makerCreateFactor,
                         txFeePrice: cfg.txFeePrice,
                         warmupBars,
+                        lookbackBars: cfg.lookbackBars,
                     }, weightName, weightFactor);
 
                     if (!best || sim.score > best.score) best = sim;
@@ -756,7 +766,7 @@ async function run() {
     console.log(`  Spread floor: > fee (${cfg.feeRoundtripPct}%)`);
     console.log(`  Reset (A):    ${cfg.repositionPct}% AMA drift from grid center (ratchet)`);
     console.log(`  Asym. bounds: ${cfg.asymmetricBounds ? 'ON — slope reset (B) + grid price offset enabled (whitelist semantics)' : 'OFF — typical non-whitelisted bot (production default)'}`);
-    console.log(`  Reset (B):    |slope - slope@lastReset| >= ${fmt((SLOPE_TRIGGER_FACTOR / 100) * SLOPE_MAX_PCT, 4)}% (lookback ${SLOPE_LOOKBACK_BARS})${cfg.asymmetricBounds ? '' : ' [gated off]'}`);
+    console.log(`  Reset (B):    |slope - slope@lastReset| >= ${fmt((SLOPE_TRIGGER_FACTOR / 100) * SLOPE_MAX_PCT, 4)}% (lookback ${cfg.lookbackBars ?? SLOPE_LOOKBACK_BARS})${cfg.asymmetricBounds ? '' : ' [gated off]'}`);
     console.log(`  Tx model:     create=${fmt(cfg.btsCreateFee, 5)} BTS, cancel=${fmt(cfg.btsCancelFee, 5)} BTS, maker=${fmt(cfg.makerCreateFactor * 100, 1)}%, 1 BTS=${fmt(cfg.txFeePrice, 2)} units`);
     console.log(`  Combos/AMA:   ${totalCombos}  |  Total: ${totalCombos * strategies.length}\n`);
 

@@ -14,6 +14,9 @@ For each of the 4 AMA strategies, it searches for best:
 
 - `backtest_bot_fitting.ts` — lightweight sweep across spread / increment / ratio with unit-size percentage-point accounting and risk scoring
 - `backtest_ama_sweep.ts` — persistent grid simulation with capital-weighted sizing, weight profiles, and worker-thread parallelization
+- `backtest_lookback_drawdown.ts` — paired Huber-lookback comparison of
+  drawdown / net capture / reset churn (geometry fixed); see
+  `docs/AMA_SLOPE_WINDOW.md`
 - `shared_utils.ts` — shared helpers (argument parsing, data loading, formatting)
 
 Both simulators share the same production grid model (ported once in
@@ -84,7 +87,16 @@ node dist/analysis/bot_fitting/backtest_bot_fitting.js \
 node dist/analysis/bot_fitting/backtest_ama_sweep.js \
   --data <path-to-lp-candles.json> \
   --results <path-to-optimization-results.json>
+
+# Paired lookback drawdown comparison (no --results needed)
+node dist/analysis/bot_fitting/backtest_lookback_drawdown.js \
+  --data market_adapter/data/lp/<market-pair> \
+  --lookbacks 12,14,16,20
 ```
+
+> `backtest_ama_sweep.ts` accepts `--lookback <bars>` to override the slope
+> window (`DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS`); `backtest_lookback_drawdown.ts`
+> builds on it and reports the paired per-lookback deltas.
 
 > `backtest_bot_fitting.ts` auto-derives `--results` from the `--data` filename
 > (`analysis/ama_fitting/optimization_results_<base>_w<λ1>_<λ2>_<λ3>_<λ4>.json`,

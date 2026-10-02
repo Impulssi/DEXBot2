@@ -19,6 +19,9 @@ This folder contains the chart generators and re-export shims used by the analys
 
 ## Backtests
 
+- `huber_scale_variants.ts` — research-only Huber scale variants (`none`/`df`/
+  `mscale`) plus an outlier-fraction diagnostic; the canonical estimator lives in
+  `market_adapter/core/strategies/dynamic_weight_series.ts` and is untouched.
 - `backtest_ama_slope_huber.ts` — sweeps the Huber slope lookback window
   (`--lookback`, default 8..28 bars; the live default is
   `DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS` = 16) over an LP candle
@@ -35,7 +38,11 @@ This folder contains the chart generators and re-export shims used by the analys
   ```
 
   Run `--help` for the full option list (AMA preset/overrides, reset thresholds,
-  confirmation gate, whipsaw definition, JSON output path).
+  confirmation gate, whipsaw definition, `--scale-mode`, JSON output path).
+
+  `--scale-mode none|df|mscale` swaps the Huber robust-scale estimate (production
+  is `none`); see `huber_scale_variants.ts` and `docs/AMA_SLOPE_WINDOW.md` for
+  why the plug-in scale is kept.
 
   `revLag` is measured against a centred reference whose half-window is
   `--truth-window` (default = max lookback), so compare it across runs only at a

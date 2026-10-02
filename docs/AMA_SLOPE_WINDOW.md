@@ -53,6 +53,40 @@ node dist/analysis/trend_detection/backtest_ama_slope_huber.js \
 compare `revLag` across runs only at a fixed `--truth-window`. The LP shards are
 refreshed by live collection, so reset counts can drift by ±1 from the table.
 
+## Huber scale estimate — why `C` stays 1.345
+
+The robust scale is a **plug-in** `1.4826 * MAD` of the fit's own residuals;
+with two fitted parameters those are shrunk, so it reads low by `≈ 1/(bars − 1)`
+and the **effective** Huber constant is ~1.25 at 16 bars (nominal 1.345).
+Compensating it (a `sqrt(n/(n-2))` correction, or a proposal-2 M-scale) is
+**decision-neutral** — wobble, lag, reset counts and wrong-way all within noise
+— and gives up more robustness (~0.8% RMS under 10% contamination) than it
+recovers in efficiency (~0.4% clean). So the detune is left in place: it makes
+short windows more conservative, the safe direction for a trend filter. The
+outlier diagnostic is the only metric that moves.
+
+```bash
+node dist/analysis/trend_detection/backtest_ama_slope_huber.js \
+  --data market_adapter/data/lp/<market-pair> --scale-mode none|df|mscale
+```
+(`none` == production; see `analysis/trend_detection/huber_scale_variants.ts`.)
+
+## Fill-model drawdown — the window effect is pool-dependent
+
+Paired persistent-grid runs (`simulatePersistentGrid`, geometry fixed,
+`asymmetricBounds` on) show the window does move fill-model economics, but
+**with no stable sign across pools**: on a long-lived liquid pair 16h beat 12h
+on realized drawdown (−8.9 pts, lower in 108/108 geometries) and net capture
+(+26 pts) at equal activity, while on a shorter pair the ordering reversed. So
+it supports keeping the shipped 16h without being a general economic proof.
+Trust the paired delta, not the absolute level (realized-equity DD is
+model-shaped and can exceed capital).
+
+```bash
+node dist/analysis/bot_fitting/backtest_lookback_drawdown.js \
+  --data market_adapter/data/lp/<market-pair> --lookbacks 12,16
+```
+
 ## Rejected alternative — Kalman slope estimator
 
 A constant-velocity Kalman filter on `ln(AMA)` was implemented, unit-tested
@@ -87,6 +121,10 @@ So it was removed completely in favour of the zero-migration window change.
   hooks (used by the comparison harness).
 - Docs: `docs/GRID_RECALCULATION.md`, `market_adapter/README.md`,
   `analysis/trend_detection/README.md`, `analysis/tradingview/README.md`.
+- Research (new): `analysis/trend_detection/huber_scale_variants.ts` and
+  `analysis/bot_fitting/backtest_lookback_drawdown.ts`, with `--scale-mode` on
+  `backtest_ama_slope_huber.ts`, `--lookback` on `backtest_ama_sweep.ts`, and
+  `tests/test_huber_scale_variants.ts`.
 
 ## Operational notes
 
@@ -107,4 +145,6 @@ So it was removed completely in favour of the zero-migration window change.
 - **Caveat.** Proxy-scored. The fill model lacks queue-position loss and adverse
   selection, so the economic benefit is not conclusively demonstrated; validate
   in shadow mode before relying on it. The churn/lag/wrong-way wins are robust
-  across six markets.
+  across six markets. The fill-model drawdown comparison (above) found a real
+  per-pool window effect but with a pool-dependent sign, so it does not convert
+  this into a general economic proof.

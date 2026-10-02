@@ -41,10 +41,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { calculateAMA, getAmaWarmupBars } from '../../market_adapter/core/strategies/ama.js';
-import {
-    computeHuberWindowSlopePct,
-    computeAmaSlopeClipThreshold,
-} from '../../market_adapter/core/strategies/dynamic_weight_series.js';
+import { computeAmaSlopeClipThreshold } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
+import { createHuberEstimator, type HuberScaleMode, type HuberEstimator } from './huber_scale_variants.js';
 import { simulateGridResetSeries, GRID_RESET_BOOTSTRAP } from '../tradingview/grid_reset_sim.js';
 import { normalizeCandle, range } from '../math_utils.js';
 import { parseListOrRange } from '../bot_fitting/shared_utils.js';
@@ -93,6 +91,7 @@ function parseArgs() {
         slopePersistBars: MA.AMA_SLOPE_PERSIST_BARS,
         confirmFraction: 0.25,
         whipsawBars: 3,
+        scaleMode: 'none' as HuberScaleMode,
         truthWindowBars: null as number | null,
         forwardWindowBars: null as number | null,
         outPath: null as string | null,
@@ -115,6 +114,9 @@ function parseArgs() {
             case '--slope-threshold-factor': out.slopeThresholdFactor = Number(val); i++; break;
             case '--slope-persist': out.slopePersistBars = Math.max(1, Math.round(Number(val))); i++; break;
             case '--confirm': out.confirmFraction = Number(val); i++; break;
+            case '--scale-mode':
+                if (val !== 'none' && val !== 'df' && val !== 'mscale') throw new Error(`--scale-mode must be none|df|mscale (got '${val}')`);
+                out.scaleMode = val; i++; break;
             case '--whipsaw': out.whipsawBars = Number(val); i++; break;
             case '--truth-window': out.truthWindowBars = Number(val); i++; break;
             case '--forward-window': out.forwardWindowBars = Number(val); i++; break;
@@ -146,6 +148,7 @@ function printHelp() {
     console.log(`  --slope-persist <bars>       Bars the slope delta must persist before resetting (default: ${MA.AMA_SLOPE_PERSIST_BARS})`);
     console.log('  --no-slope                   Disable the slope-delta reset (drift only)');
     console.log('  --confirm <frac>             Slope confirmation size as a fraction of max slope (default: 0.25)');
+    console.log('  --scale-mode <mode>          Huber scale estimate: none (production) | df | mscale (default: none)');
     console.log('  --whipsaw <bars>             Back-to-back reset gap counted as a whipsaw (default: 3)');
     console.log('  --truth-window <bars>        Centred reference half-window (default: max lookback)');
     console.log('  --forward-window <bars>      Realized forward horizon for range tilt direction (default: lookback)');
@@ -287,6 +290,7 @@ function analyzeLookback(
     truthArr: (number | null)[],
     priceTruthArr: (number | null)[],
     truthHalf: number,
+    estimator: HuberEstimator = createHuberEstimator('none'),
 ) {
     const n = closes.length;
     const warmupBars = getAmaWarmupBars(amaDef.er, amaDef.slow, 0, amaDef.fast);
@@ -308,9 +312,13 @@ function analyzeLookback(
         maxSlopeOffset,
         clipPercentile: 0,
         slopePersistBars: cfg.slopePersistBars,
+        slopeEstimator: estimator,
     });
 
     const slopeSeries = sim.slopePct as (number | null)[];
+    const estStats = estimator.stats;
+    const meanOutlierFraction = estStats.calls > 0 ? estStats.outlierFractionSum / estStats.calls : null;
+    const meanHuberScale = estStats.calls > 0 ? estStats.scaleSum / estStats.calls : null;
     const liveBars = Math.max(1, n - warmupBars);
 
     // ── Noise / signal-quality metrics ──────────────────────────────────────
@@ -422,6 +430,9 @@ function analyzeLookback(
 
     return {
         lookbackBars,
+        huberScaleMode: cfg.scaleMode,
+        meanOutlierFractionPct: meanOutlierFraction == null ? null : meanOutlierFraction * 100,
+        meanHuberScale,
         // lag
         priceLagBars: priceLag.lagBars,
         priceLagCorr: priceLag.corr,
@@ -510,10 +521,11 @@ function run() {
     // lag differences come from the causal window, not the reference.
     const amaTruth: (number | null)[] = new Array(n).fill(null);
     const priceTruth: (number | null)[] = new Array(n).fill(null);
+    const truthEstimator = createHuberEstimator(cfg.scaleMode);
     for (let t = truthHalf; t <= n - 1 - truthHalf; t++) {
-        const a = computeHuberWindowSlopePct(amaValues, t + truthHalf, truthHalf * 2);
+        const a = truthEstimator(amaValues, t + truthHalf, truthHalf * 2);
         if (a != null && Number.isFinite(a)) amaTruth[t] = a as number;
-        const p = computeHuberWindowSlopePct(closes, t + truthHalf, truthHalf * 2);
+        const p = truthEstimator(closes, t + truthHalf, truthHalf * 2);
         if (p != null && Number.isFinite(p)) priceTruth[t] = p as number;
     }
 
@@ -527,12 +539,14 @@ function run() {
     console.log(`  Resets:     drift >= ${cfg.priceThresholdPct}% | slope delta >= ${fmt((cfg.slopeThresholdFactor / 100) * MA.DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT, 4)}%/bar` +
         ` (${cfg.slopeThresholdFactor}% of max ${MA.DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT})${cfg.slopeEnabled ? '' : ' [OFF]'} | persist K=${cfg.slopePersistBars}`);
     console.log(`  Reference:  centred Huber slope, half-window ${truthHalf} bars`);
+    console.log(`  Huber:      scale mode = ${cfg.scaleMode}`);
     console.log(`  Confirm:    |slope| >= ${cfg.confirmFraction} x each window's mean |slope| (per-window gate)`);
     console.log('');
 
     const results: any[] = [];
     for (const lb of cfg.lookbacks) {
-        const r = analyzeLookback(closes, amaValues, lb, amaDef, cfg, amaTruth, priceTruth, truthHalf);
+        const estimator = createHuberEstimator(cfg.scaleMode);
+        const r = analyzeLookback(closes, amaValues, lb, amaDef, cfg, amaTruth, priceTruth, truthHalf, estimator);
         results.push(r);
         process.stdout.write(`  lb=${String(lb).padStart(2)}  resets=${String(r.resets).padStart(4)}  ` +
             `lag(ama)=${fmt(r.amaLagBars, 0).padStart(3)}  rev=${fmt(r.reversalLagBars, 1).padStart(5)}  ` +
@@ -576,6 +590,17 @@ function run() {
         );
     }
 
+    console.log(`\n  Huber scale mode: ${cfg.scaleMode}  (outlier = |residual| > C x scale)`);
+    console.log('  lb | mean outlier% | mean scale (log units)');
+    console.log('  ---+---------------+----------------------');
+    for (const r of results) {
+        console.log(
+            `  ${String(r.lookbackBars).padStart(2)} | ` +
+            `${fmt(r.meanOutlierFractionPct, 2).padStart(13)} | ` +
+            `${fmt(r.meanHuberScale, 5).padStart(20)}`
+        );
+    }
+
     console.log('\n  Range-tilt wrong-way (applied tilt vs realized forward AMA move):');
     console.log('  var    | tiltActive% | wrongWay% | meanWrongRun | medAdverse | p90Adverse');
     console.log('  -------+-------------+-----------+--------------+------------+-----------');
@@ -616,6 +641,7 @@ function run() {
             warmupBars,
             lookbacks: cfg.lookbacks,
             slopePersistBars: cfg.slopePersistBars,
+            huberScaleMode: cfg.scaleMode,
             resetConfig: {
                 priceDeltaThresholdPercent: cfg.priceThresholdPct,
                 slopeDeltaThresholdPercent: (cfg.slopeThresholdFactor / 100) * MA.DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT,
