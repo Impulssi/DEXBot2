@@ -96,7 +96,7 @@ Output: `analysis/charts/dynamic_weight_chart.html` (open in browser)
 | `--chart` | `analysis/charts/dynamic_weight_chart.html` | Output HTML path |
 | `--alpha` | `0.5` | Initial α blend (0 = pure Kalman, 1 = pure AMA) |
 | `--dw` | `0.50` | Initial displacement weight (0 = pure velocity, 1 = full displacement) |
-| `--lb` | `16` | Initial lookback bars (1-32) for AMA slope calculation |
+| `--lb` | `16` | Initial lookback bars (4-32) for AMA slope calculation |
 | `--gain` | `1.0` | Initial gain multiplier |
 | `--clip` | `10` | Initial clip percentile |
 | `--quiet` | `false` | Suppress console output |
@@ -165,9 +165,9 @@ All panels share aligned vertical time grid lines, and the bottom output panel s
 | Knob | Range | Default | Purpose |
 |------|-------|---------|---------|
 | **nz%** | 0–1 | 0.00 | Neutral zone: dead-band below which offset is forced to 0 |
-| **lb** | 1–32 | 16 | Logarithmic. Lookback bars for AMA slope calculation |
+| **lb** | 4–32 | 16 | Logarithmic. Lookback bars for AMA slope calculation |
 | **amaS%** | 0.06–0.12 | 0.09 | Logarithmic. Gear ratio for per-bar AMA slope saturation |
-| **kalS%** | 0.5–1.5 | 1.11 | Logarithmic. Gear ratio for Kalman composite saturation |
+| **kalS%** | 0.75–1.5 | 1.2 | Logarithmic. Gear ratio for Kalman composite saturation |
 | **clip%** | 0–20 | 10 | Percentile clip: filters extreme inputs (0 = off) |
 
 ### Output Controls

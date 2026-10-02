@@ -35,10 +35,10 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
 
     // Slider ranges — single source of truth for HTML attrs, tooltips,
     // payload transport, and client paste-clamp bounds.
-    const LB_MIN = 1,         LB_MAX = 32;
+    const LB_MIN = 4,         LB_MAX = 32;
     const GAIN_MIN = 0.5,     GAIN_MAX = 2.0;
     const AMA_MS_MIN = 0.06,  AMA_MS_MAX = 0.12;
-    const KAL_MS_MIN = 0.5,   KAL_MS_MAX = 1.5;
+    const KAL_MS_MIN = 0.75,  KAL_MS_MAX = 1.5;
     const CLIP_PCT_MAX = 20;
     const TH_MIN = 0,         TH_MAX = 0.5;
     const KF_MIN = 0,         KF_MAX = 200;
