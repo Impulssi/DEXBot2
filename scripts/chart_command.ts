@@ -40,13 +40,13 @@ import { fetchFeedCandlesSequentially } from '../market_adapter/inputs/kibana_fe
 import { muteChainLogs } from '../modules/utils/chain_logs.js';
 import { isSameBotName, sanitizeKey } from '../modules/utils/sanitize_key.js';
 import { slugPart } from '../market_adapter/interval_utils.js';
+import { monthsToHours } from '../modules/utils/time_range.js';
 
 const INTERVAL_SECONDS = 3600;
 const DEFAULT_MONTHS = 3;
 // Explicit --feed warns when the settlement feed is older than this
 // (a stale feed draws a flat/misleading chart). Default: 7 days.
 const FEED_STALE_WARN_AGE_MS = 7 * 24 * 3600 * 1000;
-const HOURS_PER_MONTH = 730;
 const CHUNK_MONTHS = 1;
 
 /** Chart command identity: 'tv' → TradingView exporter, 'dw' → dynamic-weight research chart. */
@@ -318,7 +318,7 @@ async function run(cmd: ChartCmd): Promise<void> {
         process.exit(0);
     }
 
-    const lookbackHours = Math.max(1, Math.round(months * HOURS_PER_MONTH));
+    const lookbackHours = monthsToHours(months);
     const bucketMs = INTERVAL_SECONDS * 1000;
     const endMs = Math.floor(Date.now() / bucketMs) * bucketMs;
     const startMs = endMs - lookbackHours * 3600 * 1000;

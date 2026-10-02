@@ -19,7 +19,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { formatCurrency } from '../modules/order/format.js';
+import { formatCurrency, formatFundsValue } from '../modules/order/format.js';
 import { resolveConfiguredPriceBound } from '../modules/order/utils/order.js';
 import { ORDER_TYPES, ORDER_STATES, MARKET_ADAPTER } from '../modules/constants.js';
 import { applyAsymmetricBounds } from '../market_adapter/core/asymmetric_bounds.js';
@@ -265,49 +265,6 @@ function getModifiedTime(filePath: string): Date {
  */
 function formatPercent(value: number): string {
   return (value * 100).toFixed(2) + '%';
-}
-
-/**
- * formatFundsValue: Format a fund amount with compact notation (K/M for ≥1000)
- * and up to 4 significant figures, trimming uninformative trailing zeros.
- * Examples:
- *   194395   -> "194.4K"
- *   10000    -> "10K"
- *   1000     -> "1K"
- *   332.33   -> "332.3"
- *   10.389   -> "10.39"
- *   1500000  -> "1.5M"
- * @param {number} value
- * @returns {string}
- */
-function formatFundsValue(value: number): string {
-  if (value === 0) return '0';
-  const absValue = Math.abs(value);
-
-  let quotient;
-  let suffix = '';
-  if (absValue >= 1000000) {
-    quotient = value / 1000000;
-    suffix = 'M';
-  } else if (absValue >= 1000) {
-    quotient = value / 1000;
-    suffix = 'K';
-  } else {
-    quotient = value;
-  }
-
-  const absQ = Math.abs(quotient);
-  const intDigits = Math.floor(Math.log10(Math.max(absQ, 1e-10))) + 1;
-  let formatted;
-  if (intDigits >= 4) {
-    formatted = String(Math.round(quotient));
-  } else {
-    const decimalPlaces = Math.max(0, 4 - intDigits);
-    formatted = quotient.toFixed(decimalPlaces);
-    formatted = formatted.replace(/(\.[0-9]*?)0+$/, '$1').replace(/\.$/, '');
-  }
-
-  return formatted + suffix;
 }
 
 /**
