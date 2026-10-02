@@ -1023,6 +1023,34 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
                         }
                     }
                 }
+                // Worker drain: SIGTERM to the wrapper usually tears the
+                // supervisor tree down with it, but a dexbot worker can
+                // outlive the parent briefly — or keep running when the kill
+                // was swallowed. A `dexbot start` immediately after `stop`
+                // would then spawn a SECOND worker over the still-live orders
+                // (duplicate trades). Wait for every dexbot worker to actually
+                // die before returning.
+                if (monolithicExited) {
+                    const workerPaths = candidateRuntimeScriptPaths(['dexbot']);
+                    const drainDeadlineMs = 15000;
+                    const drainStarted = Date.now();
+                    let drained = false;
+                    while (Date.now() - drainStarted < drainDeadlineMs) {
+                        const aliveWorkers: number[] = [];
+                        try {
+                            for (const procEntry of fs.readdirSync('/proc')) {
+                                const wpid = Number(procEntry);
+                                if (!Number.isInteger(wpid) || wpid <= 0) continue;
+                                if (pidMatchesScriptCandidates(wpid, workerPaths)) aliveWorkers.push(wpid);
+                            }
+                        } catch (_) { /* /proc scan is best-effort */ }
+                        if (aliveWorkers.length === 0) { drained = true; break; }
+                        await new Promise((res) => setTimeout(res, 250));
+                    }
+                    if (!drained) {
+                        console.warn(`dexbot stop: worker process(es) still alive after ${drainDeadlineMs}ms — not waiting longer (state kept; a start may report the running bot).`);
+                    }
+                }
             } catch (err: any) {
                 if (err.code !== 'ESRCH') throw err;
                 monolithicExited = true;

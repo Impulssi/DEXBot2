@@ -66,7 +66,7 @@ import {
     buildSuccessResult,
     evaluateCommit
 } from './utils/validate.js';
-import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge, collectRefillSlotIds } from './utils/order.js';
+import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge, collectRefillSlotIds, recordOrderPlacement } from './utils/order.js';
 import { getErrorMessage } from '../utils/errors.js';
 const { toFiniteNumber } = Format;
 
@@ -496,6 +496,7 @@ class OrderManager {
     _committedOrderIds: Set<string>;
     _committedOrderIdsBuiltAt: number;
     _orderIdAssignedAt: Map<string, number>;
+    _placedAt: Map<string, number>;
     _gapSlots: number;
     _genesis: any;
     _missingGenesis: any;
@@ -627,6 +628,9 @@ class OrderManager {
         this._committedOrderIds = new Set();
         this._committedOrderIdsBuiltAt = 0;
         this._orderIdAssignedAt = new Map();
+        // Fresh-placement timestamps (chainOrderId -> Date.now) for the
+        // surplus-cancel grace window. See recordOrderPlacement.
+        this._placedAt = new Map();
         this._gapSlots = 0;
         // Genesis (price-ladder) state. `_genesis` is established by
         // loadGrid/initializeGrid; these records are the missing-genesis fault
@@ -1510,6 +1514,23 @@ class OrderManager {
             }
             this._orderIdAssignedAt.set(updatedOrder.orderId, Date.now());
         }
+
+        // Fresh-placement timestamp for the surplus-cancel grace window: a
+        // slot gaining an orderId it did not have is a new placement (create,
+        // adopt, rotation target), and surplus sweeps must not cancel it
+        // before it has had time to prove itself. Same-id updates do not
+        // refresh the stamp, so grace cannot extend forever. Snapshot/grid
+        // load paths are excluded: reloaded orders are old by definition, and
+        // stamping them would neuter surplus sweeps for 15 minutes after every
+        // restart.
+        try {
+            const prevId = oldOrder?.orderId != null ? String(oldOrder.orderId) : '';
+            const nextId = updatedOrder.orderId != null ? String(updatedOrder.orderId) : '';
+            const isLoadContext = context === 'grid-load' || context === 'grid-init';
+            if (nextId && nextId !== prevId && !isLoadContext) {
+                recordOrderPlacement(this, nextId);
+            }
+        } catch { /* bookkeeping must never break order updates */ }
 
         const newMap = cloneMap(this.orders);
         newMap.set(id, updatedOrder);

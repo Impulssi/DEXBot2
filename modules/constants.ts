@@ -262,6 +262,15 @@ let TIMING = {
     // and feeds the fresh snapshot to the resync instead.
     SYNC_EMPTY_READ_CONFIRM_DELAY_MS: 2000,
 
+    // Surplus-cancel grace for freshly placed orders. Spread correction and
+    // surplus sweeps run on different count snapshots within one cycle, so a
+    // fill landing between them makes the second controller cancel what the
+    // first just placed (observed: 4 placed, 3 cancelled seconds later).
+    // Orders younger than this are skipped by surplus cancellation and
+    // re-evaluated next cycle. Time-bounded by design: genuine misplacements
+    // are only delayed, never protected forever.
+    SURPLUS_CANCEL_GRACE_MS: 15 * 60 * 1000,
+
     // Connection and initialization timeouts
     CONNECTION_TIMEOUT_MS: 30000,  // 30 seconds - BitShares client connection establishment timeout
     DAEMON_STARTUP_TIMEOUT_MS: 60000,  // 60 seconds - Private key daemon startup timeout

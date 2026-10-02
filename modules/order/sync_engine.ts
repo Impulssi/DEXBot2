@@ -145,7 +145,8 @@ import {
     isOrderVirtual,
     resolveSpreadOrderSide,
     duplicateOrphanLogInfo,
-    _stampCorrectionProvenance
+    _stampCorrectionProvenance,
+    _filterUnmatchedChainOrders
 } from './utils/order.js';
 import { parseSlotIndex } from './utils/slot.js';
 import {
@@ -439,6 +440,7 @@ async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, cha
             filledOrders.push({ ...bestMatch });
             updatedOrders.push(spreadOrder);
             chainOrderIdsOnGrid.add(chainOrderId);
+            try { _filterUnmatchedChainOrders(mgr, chainOrderId); } catch { /* counting hygiene only */ }
             return true; // filled path
         }
     } else if (wasPartial) {
@@ -454,6 +456,9 @@ async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, cha
     }
     updatedOrders.push(bestMatch);
     chainOrderIdsOnGrid.add(chainOrderId);
+    // Adopted means matched: drop any deferred-orphan record so fund counting
+    // (which adds unmatched locks) never double-counts the slot.
+    try { _filterUnmatchedChainOrders(mgr, chainOrderId); } catch { /* counting hygiene only */ }
     return true;
 }
 
@@ -2359,6 +2364,7 @@ class SyncEngine {
                                             'error'
                                         );
                                     } else {
+                                        try { _filterUnmatchedChainOrders(mgr, chainOrderId); } catch { /* counting hygiene only */ }
                                         mgr.logger?.log?.(
                                             `[SYNC] createOrder for unknown grid order ${gridOrderId}: materialized ${materializeType} @${materializePrice} x${descriptorSize} (price source: ${priceSource}) -> ${chainOrderId} (master lost the slot mid-broadcast)`,
                                             'warn'
