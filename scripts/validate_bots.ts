@@ -43,9 +43,10 @@ const livePath = PATHS.PROFILES.BOTS_JSON;
  * @param {Object} obj - Parsed configuration object (single bot or {bots: [...]})
  * @param {string} src - Source name for display (e.g., 'profiles/bots.json')
  */
-function checkConfig(obj: any, src: any) {
+function checkConfig(obj: unknown, src: string) {
   // Normalize: convert single bot to array format for uniform processing
-  const bots = Array.isArray(obj.bots) && obj.bots.length ? obj.bots : [obj];
+  const o = (obj && typeof obj === 'object') ? obj as Record<string, unknown> : {};
+  const bots: Record<string, unknown>[] = Array.isArray(o.bots) && o.bots.length ? o.bots as Record<string, unknown>[] : [o];
   console.log(`\n== Checking ${src}: found ${bots.length} bot entries`);
 
   // List of required fields that every bot must have
@@ -54,7 +55,7 @@ function checkConfig(obj: any, src: any) {
   let anyGridPriceWarnings = false;
 
   // Validate each bot entry
-  bots.forEach((b: any, i: any) => {
+  bots.forEach((b, i) => {
     // Use bot name if available, otherwise use index
     const name = b.name || `<unnamed-${i}>`;
     // Find which required fields are missing from this bot
@@ -106,7 +107,7 @@ try {
   } else {
     console.warn(`live config not found, skipping: ${livePath}`);
   }
-} catch (err: any) {
+} catch (err) {
   console.error('live config: parse error ->', getErrorMessage(err));
 }
 

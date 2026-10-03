@@ -31,44 +31,56 @@ const MAX_PAGES = process.argv.includes('--maxPages')
 
 const LP_OP_TYPE = 63;
 
-function fmt(obj: any): string {
+interface HistoryRow {
+    sequence?: unknown;
+    time?: unknown;
+    op_type?: unknown;
+    op?: { result?: unknown; op?: unknown; block_time?: unknown };
+    [key: string]: unknown;
+}
+
+function fmt(obj: unknown): string {
     try { return JSON.stringify(obj); } catch (_) { return String(obj); }
 }
 
-function parseChainTimeToMs(timeStr: string | null | undefined): number {
+function parseChainTimeToMs(timeStr: unknown): number {
     if (!timeStr) return Number.NaN;
     const s = String(timeStr);
     return Date.parse(s.endsWith('Z') ? s : `${s}Z`);
 }
 
-function extractReceived(row: any) {
-    const resultPayload = Array.isArray(row?.op?.result) ? row.op.result[1] : null;
-    return Array.isArray(resultPayload?.received)
-        ? resultPayload.received[0]
-        : (resultPayload?.received || null);
+function extractReceived(row: unknown) {
+    const r = row as HistoryRow | null | undefined;
+    const resultPayload = Array.isArray(r?.op?.result) ? (r.op.result as unknown[])[1] : null;
+    const rp = resultPayload as { received?: unknown } | null;
+    return Array.isArray(rp?.received)
+        ? (rp.received as unknown[])[0]
+        : (rp?.received || null);
 }
 
-function rowHasTradePayload(row: any): boolean {
-    const opPayload = Array.isArray(row?.op?.op) ? row.op.op[1] : null;
-    return !!(opPayload?.amount_to_sell && extractReceived(row));
+function rowHasTradePayload(row: unknown): boolean {
+    const r = row as HistoryRow | null | undefined;
+    const opPayload = Array.isArray(r?.op?.op) ? (r.op.op as unknown[])[1] : null;
+    return !!((opPayload as { amount_to_sell?: unknown } | null)?.amount_to_sell && extractReceived(row));
 }
 
 async function collectRecentPoolHistory(poolId: string, sinceMs: number, limit: number, maxPages: number) {
-    const rows: any[] = [];
-    const seenSequences = new Set();
+    const rows: HistoryRow[] = [];
+    const seenSequences = new Set<number>();
     let pages = 0;
-    let startSeq: any = null;
+    let startSeq: number | null = null;
     let hitOld = false;
 
     while (pages < maxPages) {
-        const page = startSeq == null
+        const page: unknown[] = startSeq == null
             ? await BitShares.history.get_liquidity_pool_history(poolId, null, null, limit, LP_OP_TYPE)
             : await BitShares.history.get_liquidity_pool_history_by_sequence(poolId, startSeq, null, limit, LP_OP_TYPE);
 
         if (!Array.isArray(page) || page.length === 0) break;
         pages++;
 
-        for (const row of page) {
+        for (const raw of page) {
+            const row = raw as HistoryRow;
             const seq = Number(row?.sequence);
             if (Number.isFinite(seq)) {
                 if (seenSequences.has(seq)) continue;
@@ -84,7 +96,7 @@ async function collectRecentPoolHistory(poolId: string, sinceMs: number, limit: 
             rows.push(row);
         }
 
-        const last = page[page.length - 1];
+        const last = page[page.length - 1] as HistoryRow | undefined;
         const lastSeq = Number(last?.sequence);
         if (!Number.isFinite(lastSeq) || lastSeq <= 1 || hitOld) break;
         startSeq = lastSeq - 1;
@@ -94,7 +106,7 @@ async function collectRecentPoolHistory(poolId: string, sinceMs: number, limit: 
     return { rows, pages, hitOld, exhausted: pages >= maxPages && !hitOld };
 }
 
-function summarizeRows(rows: any[]) {
+function summarizeRows(rows: HistoryRow[]) {
     if (!Array.isArray(rows) || rows.length === 0) {
         return {
             count: 0,
@@ -105,9 +117,10 @@ function summarizeRows(rows: any[]) {
         };
     }
 
-    const byHourMap = new Map();
+    const byHourMap = new Map<string, number>();
     let validTrades = 0;
-    for (const row of rows) {
+    for (const raw of rows) {
+        const row = raw as HistoryRow;
         if (rowHasTradePayload(row)) validTrades++;
         const tsMs = parseChainTimeToMs(row?.time || row?.op?.block_time);
         if (!Number.isFinite(tsMs)) continue;
@@ -124,7 +137,7 @@ function summarizeRows(rows: any[]) {
     };
 }
 
-function inspectRow(row: any, index: number) {
+function inspectRow(row: HistoryRow | null | undefined, index: number) {
     if (!row) {
         console.log(`  [${index}] NULL/undefined row`);
         return;
@@ -132,10 +145,10 @@ function inspectRow(row: any, index: number) {
     console.log(`\n  [${index}] ──────────────────────────────────────`);
     console.log(`    sequence: ${row.sequence}`);
     console.log(`    time:     ${row.time}`);
-    console.log(`    op_type:  ${row.op?.op?.[0] || row.op_type || 'n/a'}`);
+    console.log(`    op_type:  ${(row.op?.op as unknown[] | undefined)?.[0] || row.op_type || 'n/a'}`);
 
     if (Array.isArray(row.op?.op)) {
-        const opPayload = row.op.op[1];
+        const opPayload = (row.op.op as unknown[])[1];
         console.log(`    op.payload: ${fmt(opPayload)}`);
     } else if (row.op?.op) {
         console.log(`    op.op format: ${typeof row.op.op} => ${fmt(row.op.op)}`);
@@ -144,7 +157,7 @@ function inspectRow(row: any, index: number) {
     }
 
     if (Array.isArray(row.op?.result)) {
-        const resultPayload = row.op.result[1];
+        const resultPayload = (row.op.result as unknown[])[1];
         console.log(`    op.result: ${fmt(resultPayload)}`);
     } else if (row.op?.result) {
         console.log(`    op.result format: ${typeof row.op.result} => ${fmt(row.op.result)}`);
@@ -180,7 +193,7 @@ async function main() {
         } else {
             console.log(`  Raw: ${fmt(rows).slice(0, 500)}`);
         }
-    } catch (err: any) {
+    } catch (err) {
         console.log(`ERROR: ${getErrorMessage(err)}`);
     }
 
@@ -196,7 +209,7 @@ async function main() {
         } else {
             console.log(`  Raw: ${fmt(rows).slice(0, 500)}`);
         }
-    } catch (err: any) {
+    } catch (err) {
         console.log(`ERROR: ${getErrorMessage(err)}`);
     }
 
@@ -228,7 +241,7 @@ async function main() {
         } else {
             console.log('get_account_history_by_operations NOT available');
         }
-    } catch (err: any) {
+    } catch (err) {
         console.log(`ERROR: ${getErrorMessage(err)}`);
     }
 
@@ -246,7 +259,7 @@ async function main() {
         } else {
             console.log('get_relative_account_history NOT available');
         }
-    } catch (err: any) {
+    } catch (err) {
         console.log(`ERROR: ${getErrorMessage(err)}`);
     }
 
@@ -275,7 +288,7 @@ async function main() {
             console.log(`  Rows with amount_to_sell: ${withSell}`);
             console.log(`  Rows with received:      ${withReceived}`);
         }
-    } catch (err: any) {
+    } catch (err) {
         console.log(`ERROR: ${getErrorMessage(err)}`);
     }
 
@@ -297,7 +310,7 @@ async function main() {
                 console.log(`    ${hour}: ${count}`);
             }
         }
-    } catch (err: any) {
+    } catch (err) {
         console.log(`ERROR: ${getErrorMessage(err)}`);
     }
 

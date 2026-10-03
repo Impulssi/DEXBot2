@@ -80,15 +80,15 @@ import { parseJsonWithComments, sleep } from '../modules/order/utils/system.js';
 import { getErrorMessage } from '../modules/utils/errors.js';
 async function runOrderManagerCalculation() {
     const cfgFile = PATHS.PROFILES.BOTS_JSON;
-    let botConfig: any = {};
+    let botConfig: Record<string, unknown> = {};
 
     try {
         const { config } = readBotsFileSync(cfgFile, parseJsonWithComments);
-        const bots = config.bots || [];
+        const bots: Record<string, unknown>[] = (config as { bots?: Record<string, unknown>[] }).bots || [];
 
         const envName = Config.LIVE_BOT_NAME || Config.BOT_NAME;
-        let chosenBot: any = null;
-        if (envName) chosenBot = bots.find((b: any) => String(b.name).toLowerCase() === String(envName).toLowerCase());
+        let chosenBot: Record<string, unknown> | null = null;
+        if (envName) chosenBot = bots.find((b) => String(b.name).toLowerCase() === String(envName).toLowerCase()) ?? null;
         if (!chosenBot) chosenBot = bots[0];
 
         if (!chosenBot) {
@@ -97,7 +97,7 @@ async function runOrderManagerCalculation() {
 
         console.log(`Using bot from settings: ${chosenBot.name || '<unnamed>'}`);
         botConfig = { ...chosenBot };
-    } catch (err: any) {
+    } catch (err) {
         console.warn('Failed to read bot configuration:', getErrorMessage(err));
         throw err;
     }
@@ -106,7 +106,7 @@ async function runOrderManagerCalculation() {
 
     try {
         await initializeGrid(manager);
-    } catch (err: any) {
+    } catch (err) {
         console.error('Grid initialization failed — ensure BitShares nodes are reachable and asset symbols are valid:', getErrorMessage(err));
         throw err;
     }

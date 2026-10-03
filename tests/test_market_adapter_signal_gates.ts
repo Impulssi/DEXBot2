@@ -9,6 +9,7 @@ const { calculateATR, computeATRSeries } = require('../market_adapter/core/strat
 const { computeVolatilityShift } = require('../market_adapter/core/strategies/volatility_shift');
 const { KalmanTrendAnalyzer } = require('../analysis/trend_detection/kalman_trend_analyzer');
 const { computeRegimeMultiplier } = require('../market_adapter/core/strategies/regime_gate');
+const { getAmaWarmupBars } = require('../market_adapter/core/strategies/ama');
 const { generateHTML } = require('../analysis/trend_detection/dynamic_weight_chart_generator');
 const { generateHTML: generateVolatilityHTML } = require('../analysis/trend_detection/volatility_chart_generator');
 
@@ -226,10 +227,17 @@ function testDynamicWeightChartUsesErPlusLookbackWarmup() {
     }, 'Dynamic Weight Test');
 
     const payload = extractHtmlPayload(html);
+    const defaultAma = MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY];
     assert.strictEqual(payload.amaSlowPeriod, 1, 'chart payload should still expose the AMA slow period');
-    assert.strictEqual(payload.amaWarmupBars, 5, 'chart payload should expose the full AMA warmup window');
-    assert.strictEqual(payload.amaSlopeReadyBars, 2, 'chart payload should expose the ER-plus-lookback readiness gate');
-    assert.strictEqual(payload.amaPercentiles[100], 999, 'AMA clip percentiles should start once ER-plus-lookback bars are available');
+    // `lookbackBars` is clamped to the slider's LB_MIN by the chart, so derive
+    // the expected warmup from the payload rather than a hardcoded value.
+    assert.strictEqual(
+        payload.amaWarmupBars,
+        getAmaWarmupBars(1, 1, payload.lookbackBars, defaultAma.fastPeriod),
+        'chart payload should expose the full AMA warmup window'
+    );
+    assert.strictEqual(payload.amaSlopeReadyBars, 1 + payload.lookbackBars, 'chart payload should expose the ER-plus-lookback readiness gate');
+    assert.strictEqual(payload.amaPercentiles[100], 2, 'AMA clip percentiles should start once ER-plus-lookback bars are available');
     assert.match(html, /data\.amaErPeriod/, 'interactive chart should use the AMA ER period in its readiness gate');
     assert.match(html, /const amaReadyBar = Math\.max\(lb, amaErWarmup \+ lb\);/, 'interactive clip-threshold recompute should start at ER-plus-lookback readiness');
 }

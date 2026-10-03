@@ -11,11 +11,31 @@ const CreditRuntime = require('../modules/credit_runtime').default;
 const { disconnectClient, waitForConnected } = require('../modules/bitshares_client');
 const chainOrders = require('../modules/chain_orders');
 const { PATHS } = require('../modules/paths');
-const { getErrorMessage } = require('../modules/utils/errors');
+const { getErrorMessage, getErrorName } = require('../modules/utils/errors');
 const { loadSettingsFile, normalizeBotEntries, resolveRawBotEntries } = require('../modules/bot_settings');
 const { getStoredBotAccountId, persistBotAccountId } = require('../analysis/bot_key_utils');
 const { isSameBotName } = require('../modules/utils/sanitize_key');
 const { blockchainToFloat } = require('../modules/order/utils/math');
+import type { BotEntry } from '../modules/bot_settings.js';
+
+interface DealInput {
+  debtAmount?: unknown;
+  collateralAmount?: unknown;
+  offerId?: string;
+  feeRate?: unknown;
+  latestRepayTime?: string | null;
+  [key: string]: unknown;
+}
+
+interface EnrichedDeal extends DealInput {
+  debtFloat: number | null;
+  collateralFloat: number | null;
+  marketValueInDebt: number | null;
+  creditOfferValueInDebt: number | null;
+  collateralRatio: number | null;
+  feeDueFloat: number | null;
+  hoursLeft: number | null;
+}
 
 const DEFAULT_BOT_NAME = 'AAA-BBB';
 const DEFAULT_THRESHOLD_HOURS = 24;
@@ -104,14 +124,14 @@ function loadBot(botName: string) {
   const botsPath = PATHS.PROFILES.BOTS_JSON;
   const { config } = loadSettingsFile(botsPath, { silent: false, exitOnError: false });
   const entries = normalizeBotEntries(resolveRawBotEntries(config));
-  const bot = entries.find((entry: any) => isSameBotName(entry.name, botName));
+  const bot = entries.find((entry: BotEntry) => isSameBotName(entry.name, botName));
   if (!bot) {
     throw new Error(`Bot profile "${botName}" not found in ${botsPath}`);
   }
   return bot;
 }
 
-function amountToFloat(amount: number | string, asset: any) {
+function amountToFloat(amount: number | string | undefined, asset: { precision?: unknown } | null | undefined): number | null {
   const value = Number(amount);
   const precision = Number(asset?.precision);
   if (!Number.isFinite(value) || !Number.isFinite(precision)) return null;
@@ -131,8 +151,11 @@ function ceilToPrecision(value: number, precision: number | undefined): number {
   return Math.ceil(value * scale) / scale;
 }
 
-function summarizeOperations(calls: any[]) {
-  return calls.flatMap((call: any) => (call.operations || []).map((op: any) => op.op_name));
+function summarizeOperations(calls: unknown[]): unknown[] {
+  return calls.flatMap((call) => {
+    const c = call as { operations?: Array<{ op_name?: unknown }> };
+    return (c.operations || []).map((op) => op.op_name);
+  });
 }
 
 async function main() {
@@ -167,25 +190,25 @@ async function main() {
   let accountId: string | null = null;
   if (/^1\.2\.\d+$/.test(String(accountRef))) {
     accountId = String(accountRef);
-  } else if (!args.account && (profileBot as any).botKey) {
+  } else if (!args.account && profileBot.botKey) {
     // Bot's own account: reuse the ID stamped by the bot editor when it still
     // matches the current preferredAccount (no chain hit).
     try {
-      accountId = getStoredBotAccountId((profileBot as any).botKey, accountRef);
+      accountId = getStoredBotAccountId(String(profileBot.botKey), accountRef);
     } catch (_) {
       accountId = null;
     }
-    if (accountId) console.log(`Using stored accountId ${accountId} for bot "${(profileBot as any).name}" (no lookup needed)`);
+    if (accountId) console.log(`Using stored accountId ${accountId} for bot "${getErrorName(profileBot)}" (no lookup needed)`);
   }
   if (!accountId) {
     accountId = await chainOrders.resolveAccountId(accountRef);
     if (!accountId) throw new Error(`Unable to resolve account: ${accountRef}`);
     // Backfill the stamped ID so later runs (and analysis tools) can skip the
     // lookup. Explicit --account overrides resolve fresh and are never stored.
-    if (!args.account && (profileBot as any).botKey) {
+    if (!args.account && profileBot.botKey) {
       try {
-        if (persistBotAccountId((profileBot as any).botKey, accountId)) {
-          console.log(`Stored accountId ${accountId} in profiles/bots.json for bot "${(profileBot as any).name}"`);
+        if (persistBotAccountId(String(profileBot.botKey), accountId)) {
+          console.log(`Stored accountId ${accountId} in profiles/bots.json for bot "${getErrorName(profileBot)}"`);
         }
       } catch (_) {
         // Persistence must never break the dry run.
@@ -195,7 +218,7 @@ async function main() {
   const accountName = await chainOrders.resolveAccountName(accountId || accountRef);
 
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-credit-renewal-'));
-  const dryRunCalls: any[] = [];
+  const dryRunCalls: Array<{ reason: string; operations: unknown[] }> = [];
   const botConfig = {
     ...profileBot,
     preferredAccount: accountName || accountRef,
@@ -231,7 +254,7 @@ async function main() {
   }, { stateDir });
 
   const originalExecuteOperations = runtime.executeOperations.bind(runtime);
-  runtime.executeOperations = async (operations: any, reason: string) => {
+  runtime.executeOperations = async (operations: never, reason: string) => {
     dryRunCalls.push({ reason, operations: JSON.parse(JSON.stringify(operations || [])) });
     return originalExecuteOperations(operations, reason);
   };
@@ -244,26 +267,28 @@ async function main() {
 
     await runtime.refreshState();
     const posKey = `${debtAsset.id}:${collateralAsset.id}`;
-    const posState = runtime.state.positions[posKey] || {};
+    const posState = (runtime.state.positions[posKey] || {}) as { creditDeals?: unknown[] };
     const deals = Array.isArray(posState.creditDeals) ? posState.creditDeals : [];
     if (deals.length === 0) {
       throw new Error(`No current credit deals found for ${accountName || accountRef} ${debtAsset.symbol}-${collateralAsset.symbol}. Renew-only mode has nothing to renew.`);
     }
 
-    const offerById = new Map();
-    const enrichedDeals = await Promise.all(deals.map(async (deal: any) => {
-      const debtFloat = amountToFloat(deal.debtAmount, debtAsset);
-      const collateralFloat = amountToFloat(deal.collateralAmount, collateralAsset);
-      if (!offerById.has(deal.offerId)) {
-        offerById.set(deal.offerId, await runtime._getOfferById(deal.offerId));
+    const offerById = new Map<string, unknown>();
+    const enrichedDeals = await Promise.all(deals.map(async (dealInput): Promise<EnrichedDeal> => {
+      const deal = dealInput as DealInput;
+      const debtFloat = amountToFloat(deal.debtAmount as number | string | undefined, debtAsset);
+      const collateralFloat = amountToFloat(deal.collateralAmount as number | string | undefined, collateralAsset);
+      const offerKey = String(deal.offerId);
+      if (!offerById.has(offerKey)) {
+        offerById.set(offerKey, await runtime._getOfferById(deal.offerId));
       }
-      const offer = offerById.get(deal.offerId);
-      const collateralMap = offer?.acceptable_collateral instanceof Map
+      const offer = offerById.get(offerKey) as { acceptable_collateral?: unknown } | undefined;
+      const collateralMap: Map<string, unknown> = offer?.acceptable_collateral instanceof Map
         ? offer.acceptable_collateral
         : new Map(Array.isArray(offer?.acceptable_collateral)
           ? offer.acceptable_collateral
-          : Object.entries(offer?.acceptable_collateral || {}));
-      const collateralPrice = collateralMap.get(collateralAsset.id);
+          : Object.entries((offer?.acceptable_collateral || {}) as Record<string, unknown>));
+      const collateralPrice = collateralMap.get(String(collateralAsset.id));
       const marketValueInDebt = await runtime._calculateCollateralValueInDebtAsset(deal.collateralAmount, collateralAsset, debtAsset, collateralPrice);
       const creditOfferValueInDebt = runtime._calculateCreditOfferCollateralValueInDebtAsset(deal.collateralAmount, collateralAsset, debtAsset, collateralPrice);
       const feeDueFloat = amountToFloat(Math.ceil((Number(deal.debtAmount || 0) * Number(deal.feeRate || 0)) / CREDIT_FEE_RATE_DENOM), debtAsset);
@@ -281,12 +306,12 @@ async function main() {
       };
     }));
 
-    const currentDebt = enrichedDeals.reduce((sum: any, deal: any) => sum + (Number.isFinite(deal.debtFloat) ? deal.debtFloat : 0), 0);
-    const currentCollateral = enrichedDeals.reduce((sum: any, deal: any) => sum + (Number.isFinite(deal.collateralFloat) ? deal.collateralFloat : 0), 0);
-    const allowedOfferIds = Array.from(new Set(enrichedDeals.map((deal: any) => deal.offerId).filter(Boolean)));
+    const currentDebt = enrichedDeals.reduce((sum, deal) => sum + (deal.debtFloat ?? 0), 0);
+    const currentCollateral = enrichedDeals.reduce((sum, deal) => sum + (deal.collateralFloat ?? 0), 0);
+    const allowedOfferIds = Array.from(new Set(enrichedDeals.map((deal) => deal.offerId).filter(Boolean)));
     const maxBorrowAmount = ceilToPrecision(currentDebt, debtAsset.precision);
-    const maxObservedCollateralRatio = enrichedDeals.reduce((max: any, deal: any) => (
-      Number.isFinite(deal.collateralRatio) ? Math.max(max, deal.collateralRatio) : max
+    const maxObservedCollateralRatio = enrichedDeals.reduce((max, deal) => (
+      Number.isFinite(deal.collateralRatio) ? Math.max(max, deal.collateralRatio as number) : max
     ), 0);
     const effectiveMaxCollateralRatio = args.maxCollateralRatio || Math.max(
       DEFAULT_MAX_COLLATERAL_RATIO,
@@ -304,17 +329,17 @@ async function main() {
     await runtime.refreshState();
     const result = await runtime.runMaintenance('credit-renewal-test');
     const opNames = summarizeOperations(dryRunCalls);
-    const repayCount = opNames.filter((name: any) => name === 'credit_deal_repay').length;
-    const acceptCount = opNames.filter((name: any) => name === 'credit_offer_accept').length;
-    const standaloneAccept = dryRunCalls.some((call: any) => {
-      const names = (call.operations || []).map((op: any) => op.op_name);
+    const repayCount = opNames.filter((name) => name === 'credit_deal_repay').length;
+    const acceptCount = opNames.filter((name) => name === 'credit_offer_accept').length;
+    const standaloneAccept = dryRunCalls.some((call) => {
+      const names = (call.operations || []).map((op) => (op as { op_name?: unknown }).op_name);
       return names.includes('credit_offer_accept') && !names.includes('credit_deal_repay');
     });
     if (standaloneAccept) {
       throw new Error('Renew-only guard failed: dry-run attempted a standalone credit_offer_accept.');
     }
 
-    const dueDeals = enrichedDeals.filter((deal: any) => Number.isFinite(deal.hoursLeft) && deal.hoursLeft < args.thresholdHours);
+    const dueDeals = enrichedDeals.filter((deal) => deal.hoursLeft != null && Number.isFinite(deal.hoursLeft) && deal.hoursLeft < args.thresholdHours);
     if (dueDeals.length > 0 && repayCount < dueDeals.length) {
       throw new Error(`Renewal guard failed: ${dueDeals.length} due deal(s) but only ${repayCount} repay op(s).`);
     }
@@ -345,11 +370,15 @@ async function main() {
     console.log(`Renew threshold: ${args.thresholdHours} hours before latest_repay_time`);
     console.log(`Deals due inside threshold: ${dueDeals.length}`);
     for (const deal of enrichedDeals) {
-      const hours = Number.isFinite(deal.hoursLeft) ? deal.hoursLeft.toFixed(2) : 'unknown';
-      const ratio = Number.isFinite(deal.collateralRatio) ? deal.collateralRatio.toFixed(3) : 'unknown';
-      const due = Number.isFinite(deal.hoursLeft) && deal.hoursLeft < args.thresholdHours ? 'DUE' : 'not due';
-      const marketValue = Number.isFinite(deal.marketValueInDebt) ? deal.marketValueInDebt.toFixed(5) : 'unknown';
-      const creditValue = Number.isFinite(deal.creditOfferValueInDebt) ? deal.creditOfferValueInDebt.toFixed(5) : 'unknown';
+      const hoursLeft = deal.hoursLeft;
+      const collateralRatio = deal.collateralRatio;
+      const marketValueInDebt = deal.marketValueInDebt;
+      const creditOfferValueInDebt = deal.creditOfferValueInDebt;
+      const hours = hoursLeft != null && Number.isFinite(hoursLeft) ? hoursLeft.toFixed(2) : 'unknown';
+      const ratio = collateralRatio != null && Number.isFinite(collateralRatio) ? collateralRatio.toFixed(3) : 'unknown';
+      const due = hoursLeft != null && Number.isFinite(hoursLeft) && hoursLeft < args.thresholdHours ? 'DUE' : 'not due';
+      const marketValue = marketValueInDebt != null && Number.isFinite(marketValueInDebt) ? marketValueInDebt.toFixed(5) : 'unknown';
+      const creditValue = creditOfferValueInDebt != null && Number.isFinite(creditOfferValueInDebt) ? creditOfferValueInDebt.toFixed(5) : 'unknown';
       console.log(`- ${deal.id}: debt=${deal.debtFloat} ${debtAsset.symbol}, collateral=${deal.collateralFloat} ${collateralAsset.symbol}, market_value=${marketValue} ${debtAsset.symbol}, credit_offer_value=${creditValue} ${debtAsset.symbol}, market_to_credit_ratio=${ratio}, offer=${deal.offerId}, auto_repay=${deal.autoRepay}, hours_left=${hours}, ${due}`);
     }
     console.log(`Dry-run operation sequence: ${opNames.length ? opNames.join(' -> ') : 'none'}`);
@@ -364,7 +393,7 @@ async function main() {
   }
 }
 
-main().catch((err: any) => {
+main().catch((err: unknown) => {
   console.error(`credit renewal test failed: ${getErrorMessage(err)}`);
   process.exitCode = 1;
 });

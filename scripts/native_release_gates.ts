@@ -13,7 +13,7 @@ const { readJSON } = getStorage();
 import { getErrorMessage } from '../modules/utils/errors.js';
 const nodeBin = process.execPath;
 
-function run(label: any, args: any, env: any = {}) {
+function run(label: string, args: string[], env: Record<string, string | undefined> = {}) {
     console.log(`\n=== ${label} ===`);
     const result = spawnSync(nodeBin, args, {
         cwd: PATHS.PROJECT_ROOT,
@@ -39,7 +39,7 @@ function assertMainnetCorpusReport() {
     let report;
     try {
         report = readJSON(reportPath);
-    } catch (err: any) {
+    } catch (err) {
         console.error(`\nInvalid mainnet corpus report JSON: ${getErrorMessage(err)}`);
         process.exit(1);
     }

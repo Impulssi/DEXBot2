@@ -31,6 +31,32 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 import { loadBotMeta, loadBotSettings, computeBotKey } from '../analysis/bot_key_utils.js';
+import type { BotEntry } from '../modules/bot_settings.js';
+
+interface AssetMeta {
+    id?: string;
+    precision?: number;
+    symbol?: string;
+    [key: string]: unknown;
+}
+
+interface ChainClientLike {
+    BitShares?: { db?: Record<string, (...args: unknown[]) => Promise<unknown>> };
+}
+
+interface MpaBackingCtx {
+    [key: string]: unknown;
+    mpa: AssetMeta;
+    backing: AssetMeta;
+    isPredictionMarket: boolean;
+    feedPublicationTime: string | null;
+}
+
+interface FeedCtx {
+    [key: string]: unknown;
+    kind: string;
+    legs: MpaBackingCtx[];
+}
 import { PATHS } from '../modules/paths.js';
 import { normalizePoolId, resolveAsset, findPoolByAssets } from '../market_adapter/utils/chain.js';
 import { normalizeAssetSymbol, splitPairTarget } from '../modules/utils/asset_symbols.js';
@@ -103,28 +129,28 @@ function printUsage(cmd: ChartCmd = 'tv'): void {
     console.log('  --pool           Force LP pool candles (errors when the pair has no pool)');
     console.log('  --book           Force order-book fill candles (--orderbook is an alias)');
 }
-async function resolveMpaBacking(mpaSymbol: string, bitsharesClient: any): Promise<{ mpa: any; backing: any; isPredictionMarket: boolean; feedPublicationTime: string | null } | null> {
+async function resolveMpaBacking(mpaSymbol: string, bitsharesClient: ChainClientLike): Promise<MpaBackingCtx | null> {
     const db = bitsharesClient.BitShares?.db;
     if (!db || typeof db.lookup_asset_symbols !== 'function') return null;
     // Canonical UPPERCASE symbol for the chain call and for every message
     // below, so a lowercase assetA/assetB pair is reported UPPERCASE.
     mpaSymbol = normalizeAssetSymbol(mpaSymbol);
-    let mpa: any = null;
+    let mpa: AssetMeta | null = null;
     try {
-        const found = await db.lookup_asset_symbols([mpaSymbol]);
+        const found = await db.lookup_asset_symbols([mpaSymbol]) as AssetMeta[] | null;
         mpa = found?.[0] || null;
     } catch (_) {
         return null;
     }
     if (!mpa?.id || !mpa.bitasset_data_id) return null;
     try {
-        const objs = await db.get_objects([mpa.bitasset_data_id]);
-        const bitasset = Array.isArray(objs) ? objs[0] : objs;
+        const objs = await db.get_objects([mpa.bitasset_data_id]) as AssetMeta[] | AssetMeta | null;
+        const bitasset = (Array.isArray(objs) ? objs[0] : objs) as { options?: { short_backing_asset?: unknown; is_prediction_market?: unknown }; current_feed_publication_time?: unknown } | null | undefined;
         const backingId = String(bitasset?.options?.short_backing_asset || '');
         if (!backingId) return null;
         const metas = typeof db.get_assets === 'function' ? await db.get_assets([backingId]) : null;
-        const list = Array.isArray(metas) ? metas.flat(Infinity) : [];
-        const backing = list.find((a: any) => String(a?.id) === backingId) || null;
+        const list = (Array.isArray(metas) ? metas.flat(Infinity) : []) as AssetMeta[];
+        const backing = list.find((a) => String(a?.id) === backingId) || null;
         if (!backing?.id || !Number.isFinite(Number(backing.precision))) return null;
         return {
             mpa: { id: String(mpa.id), precision: Number(mpa.precision), symbol: mpaSymbol },
@@ -137,14 +163,14 @@ async function resolveMpaBacking(mpaSymbol: string, bitsharesClient: any): Promi
     }
 }
 
-async function pickFeedContext(symA: string, symB: string, source: string, bitsharesClient: any): Promise<{ kind: string; legs: any[] } | null> {
+async function pickFeedContext(symA: string, symB: string, source: string, bitsharesClient: ChainClientLike): Promise<FeedCtx | null> {
     // Feed candles are strictly opt-in (--feed). All other modes chart
     // tradeable market candles (pool-first, orderbook fallback) without
     // touching the chain for MPA detection.
     if (source !== 'feed') return null;
     const ctxA = await resolveMpaBacking(symA, bitsharesClient);
     const ctxB = await resolveMpaBacking(symB, bitsharesClient);
-    const legs: any[] = [ctxA, ctxB].filter(Boolean);
+    const legs = [ctxA, ctxB].filter(Boolean) as MpaBackingCtx[];
     if (legs.length === 0) throw new Error(`--feed requires an MPA pair, got ${symA}/${symB}`);
     // Prediction markets are bitassets too, but their "feed" is a binary
     // settlement outcome, not a price series — never chart it as one.
@@ -167,12 +193,12 @@ function feedAgeMs(ctx: { feedPublicationTime: string | null }, nowMs: number = 
     return nowMs - ts;
 }
 
-function feedName(feedCtx: { kind: string; legs: any[] }): string {
+function feedName(feedCtx: FeedCtx): string {
     if (feedCtx.kind === 'cross') return `${feedCtx.legs[0].mpa.symbol}/${feedCtx.legs[1].mpa.symbol}`;
-    return feedCtx.legs[0].mpa.symbol;
+    return String(feedCtx.legs[0].mpa.symbol ?? '');
 }
 
-async function activateFeedIfCovered(symA: string, symB: string, assetA: any, assetB: any, source: string, bitsharesClient: any, label = 'tv'): Promise<{ kind: string; legs: any[] } | null> {
+async function activateFeedIfCovered(symA: string, symB: string, assetA: AssetMeta, assetB: AssetMeta, source: string, bitsharesClient: ChainClientLike, label = 'tv'): Promise<FeedCtx | null> {
     const ctx = await pickFeedContext(symA, symB, source, bitsharesClient);
     if (!ctx) return null;
     const ids = [String(assetA?.id || ''), String(assetB?.id || '')];
@@ -187,8 +213,8 @@ async function activateFeedIfCovered(symA: string, symB: string, assetA: any, as
     // A stale settlement price draws a flat/misleading chart. Explicit
     // --feed still charts it on request, but says so out loud.
     // For a cross, the stalest leg gates the warning.
-    const ages = ctx.legs.map((leg: any) => feedAgeMs(leg));
-    const known: number[] = ages.filter((a: any): a is number => a != null);
+    const ages = ctx.legs.map((leg) => feedAgeMs(leg));
+    const known: number[] = ages.filter((a): a is number => a != null);
     const worst = known.length === ages.length && known.length > 0 ? Math.max(...known) : null;
     if (worst == null || worst > FEED_STALE_WARN_AGE_MS) {
         const ageLabel = worst == null ? 'unknown age' : `${Math.round(worst / 86400000)}d old`;
@@ -242,18 +268,18 @@ function isPoolIdTarget(target: string): boolean {
     return /^(1\.19\.\d+|\d+)$/.test(target.trim());
 }
 
-function findBotByTarget(target: string): { botKey: string; meta: any } | null {
+function findBotByTarget(target: string): { botKey: string; meta: BotEntry } | null {
     const settings = loadBotSettings();
-    const entries = Array.isArray((settings as any)?.bots) ? (settings as any).bots : [];
+    const entries: BotEntry[] = Array.isArray(settings?.bots) ? settings.bots : [];
     for (let i = 0; i < entries.length; i++) {
         const entry = entries[i];
         if (!entry) continue;
-        if (isSameBotName(entry.name, target)) return { botKey: computeBotKey(entry, i), meta: entry };
+        if (isSameBotName(entry.name, target)) return { botKey: computeBotKey(entry, i) ?? '', meta: entry };
     }
     const meta = loadBotMeta(target);
     if (meta) {
         const idx = entries.indexOf(meta);
-        return { botKey: computeBotKey(meta, idx >= 0 ? idx : 0), meta };
+        return { botKey: computeBotKey(meta, idx >= 0 ? idx : 0) ?? '', meta };
     }
     return null;
 }
@@ -262,22 +288,22 @@ function monthsLabel(months: number): string {
     return Number.isInteger(months) ? `${months}m` : `${String(months).replace('.', 'p')}m`;
 }
 
-async function resolvePoolAssets(poolId: string, bitsharesClient: any): Promise<{ assetA: any; assetB: any }> {
+async function resolvePoolAssets(poolId: string, bitsharesClient: ChainClientLike): Promise<{ assetA: AssetMeta; assetB: AssetMeta }> {
     const fullId = normalizePoolId(poolId) as string;
     // Chain pool object via get_objects([poolId]) → asset_a / asset_b.
     const db = bitsharesClient.BitShares?.db;
     if (db && typeof db.get_objects === 'function') {
         try {
-            const objs = await db.get_objects([fullId]);
-            const pool = Array.isArray(objs) ? objs[0] : null;
+            const objs = await db.get_objects([fullId]) as AssetMeta[] | null;
+            const pool = (Array.isArray(objs) ? objs[0] : null) as { asset_a?: unknown; asset_b?: unknown; asset_ids?: unknown[] } | null;
             const idA = pool?.asset_a || pool?.asset_ids?.[0];
             const idB = pool?.asset_b || pool?.asset_ids?.[1];
             if (idA && idB) {
                 const assets = typeof db.get_assets === 'function' ? await db.get_assets([String(idA), String(idB)]) : null;
                 // Tolerate both [..] and [[..]] result shapes.
-                const list = Array.isArray(assets) ? assets.flat(Infinity) : [];
-                const metaA = list.find((a: any) => String(a?.id) === String(idA));
-                const metaB = list.find((a: any) => String(a?.id) === String(idB));
+                const list = (Array.isArray(assets) ? assets.flat(Infinity) : []) as AssetMeta[];
+                const metaA = list.find((a) => String(a?.id) === String(idA));
+                const metaB = list.find((a) => String(a?.id) === String(idB));
                 if (metaA && metaB) {
                     return {
                         assetA: { id: String(metaA.id), precision: Number(metaA.precision), symbol: String(metaA.symbol || idA) },
@@ -296,9 +322,10 @@ async function resolvePoolAssets(poolId: string, bitsharesClient: any): Promise<
         throw new Error(`Pool ${fullId}: expected exactly 2 assets, discovered [${(ids || []).join(', ')}]. Pass AssetA/AssetB instead.`);
     }
     const [idA, idB] = ids.map(String);
-    const assets = await db.get_assets([idA, idB]);
-    const metaA = (assets || []).find((a: any) => String(a?.id) === idA);
-    const metaB = (assets || []).find((a: any) => String(a?.id) === idB);
+    if (!db || typeof db.get_assets !== 'function') throw new Error(`Pool ${fullId}: chain asset lookup unavailable`);
+    const assets = await db.get_assets([idA, idB]) as AssetMeta[] | null;
+    const metaA = (assets || []).find((a) => String(a?.id) === idA);
+    const metaB = (assets || []).find((a) => String(a?.id) === idB);
     if (!metaA || !metaB || !Number.isFinite(Number(metaA.precision)) || !Number.isFinite(Number(metaB.precision))) {
         throw new Error(`Pool ${fullId}: failed to resolve asset metadata for ${idA}/${idB}`);
     }
@@ -335,8 +362,8 @@ async function run(cmd: ChartCmd): Promise<void> {
     const pairParts = pairTarget ? splitPairTarget(target) : [];
     if (!botHit && !poolTarget && !pairTarget) {
         const settings = loadBotSettings();
-        const entries = Array.isArray((settings as any)?.bots) ? (settings as any).bots : [];
-        const keys = entries.map((b: any, i: number) => computeBotKey(b, i)).filter(Boolean);
+        const entries: BotEntry[] = Array.isArray(settings?.bots) ? settings.bots : [];
+        const keys = entries.map((b, i) => computeBotKey(b, i)).filter(Boolean);
         throw new Error(`Unknown target "${target}". Use a bot name/key${keys.length ? ` (${keys.slice(0, 8).join(', ')}${keys.length > 8 ? ', …' : ''})` : ''}, a pool id (e.g. 133), or AssetA/AssetB.`);
     }
     if (pairTarget && pairParts.length !== 2) throw new Error(`Invalid pair "${target}". Use AssetA/AssetB, e.g. TOKENA/TOKENB (case is normalized to uppercase)`);
@@ -347,13 +374,13 @@ async function run(cmd: ChartCmd): Promise<void> {
 
     let tmpFile: string | null = null;
     try {
-        let assetA: any;
-        let assetB: any;
+        let assetA: AssetMeta = {};
+        let assetB: AssetMeta = {};
         let poolId: string | null = null;
-        let feedCtx: { kind: string; legs: any[] } | null = null;
+        let feedCtx: FeedCtx | null = null;
         let sourceLabel = '';
         let botKey: string | null = null;
-        let botMeta: any = null;
+        let botMeta: BotEntry | null = null;
         if (botHit) {
             botKey = botHit.botKey;
             botMeta = botHit.meta;
@@ -370,7 +397,7 @@ async function run(cmd: ChartCmd): Promise<void> {
                 sourceLabel = 'orderbook';
             } else {
                 try {
-                    poolId = (await findPoolByAssets(assetA.id, assetB.id, { bitsharesClient, sortBy: 'assetABalance' })).id;
+                    poolId = (await findPoolByAssets(String(assetA.id), String(assetB.id), { bitsharesClient, sortBy: 'assetABalance' })).id ?? null;
                 } catch (_) {
                     poolId = null;
                 }
@@ -393,7 +420,7 @@ async function run(cmd: ChartCmd): Promise<void> {
                 sourceLabel = 'orderbook';
             } else {
                 try {
-                    poolId = (await findPoolByAssets(assetA.id, assetB.id, { bitsharesClient, sortBy: 'assetABalance' })).id;
+                    poolId = (await findPoolByAssets(String(assetA.id), String(assetB.id), { bitsharesClient, sortBy: 'assetABalance' })).id ?? null;
                 } catch (_) {
                     poolId = null;
                 }
@@ -407,7 +434,7 @@ async function run(cmd: ChartCmd): Promise<void> {
         // timeout/retry budget. Reruns query only what is missing.
         // No fetch logic is duplicated anywhere (tv/dw or vs. other tools).
         console.log(`[${cmd}] Fetching 1h candles (${months}mo, ${timeRange.gte.slice(0, 10)} → ${timeRange.lte.slice(0, 10)}) from ${sourceLabel} for ${assetA.symbol}/${assetB.symbol}...`);
-        let candles: any[];
+        let candles: number[][];
         if (feedCtx) {
             // Feed publishes go through the same chunk-cache machinery as LP
             // candles: reruns reuse local buckets and query only what is

@@ -38,6 +38,7 @@ const { getErrorMessage } = require('../modules/utils/errors');
 const { sanitizeKey } = require('../modules/utils/sanitize_key');
 const { normalizeAssetRef, normalizeAssetSymbol, isSameAssetSymbol } = require('../modules/utils/asset_symbols');
 const { loadSettingsFile, resolveRawBotEntries, normalizeBotEntries } = require('../modules/bot_settings');
+import type { BotEntry, BotLendingEntry } from '../modules/bot_settings.js';
 import { pathToFileURL } from 'node:url';
 // Terminal colors: centralized palette (modules/cli_colors.ts), shared with
 // `dexbot order` so both analyzers stay visually in lockstep.
@@ -84,7 +85,37 @@ function parseExpiryMs(raw: unknown): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
-function hasLending(bot: any): boolean {
+interface CallOrder {
+  id?: string;
+  debt?: unknown;
+  collateral?: unknown;
+  call_price?: { base?: { asset_id?: unknown }; quote?: { asset_id?: unknown } };
+  [key: string]: unknown;
+}
+
+interface CreditDeal {
+  id?: string;
+  offer_id?: unknown;
+  debt_asset?: string;
+  collateral_asset?: string;
+  debt_amount?: unknown;
+  collateral_amount?: unknown;
+  latest_repay_time?: unknown;
+  latestRepayTime?: unknown;
+  [key: string]: unknown;
+}
+
+interface CreditOffer {
+  id?: string;
+  enabled?: boolean;
+  current_balance?: unknown;
+  acceptable_collateral?: unknown;
+  fee_rate?: unknown;
+  max_duration_seconds?: unknown;
+  [key: string]: unknown;
+}
+
+function hasLending(bot: BotEntry | null | undefined): boolean {
   return Boolean(bot && bot.debtPolicy && Array.isArray(bot.debtPolicy.lending) && bot.debtPolicy.lending.length > 0);
 }
 
@@ -98,38 +129,38 @@ import {
   normalizeCollateralMap as normalizeOfferCollateralMap,
 } from '../modules/credit_pricing.js';
 
-function lendingAssetsOfType(bot: any, type: string): string[] {
-  if (!hasLending(bot)) return [];
-  return (bot.debtPolicy.lending as any[])
-    .filter((item: any) => item && item.type === type && typeof item.asset === 'string' && item.asset.length > 0)
-    .map((item: any) => String(item.asset));
+function lendingAssetsOfType(bot: BotEntry, type: string): string[] {
+  const items = bot.debtPolicy?.lending ?? [];
+  return items
+    .filter((item) => item && item.type === type && typeof item.asset === 'string' && item.asset.length > 0)
+    .map((item) => String(item.asset));
 }
 
-function allLendingAssets(bot: any): string[] {
-  if (!hasLending(bot)) return [];
-  return (bot.debtPolicy.lending as any[])
-    .filter((item: any) => item && typeof item.asset === 'string' && item.asset.length > 0)
-    .map((item: any) => String(item.asset));
+function allLendingAssets(bot: BotEntry): string[] {
+  const items = bot.debtPolicy?.lending ?? [];
+  return items
+    .filter((item) => item && typeof item.asset === 'string' && item.asset.length > 0)
+    .map((item) => String(item.asset));
 }
 
-async function dbCall(method: string, args: any[]): Promise<any> {
+async function dbCall(method: string, args: unknown[]): Promise<unknown> {
   if (BitShares?.db && typeof BitShares.db.call === 'function') {
     return BitShares.db.call(method, args);
   }
   throw new Error('BitShares DB client is unavailable');
 }
 
-async function fetchMarginPositions(account: string): Promise<any[]> {
+async function fetchMarginPositions(account: string): Promise<CallOrder[]> {
   try {
     const res = await dbCall('get_margin_positions', [account]);
-    if (Array.isArray(res)) return res;
+    if (Array.isArray(res)) return res as CallOrder[];
   } catch (_) { /* fall through to paged variant */ }
   const res = await dbCall('get_call_orders_by_account', [account, '1.3.0', PAGE_LIMIT]);
-  return Array.isArray(res) ? res : [];
+  return Array.isArray(res) ? res as CallOrder[] : [];
 }
 
-async function fetchBorrowerDeals(account: string): Promise<any[]> {
-  const all: any[] = [];
+async function fetchBorrowerDeals(account: string): Promise<CreditDeal[]> {
+  const all: CreditDeal[] = [];
   let start: string | null = null;
   for (;;) {
     const args = start == null ? [account] : [account, PAGE_LIMIT, start];
@@ -137,11 +168,11 @@ async function fetchBorrowerDeals(account: string): Promise<any[]> {
     if (!Array.isArray(page) || page.length === 0) break;
     // start_id is inclusive (>=) per database_api docs, so drop the overlap
     // row when paginating to avoid double-counting one deal.
-    const rows = start != null && page[0]?.id === start ? page.slice(1) : page;
+    const rows = start != null && (page[0] as CreditDeal)?.id === start ? (page as CreditDeal[]).slice(1) : (page as CreditDeal[]);
     if (rows.length === 0) break;
     all.push(...rows);
     if (page.length < PAGE_LIMIT) break;
-    const lastId = page[page.length - 1]?.id;
+    const lastId = (page[page.length - 1] as CreditDeal)?.id;
     if (typeof lastId !== 'string' || lastId === start) break;
     start = lastId;
     if (all.length >= 5000) break;
@@ -149,33 +180,33 @@ async function fetchBorrowerDeals(account: string): Promise<any[]> {
   return all;
 }
 
-function mpaDebtAssetId(order: any): string | null {
+function mpaDebtAssetId(order: CallOrder | null | undefined): string | null {
   const q = order?.call_price?.quote?.asset_id;
   if (typeof q === 'string' && q) return q;
-  const d = order?.debt?.asset_id;
+  const d = (order?.debt as { asset_id?: unknown } | undefined)?.asset_id;
   if (typeof d === 'string' && d) return d;
   return null;
 }
 
-function mpaCollateralAssetId(order: any): string | null {
+function mpaCollateralAssetId(order: CallOrder | null | undefined): string | null {
   const b = order?.call_price?.base?.asset_id;
   if (typeof b === 'string' && b) return b;
-  const c = order?.collateral?.asset_id;
+  const c = (order?.collateral as { asset_id?: unknown } | undefined)?.asset_id;
   if (typeof c === 'string' && c) return c;
   return null;
 }
 
-function mpaDebtRaw(order: any): number {
+function mpaDebtRaw(order: CallOrder | null | undefined): number {
   const v = Number(order?.debt);
   if (Number.isFinite(v)) return v;
-  const a = Number(order?.debt?.amount);
+  const a = Number((order?.debt as { amount?: unknown } | undefined)?.amount);
   return Number.isFinite(a) ? a : NaN;
 }
 
-function mpaCollateralRaw(order: any): number {
+function mpaCollateralRaw(order: CallOrder | null | undefined): number {
   const v = Number(order?.collateral);
   if (Number.isFinite(v)) return v;
-  const a = Number(order?.collateral?.amount);
+  const a = Number((order?.collateral as { amount?: unknown } | undefined)?.amount);
   return Number.isFinite(a) ? a : NaN;
 }
 
@@ -192,10 +223,10 @@ async function main() {
 
   const { config } = loadSettingsFile(BOTS_FILE);
   let bots = normalizeBotEntries(resolveRawBotEntries(config))
-    .filter((b: any) => b && b.active !== false && hasLending(b));
+    .filter((b: BotEntry) => b && b.active !== false && hasLending(b));
   if (botFilter) {
     const sanitized = sanitizeKey(botFilter);
-    const matched = bots.filter((b: any) =>
+    const matched = bots.filter((b: BotEntry) =>
       String(b.name || '').toLowerCase() === botFilter ||
       sanitizeKey(String(b.name || '')) === sanitized ||
       String(b.botKey || '').toLowerCase() === botFilter);
@@ -203,7 +234,7 @@ async function main() {
       console.log(`${colors.sell}No credit bot found for '${botFilter}'.${colors.reset}`);
       console.log('Available bots:');
       const all = normalizeBotEntries(resolveRawBotEntries(config));
-      all.forEach((b: any) => console.log(`  - ${b.name}${hasLending(b) ? '' : ' (no debtPolicy)'}`));
+      all.forEach((b: BotEntry) => console.log(`  - ${b.name}${hasLending(b) ? '' : ' (no debtPolicy)'}`));
       process.exit(0);
     }
     bots = matched;
@@ -256,8 +287,8 @@ async function main() {
     } catch { /* keep raw symbol */ }
     return { id: null, symbol: s };
   }
-  async function fetchOfferObjects(offerIds: string[]): Promise<Map<string, any>> {
-    const out = new Map<string, any>();
+  async function fetchOfferObjects(offerIds: string[]): Promise<Map<string, CreditOffer>> {
+    const out = new Map<string, CreditOffer>();
     const unique = [...new Set(offerIds.filter(Boolean).map(String))];
     for (let i = 0; i < unique.length; i += 100) {
       const batch = unique.slice(i, i + 100);
@@ -265,7 +296,8 @@ async function main() {
         const res = await dbCall('get_objects', [batch]);
         if (Array.isArray(res)) {
           for (const o of res) {
-            if (o?.id) out.set(String(o.id), o);
+            const offer = o as CreditOffer;
+            if (offer?.id) out.set(String(offer.id), offer);
           }
         }
       } catch { /* leave missing; deal falls back to pool/market pricing */ }
@@ -277,25 +309,26 @@ async function main() {
   // against a misbehaving node; the loop normally ends on a short page or
   // a repeated cursor.
   const MAX_OFFER_PAGES = 100;
-  async function fetchLiveOffers(debtAssetId: string): Promise<any[]> {
-    const out: any[] = [];
+  async function fetchLiveOffers(debtAssetId: string): Promise<CreditOffer[]> {
+    const out: CreditOffer[] = [];
     const seen = new Set<string>();
     let start: string | null = null;
     for (let page = 0; page < MAX_OFFER_PAGES; page++) {
       const args = start == null ? [debtAssetId, 100] : [debtAssetId, 100, start];
-      let rows: any;
+      let rows: unknown;
       try {
         rows = await dbCall('get_credit_offers_by_asset', args);
       } catch { break; }
       if (!Array.isArray(rows) || rows.length === 0) break;
       for (const o of rows) {
-        if (o?.id && !seen.has(String(o.id))) {
-          seen.add(String(o.id));
-          out.push(o);
+        const offer = o as CreditOffer;
+        if (offer?.id && !seen.has(String(offer.id))) {
+          seen.add(String(offer.id));
+          out.push(offer);
         }
       }
       if (rows.length < 100) break;
-      const lastId = rows[rows.length - 1]?.id;
+      const lastId = (rows[rows.length - 1] as CreditOffer)?.id;
       if (typeof lastId !== 'string' || lastId === start) break;
       start = lastId;
     }
@@ -309,7 +342,7 @@ async function main() {
     const out = new Map<string, number>();
     try {
       const res = await dbCall('get_full_accounts', [[account], false]);
-      const entry = Array.isArray(res) && Array.isArray(res[0]) && res[0].length >= 2 ? res[0][1] : res?.[0];
+      const entry = (Array.isArray(res) && Array.isArray(res[0]) && res[0].length >= 2 ? res[0][1] : (res as unknown[] | undefined)?.[0]) as { balances?: Array<Record<string, unknown>> } | undefined;
       const balances = entry?.balances || [];
       for (const b of balances) {
         const aid = String(b?.asset_type || b?.asset_id || b?.asset || '');
@@ -350,12 +383,12 @@ async function main() {
     }
     const shared = (accountUsers.get(account) || 0) > 1;
 
-    let callOrders: any[] = [];
-    let deals: any[] = [];
+    let callOrders: CallOrder[] = [];
+    let deals: CreditDeal[] = [];
     let fetchError: string | null = null;
     try {
       [callOrders, deals] = await Promise.all([fetchMarginPositions(account), fetchBorrowerDeals(account)]);
-    } catch (err: any) {
+    } catch (err) {
       fetchError = getErrorMessage(err) || String(err);
     }
     if (fetchError) {
@@ -390,11 +423,11 @@ async function main() {
       } catch { return false; }
     }
 
-    const mpaOrders: any[] = [];
+    const mpaOrders: CallOrder[] = [];
     for (const o of callOrders) {
       if (await debtMatches(mpaDebtAssetId(o), mpaIds, mpaSyms)) mpaOrders.push(o);
     }
-    const creditDeals: any[] = [];
+    const creditDeals: CreditDeal[] = [];
     for (const d of deals) {
       const debtId = typeof d?.debt_asset === 'string' ? d.debt_asset : null;
       let symOk = false;
@@ -411,15 +444,16 @@ async function main() {
     // position for the "(×N, ▲ …)" display plus the earliest
     // latest_repay_time per debt asset (next credit expiry).
     type DebtEntry = { total: number; count: number; max: number; earliest?: number | null };
-    async function sumPositions(kind: 'mpa' | 'credit', items: any[]) {
+    async function sumPositions(kind: 'mpa' | 'credit', items: unknown[]) {
       const debt = new Map<string, DebtEntry>();
       const coll = new Map<string, { total: number; count: number; max: number }>();
       for (const it of items) {
+        const item = it as CallOrder & CreditDeal;
         if (kind === 'mpa') {
-          const dId = mpaDebtAssetId(it);
-          const cId = mpaCollateralAssetId(it);
-          const dRaw = mpaDebtRaw(it);
-          const cRaw = mpaCollateralRaw(it);
+          const dId = mpaDebtAssetId(item);
+          const cId = mpaCollateralAssetId(item);
+          const dRaw = mpaDebtRaw(item);
+          const cRaw = mpaCollateralRaw(item);
           if (dId) {
             const f = await toFloat(dRaw, dId);
             if (f != null) {
@@ -435,16 +469,16 @@ async function main() {
             }
           }
         } else {
-          const dId = typeof it?.debt_asset === 'string' ? it.debt_asset : null;
-          const cId = typeof it?.collateral_asset === 'string' ? it.collateral_asset : null;
-          const dRaw = Number(it?.debt_amount);
-          const cRaw = Number(it?.collateral_amount);
+          const dId = typeof item.debt_asset === 'string' ? item.debt_asset : null;
+          const cId = typeof item.collateral_asset === 'string' ? item.collateral_asset : null;
+          const dRaw = Number(item.debt_amount);
+          const cRaw = Number(item.collateral_amount);
           if (dId && Number.isFinite(dRaw)) {
             const f = await toFloat(dRaw, dId);
             if (f != null) {
               const e = debt.get(dId) || { total: 0, count: 0, max: 0, earliest: null as number | null };
               e.total += f; e.count += 1; e.max = Math.max(e.max, f);
-              const ms = parseExpiryMs((it as any)?.latest_repay_time ?? (it as any)?.latestRepayTime);
+              const ms = parseExpiryMs(item.latest_repay_time ?? item.latestRepayTime);
               if (ms !== null && (e.earliest == null || ms < e.earliest)) e.earliest = ms;
               debt.set(dId, e);
             }
@@ -477,9 +511,7 @@ async function main() {
     // (type creditOffer) AND the pair is listed on the current credit
     // offer (acceptable_collateral). Anything else is reported separately
     // as ignored/unpriced and excluded from the average CR.
-    const lendingItems: any[] = hasLending(bot) && Array.isArray((bot as any).debtPolicy?.lending)
-      ? (bot as any).debtPolicy.lending
-      : [];
+    const lendingItems: BotLendingEntry[] = bot.debtPolicy?.lending ?? [];
     // Configured credit pairs drive the whitelist, per-pair CR lines, and
     // the borrow-now preview.
     const creditPairs: Array<{ debtId: string | null; debtSym: string; collId: string | null; collSym: string; maxCR: number | null }> = [];
@@ -489,7 +521,7 @@ async function main() {
         resolveLendingRef(String(item.asset)),
         resolveLendingRef(String(item.collateralAsset)),
       ]);
-      const maxCR = Number(item.maxCollateralRatio);
+      const maxCR = Number((item as { maxCollateralRatio?: unknown }).maxCollateralRatio);
       creditPairs.push({
         debtId: debtR.id, debtSym: debtR.symbol,
         collId: collR.id, collSym: collR.symbol,
@@ -504,7 +536,7 @@ async function main() {
     );
 
     // Offer objects for the deals' conversion rates (debt per collateral).
-    const dealOfferIds = creditDeals.map((d: any) => d?.offer_id).filter(Boolean).map(String);
+    const dealOfferIds = creditDeals.map((d) => d?.offer_id).filter(Boolean).map(String);
     const offerById = await fetchOfferObjects(dealOfferIds);
     await ensurePrecisions((() => {
       const legIds = new Set<string>();
@@ -665,7 +697,7 @@ async function main() {
           : null;
         // Current credit for the pair: active deal's offer first, else the
         // cheapest live offer listing the pair.
-        let liveOffer: any = null;
+        let liveOffer: CreditOffer | null = null;
         let liveRate: number | null = null;
         let liveOfferId: string | null = null;
         const offerRows = pairRows.filter((r) => r.source === 'offer' && r.rate !== null && r.offerId);
@@ -677,7 +709,7 @@ async function main() {
           liveOfferId = ranked[0].r.offerId != null ? String(ranked[0].r.offerId) : null;
         } else if (pair.debtId && pair.collId) {
           const liveOffers = (await fetchLiveOffers(pair.debtId)).filter((o) => o?.enabled !== false);
-          const cands: Array<{ offer: any; rate: number; daily: number; id: string }> = [];
+          const cands: Array<{ offer: CreditOffer; rate: number; daily: number; id: string }> = [];
           for (const o of liveOffers) {
             await ensurePrecisions((() => {
               const ids = new Set<string>();
@@ -735,7 +767,7 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((err: any) => {
+  main().catch((err: unknown) => {
     console.error(`credit: ${getErrorMessage(err) || err}`);
     try { disconnectClient(); } catch { /* noop */ }
     process.exit(1);

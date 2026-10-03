@@ -49,7 +49,7 @@ function readData() {
     const filePath = path.resolve(args[0]);
     try {
       return fs.readFileSync(filePath, 'utf-8');
-    } catch (err: any) {
+    } catch (err) {
       console.error(`Error reading file "${filePath}":`, getErrorMessage(err) ?? String(err));
       process.exit(1);
     }
@@ -62,9 +62,10 @@ function readData() {
 const data = readData();
 
 const lines = data.trim().split('\n');
-const orders: any[] = [];
+interface DivergenceOrder { orderId: string; price: number; persisted: number; calculated: number; state: string; type?: string }
+const orders: DivergenceOrder[] = [];
 
-lines.forEach((line: any) => {
+lines.forEach((line: string) => {
   // Parse orders in format: Buy/Sell order-id @ price: persisted → calculated [state]
   // State is optional and used to exclude partial orders
   const match = line.match(/(?:Buy|Sell) (?:buy|sell)-(\d+) @ ([\d.]+): ([\d.]+) → ([\d.]+)(?:\s+\[(\w+)\])?/);
@@ -81,12 +82,12 @@ lines.forEach((line: any) => {
 // Filter out partial orders from divergence calculation
 // Include: 'active' and 'virtual' orders - these represent the intended grid structure
 // Exclude: 'partial' orders - these are temporarily filled and in transition
-const activeOrders = orders.filter((o: any) => o.state !== 'partial');
+const activeOrders = orders.filter((o) => o.state !== 'partial');
 const partialOrdersCount = orders.length - activeOrders.length;
 
 // Calculate divergence metric: sum of ((calculated - persisted) / persisted)^2 / count
 let sumSquaredDiff = 0;
-activeOrders.forEach((order: any) => {
+activeOrders.forEach((order) => {
   const relativeError = (order.calculated - order.persisted) / order.persisted;
   sumSquaredDiff += relativeError * relativeError;
 });
@@ -114,8 +115,8 @@ console.log(`  Status: ${promille <= 1 ? '✓ WITHIN THRESHOLD' : '✗ EXCEEDS T
 
 // Show min/max errors
 let minError = Infinity, maxError = -Infinity;
-let minErrorOrder: any = null, maxErrorOrder: any = null;
-activeOrders.forEach((order: any, idx: any) => {
+let minErrorOrder: (DivergenceOrder & { idx: number }) | null = null, maxErrorOrder: (DivergenceOrder & { idx: number }) | null = null;
+activeOrders.forEach((order, idx) => {
   const absError = Math.abs((order.calculated - order.persisted) / order.persisted);
   if (absError < minError) { minError = absError; minErrorOrder = { ...order, idx }; }
   if (absError > maxError) { maxError = absError; maxErrorOrder = { ...order, idx }; }
