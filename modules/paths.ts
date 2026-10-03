@@ -72,13 +72,13 @@ function dirHasState(dir: string): boolean {
  */
 function getEnvLive(key: string): string | undefined {
     if (hasProcess() && process.env[key] !== undefined) return process.env[key];
-    return (Config as any)[key];
+    return (Config as unknown as Record<string, string | undefined>)[key];
 }
 function getEnvDirect(key: string): string | undefined {
     return hasProcess() && process.env[key] !== undefined ? process.env[key] : undefined;
 }
 function getHomeConfigDir(): string {
-    const xdg = getEnvDirect('XDG_CONFIG_HOME') ?? (Config as any).XDG_CONFIG_HOME;
+    const xdg = getEnvDirect('XDG_CONFIG_HOME') ?? (Config as unknown as Record<string, string | undefined>).XDG_CONFIG_HOME;
     if (xdg && xdg.trim()) return path.join(path.resolve(xdg), 'dexbot2');
     return path.join(homedir(), '.config', 'dexbot2');
 }
@@ -118,9 +118,9 @@ function resolveProfilesDir(projectRoot = PROJECT_ROOT): string {
         return path.join(dexbot2Root, 'profiles');
     }
     // Fallback to Config only for legacy direct Config mutation (not env)
-    const cfgProfile = (Config as any).DEXBOT_PROFILE_ROOT;
+    const cfgProfile = (Config as unknown as Record<string, string | undefined>).DEXBOT_PROFILE_ROOT;
     if (cfgProfile) return cfgProfile;
-    const cfgRoot = (Config as any).DEXBOT2_ROOT;
+    const cfgRoot = (Config as unknown as Record<string, string | undefined>).DEXBOT2_ROOT;
     if (cfgRoot) return path.join(cfgRoot, 'profiles');
 
     const homeDir = getHomeProfilesDir();
@@ -379,7 +379,7 @@ export { PATHS, HOME_PROFILES_DIR, HOME_CONFIG_DIR, getHomeConfigDir, getHomePro
 // Live getters for CJS require() interop (ESM cache not invalidated via require.cache)
 try {
     // @ts-ignore - patch CJS wrapper if present
-    const g: any = globalThis as any;
+    const g = globalThis as { module?: { exports?: Record<string, unknown> } };
     if (g.module && g.module.exports) {
         Object.defineProperty(g.module.exports, 'HOME_PROFILES_DIR', { get: getHomeProfilesDir, enumerable: true, configurable: true });
         Object.defineProperty(g.module.exports, 'HOME_CONFIG_DIR', { get: getHomeConfigDir, enumerable: true, configurable: true });
@@ -388,7 +388,7 @@ try {
 // Also patch this module's own exports object when loaded via require() interop (Node experimental require(esm))
 try {
     // @ts-ignore
-    const exp: any = typeof exports !== 'undefined' ? exports : undefined;
+    const exp = (typeof exports !== 'undefined' ? exports : undefined) as Record<string, unknown> | undefined;
     if (exp) {
         Object.defineProperty(exp, 'HOME_PROFILES_DIR', { get: getHomeProfilesDir, enumerable: true, configurable: true });
         Object.defineProperty(exp, 'HOME_CONFIG_DIR', { get: getHomeConfigDir, enumerable: true, configurable: true });

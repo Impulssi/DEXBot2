@@ -40,7 +40,7 @@ const BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const CREDENTIAL_SOCKET_FILE = getCredentialSocketPath();
 const CREDENTIAL_READY_FILE = getCredentialReadyFilePath();
 
-function formatBotCount(count: any) {
+function formatBotCount(count: number) {
     return `${count} ${count === 1 ? 'bot' : 'bots'}`;
 }
 
@@ -87,25 +87,25 @@ function readMonolithicBotInfo() {
 
 // ── Process matching ───────────────────────────────────────────────
 
-function isLikelyCredentialDaemonProcess(pid: any) {
+function isLikelyCredentialDaemonProcess(pid: number) {
     return isNodeProcessWithExactScript(pid, ['credential-daemon']);
 }
 
-function isLikelyDexbotProcess(pid: any) {
+function isLikelyDexbotProcess(pid: number) {
     return isNodeProcessWithExactScript(pid, ['dexbot']);
 }
 
-function isLikelyUnlockProcess(pid: any) {
+function isLikelyUnlockProcess(pid: number) {
     return isNodeProcessWithExactScript(pid, ['unlock']);
 }
 
-function isExpectedProcessStarttime(pid: any, expectedStarttime: any) {
+function isExpectedProcessStarttime(pid: number, expectedStarttime: unknown) {
     if (typeof expectedStarttime !== 'number') return false;
     const stat = readProcStat(pid);
     return !!(stat && stat.starttime === expectedStarttime);
 }
 
-function isExpectedMonolithicBotPid(pid: any, botInfo: any) {
+function isExpectedMonolithicBotPid(pid: number, botInfo: Record<string, unknown> | null) {
     if (!Number.isInteger(pid) || pid <= 0) {
         return false;
     }
@@ -211,7 +211,7 @@ async function stopCredentialDaemon() {
     return { signaled, cleaned: true };
 }
 
-async function ensureNoForeignCredentialDaemon({ verbose = true }: any = {}) {
+async function ensureNoForeignCredentialDaemon({ verbose = true }: { verbose?: boolean } = {}) {
     return foreignCredDaemon.ensureNoForeignCredentialDaemon({
         socketPath: CREDENTIAL_SOCKET_FILE,
         readyFilePath: CREDENTIAL_READY_FILE,
@@ -251,7 +251,7 @@ function ensureLogDir() {
     storage.ensureDir(PATHS.LOGS_DIR);
 }
 
-function buildDexbotStartArgs(botName: any, dryrun: any = false) {
+function buildDexbotStartArgs(botName: string | null | undefined, dryrun: boolean = false) {
     // Launch the supervised worker as `worker` so the process table identifies
     // it as the bot worker instead of the internal runner name. The worker is
     // distinguished from the `unlock` supervisor by DEXBOT_LAUNCHER_WORKER
@@ -268,8 +268,8 @@ function buildDexbotStartArgs(botName: any, dryrun: any = false) {
 
 // ── Update scheduler ───────────────────────────────────────────────
 
-function createUpdateScheduler({ botProcessRef, warn = console.warn }: { botProcessRef?: { current: any }; warn?: (...data: any[]) => void } = {}) {
-    let _updateTimer: any = null;
+function createUpdateScheduler({ botProcessRef, warn = console.warn }: { botProcessRef?: { current: import('node:child_process').ChildProcess | null }; warn?: (...data: unknown[]) => void } = {}) {
+    let _updateTimer: ReturnType<typeof setTimeout> | null = null;
     let _pendingRestart = false;
     let cancelled = false;
 
@@ -298,7 +298,7 @@ function createUpdateScheduler({ botProcessRef, warn = console.warn }: { botProc
                     stdio: 'inherit',
                     env: buildScopedChildEnv({ extra: { DEXBOT_UPDATE_SKIP_RELOAD: '1' } }),
                 });
-                const code = await new Promise((resolve: any) => {
+                const code = await new Promise<number | null>((resolve) => {
                     updateChild.on('close', resolve);
                     updateChild.on('error', () => resolve(-1));
                 });
@@ -314,7 +314,7 @@ function createUpdateScheduler({ botProcessRef, warn = console.warn }: { botProc
             if (_updateTimer && typeof _updateTimer.unref === 'function') {
                 _updateTimer.unref();
             }
-        } catch (err: any) {
+        } catch (err) {
             warn(`Update scheduler: ${getErrorMessage(err)}`);
             _updateTimer = setTimeout(scheduleNext, 3600000);
             if (_updateTimer && typeof _updateTimer.unref === 'function') {
@@ -334,13 +334,13 @@ function createUpdateScheduler({ botProcessRef, warn = console.warn }: { botProc
 
 // ── Control command helpers ────────────────────────────────────────
 
-function listConfiguredBots(botsFile?: any) {
+function listConfiguredBots(botsFile?: string): Array<{ name: string; active: boolean; gridPrice: string }> {
     try {
         const botsFilePath = botsFile || BOTS_FILE;
         const { config } = loadSettingsFile(botsFilePath);
         const raw = resolveRawBotEntries(config);
-        return raw.map((b: any) => ({
-            name: b.name,
+        return raw.map((b) => ({
+            name: b.name as string,
             active: b.active !== false,
             gridPrice: typeof b.gridPrice === 'string' ? b.gridPrice.trim().toLowerCase() : '',
         }));
@@ -349,7 +349,7 @@ function listConfiguredBots(botsFile?: any) {
     }
 }
 
-function getActiveAmaBotFingerprint(botsFile?: any) {
+function getActiveAmaBotFingerprint(botsFile?: string) {
     // Canonical semantic fingerprint (see launcher/adapter_requirement.ts):
     // identical to the per-bot snapshot fingerprint, so the wrapper watchdog
     // and wrapper-less bot fallbacks agree on what "changed" means.
@@ -359,13 +359,13 @@ function getActiveAmaBotFingerprint(botsFile?: any) {
 function getAllControlBotNames() {
     // Prefer live bots.json (current intent) over the startup snapshot.
     // Shows what the user configured, even if the wrapper hasn't respawned yet.
-    const liveBots = listConfiguredBots().filter((b: any) => b.active).map((b: any) => b.name);
+    const liveBots = listConfiguredBots().filter((b) => b.active).map((b) => b.name);
     if (liveBots.length > 0) {
         return liveBots;
     }
     const botInfo = readMonolithicBotInfo();
     if (Array.isArray(botInfo?.botNames) && botInfo.botNames.length > 0) {
-        return botInfo.botNames.map((name: any) => String(name));
+        return (botInfo.botNames as unknown[]).map((name) => String(name));
     }
     if (botInfo?.botName) {
         return [String(botInfo.botName)];
@@ -373,20 +373,20 @@ function getAllControlBotNames() {
     return [];
 }
 
-function getControlBotNames(target: any, wholeRuntime: any = false) {
+function getControlBotNames(target: string | null | undefined, wholeRuntime: boolean = false) {
     if (target) return [target];
     if (wholeRuntime) return getAllControlBotNames();
     return [];
 }
 
-function getControlActionLabel(cmd: any) {
+function getControlActionLabel(cmd: string) {
     if (cmd === 'restart' || cmd === 'restart-all') return 'restarting';
     if (cmd === 'reload' || cmd === 'reload-all') return 'reloading';
     if (cmd === 'shutdown' || cmd === 'delete') return 'shutting down';
     return 'stopping';
 }
 
-function getControlServiceNames(cmd: any, botNames: any) {
+function getControlServiceNames(cmd: string, botNames: string[]): string[] {
     if (!['stop-all', 'restart-all', 'reload-all', 'delete', 'shutdown'].includes(cmd)) return [];
     const serviceNames: string[] = [];
     // reload-all mirrors restart-all but leaves the credential daemon untouched,
@@ -394,8 +394,8 @@ function getControlServiceNames(cmd: any, botNames: any) {
     if (cmd === 'restart-all' || cmd === 'delete' || cmd === 'shutdown') {
         serviceNames.push('credential daemon');
     }
-    const affectedAmaBots = listConfiguredBots().some((bot: any) => (
-        bot.active && usesAmaGridPrice(bot) && (botNames as any[]).some((n: any) => isSameBotName(n, bot.name))
+    const affectedAmaBots = listConfiguredBots().some((bot) => (
+        bot.active && usesAmaGridPrice(bot as unknown as Record<string, unknown>) && botNames.some((n) => isSameBotName(n, bot.name))
     ));
     if (affectedAmaBots) {
         serviceNames.push('market adapter');
@@ -403,7 +403,7 @@ function getControlServiceNames(cmd: any, botNames: any) {
     return serviceNames;
 }
 
-function printControlActionSummary(action: any, botNames: any, serviceNames: any = []) {
+function printControlActionSummary(action: string, botNames: string[], serviceNames: string[] = []) {
     console.log('='.repeat(50));
     console.log(`DEXBot2 ${action} ${formatBotCount(botNames.length)}`);
     console.log();

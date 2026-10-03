@@ -1,7 +1,10 @@
+import { getErrorMessage } from './utils/errors.js';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
 import { deepMerge } from './settings_merge.js';
+import type { UnknownRecord } from './types.js';
+import { isUnknownRecord } from './types.js';
 
 import {
     GRID_LIMITS, FEE_PARAMETERS, INCREMENT_BOUNDS, TIMING,
@@ -13,33 +16,37 @@ function _toScreamingCase(key: string): string {
     return key.replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase();
 }
 
-function _normalizeKeys(obj: any): any {
+function _normalizeKeys(obj: unknown): unknown {
     if (Array.isArray(obj) || obj === null || typeof obj !== 'object') return obj;
-    const out: Record<string, any> = {};
+    const out: UnknownRecord = {};
     for (const [k, v] of Object.entries(obj)) {
         out[_toScreamingCase(k)] = _normalizeKeys(v);
     }
     return out;
 }
 
-function _deepMerge(target: any, source: any): any {
-    return deepMerge(target, _normalizeKeys(source));
+function _deepMerge<T extends UnknownRecord>(target: T | undefined, source: unknown): T {
+    return deepMerge(target ?? ({} as T), _normalizeKeys(source) as UnknownRecord) as T;
 }
 
 export interface BotRuntimeSettings {
-    gridLimits: Record<string, any>;
-    feeParams: Record<string, any>;
-    incrementBounds: Record<string, any>;
-    timing: Record<string, any>;
-    fillProcessing: Record<string, any>;
-    cowPerformance: Record<string, any>;
-    pipelineTiming: Record<string, any>;
-    apiLimits: Record<string, any>;
+    gridLimits: typeof GRID_LIMITS;
+    feeParams: typeof FEE_PARAMETERS;
+    incrementBounds: typeof INCREMENT_BOUNDS;
+    timing: typeof TIMING;
+    fillProcessing: typeof FILL_PROCESSING;
+    cowPerformance: typeof COW_PERFORMANCE;
+    pipelineTiming: typeof PIPELINE_TIMING;
+    apiLimits: typeof API_LIMITS;
     logging: {
         level: string;
-        config: Record<string, any>;
+        config: typeof LOGGING_CONFIG;
     };
 }
+
+export type BotRuntimeSettingsOverrides = Partial<BotRuntimeSettings> & {
+    poolSlippageTolerance?: number;
+};
 
 export const RUNTIME_SETTINGS_KEYS: readonly string[] = [
     'gridLimits', 'feeParams', 'incrementBounds', 'timing',
@@ -67,7 +74,7 @@ export const BOT_LIVE_CONFIG_KEYS: readonly string[] = [
     'debtPolicy',
 ];
 
-export function resolveBotRuntimeSettings(botConfig: Record<string, any>): BotRuntimeSettings {
+export function resolveBotRuntimeSettings(botConfig: UnknownRecord): BotRuntimeSettings {
     const result: BotRuntimeSettings = {
         gridLimits: { ...GRID_LIMITS, GRID_COMPARISON: { ...GRID_LIMITS.GRID_COMPARISON } },
         feeParams: { ...FEE_PARAMETERS },
@@ -105,14 +112,19 @@ export function resolveBotRuntimeSettings(botConfig: Record<string, any>): BotRu
     if (botConfig.pipelineTiming) result.pipelineTiming = _deepMerge(result.pipelineTiming, botConfig.pipelineTiming);
     if (botConfig.apiLimits) result.apiLimits = _deepMerge(result.apiLimits, botConfig.apiLimits);
     if (botConfig.logging) {
-        if (botConfig.logging.level) result.logging.level = botConfig.logging.level;
-        if (botConfig.logging.config) result.logging.config = deepMerge(result.logging.config, botConfig.logging.config);
+        const loggingOverride = botConfig.logging;
+        if (isUnknownRecord(loggingOverride)) {
+            if (typeof loggingOverride.level === 'string') result.logging.level = loggingOverride.level;
+            if (isUnknownRecord(loggingOverride.config)) {
+                result.logging.config = deepMerge(result.logging.config, loggingOverride.config) as typeof LOGGING_CONFIG;
+            }
+        }
     }
 
     return result;
 }
 
-function _resolveMarketOverrides(botConfig: Record<string, any>): Record<string, any> | null {
+function _resolveMarketOverrides(botConfig: UnknownRecord): BotRuntimeSettingsOverrides | null {
     try {
         const marketAdapter = require('../market_adapter/market_adapter');
         const settings = (typeof marketAdapter.loadMarketAdapterSettings === 'function')
@@ -120,7 +132,7 @@ function _resolveMarketOverrides(botConfig: Record<string, any>): Record<string,
             : null;
         if (!settings) return null;
 
-        const overrides: Record<string, any> = {};
+        const overrides: BotRuntimeSettingsOverrides = {};
 
         if (settings.globals) {
             if (settings.globals.runtimeGridLimits) overrides.gridLimits = { ...settings.globals.runtimeGridLimits };
@@ -137,26 +149,26 @@ function _resolveMarketOverrides(botConfig: Record<string, any>): Record<string,
         if (Array.isArray(settings.pairs) && typeof marketAdapter.findPairForBot === 'function') {
             const pair = marketAdapter.findPairForBot(botConfig, settings.pairs);
             if (pair) {
-                if (pair.marketGridLimits) overrides.gridLimits = _deepMerge(overrides.gridLimits || {}, pair.marketGridLimits);
-                if (pair.marketFeeParams) overrides.feeParams = _deepMerge(overrides.feeParams || {}, pair.marketFeeParams);
-                if (pair.marketTiming) overrides.timing = _deepMerge(overrides.timing || {}, pair.marketTiming);
-                if (pair.marketIncrementBounds) overrides.incrementBounds = _deepMerge(overrides.incrementBounds || {}, pair.marketIncrementBounds);
-                if (pair.marketFillProcessing) overrides.fillProcessing = _deepMerge(overrides.fillProcessing || {}, pair.marketFillProcessing);
-                if (pair.marketCowPerformance) overrides.cowPerformance = _deepMerge(overrides.cowPerformance || {}, pair.marketCowPerformance);
-                if (pair.marketPipelineTiming) overrides.pipelineTiming = _deepMerge(overrides.pipelineTiming || {}, pair.marketPipelineTiming);
-                if (pair.marketApiLimits) overrides.apiLimits = _deepMerge(overrides.apiLimits || {}, pair.marketApiLimits);
+                if (pair.marketGridLimits) overrides.gridLimits = _deepMerge(overrides.gridLimits, pair.marketGridLimits);
+                if (pair.marketFeeParams) overrides.feeParams = _deepMerge(overrides.feeParams, pair.marketFeeParams);
+                if (pair.marketTiming) overrides.timing = _deepMerge(overrides.timing, pair.marketTiming);
+                if (pair.marketIncrementBounds) overrides.incrementBounds = _deepMerge(overrides.incrementBounds, pair.marketIncrementBounds);
+                if (pair.marketFillProcessing) overrides.fillProcessing = _deepMerge(overrides.fillProcessing, pair.marketFillProcessing);
+                if (pair.marketCowPerformance) overrides.cowPerformance = _deepMerge(overrides.cowPerformance, pair.marketCowPerformance);
+                if (pair.marketPipelineTiming) overrides.pipelineTiming = _deepMerge(overrides.pipelineTiming, pair.marketPipelineTiming);
+                if (pair.marketApiLimits) overrides.apiLimits = _deepMerge(overrides.apiLimits, pair.marketApiLimits);
                 if (pair.marketPoolSlippageTolerance !== undefined) overrides.poolSlippageTolerance = pair.marketPoolSlippageTolerance;
 
-                if (pair.botOverrides && pair.botOverrides[botConfig.name]) {
-                    const bo = pair.botOverrides[botConfig.name];
-                    if (bo.botGridLimits) overrides.gridLimits = _deepMerge(overrides.gridLimits || {}, bo.botGridLimits);
-                    if (bo.botFeeParams) overrides.feeParams = _deepMerge(overrides.feeParams || {}, bo.botFeeParams);
-                    if (bo.botTiming) overrides.timing = _deepMerge(overrides.timing || {}, bo.botTiming);
-                    if (bo.botIncrementBounds) overrides.incrementBounds = _deepMerge(overrides.incrementBounds || {}, bo.botIncrementBounds);
-                    if (bo.botFillProcessing) overrides.fillProcessing = _deepMerge(overrides.fillProcessing || {}, bo.botFillProcessing);
-                    if (bo.botCowPerformance) overrides.cowPerformance = _deepMerge(overrides.cowPerformance || {}, bo.botCowPerformance);
-                    if (bo.botPipelineTiming) overrides.pipelineTiming = _deepMerge(overrides.pipelineTiming || {}, bo.botPipelineTiming);
-                    if (bo.botApiLimits) overrides.apiLimits = _deepMerge(overrides.apiLimits || {}, bo.botApiLimits);
+                if (pair.botOverrides && pair.botOverrides[String(botConfig.name)]) {
+                    const bo = pair.botOverrides[String(botConfig.name)];
+                    if (bo.botGridLimits) overrides.gridLimits = _deepMerge(overrides.gridLimits, bo.botGridLimits);
+                    if (bo.botFeeParams) overrides.feeParams = _deepMerge(overrides.feeParams, bo.botFeeParams);
+                    if (bo.botTiming) overrides.timing = _deepMerge(overrides.timing, bo.botTiming);
+                    if (bo.botIncrementBounds) overrides.incrementBounds = _deepMerge(overrides.incrementBounds, bo.botIncrementBounds);
+                    if (bo.botFillProcessing) overrides.fillProcessing = _deepMerge(overrides.fillProcessing, bo.botFillProcessing);
+                    if (bo.botCowPerformance) overrides.cowPerformance = _deepMerge(overrides.cowPerformance, bo.botCowPerformance);
+                    if (bo.botPipelineTiming) overrides.pipelineTiming = _deepMerge(overrides.pipelineTiming, bo.botPipelineTiming);
+                    if (bo.botApiLimits) overrides.apiLimits = _deepMerge(overrides.apiLimits, bo.botApiLimits);
                     if (bo.botPoolSlippageTolerance !== undefined) overrides.poolSlippageTolerance = bo.botPoolSlippageTolerance;
                 }
             }
@@ -164,10 +176,10 @@ function _resolveMarketOverrides(botConfig: Record<string, any>): Record<string,
 
         if (Object.keys(overrides).length === 0) return null;
         return overrides;
-    } catch (err: any) {
+    } catch (err) {
         console.warn(
             `[runtime_settings] Failed to resolve market adapter overrides for bot "${botConfig?.name ?? 'unknown'}" ` +
-            `(${err?.message || err}); continuing with base settings only.`
+            `(${getErrorMessage(err)}); continuing with base settings only.`
         );
         return null;
     }

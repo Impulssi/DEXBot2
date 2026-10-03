@@ -29,14 +29,15 @@ export type BroadcastFailureClass = 'retryable' | 'uncertain' | 'definite';
  *               be built: nothing landed and retrying the identical ops
  *               cannot change the outcome.
  *
- * @param {any} err - The thrown error (code + message).
+ * @param {unknown} err - The thrown error (code + message).
  * @returns {BroadcastFailureClass}
  */
-export function classifyBroadcastFailure(err: any): BroadcastFailureClass {
+export function classifyBroadcastFailure(err: unknown): BroadcastFailureClass {
     if (!err) return 'definite';
-    const code = String(err.code || '');
+    const e = err as { code?: unknown; message?: unknown };
+    const code = String(e.code || '');
     if (code === 'CONNECTION_ERROR') {
-        const msg = String(err.message || '');
+        const msg = String(e.message || '');
         // Pre-send rejections in transport.call() — the RPC frame was never
         // written to the socket, so no transaction was transmitted.
         if (msg === 'WebSocket not open' || msg.startsWith('Failed to send') || msg === 'No servers provided') {
@@ -66,7 +67,7 @@ export function classifyBroadcastFailure(err: any): BroadcastFailureClass {
     //    fetches, stale signing clients): 'retryable' — they can succeed on
     //    another node and nothing landed.
     if (code === 'TX_TOO_LARGE') return 'definite';
-    const msg = String(err.message || '');
+    const msg = String(e.message || '');
     if (
         msg === 'Operation must have op_name and op_data'
         || msg === 'Each operation requires op_name and op_data'

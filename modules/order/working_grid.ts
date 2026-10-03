@@ -74,11 +74,12 @@
 
 
 import { buildDelta, buildIndexes } from './utils/order.js';
+import type { ManagedOrder, UnknownRecord } from '../types.js';
 import { COW_PERFORMANCE } from '../constants.js';
 class WorkingGrid {
-    grid: Map<string, any>;
+    grid: Map<string, ManagedOrder>;
     modified: Set<string>;
-    _indexes: any;
+    _indexes: unknown;
     baseVersion: number;
     _stale: boolean;
     _staleReason: string | null;
@@ -89,7 +90,7 @@ class WorkingGrid {
      * @param {Object} [options] - Optional parameters
      * @param {number} [options.baseVersion=0] - Base version number
      */
-    constructor(masterGrid: Map<string, any>, options: { baseVersion?: number } = {}) {
+    constructor(masterGrid: Map<string, ManagedOrder>, options: { baseVersion?: number } = {}) {
         this.grid = this._cloneGrid(masterGrid);
         this.modified = new Set();
         this._indexes = null;
@@ -103,7 +104,7 @@ class WorkingGrid {
      * @param {Map} source - Source map
      * @returns {Map} - Cloned map
      */
-    _cloneGrid(source: Map<string, any>): Map<string, any> {
+    _cloneGrid(source: Map<string, ManagedOrder>): Map<string, ManagedOrder> {
         const cloned = new Map();
         for (const [id, order] of source.entries()) {
             cloned.set(id, this._cloneOrder(order));
@@ -116,7 +117,7 @@ class WorkingGrid {
      * @param {Object} order - Order to clone
      * @returns {Object} - Cloned order
      */
-    _cloneOrder(order: any): any {
+    _cloneOrder(order: ManagedOrder): ManagedOrder {
         return {
             ...order,
             metadata: order.metadata ? { ...order.metadata } : undefined
@@ -128,7 +129,7 @@ class WorkingGrid {
      * @param {string} id - Order ID
      * @returns {Object|undefined} Order object or undefined
      */
-    get(id: string): any { return this.grid.get(id); }
+    get(id: string): ManagedOrder | undefined { return this.grid.get(id); }
     
     /**
      * Set order and mark as modified
@@ -136,7 +137,7 @@ class WorkingGrid {
      * @param {Object} order - Order object
      * @returns {void}
      */
-    set(id: string, order: any): void {
+    set(id: string, order: ManagedOrder): void {
         this.grid.set(id, order);
         this.modified.add(id);
         this._indexes = null;
@@ -164,13 +165,13 @@ class WorkingGrid {
      * Iterate order values
      * @returns {IterableIterator<Object>}
      */
-    values(): IterableIterator<any> { return this.grid.values(); }
+    values(): IterableIterator<ManagedOrder> { return this.grid.values(); }
 
     /**
      * Iterate [id, order] pairs
      * @returns {IterableIterator<[string, Object]>}
      */
-    entries(): IterableIterator<[string, any]> { return this.grid.entries(); }
+    entries(): IterableIterator<[string, ManagedOrder]> { return this.grid.entries(); }
 
     /**
      * Iterate order IDs
@@ -188,7 +189,7 @@ class WorkingGrid {
      * Get indexes (builds if not cached)
      * @returns {Object} - Grid indexes
      */
-    getIndexes(): any {
+    getIndexes(): unknown {
         if (!this._indexes) {
             this._indexes = buildIndexes(this.grid);
         }
@@ -201,7 +202,7 @@ class WorkingGrid {
      * @param {Object} [options={}] - Delta options forwarded to ordersEqual
      * @returns {Array} - Array of action objects
      */
-    buildDelta(masterGrid: Map<string, any>, options: any = {}): any[] {
+    buildDelta(masterGrid: Map<string, ManagedOrder>, options: UnknownRecord = {}): unknown[] {
         return buildDelta(masterGrid, this.grid, options);
     }
 
@@ -243,7 +244,7 @@ class WorkingGrid {
      * Convert to plain Map (for commit)
      * @returns {Map} - The internal grid map
      */
-    toMap(): Map<string, any> {
+    toMap(): Map<string, ManagedOrder> {
         return this.grid;
     }
 
@@ -266,7 +267,7 @@ class WorkingGrid {
      * @param {string} orderId - Order ID to sync
      * @param {number} [masterVersion] - Current master grid version (updates baseVersion to stay in sync)
      */
-    syncFromMaster(masterGrid: Map<string, any>, orderId: string, masterVersion?: number): void {
+    syncFromMaster(masterGrid: Map<string, ManagedOrder>, orderId: string, masterVersion?: number): void {
         const masterOrder = masterGrid.get(orderId);
         if (!masterOrder) {
             // Order was deleted from master, also delete from working

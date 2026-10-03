@@ -35,7 +35,11 @@
  */
 
 import { GRID_LIMITS } from '../constants.js';
+import type { GridConfig } from '../types.js';
+import { isUnknownRecord } from '../types.js';
+import type { GridGenesis } from './utils/math.js';
 import { getErrorMessage } from '../utils/errors.js';
+import type { OrderManagerLike } from '../types.js';
 import {
     assertSlotPriceInvariant,
     buildGenesisFromPriceLevels,
@@ -96,9 +100,11 @@ export class MissingGenesisError extends Error {
 }
 
 /** True for a MissingGenesisError, including across module/realm duplication. */
-export function isMissingGenesisError(err: any): boolean {
+export function isMissingGenesisError(err: unknown): err is MissingGenesisError {
     if (err instanceof MissingGenesisError) return true;
-    return !!err && typeof err === 'object' && (err as any).name === 'MissingGenesisError' && typeof (err as any).reason === 'string';
+    if (!err || typeof err !== 'object') return false;
+    const candidate = err as { name?: unknown; reason?: unknown };
+    return candidate.name === 'MissingGenesisError' && typeof candidate.reason === 'string';
 }
 
 /**
@@ -107,25 +113,25 @@ export function isMissingGenesisError(err: any): boolean {
  * and the ladder is still used for validation (the pre-existing contract), and
  * the persisted-row schema check lives at the source (`AccountOrders.loadGenesis`).
  */
-export function hasGenesisLadder(genesis: any): boolean {
-    return !!genesis && Array.isArray(genesis.priceLevels) && genesis.priceLevels.length > 0;
+export function hasGenesisLadder(genesis: unknown): genesis is GridGenesis {
+    return !!genesis && isUnknownRecord(genesis) && Array.isArray(genesis.priceLevels) && genesis.priceLevels.length > 0;
 }
 
 /**
  * Resolve the configured missing-genesis policy.
  * Unknown/absent values fall back to the default ('rebuild'); only an explicit
  * 'halt' opts into manual intervention.
- * @param {any} config - Bot/manager config (reads `gridLimits.MISSING_GENESIS_POLICY`).
+ * @param {unknown} config - Bot/manager config (reads `gridLimits.MISSING_GENESIS_POLICY`).
  * @returns {OnMissingGenesisPolicy}
  */
-export function resolveOnMissingGenesisPolicy(config: any): OnMissingGenesisPolicy {
+export function resolveOnMissingGenesisPolicy(config: GridConfig | null | undefined): OnMissingGenesisPolicy {
     const raw = config?.gridLimits?.MISSING_GENESIS_POLICY ?? GRID_LIMITS.MISSING_GENESIS_POLICY;
     const normalized = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
     return normalized === ON_MISSING_GENESIS.HALT ? ON_MISSING_GENESIS.HALT : ON_MISSING_GENESIS.REBUILD;
 }
 
 /** Ratio of persisted slots above which a config-derived rail is refused. */
-export function resolveMismatchRatioLimit(config: any): number {
+export function resolveMismatchRatioLimit(config: GridConfig | null | undefined): number {
     const raw = Number(config?.gridLimits?.MISSING_GENESIS_MISMATCH_RATIO);
     if (Number.isFinite(raw) && raw >= 0 && raw <= 1) return raw;
     return Number(GRID_LIMITS.MISSING_GENESIS_MISMATCH_RATIO);
@@ -142,19 +148,19 @@ export function resolveMismatchRatioLimit(config: any): number {
  * persisted array would permanently shrink the ladder.
  * @returns {{ok: true, genesis: any} | {ok: false, reason: string, detail: string}}
  */
-export function buildGenesisFromLiveRail(config: any): { ok: true; genesis: any } | { ok: false; reason: string; detail: string } {
+export function buildGenesisFromLiveRail(config: GridConfig | null | undefined): { ok: true; genesis: GridGenesis } | { ok: false; reason: string; detail: string } {
     const startPrice = Number(config?.startPrice);
     const minPrice = Number(config?.minPrice);
     const maxPrice = Number(config?.maxPrice);
     const incPct = Number(config?.incrementPercent);
 
-    const nonFinite = [
+    const nonFinite = ([
         ['startPrice', config?.startPrice],
         ['minPrice', config?.minPrice],
         ['maxPrice', config?.maxPrice],
         ['incrementPercent', config?.incrementPercent]
-    ].filter(([, v]: any) => !Number.isFinite(Number(v)))
-        .map(([k, v]: any) => `${k}=${JSON.stringify(v)}`);
+    ] as Array<[string, unknown]>).filter(([, v]) => !Number.isFinite(Number(v)))
+        .map(([k, v]) => `${k}=${JSON.stringify(v)}`);
 
     if (nonFinite.length > 0) {
         return {
@@ -171,7 +177,7 @@ export function buildGenesisFromLiveRail(config: any): { ok: true; genesis: any 
         const priceLevels = derivePriceLevels(startPrice, minPrice, maxPrice, incPct);
         const gapSlotsForGenesis = calculateGapSlots(incPct, config?.targetSpreadPercent, config?.gridLimits);
         return { ok: true, genesis: buildGenesisFromPriceLevels(startPrice, incPct, gapSlotsForGenesis, priceLevels) };
-    } catch (e: any) {
+    } catch (e) {
         return {
             ok: false,
             reason: MISSING_GENESIS_REASON.MIGRATION_FAILED,
@@ -181,7 +187,7 @@ export function buildGenesisFromLiveRail(config: any): { ok: true; genesis: any 
 }
 
 export type GenesisResolution =
-    | { ok: true; genesis: any; source: 'persisted' | 'in_memory' | 'migration' }
+    | { ok: true; genesis: GridGenesis | null; source: 'persisted' | 'in_memory' | 'migration' }
     | { ok: false; reason: string; detail: string; mismatchRatio: number | null };
 
 /**
@@ -202,10 +208,10 @@ export type GenesisResolution =
  * verdict before it commits to a resume.
  *
  * @param {Object} params
- * @param {any} params.config - Live bot/manager config.
- * @param {any[]} params.grid - Persisted grid array (may be empty).
- * @param {any} [params.genesisInput] - Genesis supplied by the caller (snapshot row).
- * @param {any} [params.managerGenesis] - In-memory `manager._genesis`.
+ * @param {unknown} params.config - Live bot/manager config.
+ * @param {unknown[]} params.grid - Persisted grid array (may be empty).
+ * @param {unknown} [params.genesisInput] - Genesis supplied by the caller (snapshot row).
+ * @param {unknown} [params.managerGenesis] - In-memory `manager._genesis`.
  * @param {(msg: string, level?: string) => void} [params.log] - Logger sink for the cross-check verdict.
  * @param {string} [params.validationMode] - 'log' | 'enforce', for the warning text only.
  * @returns {GenesisResolution}
@@ -218,14 +224,14 @@ export function resolvePersistedGenesis({
     log,
     validationMode = 'log'
 }: {
-    config: any;
-    grid: any;
-    genesisInput?: any;
-    managerGenesis?: any;
+    config: GridConfig | null;
+    grid: unknown;
+    genesisInput?: unknown;
+    managerGenesis?: unknown;
     log?: (msg: string, level?: string) => void;
     validationMode?: string;
 }): GenesisResolution {
-    const slots: any[] = Array.isArray(grid) ? grid : [];
+    const slots: unknown[] = Array.isArray(grid) ? grid : [];
     const emit = (msg: string, level: string = 'warn') => { try { log?.(msg, level); } catch { /* logging must never fail the load */ } };
 
     if (hasGenesisLadder(genesisInput)) {
@@ -291,11 +297,11 @@ export function resolvePersistedGenesis({
  * Build the fault object for a refused snapshot, recording the policy and the
  * reason on the manager for observability (the soft half of the enforcement:
  * a counter/log is what tells an operator T2-T4 ever fire in the wild).
- * @param {any} manager
+ * @param {unknown} manager
  * @param {{reason: string, detail: string, mismatchRatio: number | null}} fault
  * @returns {MissingGenesisError}
  */
-export function recordMissingGenesisFault(manager: any, fault: { reason: string; detail: string; mismatchRatio: number | null }): MissingGenesisError {
+export function recordMissingGenesisFault(manager: OrderManagerLike, fault: { reason: string; detail: string; mismatchRatio: number | null }): MissingGenesisError {
     const policy = resolveOnMissingGenesisPolicy(manager?.config);
     try {
         manager._missingGenesis = {

@@ -77,12 +77,22 @@ import * as Format from '../format.js';
 import * as MathUtils from './math.js';
 import Logger from '../../order/logger.js';
 import { sleep } from './system.js';
-import { getErrorMessage } from '../../utils/errors.js';
+import { getErrorMessage, getErrorCode, getErrorName } from '../../utils/errors.js';
 import { hasGenesisLadder } from '../genesis_policy.js';
 import { parseSlotIndex as parseSlotIndexShared } from './slot.js';
+import type { OrderManagerLike, PendingPriceCorrection, ChainOrder, ParsedChainOrder, AssetPair, AssetInfo, OrderType, ManagedOrder, UnmatchedChainOrder, CowAction, ProjectedFunds } from '../../types.js';
+import type { GridGenesis } from './math.js';
 const { isValidNumber, toFiniteNumber } = Format;
 const { blockchainToFloat, floatToBlockchainInt, quantizeFloat, priceSlotEqual } = MathUtils;
 const orderLogger = new Logger('Order');
+
+interface CorrectionAccountOrdersLike {
+    cancelOrder(account: string, privateKey: string, chainOrderId: string): Promise<unknown>;
+    updateOrder(account: string, privateKey: string, chainOrderId: string, params: { amountToSell: unknown; minToReceive: unknown }): Promise<unknown>;
+    buildCancelOrderOp(account: string, chainOrderId: string): Promise<unknown>;
+    batchReadOrders(ids: string[]): Promise<Map<string, unknown>>;
+    executeBatch(account: string, privateKey: string, ops: unknown[]): Promise<unknown>;
+}
 
 const ORDER_GONE_ERROR_FRAGMENT = 'not found';
 
@@ -102,7 +112,7 @@ const ORDER_GONE_ERROR_FRAGMENT = 'not found';
  *   for generic object-missing phrasings (precision mode).
  * @returns {boolean} True if the message indicates the order is gone.
  */
-function isOrderGoneErrorMessage(message: any, orderId?: any) {
+function isOrderGoneErrorMessage(message: string | null | undefined, orderId?: string | null) {
     if (typeof message !== 'string' || message.length === 0) return false;
     if (/\border\b.*\bdoes not exist\b/i.test(message)) return true;
     if (/\bdoes not exist\b.*\border\b/i.test(message)) return true;
@@ -136,7 +146,7 @@ const _duplicateOrphanDetections = new Map<string, { count: number; lastWarnAt: 
  * @param {string} orderId - Duplicate orphan chain order ID.
  * @returns {{ count: number; shouldEscalate: boolean }} Detection stats.
  */
-function recordDuplicateOrphanDetection(orderId: any) {
+function recordDuplicateOrphanDetection(orderId: string | null | undefined) {
     if (!orderId) return { count: 0, shouldEscalate: false };
     const warnRateLimitMs = Number.isFinite(TIMING?.STALE_TOTALS_WARN_RATE_LIMIT_MS)
         ? TIMING.STALE_TOTALS_WARN_RATE_LIMIT_MS
@@ -173,7 +183,7 @@ function recordDuplicateOrphanDetection(orderId: any) {
  * so a resolved orphan never lingers and false-escalates later.
  * @param {string} orderId - Chain order ID to forget.
  */
-function clearDuplicateOrphanDetection(orderId: any) {
+function clearDuplicateOrphanDetection(orderId: string | null | undefined) {
     if (orderId) _duplicateOrphanDetections.delete(String(orderId));
 }
 
@@ -184,7 +194,7 @@ function clearDuplicateOrphanDetection(orderId: any) {
  * @param {string} orderId - Duplicate orphan chain order ID.
  * @returns {{ level: 'info'|'warn'; suffix: string }} Log level and suffix text.
  */
-function duplicateOrphanLogInfo(orderId: any) {
+function duplicateOrphanLogInfo(orderId: string | null | undefined) {
     const { count, shouldEscalate } = recordDuplicateOrphanDetection(orderId);
     return {
         level: shouldEscalate ? 'warn' : 'info',
@@ -192,10 +202,10 @@ function duplicateOrphanLogInfo(orderId: any) {
     };
 }
 
-function _filterUnmatchedChainOrders(manager: any, chainOrderId: string): void {
+function _filterUnmatchedChainOrders(manager: OrderManagerLike, chainOrderId: string): void {
     if (Array.isArray(manager._lastUnmatchedChainOrders)) {
         manager._lastUnmatchedChainOrders = manager._lastUnmatchedChainOrders.filter(
-            (u: any) => (u?.id || u?.orderId || u?.chainOrderId) !== chainOrderId
+            (u) => (u?.id || u?.orderId || u?.chainOrderId) !== chainOrderId
         );
     }
 }
@@ -204,10 +214,10 @@ function _filterUnmatchedChainOrders(manager: any, chainOrderId: string): void {
  * Record a fresh on-chain placement timestamp for surplus-cancel grace.
  * Called when a slot gains a chain orderId it did not have before (create,
  * adopt, rotation target). Powers isFreshlyPlacedOrder below.
- * @param {any} manager - OrderManager instance (owns `_placedAt`)
+ * @param {unknown} manager - OrderManager instance (owns `_placedAt`)
  * @param {string} chainOrderId - Chain order id that was just placed
  */
-function recordOrderPlacement(manager: any, chainOrderId: string | null | undefined): void {
+function recordOrderPlacement(manager: OrderManagerLike, chainOrderId: string | null | undefined): void {
     try {
         if (!manager || chainOrderId == null || String(chainOrderId).length === 0) return;
         if (!(manager._placedAt instanceof Map)) manager._placedAt = new Map();
@@ -227,12 +237,12 @@ function recordOrderPlacement(manager: any, chainOrderId: string | null | undefi
  * window. Surplus sweeps must skip such orders: a fill landing between two
  * controllers' count snapshots otherwise makes the second cancel what the
  * first just placed (fee bleed + empty levels, no net change).
- * @param {any} manager - OrderManager instance
+ * @param {unknown} manager - OrderManager instance
  * @param {string} chainOrderId - Chain order id to test
  * @param {number} [graceMs] - Override grace window (defaults to TIMING.SURPLUS_CANCEL_GRACE_MS)
  * @returns {boolean} True while the order is still inside its grace window
  */
-function isFreshlyPlacedOrder(manager: any, chainOrderId: string | null | undefined, graceMs?: number): boolean {
+function isFreshlyPlacedOrder(manager: OrderManagerLike, chainOrderId: string | null | undefined, graceMs?: number): boolean {
     try {
         if (chainOrderId == null || String(chainOrderId).length === 0) return false;
         const placedAt = manager?._placedAt instanceof Map
@@ -255,11 +265,11 @@ function isFreshlyPlacedOrder(manager: any, chainOrderId: string | null | undefi
  * discard a sibling entry (e.g. a cancel-only orphan sharing the id with
  * a price update). Callers pass the entry's own isSurplus flag.
  */
-function _removeCorrectionEntry(manager: any, chainOrderId: string, isSurplus: any): void {
+function _removeCorrectionEntry(manager: OrderManagerLike, chainOrderId: string, isSurplus: boolean | null | undefined): void {
     const surplus = Boolean(isSurplus);
     if (manager && Array.isArray(manager.ordersNeedingPriceCorrection)) {
         manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(
-            (c: any) => c?.chainOrderId !== chainOrderId || Boolean(c?.isSurplus) !== surplus
+            (c) => c?.chainOrderId !== chainOrderId || Boolean(c?.isSurplus) !== surplus
         );
     }
 }
@@ -274,7 +284,7 @@ function _removeCorrectionEntry(manager: any, chainOrderId: string, isSurplus: a
  * @param {string} source - provenance tag (see queuedBy values)
  * @returns {Object} The same entry, stamped
  */
-function _stampCorrectionProvenance(entry: any, source: string): any {
+function _stampCorrectionProvenance(entry: PendingPriceCorrection, source: string): PendingPriceCorrection {
     if (entry && typeof entry === 'object') {
         if (entry.queuedAt == null) entry.queuedAt = Date.now();
         if (entry.queuedBy == null) entry.queuedBy = source;
@@ -288,7 +298,7 @@ function _stampCorrectionProvenance(entry: any, source: string): any {
  * live slots are searched. This keeps stale-decision guards consistent without
  * changing which owner is considered valid.
  */
-function findLiveOrderOwnerByChainId(manager: any, chainOrderId: any, slotId?: any): any | null {
+function findLiveOrderOwnerByChainId(manager: OrderManagerLike, chainOrderId: string | null | undefined, slotId?: string | null): ManagedOrder | null {
     if (!(manager?.orders instanceof Map) || !chainOrderId) return null;
     if (slotId) {
         const slot = manager.orders.get(slotId);
@@ -336,7 +346,7 @@ function findLiveOrderOwnerByChainId(manager: any, chainOrderId: any, slotId?: a
  * @param {Object} entry - Queued correction entry
  * @returns {{valid: boolean, reason: string}} valid=false drops the entry
  */
-function _validatePriceCorrectionEntry(manager: any, entry: any): { valid: boolean; reason: string } {
+function _validatePriceCorrectionEntry(manager: OrderManagerLike, entry: PendingPriceCorrection): { valid: boolean; reason: string } {
     if (!entry) return { valid: false, reason: 'missing correction entry' };
     if (entry.cancelOnly === true) {
         const owningSlot = findLiveOrderOwnerByChainId(manager, entry.chainOrderId);
@@ -391,10 +401,10 @@ function _validatePriceCorrectionEntry(manager: any, entry: any): { valid: boole
     // and is dropped. The E2 sync gate refuses such a grid outright (queues
     // nothing); it is the structural resync that restores the ladder, after
     // which a later sync re-evaluates the slot.
-    if (!hasGenesisLadder((manager as any)?._genesis)) {
+    if (!hasGenesisLadder(manager?._genesis)) {
         return { valid: false, reason: `no price ladder (INV-GRID-004) — slot ${slotId} has no authoritative price` };
     }
-    if (!priceSlotEqual(slot.price, entry.expectedPrice, precision)) {
+    if (!priceSlotEqual(slot.price, Number(entry.expectedPrice), Number(precision))) {
         return { valid: false, reason: `slot ${slotId} now targets ${slot.price} (entry queued ${entry.expectedPrice})` };
     }
     // Size check: the broadcast sends amountToSell from the QUEUED snapshot.
@@ -429,36 +439,39 @@ function _validatePriceCorrectionEntry(manager: any, entry: any): { valid: boole
  * @param {Object} assets - Asset metadata with assetA, assetB, and precisions
  * @returns {Object|null} Parsed order {orderId, price, type, size} or null if invalid
  */
-function parseChainOrder(chainOrder: any, assets: any) {
+function parseChainOrder(chainOrder: ChainOrder | null | undefined, assets: AssetPair | null | undefined): ParsedChainOrder | null {
     if (!chainOrder || !chainOrder.sell_price || !assets) return null;
     const { base, quote } = chainOrder.sell_price;
-    if (!base || !quote || !base.asset_id || !quote.asset_id || base.amount === 0) return null;
-    
-    let price; let type;
+    if (!base || !quote || !base.asset_id || !quote.asset_id || toFiniteNumber(base.amount) === 0) return null;
+
+    let price: number;
+    let type: OrderType;
     const precisionDelta = assets.assetA.precision - assets.assetB.precision;
     const scaleFactor = precisionDelta >= 0
         ? Math.pow(10, precisionDelta)
         : Math.pow(10, Math.abs(precisionDelta));
+    const baseAmount = toFiniteNumber(base.amount);
+    const quoteAmount = toFiniteNumber(quote.amount);
 
     if (base.asset_id === assets.assetA.id && quote.asset_id === assets.assetB.id) {
         price = precisionDelta >= 0
-            ? (quote.amount / base.amount) * scaleFactor
-            : (quote.amount / base.amount) / scaleFactor;
+            ? (quoteAmount / baseAmount) * scaleFactor
+            : (quoteAmount / baseAmount) / scaleFactor;
         type = ORDER_TYPES.SELL;
     } else if (base.asset_id === assets.assetB.id && quote.asset_id === assets.assetA.id) {
         price = precisionDelta >= 0
-            ? (base.amount / quote.amount) * scaleFactor
-            : (base.amount / quote.amount) / scaleFactor;
+            ? (baseAmount / quoteAmount) * scaleFactor
+            : (baseAmount / quoteAmount) / scaleFactor;
         type = ORDER_TYPES.BUY;
     } else return null;
 
-    let size;
+    let size: number | undefined;
     try {
         if (chainOrder.for_sale !== undefined && chainOrder.for_sale !== null) {
             const prec = (type === ORDER_TYPES.SELL) ? assets.assetA.precision : assets.assetB.precision;
             size = blockchainToFloat(toFiniteNumber(chainOrder.for_sale), prec);
         }
-    } catch (e: any) {
+    } catch (e) {
         orderLogger.warn(`parseChainOrder failed for ${chainOrder?.id}: ${getErrorMessage(e)}`);
         return null;
     }
@@ -478,7 +491,7 @@ function parseChainOrder(chainOrder: any, assets: any) {
  * @returns {Promise<Object|null>} Updated order object or null
  * @throws {Error} If chainSize suspicious (possible data corruption)
  */
-async function applyChainSizeToGridOrder(manager: any, gridOrder: any, chainSize: any) {
+async function applyChainSizeToGridOrder(manager: OrderManagerLike, gridOrder: ManagedOrder, chainSize: number | string | null | undefined): Promise<ManagedOrder | null> {
     if (!manager || !gridOrder) return null;
     if (gridOrder.state !== ORDER_STATES.ACTIVE && gridOrder.state !== ORDER_STATES.PARTIAL) return null;
 
@@ -519,8 +532,8 @@ async function applyChainSizeToGridOrder(manager: any, gridOrder: any, chainSize
  * @param {Object} fillOrParts - Fill entry ({ op, block_num, id }) or { orderId, blockNum, historyId }
  * @returns {string|null} Stable key in order:block:history form, or null if fields are missing
  */
-function buildFillKey(fillOrParts: any) {
-    const fillOp = fillOrParts?.op?.[1];
+function buildFillKey(fillOrParts: { op?: unknown[]; orderId?: string; block_num?: number; blockNum?: number; id?: string; historyId?: string } | null | undefined) {
+    const fillOp = fillOrParts?.op?.[1] as { order_id?: string } | undefined;
     const orderId = fillOp?.order_id ?? fillOrParts?.orderId;
     const blockNum = fillOrParts?.block_num ?? fillOrParts?.blockNum;
     const historyId = fillOrParts?.id ?? fillOrParts?.historyId;
@@ -528,11 +541,12 @@ function buildFillKey(fillOrParts: any) {
     return `${orderId}:${blockNum}:${historyId}`;
 }
 
-function _currentCorrectionGridOrder(manager: any, correctionInfo: any): any | null {
+function _currentCorrectionGridOrder(manager: OrderManagerLike, correctionInfo: PendingPriceCorrection): ManagedOrder | null {
     const slotId = correctionInfo?.gridOrder?.id;
     if (!slotId || !(manager?.orders instanceof Map)) return null;
     const liveSlot = manager.orders.get(slotId);
-    return liveSlot?.orderId === correctionInfo?.chainOrderId ? liveSlot : null;
+    if (!liveSlot || liveSlot.orderId !== correctionInfo?.chainOrderId) return null;
+    return liveSlot;
 }
 
 /**
@@ -548,9 +562,13 @@ function _currentCorrectionGridOrder(manager: any, correctionInfo: any): any | n
  * @param {Object} accountOrders - AccountOrders accessor for blockchain ops
  * @returns {Promise<Object>} Result {success, cancelled, skipped, error, orderGone}
  */
-async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accountName: any, privateKey: any, accountOrders: any) {
+async function correctOrderPriceOnChain(manager: OrderManagerLike, correctionInfo: PendingPriceCorrection, accountName: string, privateKey: string, accountOrders: CorrectionAccountOrdersLike) {
     const { gridOrder, chainOrderId, expectedPrice, size, type, isSurplus, cancelOnly } = correctionInfo;
-    const stillNeeded = manager.ordersNeedingPriceCorrection?.some((c: any) => c.chainOrderId === chainOrderId);
+    if (!chainOrderId) return { success: false, error: 'missing chainOrderId' };
+    const expectedPriceNum = Number(expectedPrice);
+    const sizeNum = Number(size);
+    const typeStr = type == null ? '' : String(type);
+    const stillNeeded = manager.ordersNeedingPriceCorrection?.some((c) => c.chainOrderId === chainOrderId);
     if (!stillNeeded) return { success: true, skipped: true };
 
     // Cancel-only entries (e.g., duplicate price level orphans) — cancel without
@@ -572,7 +590,7 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
             _filterUnmatchedChainOrders(manager, chainOrderId);
             shouldRemove = true;
             return { success: true, cancelled: true };
-        } catch (error: any) {
+        } catch (error) {
             const orderGone = isOrderGoneErrorMessage(getErrorMessage(error));
             if (orderGone) {
                 clearDuplicateOrphanDetection(chainOrderId);
@@ -609,7 +627,7 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
             _filterUnmatchedChainOrders(manager, chainOrderId);
             shouldRemove = true;
             return { success: true, cancelled: true };
-        } catch (error: any) {
+        } catch (error) {
             const orderGone = getErrorMessage(error)?.includes(ORDER_GONE_ERROR_FRAGMENT);
             if (orderGone) {
                 shouldRemove = true;
@@ -625,11 +643,11 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
 
     let amountToSell, minToReceive;
     if (type === ORDER_TYPES.SELL) {
-        amountToSell = size;
-        minToReceive = size * expectedPrice;
+        amountToSell = sizeNum;
+        minToReceive = sizeNum * expectedPriceNum;
     } else {
-        amountToSell = size;
-        minToReceive = size / expectedPrice;
+        amountToSell = sizeNum;
+        minToReceive = sizeNum / expectedPriceNum;
     }
 
     let shouldRemove = false;
@@ -644,14 +662,14 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
     // update below).
     const crossed = MathUtils.findCrossedOrder(
         buildCrossingCheckCandidates(manager),
-        expectedPrice,
-        type,
+        expectedPriceNum,
+        typeStr,
         manager.assets,
-        (o: any) => isCrossingCheckCandidate(o, chainOrderId)
+        (o) => isCrossingCheckCandidate(o, chainOrderId)
     );
     if (crossed) {
         manager.logger?.log?.(
-            `[CROSS-GUARD] Skipping price correction for ${chainOrderId} -> ${type} @${expectedPrice}: ` +
+            `[CROSS-GUARD] Skipping price correction for ${chainOrderId} -> ${typeStr} @${expectedPriceNum}: ` +
             `crosses live ${crossed.type} ${crossed.id} (${crossed.orderId}) @${crossed.price}; ` +
             `retried after the crossed order resolves.`,
             'warn'
@@ -677,12 +695,12 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
         }
         shouldRemove = true;
         return { success: true };
-    } catch (error: any) {
+    } catch (error) {
         const orderGone = getErrorMessage(error)?.includes(ORDER_GONE_ERROR_FRAGMENT);
         if (orderGone) {
             shouldRemove = true;
             _filterUnmatchedChainOrders(manager, chainOrderId);
-        } else if (error?.code === 'BROADCAST_UNCERTAIN' || error?.name === 'BroadcastUncertainError') {
+        } else if (getErrorCode(error) === 'BROADCAST_UNCERTAIN' || getErrorName(error) === 'BroadcastUncertainError') {
             // Uncertain update: the delta may have landed. Re-applying the same
             // delta on a later (possibly lagging) read would double-shrink the
             // order. Drop the entry instead of re-queueing blindly — the next
@@ -709,8 +727,9 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
  * correctOrderPriceOnChain: duplicate-orphan detection reset, unmatched-list
  * filter, queue removal, and (for surplus entries) grid-slot virtualization.
  */
-async function _resolveCancelledCorrection(manager: any, entry: any): Promise<void> {
+async function _resolveCancelledCorrection(manager: OrderManagerLike, entry: PendingPriceCorrection): Promise<void> {
     const chainOrderId = entry.chainOrderId;
+    if (!chainOrderId) return;
     if (entry.cancelOnly) {
         clearDuplicateOrphanDetection(chainOrderId);
     }
@@ -750,13 +769,13 @@ async function _resolveCancelledCorrection(manager: any, entry: any): Promise<vo
  *
  * @returns {Promise<{corrected: number, failed: number, unresolved: Array}>}
  */
-async function _batchCancelCorrections(manager: any, entries: any[], accountName: any, privateKey: any, accountOrders: any) {
+async function _batchCancelCorrections(manager: OrderManagerLike, entries: PendingPriceCorrection[], accountName: string, privateKey: string, accountOrders: CorrectionAccountOrdersLike): Promise<{ corrected: number; failed: number; unresolved: PendingPriceCorrection[] }> {
     const logger = manager?.logger;
-    const unresolved: any[] = [];
+    const unresolved: PendingPriceCorrection[] = [];
     let corrected = 0;
     let failed = 0;
 
-    const byId = new Map<string, any>();
+    const byId = new Map<string, PendingPriceCorrection>();
     for (const e of entries) {
         if (e?.chainOrderId && !byId.has(e.chainOrderId)) byId.set(e.chainOrderId, e);
     }
@@ -773,10 +792,10 @@ async function _batchCancelCorrections(manager: any, entries: any[], accountName
                 if (orderMap.get(id)) presentIds.push(id); else goneIds.push(id);
             }
             for (const id of goneIds) {
-                await _resolveCancelledCorrection(manager, byId.get(id));
+                await _resolveCancelledCorrection(manager, byId.get(id)!);
                 corrected++;
             }
-        } catch (err: any) {
+        } catch (err) {
             logger?.log?.(
                 `[CORRECTION] Batch pre-read of ${ids.length} cancel candidate(s) failed; proceeding with broadcast: ${getErrorMessage(err)}`,
                 'warn'
@@ -786,19 +805,19 @@ async function _batchCancelCorrections(manager: any, entries: any[], accountName
     }
     if (presentIds.length === 0) return { corrected, failed, unresolved };
 
-    let ops: { id: string; op: any; }[] = [];
+    let ops: { id: string; op: unknown; }[] = [];
     try {
         for (const id of presentIds) {
             const op = await accountOrders.buildCancelOrderOp(accountName, id);
             ops.push({ id, op });
         }
-    } catch (err: any) {
+    } catch (err) {
         // Op construction failed (e.g. account resolution): fall back entirely.
         logger?.log?.(
             `[CORRECTION] Batch cancel build failed (${presentIds.length} order(s)): ${getErrorMessage(err)}; falling back to serial cancels`,
             'warn'
         );
-        return { corrected, failed, unresolved: entries.filter((e: any) => presentIds.includes(e.chainOrderId)) };
+        return { corrected, failed, unresolved: entries.filter((e) => e.chainOrderId != null && presentIds.includes(e.chainOrderId)) };
     }
 
     const configuredMax = Number(COW_PERFORMANCE?.MAX_CANCELS_PER_BROADCAST);
@@ -816,13 +835,13 @@ async function _batchCancelCorrections(manager: any, entries: any[], accountName
     for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
         try {
-            await accountOrders.executeBatch(accountName, privateKey, chunk.map((o: any) => o.op));
+            await accountOrders.executeBatch(accountName, privateKey, chunk.map((o) => o.op));
             for (const { id } of chunk) {
-                await _resolveCancelledCorrection(manager, byId.get(id));
+                await _resolveCancelledCorrection(manager, byId.get(id)!);
                 corrected++;
             }
             logger?.log?.(`[CORRECTION] Batch chunk ${i + 1}/${chunks.length} cancelled ${chunk.length} order(s)`, 'info');
-        } catch (err: any) {
+        } catch (err) {
             logger?.log?.(
                 `[CORRECTION] Batch chunk ${i + 1}/${chunks.length} failed (${chunk.length} order(s)): ${getErrorMessage(err)}; verifying per order`,
                 'warn'
@@ -832,11 +851,11 @@ async function _batchCancelCorrections(manager: any, entries: any[], accountName
     }
 
     for (const chunk of failedChunks) {
-        let verifyMap: Map<string, any> | null = null;
+        let verifyMap: Map<string, unknown> | null = null;
         if (preRead) {
             try {
-                verifyMap = await accountOrders.batchReadOrders(chunk.map((o: any) => o.id));
-            } catch (_: any) {
+                verifyMap = await accountOrders.batchReadOrders(chunk.map((o) => o.id));
+            } catch (_) {
                 verifyMap = null;
             }
         }
@@ -844,10 +863,10 @@ async function _batchCancelCorrections(manager: any, entries: any[], accountName
             const stillLive = verifyMap ? verifyMap.get(id) : true;
             if (!stillLive && verifyMap) {
                 // Uncertain broadcast that actually landed — order is gone.
-                await _resolveCancelledCorrection(manager, byId.get(id));
+                await _resolveCancelledCorrection(manager, byId.get(id)!);
                 corrected++;
             } else {
-                unresolved.push(byId.get(id));
+                unresolved.push(byId.get(id)!);
             }
         }
     }
@@ -862,12 +881,12 @@ async function _batchCancelCorrections(manager: any, entries: any[], accountName
  * cannot hold _gridLock (no acquisition timeout) for minutes. Reads the bot
  * config override first, then the frozen default. Non-finite/non-positive
  * falls back to the frozen default, then to 4000ms.
- * @param {any} manager
+ * @param {unknown} manager
  * @returns {number} Positive hold budget in milliseconds
  */
-function resolveCorrectionHoldBudget(manager: any): number {
+function resolveCorrectionHoldBudget(manager: OrderManagerLike): number {
     const raw = manager?.config?.fillProcessing?.CORRECTION_LOCK_HOLD_BUDGET_MS
-        ?? (FILL_PROCESSING as any)?.CORRECTION_LOCK_HOLD_BUDGET_MS;
+        ?? (FILL_PROCESSING as unknown as Record<string, unknown>)?.CORRECTION_LOCK_HOLD_BUDGET_MS;
     const n = Number(raw);
     if (Number.isFinite(n) && n > 0) return Math.floor(n);
     return 4000;
@@ -878,12 +897,12 @@ function resolveCorrectionHoldBudget(manager: any): number {
  * on top of the hold-time budget: unset (null/undefined/non-finite) means no
  * count cap and the elapsed-time budget alone governs; a finite value >= 0 is
  * honored verbatim (0 intentionally drains no updates this cycle).
- * @param {any} manager
+ * @param {unknown} manager
  * @returns {number} Finite cap, or Infinity when uncapped
  */
-function resolveCorrectionMaxUpdates(manager: any): number {
+function resolveCorrectionMaxUpdates(manager: OrderManagerLike): number {
     const raw = manager?.config?.fillProcessing?.CORRECTION_MAX_UPDATES_PER_CYCLE
-        ?? (FILL_PROCESSING as any)?.CORRECTION_MAX_UPDATES_PER_CYCLE;
+        ?? (FILL_PROCESSING as unknown as Record<string, unknown>)?.CORRECTION_MAX_UPDATES_PER_CYCLE;
     if (raw == null) return Infinity;
     const n = Number(raw);
     if (Number.isFinite(n) && n >= 0) return Math.floor(n);
@@ -893,12 +912,12 @@ function resolveCorrectionMaxUpdates(manager: any): number {
 /**
  * Resolve the correction-backlog warn threshold (see
  * CORRECTION_QUEUE_WARN_THRESHOLD). Non-positive disables the alarm.
- * @param {any} manager
+ * @param {unknown} manager
  * @returns {number}
  */
-function resolveCorrectionWarnThreshold(manager: any): number {
+function resolveCorrectionWarnThreshold(manager: OrderManagerLike): number {
     const raw = manager?.config?.fillProcessing?.CORRECTION_QUEUE_WARN_THRESHOLD
-        ?? (FILL_PROCESSING as any)?.CORRECTION_QUEUE_WARN_THRESHOLD;
+        ?? (FILL_PROCESSING as unknown as Record<string, unknown>)?.CORRECTION_QUEUE_WARN_THRESHOLD;
     const n = Number(raw);
     if (Number.isFinite(n) && n > 0) return Math.floor(n);
     return 0;
@@ -906,12 +925,12 @@ function resolveCorrectionWarnThreshold(manager: any): number {
 
 /**
  * Resolve the correction-backlog warn rate-limit window.
- * @param {any} manager
+ * @param {unknown} manager
  * @returns {number}
  */
-function resolveCorrectionWarnRateLimitMs(manager: any): number {
+function resolveCorrectionWarnRateLimitMs(manager: OrderManagerLike): number {
     const raw = manager?.config?.fillProcessing?.CORRECTION_QUEUE_WARN_RATE_LIMIT_MS
-        ?? (FILL_PROCESSING as any)?.CORRECTION_QUEUE_WARN_RATE_LIMIT_MS
+        ?? (FILL_PROCESSING as unknown as Record<string, unknown>)?.CORRECTION_QUEUE_WARN_RATE_LIMIT_MS
         ?? TIMING?.STALE_TOTALS_WARN_RATE_LIMIT_MS;
     const n = Number(raw);
     if (Number.isFinite(n) && n > 0) return n;
@@ -929,7 +948,7 @@ function resolveCorrectionWarnRateLimitMs(manager: any): number {
  * @param {Object} accountOrders - AccountOrders accessor for blockchain ops
  * @returns {Promise<Object>} Summary {corrected, failed, results}
  */
-async function correctAllPriceMismatches(manager: any, accountName: any, privateKey: any, accountOrders: any) {
+async function correctAllPriceMismatches(manager: OrderManagerLike, accountName: string, privateKey: string, accountOrders: CorrectionAccountOrdersLike) {
     if (!manager || !manager._gridLock) return { corrected: 0, failed: 0, results: [] };
 
     // 6b: backlog alarm (rate-limited). Emitted even when the drain defers
@@ -966,20 +985,21 @@ async function correctAllPriceMismatches(manager: any, accountName: any, private
     }
 
     return await manager._gridLock.acquire(async () => {
-        const results: any[] = [];
+        const results: Array<PendingPriceCorrection & { result: unknown }> = [];
         let corrected = 0; let failed = 0; let staleDropped = 0;
         // Dedupe on the full queue key (chainOrderId + surplus flag),
         // matching the sync upsert key. A chain-order-only key would drop a
         // sibling entry (price update + cancel sharing one chain id) before
         // it ever drains.
-        const seen = new Set();
-        const ordersToCorrect = (manager.ordersNeedingPriceCorrection || []).filter((c: any) => {
-            if (!c.chainOrderId) return false;
-            const key = `${c.chainOrderId}|${Boolean(c.isSurplus)}`;
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        });
+        const seen = new Set<string>();
+        const ordersToCorrect = (manager.ordersNeedingPriceCorrection || []).filter(
+            (c): c is PendingPriceCorrection & { chainOrderId: string } => {
+                if (!c.chainOrderId) return false;
+                const key = `${c.chainOrderId}|${Boolean(c.isSurplus)}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
 
         // Drain-time staleness validation: a geometry-changing resync between
         // queue and drain can re-slot/re-price UPDATEs or adopt a previously
@@ -987,7 +1007,7 @@ async function correctAllPriceMismatches(manager: any, accountName: any, private
         // the resync, and stale cancel-only decisions before they cancel a
         // freshly relocated in-place order. The next sync re-queues if the
         // order is genuinely still off-target.
-        const liveEntries: any[] = [];
+        const liveEntries: PendingPriceCorrection[] = [];
         for (const entry of ordersToCorrect) {
             const check = _validatePriceCorrectionEntry(manager, entry);
             if (check.valid) {
@@ -1023,7 +1043,7 @@ async function correctAllPriceMismatches(manager: any, accountName: any, private
         // correctOrderPriceOnChain cannot protect the batch path, which
         // bypasses it. Held-back entries are simply left in
         // ordersNeedingPriceCorrection (never removed) and re-drain next cycle.
-        const cancelEntries = liveEntries.filter((c: any) => {
+        const cancelEntries = liveEntries.filter((c) => {
             if (!(c.cancelOnly === true || c.isSurplus === true)) return false;
             if (isFreshlyPlacedOrder(manager, c.chainOrderId)) {
                 manager?.logger?.log?.(
@@ -1034,12 +1054,12 @@ async function correctAllPriceMismatches(manager: any, accountName: any, private
             }
             return true;
         });
-        const updateEntries = liveEntries.filter((c: any) => !(c.cancelOnly === true || c.isSurplus === true));
+        const updateEntries = liveEntries.filter((c) => !(c.cancelOnly === true || c.isSurplus === true));
 
         const canBatch = cancelEntries.length > 1
             && typeof accountOrders?.buildCancelOrderOp === 'function'
             && typeof accountOrders?.executeBatch === 'function';
-        let serialCancels: any[] = cancelEntries;
+        let serialCancels: PendingPriceCorrection[] = cancelEntries;
         if (canBatch) {
             const batchOutcome = await _batchCancelCorrections(
                 manager, cancelEntries, accountName, privateKey, accountOrders
@@ -1117,7 +1137,7 @@ async function correctAllPriceMismatches(manager: any, accountName: any, private
  * @returns {Object} Blockchain args {amountToSell, sellAssetId, minToReceive, receiveAssetId}
  * @throws {Error} If asset precision missing
  */
-function buildCreateOrderArgs(order: any, assetA: any, assetB: any) {
+function buildCreateOrderArgs(order: { type: OrderType; size: number; price: number }, assetA: AssetInfo, assetB: AssetInfo) {
     let precision = (order.type === 'sell') ? assetA?.precision : assetB?.precision;
     if (typeof precision !== 'number') throw new Error("Asset precision missing");
 
@@ -1164,7 +1184,7 @@ function buildCreateOrderArgs(order: any, assetA: any, assetB: any) {
  * @param {string} params.slotId - Grid slot id (e.g. 'sell-3', 'buy-7')
  * @returns {string|null} Fingerprint or null on bad input
  */
-function buildCreateOpFingerprint(params: any) {
+function buildCreateOpFingerprint(params: { side?: string; assetA?: string; assetB?: string; sellInt?: number | string; receiveInt?: number | string; slotId?: string } | null) {
     if (!params || typeof params !== 'object') return null;
     const { side, assetA, assetB, sellInt, receiveInt, slotId } = params;
     if (side !== 'sell' && side !== 'buy') return null;
@@ -1181,7 +1201,7 @@ function buildCreateOpFingerprint(params: any) {
  * @param {boolean} sellUpdated - Whether sell side was updated
  * @returns {string} "buy", "sell", or "both"
  */
-function getOrderTypeFromUpdatedFlags(buyUpdated: any, sellUpdated: any) {
+function getOrderTypeFromUpdatedFlags(buyUpdated: boolean | undefined, sellUpdated: boolean | undefined) {
     return (buyUpdated && sellUpdated) ? 'both' : (buyUpdated ? 'buy' : 'sell');
 }
 
@@ -1196,7 +1216,7 @@ function getOrderTypeFromUpdatedFlags(buyUpdated: any, sellUpdated: any) {
  * @returns {number} Resolved numeric price
  * @throws {Error} If value is invalid and cannot be interpreted
  */
-function resolveConfiguredPriceBound(value: any, fallback: any, startPrice: any, mode: any) {
+function resolveConfiguredPriceBound(value: unknown, fallback: number | string | null | undefined, startPrice: number | string | null | undefined, mode: string) {
     const configuredValue = (value === null || value === undefined || value === '') ? fallback : value;
 
     // Bound x-multipliers must be > 1. With min semantics "Nx" => center/N and
@@ -1210,7 +1230,7 @@ function resolveConfiguredPriceBound(value: any, fallback: any, startPrice: any,
         const hint = mode === 'min'
             ? `'Nx' means center/N for minPrice, so use a value > 1 (e.g. '1.43x' to place the bound at 70% of center)`
             : `'Nx' means center*N for maxPrice, so use a value > 1`;
-        throw new Error(`Invalid ${boundName} '${configuredValue.trim()}': a bound multiplier must be > 1. ${hint}.`);
+        throw new Error(`Invalid ${boundName} '${String(configuredValue).trim()}': a bound multiplier must be > 1. ${hint}.`);
     }
 
     const relative = MathUtils.resolveRelativePrice(configuredValue, startPrice, mode);
@@ -1234,7 +1254,26 @@ function resolveConfiguredPriceBound(value: any, fallback: any, startPrice: any,
  * @param {Object} order - Order to virtualize
  * @returns {Object} Virtualized order (VIRTUAL state, no orderId)
  */
-function virtualizeOrder(order: any) {
+interface CrossingCandidate {
+    orderId?: string | null;
+    chainOrderId?: string | null;
+    slotId?: string;
+    price?: number;
+    type?: string;
+    order?: { price?: number; [key: string]: unknown } | null;
+    [key: string]: unknown;
+}
+
+interface SlotLike {
+    id?: string;
+    state?: string;
+    orderId?: string | null;
+    size?: number;
+    type?: OrderType | null;
+    price?: number;
+}
+
+function virtualizeOrder(order: ManagedOrder): ManagedOrder {
     if (!order) return order;
     // Drop btsFeeState and the createUncertain orphan marker: an explicit
     // virtualize is a known-clean hole transition, so durable "possibly
@@ -1250,7 +1289,7 @@ function virtualizeOrder(order: any) {
  * @param {Object} order - Order to convert
  * @returns {Object} Spread placeholder order (VIRTUAL, SPREAD type, zero size)
  */
-function convertToSpreadPlaceholder(order: any) {
+function convertToSpreadPlaceholder(order: ManagedOrder): ManagedOrder {
     return { ...virtualizeOrder(order), type: ORDER_TYPES.SPREAD, size: 0 };
 }
 
@@ -1270,7 +1309,7 @@ function convertToSpreadPlaceholder(order: any) {
  * @param {number} [sizeOverride] - Explicit size (defaults to booked size, 0 when non-finite)
  * @returns {Object} Rail hole placeholder (VIRTUAL, rail type, preserved size)
  */
-function toRailHolePlaceholder(order: any, railType: any, sizeOverride: any = null) {
+function toRailHolePlaceholder(order: ManagedOrder, railType: string, sizeOverride: number | null = null): ManagedOrder {
     const rail = (railType === ORDER_TYPES.BUY || railType === ORDER_TYPES.SELL) ? railType : order?.type;
     const size = sizeOverride !== null && sizeOverride !== undefined
         ? Math.max(0, toFiniteNumber(sizeOverride))
@@ -1283,7 +1322,7 @@ function toRailHolePlaceholder(order: any, railType: any, sizeOverride: any = nu
  * sellStart, SPREAD inside the gap band. Null-safe — returns null when the
  * index, boundary, or gap width is unusable so callers fail closed.
  */
-function geometryTypeForSlotIndex(idx: any, boundaryIdx: any, gapSlots: any) {
+function geometryTypeForSlotIndex(idx: number | string | null | undefined, boundaryIdx: number | string | null | undefined, gapSlots: number | string | null | undefined): OrderType | null {
     // Explicit null/undefined/'' guard: Number(null) === 0 would silently
     // treat "no index" as slot 0 (BUY rail). Fail closed instead.
     if (idx === null || idx === undefined || idx === '') return null;
@@ -1309,8 +1348,8 @@ function geometryTypeForSlotIndex(idx: any, boundaryIdx: any, gapSlots: any) {
  * @param {number} gapSlots - Spread gap slot count (frozen at plan-build)
  * @returns {Array} Candidates [{id, idx, type, price, size, orderId}]
  */
-function detectGapEvacuationCandidates(masterGrid: any, boundaryIdx: any, gapSlots: any) {
-    const out: any[] = [];
+function detectGapEvacuationCandidates(masterGrid: Map<string, ManagedOrder>, boundaryIdx: number | string | null, gapSlots: number | string | null): Array<{ id: string; idx: number; type: OrderType; price: number; size: number; orderId: string }> {
+    const out: Array<{ id: string; idx: number; type: OrderType; price: number; size: number; orderId: string }> = [];
     if (!masterGrid || typeof masterGrid.values !== 'function') return out;
     const b = Number(boundaryIdx);
     const g = Number(gapSlots);
@@ -1339,11 +1378,11 @@ function detectGapEvacuationCandidates(masterGrid: any, boundaryIdx: any, gapSlo
  * @param {number} [threshold] - GRID_LIMITS.GAP_EVACUATION_STREAK_THRESHOLD default
  * @returns {{streaks: Object, ready: Array}}
  */
-function updateGapEvacuationStreaks(streakMap: any, candidates: any, threshold: any = null) {
+function updateGapEvacuationStreaks(streakMap: Map<string, number>, candidates: unknown, threshold: number | null = null): { streaks: Record<string, number>; ready: Array<{ id: string; [key: string]: unknown }> } {
     const thrRaw = threshold !== null && threshold !== undefined ? Number(threshold) : Number(GRID_LIMITS?.GAP_EVACUATION_STREAK_THRESHOLD);
     const thr = Number.isFinite(thrRaw) && thrRaw > 0 ? Math.floor(thrRaw) : 2;
     const seen = new Set<string>();
-    const list = Array.isArray(candidates) ? candidates : [];
+    const list: Array<{ id?: string; [key: string]: unknown }> = Array.isArray(candidates) ? candidates : [];
     for (const c of list) {
         if (!c?.id || seen.has(c.id)) continue;
         seen.add(c.id);
@@ -1357,13 +1396,13 @@ function updateGapEvacuationStreaks(streakMap: any, candidates: any, threshold: 
         }
     }
     const streaks: Record<string, number> = {};
-    const ready: any[] = [];
+    const ready: Array<{ id: string; [key: string]: unknown }> = [];
     if (streakMap instanceof Map) {
         for (const [id, count] of streakMap.entries()) {
             streaks[id] = Number(count);
             if (Number(count) >= thr) {
-                const cand = list.find((c: any) => c?.id === id) || { id };
-                ready.push(cand);
+                const cand = list.find((c) => c?.id === id) || { id };
+                ready.push(cand as { id: string });
             }
         }
     }
@@ -1381,17 +1420,17 @@ function updateGapEvacuationStreaks(streakMap: any, candidates: any, threshold: 
  * @param {number} startPrice - The configured grid center price.
  * @returns {string} ORDER_TYPES.BUY or ORDER_TYPES.SELL
  */
-function resolveSpreadOrderSide(price: any, startPrice: any): string {
+function resolveSpreadOrderSide(price: number | string, startPrice: number | string | null | undefined): OrderType {
     return Number(price) < Number(startPrice) ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
 }
 
 /**
  * Parse a grid slot id ("slot-123") to its rail index. Delegates to
  * shared slot.ts single source (GRID_PRICE_SLOT_DETERMINISM_PLAN §2.1).
- * @param {any} id - grid slot id string
+ * @param {unknown} id - grid slot id string
  * @returns {number|null}
  */
-function parseSlotIndex(id: any): number | null {
+function parseSlotIndex(id: string | null | undefined): number | null {
     return parseSlotIndexShared(id);
 }
 /**
@@ -1408,7 +1447,7 @@ function parseSlotIndex(id: any): number | null {
  * @param {Object} assets - Manager assets ({assetA, assetB} with precision)
  * @returns {boolean}
  */
-function chainOrderMatchesSlot(parsed: any, slot: any, assets: any): boolean {
+function chainOrderMatchesSlot(parsed: ParsedChainOrder, slot: ManagedOrder, assets: AssetPair): boolean {
     if (!parsed || !slot || !assets) return false;
     if (parsed.type !== slot.type && slot.type !== ORDER_TYPES.SPREAD) return false;
     // Genesis-frozen: price equality via integer round-trip (single epsilon); slot id is handled by caller via slotIndexForPrice
@@ -1436,7 +1475,7 @@ function chainOrderMatchesSlot(parsed: any, slot: any, assets: any): boolean {
  * @param {Object} assets - Manager assets ({assetA, assetB} with precision)
  * @returns {boolean}
  */
-function chainOrderMatchesSlotWithTolerance(parsed: any, slot: any, assets: any): boolean {
+function chainOrderMatchesSlotWithTolerance(parsed: ParsedChainOrder, slot: ManagedOrder, assets: AssetPair): boolean {
     if (!parsed || !slot || !assets) return false;
     if (parsed.type !== slot.type && slot.type !== ORDER_TYPES.SPREAD) return false;
     const precision = parsed.type === ORDER_TYPES.SELL ? assets.assetA.precision : assets.assetB.precision;
@@ -1444,7 +1483,7 @@ function chainOrderMatchesSlotWithTolerance(parsed: any, slot: any, assets: any)
     try {
         tolerance = MathUtils.calculatePriceTolerance(
             Math.min(parsed.price, slot.price),
-            Math.max(parsed.size, slot.size),
+            Math.max(Number(parsed.size) || 0, slot.size),
             parsed.type,
             assets
         );
@@ -1473,7 +1512,7 @@ function chainOrderMatchesSlotWithTolerance(parsed: any, slot: any, assets: any)
  * @param {Object} o - Candidate order or pending-broadcast wrapper entry
  * @returns {string|null} Chain/slot identity, or null when not placeable
  */
-function crossingCandidateChainId(o: any): string | null {
+function crossingCandidateChainId(o: CrossingCandidate | null | undefined): string | null {
     if (!o) return null;
     if (o.orderId) return o.orderId;
     if (o.chainOrderId) return o.chainOrderId;
@@ -1494,7 +1533,7 @@ function crossingCandidateChainId(o: any): string | null {
  * @param {Map|null} [cancelOpIndexByOrderId=null] - orderId -> op index of its already-queued cancel
  * @returns {boolean} True when the candidate participates in crossing checks
  */
-function isCrossingCheckCandidate(o: any, excludeChainOrderId: any = null, cancelOpIndexByOrderId: any = null): boolean {
+function isCrossingCheckCandidate(o: CrossingCandidate | null | undefined, excludeChainOrderId: string | null = null, cancelOpIndexByOrderId: Map<string, unknown> | null = null): boolean {
     if (!o) return false;
     const oid = crossingCandidateChainId(o);
     if (!oid) return false;
@@ -1515,11 +1554,11 @@ function isCrossingCheckCandidate(o: any, excludeChainOrderId: any = null, cance
  * master-grid-only checks cannot see (the pending/unmatched batch guards
  * fire only for CREATE batches).
  * @param {Object} manager - OrderManager instance (orders Map, _pendingBroadcasts, _lastUnmatchedChainOrders)
- * @returns {any[]} Candidate orders/wrappers for findCrossedOrder
+ * @returns {unknown[]} Candidate orders/wrappers for findCrossedOrder
  */
-function buildCrossingCheckCandidates(manager: any): any[] {
+function buildCrossingCheckCandidates(manager: OrderManagerLike): CrossingCandidate[] {
     if (!manager) return [];
-    const candidates: any[] = manager.orders instanceof Map ? [...manager.orders.values()] : [];
+    const candidates: CrossingCandidate[] = manager.orders instanceof Map ? [...manager.orders.values()] : [];
     if (manager._pendingBroadcasts instanceof Map) {
         for (const entry of manager._pendingBroadcasts.values()) {
             if (entry && entry.slotId && entry.order) candidates.push(entry);
@@ -1544,8 +1583,8 @@ function buildCrossingCheckCandidates(manager: any): any[] {
  * @param {string} orderType - Order type to match (BUY, SELL, SPREAD)
  * @returns {Array<Object>} Filtered orders of specified type
  */
-function filterOrdersByType(orders: any, orderType: any) {
-    return Array.isArray(orders) ? orders.filter((o: any) => o && o.type === orderType) : [];
+function filterOrdersByType(orders: ManagedOrder[], orderType: OrderType): ManagedOrder[] {
+    return Array.isArray(orders) ? orders.filter((o) => o && o.type === orderType) : [];
 }
 
 /**
@@ -1560,22 +1599,22 @@ function filterOrdersByType(orders: any, orderType: any) {
  * @param {(item: any) => number|string} accessors.getPrice - Returns item price.
  * @returns {Array<Array<*>>} Grouped items in outside->center pair order.
  */
-function buildOutsideInPairGroups(items: any, { isValid = Boolean, getType, getPrice }: any) {
-    const safeItems = Array.isArray(items) ? items.filter((item: any) => isValid(item)) : [];
+function buildOutsideInPairGroups<T>(items: T[], { isValid = Boolean, getType, getPrice }: { isValid?: (item: T) => boolean; getType: (item: T) => string; getPrice: (item: T) => number | string }): T[][] {
+    const safeItems = Array.isArray(items) ? items.filter((item) => isValid(item)) : [];
     if (safeItems.length === 0) return [];
 
     const sellItems = safeItems
-        .filter((item: any) => getType(item) === ORDER_TYPES.SELL)
-        .sort((a: any, b: any) => Number(getPrice(b) || 0) - Number(getPrice(a) || 0));
+        .filter((item) => getType(item) === ORDER_TYPES.SELL)
+        .sort((a, b) => Number(getPrice(b) || 0) - Number(getPrice(a) || 0));
 
     const buyItems = safeItems
-        .filter((item: any) => getType(item) === ORDER_TYPES.BUY)
-        .sort((a: any, b: any) => Number(getPrice(a) || 0) - Number(getPrice(b) || 0));
+        .filter((item) => getType(item) === ORDER_TYPES.BUY)
+        .sort((a, b) => Number(getPrice(a) || 0) - Number(getPrice(b) || 0));
 
-    const groups: any[] = [];
+    const groups: T[][] = [];
     const maxLen = Math.max(sellItems.length, buyItems.length);
     for (let i = 0; i < maxLen; i++) {
-        const group: any[] = [];
+        const group: T[] = [];
         if (i < sellItems.length) group.push(sellItems[i]);
         if (i < buyItems.length) group.push(buyItems[i]);
         if (group.length > 0) groups.push(group);
@@ -1592,12 +1631,17 @@ function buildOutsideInPairGroups(items: any, { isValid = Boolean, getType, getP
  * @param {Object|Array} result - Raw chain batch execution result.
  * @returns {Array} Array of operation result tuples, or empty array if unrecognized.
  */
-function extractBatchOperationResults(result: any) {
+function extractBatchOperationResults(result: unknown): unknown[][] | null {
+    const r = result as {
+        operation_results?: unknown[][];
+        raw?: { operation_results?: unknown[][]; trx?: { operation_results?: unknown[][] } };
+    } | null | undefined;
+    const asArray = Array.isArray(result) ? result as Array<{ trx?: { operation_results?: unknown[][] } }> : null;
     const ops = (
-        (result && Array.isArray(result.operation_results) && result.operation_results) ||
-        (result && result.raw && Array.isArray(result.raw.operation_results) && result.raw.operation_results) ||
-        (result && result.raw && result.raw.trx && Array.isArray(result.raw.trx.operation_results) && result.raw.trx.operation_results) ||
-        (result && Array.isArray(result) && result[0] && result[0].trx && Array.isArray(result[0].trx.operation_results) && result[0].trx.operation_results) ||
+        (r && Array.isArray(r.operation_results) && r.operation_results) ||
+        (r && r.raw && Array.isArray(r.raw.operation_results) && r.raw.operation_results) ||
+        (r && r.raw && r.raw.trx && Array.isArray(r.raw.trx.operation_results) && r.raw.trx.operation_results) ||
+        (asArray && asArray[0] && asArray[0].trx && Array.isArray(asArray[0].trx.operation_results) && asArray[0].trx.operation_results) ||
         null
     );
     return (ops && ops.length > 0) ? ops : null;
@@ -1609,12 +1653,12 @@ function extractBatchOperationResults(result: any) {
  * @param {Object} order - Unmatched chain order or structural blocker.
  * @returns {string} Compact human-readable diagnostic.
  */
-function formatUnmatchedChainOrder(order: any) {
+function formatUnmatchedChainOrder(order: UnmatchedChainOrder | null | undefined) {
     if (!order) return 'unknown unmatched order';
     const parts = [
-        `${order.chainOrderId || 'unknown'}:${order.type || 'unknown'}@${Format.formatPrice6(order.price)}`,
+        `${order.chainOrderId || 'unknown'}:${order.type || 'unknown'}@${Format.formatPrice6(Number(order.price))}`,
     ];
-    if (order.size !== undefined) parts.push(`size=${Format.formatAmount(order.size)}`);
+    if (order.size !== undefined) parts.push(`size=${Format.formatAmount(Number(order.size))}`);
     if (order.slotId) parts.push(`slot=${order.slotId}`);
     if (order.reason) parts.push(`reason=${order.reason}`);
     if (order.fingerprint) parts.push(`fingerprint=${order.fingerprint}`);
@@ -1638,7 +1682,7 @@ function formatUnmatchedChainOrder(order: any) {
  * @param {Object} order - Unmatched chain order entry.
  * @returns {boolean} True when the entry is a non-blocking deferred hold.
  */
-function isNonBlockingUnmatchedOrder(order: any): boolean {
+function isNonBlockingUnmatchedOrder(order: { reason?: unknown } | null | undefined): boolean {
     const reason = order?.reason;
     return typeof reason === 'string' && reason.endsWith('-deferred');
 }
@@ -1684,7 +1728,7 @@ const STRANDED_HOLD_REASONS = new Set<string>([
  * @returns {boolean} True when the hold is stranded and a structural resync is
  *   a plausible remedy (see STRANDED_HOLD_REASONS).
  */
-function isStrandedHoldOrder(order: any): boolean {
+function isStrandedHoldOrder(order: { reason?: unknown } | null | undefined): boolean {
     const reason = order?.reason;
     return typeof reason === 'string' && STRANDED_HOLD_REASONS.has(reason);
 }
@@ -1703,10 +1747,10 @@ function isStrandedHoldOrder(order: any): boolean {
  *
  * @param {string} slotId - Grid slot id (slot-<idx>)
  * @param {number} price - Price about to be emitted
- * @param {any} genesis - manager._genesis (priceLevels table)
+ * @param {unknown} genesis - manager._genesis (priceLevels table)
  * @returns {{ok: boolean, reason: string, expected: number|null, idx: number|null, drift: number|null}}
  */
-function checkGridPriceInvariant(slotId: any, price: any, genesis: any): { ok: boolean; reason: string; expected: number | null; idx: number | null; drift: number | null } {
+function checkGridPriceInvariant(slotId: string | null | undefined, price: number | string | null | undefined, genesis: GridGenesis | null | undefined): { ok: boolean; reason: string; expected: number | null; idx: number | null; drift: number | null } {
     const pass = { ok: true, expected: null as number | null, idx: null as number | null, drift: null as number | null };
     try {
         if (!genesis || !Array.isArray(genesis?.priceLevels) || genesis.priceLevels.length === 0) {
@@ -1742,7 +1786,7 @@ function checkGridPriceInvariant(slotId: any, price: any, genesis: any): { ok: b
  * reconcile sites treat `false` as blocking (skip the emission and let the next
  * cycle re-plan). See docs/GRID_PRICE_INVARIANT.md.
  *
- * @param {any} manager - OrderManager (reads _genesis, writes logger)
+ * @param {unknown} manager - OrderManager (reads _genesis, writes logger)
  * @param {string} slotId - Destination slot id whose level the price must match
  * @param {number} price - Price about to be emitted
  * @param {string} site - Emitting site label (CREATE / UPDATE / RECONCILE-*)
@@ -1750,9 +1794,9 @@ function checkGridPriceInvariant(slotId: any, price: any, genesis: any): { ok: b
  *   at the reconcile sites treat `false` as a blocking mismatch and skip the
  *   emission, so this must return the check result rather than void.
  */
-function reportGridPriceInvariant(manager: any, slotId: any, price: any, site: string): boolean {
+function reportGridPriceInvariant(manager: OrderManagerLike, slotId: string | null | undefined, price: number | string, site: string): boolean {
     try {
-        const inv = checkGridPriceInvariant(slotId, price, manager?._genesis);
+        const inv = checkGridPriceInvariant(slotId, price, hasGenesisLadder(manager?._genesis) ? manager._genesis : null);
         if (inv.ok) return true;
         manager?.logger?.log?.(
             `[GRID-PRICE-INVARIANT] ${site} for ${slotId} at ${Format.formatPrice6(Number(price))} ` +
@@ -1771,7 +1815,7 @@ function reportGridPriceInvariant(manager: any, slotId: any, price: any, site: s
  * @param {Object} order - Order to check
  * @returns {boolean} True if order has on-chain state
  */
-function isOrderOnChain(order: any) {
+function isOrderOnChain(order: SlotLike | null | undefined) {
     return (order?.state === ORDER_STATES.ACTIVE || order?.state === ORDER_STATES.PARTIAL) && !!order?.orderId;
 }
 
@@ -1794,10 +1838,10 @@ function isOrderOnChain(order: any) {
  * @param {Object} ORDER_TYPES - ORDER_TYPES constants
  * @returns {string} Type to keep for the on-chain slot
  */
-function resolveOnChainRetypeType(slot: any, idx: number, buyEndIdx: number, ORDER_TYPES: any) {
-    return (slot.type === ORDER_TYPES.BUY || slot.type === ORDER_TYPES.SELL)
+function resolveOnChainRetypeType(slot: SlotLike, idx: number, buyEndIdx: number, orderTypes: { BUY: OrderType; SELL: OrderType }): OrderType {
+    return (slot.type === orderTypes.BUY || slot.type === orderTypes.SELL)
         ? slot.type
-        : (idx <= buyEndIdx ? ORDER_TYPES.BUY : ORDER_TYPES.SELL);
+        : (idx <= buyEndIdx ? orderTypes.BUY : orderTypes.SELL);
 }
 
 /**
@@ -1806,7 +1850,7 @@ function resolveOnChainRetypeType(slot: any, idx: number, buyEndIdx: number, ORD
  * @param {Object} order - Order to check
  * @returns {boolean} True if order in VIRTUAL state
  */
-function isOrderVirtual(order: any) { return order?.state === ORDER_STATES.VIRTUAL; }
+function isOrderVirtual(order: SlotLike | null | undefined) { return order?.state === ORDER_STATES.VIRTUAL; }
 
 /**
  * Whether a slot is an empty reusable placeholder: VIRTUAL, no chain order,
@@ -1830,7 +1874,7 @@ function isOrderVirtual(order: any) { return order?.state === ORDER_STATES.VIRTU
  * @param {boolean} [opts.allowNullType=false] - Treat `type: null` slots as empty.
  * @returns {boolean} True when the slot is a size-0 VIRTUAL placeholder.
  */
-function isEmptyGridSlot(slot: any, liveSlot: any = null, opts: { allowNullType?: boolean } = {}): boolean {
+function isEmptyGridSlot(slot: SlotLike | null | undefined, liveSlot: SlotLike | null = null, opts: { allowNullType?: boolean } = {}): boolean {
     if (!slot) return false;
     const target = liveSlot || slot;
     if (target.state !== ORDER_STATES.VIRTUAL) return false;
@@ -1846,7 +1890,7 @@ function isEmptyGridSlot(slot: any, liveSlot: any = null, opts: { allowNullType?
  * @param {Object} order - Order to check
  * @returns {boolean} True if order has orderId
  */
-function hasOnChainId(order: any) { return !!order?.orderId; }
+function hasOnChainId(order: { orderId?: string | null } | null | undefined) { return !!order?.orderId; }
 
 /**
  * Check if order is placed and confirmed on blockchain.
@@ -1855,7 +1899,7 @@ function hasOnChainId(order: any) { return !!order?.orderId; }
  * @param {Object} order - Order to check
  * @returns {boolean} True if order is confirmed placed
  */
-function isOrderPlaced(order: any) { return isOrderOnChain(order) && hasOnChainId(order); }
+function isOrderPlaced(order: SlotLike | null | undefined) { return isOrderOnChain(order) && hasOnChainId(order); }
 
 /**
  * Check if order is phantom (on-chain but missing orderId).
@@ -1864,7 +1908,7 @@ function isOrderPlaced(order: any) { return isOrderOnChain(order) && hasOnChainI
  * @param {Object} order - Order to check
  * @returns {boolean} True if order appears on-chain but has no ID
  */
-function isPhantomOrder(order: any) {
+function isPhantomOrder(order: SlotLike | null | undefined) {
     const inOnChainState = order?.state === ORDER_STATES.ACTIVE || order?.state === ORDER_STATES.PARTIAL;
     return inOnChainState && !hasOnChainId(order);
 }
@@ -1876,7 +1920,7 @@ function isPhantomOrder(order: any) {
  * @param {Object} order - Order/slot to check
  * @returns {boolean} True if slot available
  */
-function isSlotAvailable(order: any) { return isOrderVirtual(order) && !hasOnChainId(order); }
+function isSlotAvailable(order: SlotLike | null | undefined) { return isOrderVirtual(order) && !hasOnChainId(order); }
 
 /**
  * Check if order size meets health thresholds.
@@ -1888,7 +1932,7 @@ function isSlotAvailable(order: any) { return isOrderVirtual(order) && !hasOnCha
  * @param {number} idealSize - Ideal grid size for dust calculation
  * @returns {boolean} True if order is healthy
  */
-function isOrderHealthy(size: any, type: any, assets: any, idealSize: any) {
+function isOrderHealthy(size: number | string, type: OrderType, assets: AssetPair, idealSize: number | string) {
     const numericSize = Number(size);
     const numericIdeal = Number(idealSize);
     if (!Number.isFinite(numericSize) || numericSize <= 0) return false;
@@ -1914,12 +1958,12 @@ function isOrderHealthy(size: any, type: any, assets: any, idealSize: any) {
  * @param {boolean} [includeNonFinite=false] - Treat non-finite values as below threshold
  * @returns {boolean} True if any size is below threshold
  */
-function checkSizeThreshold(sizes: any, threshold: any, precision: any, includeNonFinite: any = false) {
+function checkSizeThreshold(sizes: number[], threshold: number, precision: number, includeNonFinite: boolean = false) {
     if (threshold <= 0 || !Array.isArray(sizes) || sizes.length === 0) return false;
     const precisionSlack = isValidNumber(precision)
         ? MathUtils.getPrecisionSlack(precision, 1)
         : Number.EPSILON;
-    return sizes.some((sz: any) => {
+    return sizes.some((sz) => {
         if (!Number.isFinite(sz)) return includeNonFinite;
         if (sz <= 0) return false;
         if (isValidNumber(precision)) return floatToBlockchainInt(sz, precision) < floatToBlockchainInt(threshold, precision);
@@ -1936,7 +1980,7 @@ function checkSizeThreshold(sizes: any, threshold: any, precision: any, includeN
  * @param {number} precision - Asset precision
  * @returns {boolean} True if any size is below minimum
  */
-function checkSizesBeforeMinimum(sizes: any, minSize: any, precision: any) {
+function checkSizesBeforeMinimum(sizes: number[], minSize: number, precision: number) {
     return checkSizeThreshold(sizes, minSize, precision, true);
 }
 
@@ -1950,7 +1994,7 @@ function checkSizesBeforeMinimum(sizes: any, minSize: any, precision: any) {
  * @param {number} gapSlots - Gap band size
  * @returns {number} Clamped center index (0 when the rail is empty)
  */
-function railCenterIndex(length: any, gapSlots: any): number {
+function railCenterIndex(length: number, gapSlots: number): number {
     const len = Number(length);
     if (!Number.isFinite(len) || len <= 0) return 0;
     const gap = Number.isFinite(Number(gapSlots)) && Number(gapSlots) >= 0 ? Math.floor(Number(gapSlots)) : 0;
@@ -1973,12 +2017,12 @@ function railCenterIndex(length: any, gapSlots: any): number {
  * @param {number} gapSlots - Number of gap slots between buy and sell
  * @returns {number} Ideal boundary index or -1 if slots empty
  */
-function calculateIdealBoundary(allSlots: any, referencePrice: any, gapSlots: any) {
+function calculateIdealBoundary(allSlots: SlotLike[], referencePrice: number | string, gapSlots: number) {
     if (!allSlots || allSlots.length === 0) return -1;
     if (!Number.isFinite(Number(referencePrice))) {
         return railCenterIndex(allSlots.length, gapSlots);
     }
-    let splitIdx = allSlots.findIndex((s: any) => s.price >= referencePrice);
+    let splitIdx = allSlots.findIndex((s) => Number(s.price) >= Number(referencePrice));
     if (splitIdx === -1) splitIdx = allSlots.length;
     const buySpread = Math.floor(gapSlots / 2);
     return Math.max(0, Math.min(allSlots.length - 1, splitIdx - buySpread - 1));
@@ -1998,14 +2042,47 @@ function calculateIdealBoundary(allSlots: any, referencePrice: any, gapSlots: an
  * @param {boolean} [options.assignOnChain=false] - Override on-chain orders if true
  * @returns {Array<Object>} Slots with updated type assignments
  */
-function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_TYPES: any, _ORDER_STATES: any, options: { assignOnChain?: boolean; getCurrentSlot?: (id: any) => any } = {}) {
+interface DeltaAction {
+    type: 'create' | 'update' | 'cancel';
+    id: string;
+    order?: ManagedOrder;
+    prevOrder?: ManagedOrder;
+    orderId?: string | null;
+    [key: string]: unknown;
+}
+
+interface ReserveConfig {
+    reserveOrders?: number | { buy?: number; sell?: number; [key: string]: unknown };
+    activeOrders?: { buy?: number; sell?: number; [key: string]: unknown };
+    startPrice?: number | string;
+    minPrice?: number | string | null;
+    maxPrice?: number | string | null;
+    assetA?: string;
+    assetB?: string;
+    feeParams?: { BTS_RESERVATION_MULTIPLIER?: number; [key: string]: unknown };
+    min_BTS_value?: number;
+    incrementPercent?: number;
+    targetSpreadPercent?: number;
+    gridLimits?: { [key: string]: unknown };
+    [key: string]: unknown;
+}
+
+interface ManagerFundsLike {
+    allocatedBuy?: number;
+    allocatedSell?: number;
+    chainFreeBuy?: number;
+    chainFreeSell?: number;
+    btsBalance?: { free?: number; total?: number; locked?: number } | null;
+}
+
+function assignGridRoles<T extends SlotLike>(allSlots: T[], boundaryIdx: number, gapSlots: number, ORDER_TYPES: { BUY: OrderType; SELL: OrderType; SPREAD: OrderType }, _ORDER_STATES: unknown, options: { assignOnChain?: boolean; getCurrentSlot?: (id: string) => ManagedOrder | undefined } = {}): T[] {
     const assignOnChain = options.assignOnChain === true;
     const getCurrentSlot = (typeof options.getCurrentSlot === 'function') ? options.getCurrentSlot : null;
     const buyEndIdx = boundaryIdx;
     const sellStartIdx = MathUtils.getSellStartIdx(boundaryIdx, gapSlots);
 
-    return allSlots.map((slot: any, i: any) => {
-        const liveSlot = getCurrentSlot ? (getCurrentSlot(slot.id) || slot) : slot;
+    return allSlots.map((slot, i): T => {
+        const liveSlot = getCurrentSlot && slot.id ? (getCurrentSlot(slot.id) || slot) : slot;
 
         // Empty VIRTUAL slots (size 0, no orderId) keep their RAIL type by
         // geometry (Phase 2): an in-rail hole stays BUY/SELL VIRTUAL so
@@ -2025,7 +2102,7 @@ function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_T
             const geoType = geometryTypeForSlotIndex(parsed !== null && parsed !== undefined ? parsed : i, boundaryIdx, gapSlots);
             const wantType = geoType || ORDER_TYPES.SPREAD;
             if (slot.type === wantType) return slot;
-            return { ...slot, type: wantType };
+            return { ...slot, type: wantType } as T;
         }
 
         const newType = (i <= buyEndIdx) ? ORDER_TYPES.BUY : (i >= sellStartIdx) ? ORDER_TYPES.SELL : ORDER_TYPES.SPREAD;
@@ -2040,12 +2117,12 @@ function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_T
         // cancelled by sync pass-1 type-mismatch handling. Mirrors the load-time
         // GRID-TYPE-CORRECT guard (grid.ts).
         if (newType === ORDER_TYPES.SPREAD && isOrderOnChain(liveSlot)) {
-            return { ...slot, type: resolveOnChainRetypeType(slot, i, buyEndIdx, ORDER_TYPES) };
+            return { ...slot, type: resolveOnChainRetypeType(slot, i, buyEndIdx, ORDER_TYPES) } as T;
         }
 
         const canAssign = assignOnChain || !isOrderOnChain(liveSlot);
         if (canAssign) {
-            return { ...slot, type: newType };
+            return { ...slot, type: newType } as T;
         }
         return slot;
     });
@@ -2064,7 +2141,7 @@ function assignGridRoles(allSlots: any, boundaryIdx: any, gapSlots: any, ORDER_T
  * @param {number} [incrementPercent=0.5] - Grid increment percentage
  * @returns {number} Excess steps (0 if in-spread, >0 if out-of-spread)
  */
-function shouldFlagOutOfSpread(currentSpread: any, nominalSpread: any, toleranceSteps: any, buyCount: any, sellCount: any, incrementPercent: any = 0.5) {
+function shouldFlagOutOfSpread(currentSpread: number, nominalSpread: number, toleranceSteps: number, buyCount: number, sellCount: number, incrementPercent: number = 0.5) {
     // Non-finite spread (one-sided book, zero best-buy) with placed orders on
     // both sides is pathological — treat like the empty side: flag the nominal
     // gap count, never propagate Infinity as an "extra slots" count.
@@ -2089,8 +2166,8 @@ function shouldFlagOutOfSpread(currentSpread: any, nominalSpread: any, tolerance
  * @param {Map} grid - Order grid
  * @returns {Object} - Index object with state and type indexes
  */
-function buildIndexes(grid: any) {
-    const indexes = {
+function buildIndexes(grid: Map<string, ManagedOrder>): Record<string, Set<string>> {
+    const indexes: Record<string, Set<string>> = {
         [ORDER_STATES.VIRTUAL]: new Set(),
         [ORDER_STATES.ACTIVE]: new Set(),
         [ORDER_STATES.PARTIAL]: new Set(),
@@ -2102,8 +2179,8 @@ function buildIndexes(grid: any) {
     for (const order of grid.values()) {
         const stateKey = order.state as string;
         const typeKey = order.type as string;
-        if ((indexes as any)[stateKey]) (indexes as any)[stateKey].add(order.id);
-        if ((indexes as any)[typeKey]) (indexes as any)[typeKey].add(order.id);
+        if (indexes[stateKey]) indexes[stateKey].add(order.id);
+        if (indexes[typeKey]) indexes[typeKey].add(order.id);
     }
 
     return indexes;
@@ -2115,12 +2192,12 @@ function buildIndexes(grid: any) {
  * @param {Object} indexes - Index object
  * @returns {Object} - Validation result
  */
-function validateIndexes(grid: any, indexes: any) {
+function validateIndexes(grid: Map<string, ManagedOrder>, indexes: Record<string, Set<string>>) {
     const errors: string[] = [];
 
     for (const [id, order] of grid.entries()) {
-        const stateIndex = (indexes as any)[order.state];
-        const typeIndex = (indexes as any)[order.type];
+        const stateIndex = indexes[order.state];
+        const typeIndex = indexes[order.type];
 
         if (!stateIndex || !stateIndex.has(id)) {
             errors.push(`Order ${id} missing from state index ${order.state}`);
@@ -2131,7 +2208,7 @@ function validateIndexes(grid: any, indexes: any) {
     }
 
     for (const [key, indexSet] of Object.entries(indexes)) {
-        for (const id of (indexSet as any as Set<string>)) {
+        for (const id of (indexSet as Set<string>)) {
             if (!grid.has(id)) {
                 errors.push(`Orphaned index entry: ${key} has ${id} but not in grid`);
             }
@@ -2148,14 +2225,14 @@ function validateIndexes(grid: any, indexes: any) {
 // SECTION 9: ORDER COMPARISON & DELTA
 // ================================================================================
 
-function _getRelativeTolerance(configOverride?: Record<string, any>): number {
+function _getRelativeTolerance(configOverride?: { gridLimits?: { RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT?: number; [key: string]: unknown } }): number {
     const raw = configOverride?.gridLimits?.RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT
         ?? GRID_LIMITS.RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT;
     return Number(raw) / 100;
 }
 const ORDER_RELATIVE_TOLERANCE = _getRelativeTolerance();
 
-function getDecimalPlaces(value: any) {
+function getDecimalPlaces(value: number | string) {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return 0;
 
@@ -2172,28 +2249,28 @@ function getDecimalPlaces(value: any) {
     return Math.max(0, mantissaDecimals - exponent);
 }
 
-function parseOptionalPrecision(value: any) {
+function parseOptionalPrecision(value: number | string | null | undefined) {
     if (value === null || value === undefined || value === '') return null;
     const numeric = Number(value);
     if (!Number.isFinite(numeric) || numeric < 0) return null;
     return numeric;
 }
 
-function precisionToQuantum(precision: any) {
+function precisionToQuantum(precision: number | string | null | undefined) {
     const p = parseOptionalPrecision(precision);
     if (p === null) return null;
     const quantum = MathUtils.quantumForPrecision(p);
     return quantum > 0 ? quantum : Number.EPSILON;
 }
 
-function observedQuantum(a: any, b: any) {
+function observedQuantum(a: number | string, b: number | string) {
     const maxDecimals = Math.max(getDecimalPlaces(a), getDecimalPlaces(b));
     if (maxDecimals <= 0) return Number.EPSILON;
     const quantum = MathUtils.quantumForPrecision(maxDecimals);
     return quantum > 0 ? quantum : Number.EPSILON;
 }
 
-function resolveOrderSizePrecision(orderType: any, precisions: { buyPrecision?: number; sellPrecision?: number; defaultPrecision?: number } = {}) {
+function resolveOrderSizePrecision(orderType: OrderType, precisions: { buyPrecision?: number; sellPrecision?: number; defaultPrecision?: number } = {}) {
     if (!precisions || typeof precisions !== 'object') return null;
 
     if (orderType === ORDER_TYPES.BUY) return parseOptionalPrecision(precisions.buyPrecision);
@@ -2202,7 +2279,7 @@ function resolveOrderSizePrecision(orderType: any, precisions: { buyPrecision?: 
     return parseOptionalPrecision(precisions.defaultPrecision);
 }
 
-function resolvePriceTolerance(precisions: { priceRelativeTolerance?: number } = {}, order: any, referenceOrder: any) {
+function resolvePriceTolerance(precisions: { priceRelativeTolerance?: number } = {}, order: ManagedOrder | null | undefined, referenceOrder: ManagedOrder | null | undefined) {
     const leftPrice = Number(order?.price);
     const rightPrice = Number(referenceOrder?.price);
     const relativeToleranceRatio = Number(precisions.priceRelativeTolerance);
@@ -2212,7 +2289,7 @@ function resolvePriceTolerance(precisions: { priceRelativeTolerance?: number } =
     return scale * relativeToleranceRatio;
 }
 
-function nearlyEqualAbsolute(a: any, b: any, tolerance: any) {
+function nearlyEqualAbsolute(a: number | string | null, b: number | string | null, tolerance: number | string | null | undefined) {
     const left = Number(a);
     const right = Number(b);
 
@@ -2229,7 +2306,7 @@ function nearlyEqualAbsolute(a: any, b: any, tolerance: any) {
     return Math.abs(left - right) <= tol;
 }
 
-function nearlyEqualRelative(a: any, b: any, options: { precision?: number } = {}) {
+function nearlyEqualRelative(a: number | string | null, b: number | string | null, options: { precision?: number } = {}) {
     const left = Number(a);
     const right = Number(b);
 
@@ -2252,7 +2329,7 @@ function nearlyEqualRelative(a: any, b: any, options: { precision?: number } = {
  * @param {Object} order - Order object
  * @returns {number|null} - Size or null if not found
  */
-function getOrderSize(order: any): number | null {
+function getOrderSize(order: ManagedOrder | null | undefined): number | null {
     const raw = order?.size;
     if (raw != null && !(typeof raw === 'number' && !Number.isFinite(raw))) {
         return toFiniteNumber(raw);
@@ -2268,7 +2345,7 @@ function getOrderSize(order: any): number | null {
  * @param {Object} [options.precisions] - Optional precision hints {buyPrecision, sellPrecision, defaultPrecision, priceRelativeTolerance}
  * @returns {boolean} - True if orders are equivalent
  */
-function ordersEqual(a: any, b: any, options: { precisions?: { buyPrecision?: number; sellPrecision?: number; defaultPrecision?: number; priceRelativeTolerance?: number }; comparePrecisions?: { buyPrecision?: number; sellPrecision?: number; defaultPrecision?: number; priceRelativeTolerance?: number } } = {}) {
+function ordersEqual(a: ManagedOrder | null | undefined, b: ManagedOrder | null | undefined, options: { precisions?: { buyPrecision?: number; sellPrecision?: number; defaultPrecision?: number; priceRelativeTolerance?: number }; comparePrecisions?: { buyPrecision?: number; sellPrecision?: number; defaultPrecision?: number; priceRelativeTolerance?: number } } = {}) {
     if (!a || !b) return false;
     if (a === b) return true;
 
@@ -2291,8 +2368,8 @@ function ordersEqual(a: any, b: any, options: { precisions?: { buyPrecision?: nu
  * @param {Object} [options={}] - Delta options forwarded to ordersEqual
  * @returns {Array} - Array of action objects
  */
-function buildDelta(masterGrid: any, workingGrid: any, options: any = {}) {
-    const actions: any[] = [];
+function buildDelta(masterGrid: Map<string, ManagedOrder>, workingGrid: Map<string, ManagedOrder>, options: { precisions?: { buyPrecision?: number; sellPrecision?: number; defaultPrecision?: number; priceRelativeTolerance?: number }; comparePrecisions?: { buyPrecision?: number; sellPrecision?: number; defaultPrecision?: number; priceRelativeTolerance?: number } } = {}): DeltaAction[] {
+    const actions: DeltaAction[] = [];
 
     for (const [id, workingOrder] of workingGrid.entries()) {
         const masterOrder = masterGrid.get(id);
@@ -2338,12 +2415,12 @@ function buildDelta(masterGrid: any, workingGrid: any, options: any = {}) {
  * @param {Object} fill - Fill event
  * @returns {boolean} True when the fill may shift the boundary
  */
-function isShiftEligibleFill(fill: any): boolean {
+function isShiftEligibleFill(fill: { isPartial?: boolean; isDelayedRotationTrigger?: boolean; [key: string]: unknown } | null | undefined): boolean {
     return fill?.isPartial !== true || fill?.isDelayedRotationTrigger === true;
 }
 
-function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any, config: any, gapSlots: any, crossChunkBudget?: number | null, pendingCrawls?: any[], edgeAnchors?: { buy?: number | null; sell?: number | null } | null): { boundaryIdx: number | null; remainingBudget: number } {
-    let newBoundaryIdx: number | null = currentBoundaryIdx;
+function deriveTargetBoundary(fills: Array<{ id?: string; price?: number; type?: string; [key: string]: unknown }> | null | undefined, currentBoundaryIdx: number | null | undefined, allSlots: ManagedOrder[], config: { startPrice?: number | string; genesisStartPrice?: number | string; activeOrders?: { buy?: number; sell?: number; [key: string]: unknown }; [key: string]: unknown } | null | undefined, gapSlots: number, crossChunkBudget?: number | null, pendingCrawls?: Array<{ slotId?: string; side?: string; [key: string]: unknown }> | null, edgeAnchors?: { buy?: number | null; sell?: number | null } | null): { boundaryIdx: number | null; remainingBudget: number } {
+    let newBoundaryIdx: number | null = currentBoundaryIdx ?? null;
 
     // Recovery when the committed boundary is unknown (GRID-LOAD rejected a
     // poisoned snapshot, re-derivation failed, and no fill has re-anchored
@@ -2378,7 +2455,7 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
         // Tier 3 — frozen genesis center (forwarded by the strategy when
         // config.startPrice is an unresolved mode string).
         if (referencePrice === null) {
-            const genesis = Number((config as any)?.genesisStartPrice);
+    const genesis = Number((config as { genesisStartPrice?: number } | null | undefined)?.genesisStartPrice);
             if (Number.isFinite(genesis)) referencePrice = genesis;
         }
         // Stale-center guard: a Tier-2 numeric config center or a Tier-3
@@ -2466,18 +2543,18 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
     // anything older is still owed and shifts here. Reserve-slot entries
     // never crawl (static insurance), same as live fills.
     const currentSlotIds = new Set(
-        (fills ?? []).map((f: any) => f?.id).filter((id: any) => typeof id === 'string' && id.length > 0)
+        (fills ?? []).map((f) => f?.id).filter((id) => typeof id === 'string' && id.length > 0)
     );
-    const owedPending = (pendingCrawls ?? []).filter((e: any) => e
+    const owedPending = (pendingCrawls ?? []).filter((e) => e
         && typeof e.slotId === 'string' && e.slotId.length > 0
         && !currentSlotIds.has(e.slotId)
         && (e.side === ORDER_TYPES.BUY || e.side === ORDER_TYPES.SELL)
         && !(e.side === ORDER_TYPES.BUY && reserveBuyIds && reserveBuyIds.has(e.slotId))
         && !(e.side === ORDER_TYPES.SELL && reserveSellIds && reserveSellIds.has(e.slotId)));
-    for (const fill of fills) {
+    for (const fill of fills ?? []) {
         if (!isShiftEligibleFill(fill)) continue;
-        if (fill && fill.type === ORDER_TYPES.BUY && reserveBuyIds && reserveBuyIds.has(fill.id)) continue;
-        if (fill && fill.type === ORDER_TYPES.SELL && reserveSellIds && reserveSellIds.has(fill.id)) continue;
+        if (fill && fill.type === ORDER_TYPES.BUY && reserveBuyIds && fill.id != null && reserveBuyIds.has(fill.id)) continue;
+        if (fill && fill.type === ORDER_TYPES.SELL && reserveSellIds && fill.id != null && reserveSellIds.has(fill.id)) continue;
         if (fill.type === ORDER_TYPES.SELL) netShift++;
         else if (fill.type === ORDER_TYPES.BUY) netShift--;
     }
@@ -2498,8 +2575,8 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
     // never exceeds half the active window.
     // Falls back to a per-call cap when no budget is set.
     const fallbackCap = Math.max(
-        Math.floor((config.activeOrders?.sell ?? 1) / 2),
-        Math.floor((config.activeOrders?.buy ?? 1) / 2),
+        Math.floor((config?.activeOrders?.sell ?? 1) / 2),
+        Math.floor((config?.activeOrders?.buy ?? 1) / 2),
         1
     );
     const effectiveBudget = crossChunkBudget ?? fallbackCap;
@@ -2552,10 +2629,10 @@ function deriveTargetBoundary(fills: any, currentBoundaryIdx: any, allSlots: any
  * dropped rather than stranding live orders. Commits clear the record, so
  * entries present here predate every commit since recording — always owed.
  *
- * @param {any} manager - OrderManager (boundaryIdx, orders, config restored)
+ * @param {unknown} manager - OrderManager (boundaryIdx, orders, config restored)
  * @returns {{applied: boolean, from?: number, to?: number, count?: number, reason?: string}}
  */
-export function consumePendingFillCrawls(manager: any): { applied: boolean; from?: number; to?: number; count?: number; reason?: string } {
+export function consumePendingFillCrawls(manager: OrderManagerLike): { applied: boolean; from?: number; to?: number; count?: number; reason?: string } {
     const pending = Array.isArray(manager?._pendingFillCrawls) ? manager._pendingFillCrawls : [];
     if (pending.length === 0) return { applied: false };
     // Clearing marks the grid dirty so the cleared record reaches disk on
@@ -2580,7 +2657,7 @@ export function consumePendingFillCrawls(manager: any): { applied: boolean; from
         return { applied: false, reason: 'null-boundary' };
     }
     const config = manager?.config ?? {};
-    const slots = Array.from(manager?.orders instanceof Map ? manager.orders.values() : []) as any[];
+    const slots: SlotLike[] = Array.from(manager?.orders instanceof Map ? manager.orders.values() : []);
     // Classify with the SAME live anchors the strategy derivation uses, or the
     // two disagree: the config-bound fallback is null for mode-string/relative
     // bounds, so a restart would rank a stale below-rail slot as a reserve and
@@ -2606,9 +2683,11 @@ export function consumePendingFillCrawls(manager: any): { applied: boolean; from
         clear();
         return { applied: false, reason: 'nothing-owed' };
     }
+    const activeOrdersCfg = config?.activeOrders;
+    const activeOrdersObj = (activeOrdersCfg && typeof activeOrdersCfg === 'object') ? activeOrdersCfg : {};
     const fallbackCap = Math.max(
-        Math.floor((config?.activeOrders?.sell ?? 1) / 2),
-        Math.floor((config?.activeOrders?.buy ?? 1) / 2),
+        Math.floor(Number(activeOrdersObj.sell ?? 1) / 2),
+        Math.floor(Number(activeOrdersObj.buy ?? 1) / 2),
         1
     );
     if (Math.abs(netShift) > fallbackCap) netShift = Math.sign(netShift) * fallbackCap;
@@ -2626,11 +2705,11 @@ export function consumePendingFillCrawls(manager: any): { applied: boolean; from
         clear();
         return { applied: false, reason: 'no-op' };
     }
-    let check: any = { ok: true };
+    let check: { ok: boolean; reason?: string; detail?: string } = { ok: true };
     try {
         check = MathUtils.validatePersistedBoundary(candidate, slots, gapSlots);
     } catch (err) {
-        check = { ok: false, reason: 'validator-threw', detail: String((err as any)?.message ?? err) };
+        check = { ok: false, reason: 'validator-threw', detail: getErrorMessage(err) };
     }
     if (!check || check.ok !== true) {
         clear();
@@ -2659,7 +2738,7 @@ export function consumePendingFillCrawls(manager: any): { applied: boolean; from
  * @param {string} side - 'buy' or 'sell'
  * @returns {number} Reserve count for the side (>= 0 integer)
  */
-function resolveReserveCount(config: any, side: any) {
+function resolveReserveCount(config: ReserveConfig | null | undefined, side: string) {
     const key = side === 'sell' ? 'sell' : 'buy';
     const rawReserve = config?.reserveOrders;
     if (typeof rawReserve === 'number') {
@@ -2678,7 +2757,7 @@ function resolveReserveCount(config: any, side: any) {
  * @param {Object} config - Bot configuration
  * @returns {number} Total reserves (buy + sell)
  */
-function resolveReserveOrders(config: any) {
+function resolveReserveOrders(config: ReserveConfig | null | undefined) {
     return resolveReserveCount(config, 'buy') + resolveReserveCount(config, 'sell');
 }
 
@@ -2710,7 +2789,7 @@ function resolveReserveOrders(config: any) {
  *   dedicated reserves and the deficit never fires (issue #27 follow-up).
  * @returns {Set<string>|null} Edge slot ids, or null when side disabled
  */
-function reserveEdgeIdSet(allSlots: any, config: any, orderType: any, anchorPrice: unknown = null, excludeIds: Set<string> | null = null): Set<string> | null {
+function reserveEdgeIdSet(allSlots: SlotLike[], config: ReserveConfig | null | undefined, orderType: OrderType, anchorPrice: unknown = null, excludeIds: Set<string> | null = null): Set<string> | null {
     const isSell = orderType === ORDER_TYPES.SELL;
     const side = isSell ? 'sell' : 'buy';
     // Filter by the canonical side type, not the caller's token: the previous
@@ -2724,10 +2803,10 @@ function reserveEdgeIdSet(allSlots: any, config: any, orderType: any, anchorPric
     // NB: Number(null) === 0 is finite — null/undefined must mean "no anchor".
     const anchor = anchorPrice == null ? resolveReserveEdgeAnchorPrice(config, side) : Number(anchorPrice);
     const ascending = allSlots
-        .filter((s: any) => s && s.id != null && s.price != null && s.type === type && parseSlotIndex(s.id) !== null)
-        .sort((a: any, b: any) => Number(a.price) - Number(b.price));
+        .filter((s) => s && s.id != null && s.price != null && s.type === type && parseSlotIndex(s.id) !== null)
+        .sort((a, b) => Number(a.price) - Number(b.price));
     for (const s of selectReserveEdgeSlots(ascending, n, excludeIds, isSell ? 'ceiling' : 'floor', anchor)) {
-        ids.add(s.id);
+        ids.add(String(s.id));
     }
     return ids;
 }
@@ -2755,7 +2834,7 @@ function reserveEdgeIdSet(allSlots: any, config: any, orderType: any, anchorPric
  * @param {number} gapSlots - Gap band size
  * @returns {Set<string>|null} Window slot ids, or null when geometry unknown
  */
-function windowIdSetFromSlots(allSlots: any, config: any, orderType: any, boundaryIdx: any, gapSlots: any): Set<string> | null {
+function windowIdSetFromSlots(allSlots: SlotLike[], config: ReserveConfig | null | undefined, orderType: OrderType, boundaryIdx: number | null | undefined, gapSlots: number): Set<string> | null {
     try {
         const isSell = orderType === ORDER_TYPES.SELL;
         const type = isSell ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
@@ -2765,17 +2844,17 @@ function windowIdSetFromSlots(allSlots: any, config: any, orderType: any, bounda
         if (!Array.isArray(allSlots)) return new Set<string>();
         if (boundaryIdx === null || boundaryIdx === undefined || !Number.isFinite(Number(boundaryIdx))) return null;
         const gap = Number.isFinite(Number(gapSlots)) ? Number(gapSlots) : 0;
-        const inRail = (o: any): boolean => MathUtils.isSlotInRail(boundaryIdx, gap, type, o);
+        const inRail = (o: SlotLike): boolean => MathUtils.isSlotInRail(boundaryIdx, gap, type, o);
         // Same type filter as the window pickers with known geometry: the
         // side's concrete type plus SPREAD placeholders (normalized empties
         // sitting in this side's rail).
-        const typeFilter = (o: any): boolean => o && o.id != null && o.price != null && (o.type === type || o.type === ORDER_TYPES.SPREAD);
+        const typeFilter = (o: SlotLike): boolean => !!o && o.id != null && o.price != null && (o.type === type || o.type === ORDER_TYPES.SPREAD);
         const ids = allSlots
             .filter(typeFilter)
             .filter(inRail)
-            .sort((a: any, b: any) => isSell ? Number(a.price) - Number(b.price) : Number(b.price) - Number(a.price))
+            .sort((a, b) => isSell ? Number(a.price) - Number(b.price) : Number(b.price) - Number(a.price))
             .slice(0, count)
-            .map((o: any) => String(o.id));
+            .map((o) => String(o.id));
         return new Set<string>(ids);
     } catch {
         return null;
@@ -2787,11 +2866,11 @@ function windowIdSetFromSlots(allSlots: any, config: any, orderType: any, bounda
  * windowIdSetFromSlots). Delegates so the manager and explicit-geometry
  * callers share one definition.
  *
- * @param {any} manager - OrderManager (orders Map, config, boundaryIdx)
+ * @param {unknown} manager - OrderManager (orders Map, config, boundaryIdx)
  * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
  * @returns {Set<string>|null} Window slot ids, or null when geometry unknown
  */
-function liveWindowIdSet(manager: any, orderType: any): Set<string> | null {
+function liveWindowIdSet(manager: OrderManagerLike, orderType: OrderType): Set<string> | null {
     try {
         if (!manager?.orders || typeof manager.orders.values !== 'function') return new Set<string>();
         const resolved = MathUtils.resolveGapBand(manager);
@@ -2830,18 +2909,18 @@ function liveWindowIdSet(manager: any, orderType: any): Set<string> | null {
  * @param {Iterable<Object>} [options.slots] - Master slots (reserve classification)
  * @param {{buy?: number|null, sell?: number|null}} [options.edgeAnchors] - Live
  *   edge anchors (same pair the strategy classifies reserve fills against)
- * @param {any} [options.manager] - OrderManager for the window exclusion (same
+ * @param {unknown} [options.manager] - OrderManager for the window exclusion (same
  *   set the placement pickers exclude); omit to fall back to the previous
  *   exclusion-free classification (fail-open)
  * @returns {string[]} Refill slot ids (CREATE ids minus reserve edge ids)
  */
-function collectRefillSlotIds(actions: any, options: { config?: any; slots?: any; edgeAnchors?: { buy?: number | null; sell?: number | null } | null; manager?: any } = {}): string[] {
+function collectRefillSlotIds(actions: CowAction[], options: { config?: ReserveConfig | null; slots?: unknown; edgeAnchors?: { buy?: number | null; sell?: number | null } | null; manager?: OrderManagerLike | null } = {}): string[] {
     const { config = null, slots = null, edgeAnchors = null, manager = null } = options;
     const out: string[] = [];
     if (!Array.isArray(actions)) return out;
     const createIds = actions
-        .filter((a: any) => a?.type === COW_ACTIONS.CREATE && typeof a?.id === 'string' && a.id.length > 0)
-        .map((a: any) => a.id);
+        .filter((a) => a?.type === COW_ACTIONS.CREATE && typeof a?.id === 'string' && a.id.length > 0)
+        .map((a) => a.id);
     if (createIds.length === 0) return out;
     let reserveIds: Set<string> | null = null;
     if (slots && config) {
@@ -2849,11 +2928,11 @@ function collectRefillSlotIds(actions: any, options: { config?: any; slots?: any
             // Accept a Map (master grid), an array of slots, or any iterable of
             // slot objects. Map entries are [id, slot] pairs, so `.values()` is
             // required — Array.from(map) would hand reserveEdgeIdSet pairs.
-            const allSlots = Array.isArray(slots)
-                ? slots
-                : (typeof (slots as any)?.values === 'function'
-                    ? Array.from((slots as any).values())
-                    : Array.from(slots as Iterable<any>));
+            const allSlots: SlotLike[] = Array.isArray(slots)
+                ? slots as SlotLike[]
+                : (slots && typeof (slots as { values?: unknown }).values === 'function'
+                    ? Array.from((slots as { values(): Iterable<SlotLike> }).values())
+                    : Array.from(slots as Iterable<SlotLike>));
             // Window exclusion keeps classification in agreement with the
             // placement pickers: a window reaching the grid edge must not have
             // its window hole-CREATEs dropped from the wire as if they were
@@ -2893,7 +2972,7 @@ function collectRefillSlotIds(actions: any, options: { config?: any; slots?: any
  * @param {string} side - 'buy' or 'sell'
  * @returns {number|null} Finite anchor price, or null
  */
-function resolveReserveEdgeAnchorPrice(config: any, side: any): number | null {
+function resolveReserveEdgeAnchorPrice(config: ReserveConfig | null | undefined, side: string): number | null {
     const isSell = side === 'sell';
     const bound = isSell ? config?.maxPrice : config?.minPrice;
     const mode = isSell ? 'max' : 'min';
@@ -2967,7 +3046,7 @@ function resolveLiveReserveEdgeAnchorPrice(manager: ReserveEdgeAnchorManager | n
  * @param {number|null} anchorPrice - Resolved bound anchor (null = rank fallback)
  * @returns {number} Comparator result for Array.prototype.sort
  */
-function compareReserveEdge(a: any, b: any, edge: any, anchorPrice: any): number {
+function compareReserveEdge(a: SlotLike, b: SlotLike, edge: string, anchorPrice: number | null): number {
     const ceil = edge === 'ceiling';
     // NB: Number(null) === 0 is finite — null/undefined must mean "no anchor".
     const anchor = anchorPrice == null ? Number.NaN : Number(anchorPrice);
@@ -3002,10 +3081,10 @@ function compareReserveEdge(a: any, b: any, edge: any, anchorPrice: any): number
  * @param {number|null} [anchorPrice] - Live edge anchor for the side (null = rank-based)
  * @returns {Array<Object>} Reserve slots (ascending for floor, descending for ceiling)
  */
-function selectReserveEdgeSlots(sortedAsc: any, count: any, excludeIds: any, edge: any, anchorPrice: any = null): any[] {
+function selectReserveEdgeSlots<T extends SlotLike>(sortedAsc: T[], count: number, excludeIds: Set<string> | null, edge: string, anchorPrice: number | null = null): T[] {
     const n = Math.max(0, Math.floor(Number(count) || 0));
     if (n <= 0 || !Array.isArray(sortedAsc)) return [];
-    const avail = sortedAsc.filter((s: any) => s && s.id != null && (!excludeIds || !excludeIds.has(s.id)));
+    const avail = sortedAsc.filter((s) => s && s.id != null && (!excludeIds || !excludeIds.has(s.id)));
     // NB: Number(null) === 0 is finite — null/undefined must mean "no anchor".
     const anchor = anchorPrice == null ? Number.NaN : Number(anchorPrice);
     if (!Number.isFinite(anchor)) {
@@ -3016,7 +3095,7 @@ function selectReserveEdgeSlots(sortedAsc: any, count: any, excludeIds: any, edg
     // Anchored: shared comparator — in-bound slots nearest the bound first,
     // stale out-of-bound slots last.
     return avail
-        .sort((x: any, y: any) => compareReserveEdge(x, y, edge, anchor))
+        .sort((x, y) => compareReserveEdge(x, y, edge, anchor))
         .slice(0, n);
 }
 
@@ -3028,7 +3107,7 @@ function selectReserveEdgeSlots(sortedAsc: any, count: any, excludeIds: any, edg
  * @param {Object} config - Bot configuration
  * @returns {number} Total target order count
  */
-function getActiveOrdersTotal(config: any) {
+function getActiveOrdersTotal(config: ReserveConfig | null | undefined) {
     return Math.max(0, config?.activeOrders?.buy ?? 1) +
         Math.max(0, config?.activeOrders?.sell ?? 1) +
         resolveReserveOrders(config);
@@ -3042,7 +3121,8 @@ function getActiveOrdersTotal(config: any) {
  * @param {number} totalTarget - Total target order count (used for BTS fee calculation on both sides)
  * @returns {number} Available budget for the side
  */
-function getSideBudget(side: any, funds: any, config: any, totalTarget: any) {
+function getSideBudget(side: string, funds: ManagerFundsLike | ProjectedFunds | null, config: ReserveConfig, totalTarget: number) {
+    if (!funds) return 0;
     const isBuy = side === 'buy';
     const allocated = isBuy ? (funds.allocatedBuy || 0) : (funds.allocatedSell || 0);
     if (allocated <= 0) return 0;
@@ -3085,7 +3165,7 @@ function getSideBudget(side: any, funds: any, config: any, totalTarget: any) {
  * @param {Object} assets - Asset metadata for precision
  * @returns {Array} Array of calculated sizes
  */
-function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: any, incrementPercent: any, assets: any) {
+function calculateBudgetedSizes(slots: SlotLike[], side: string, budget: number, weightDist: unknown, incrementPercent: number | undefined, assets: AssetPair | null) {
     const isBuy = side === 'buy';
 
     let precision;
@@ -3093,12 +3173,12 @@ function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: 
         try {
             const { A: precA, B: precB } = MathUtils.getPrecisionsForManager(assets);
             precision = isBuy ? precB : precA;
-        } catch (e: any) {
+        } catch (e) {
             // Precision not available — floatToBlockchainInt will throw
         }
     }
 
-    const incrementFactor = incrementPercent / 100;
+    const incrementFactor = Number(incrementPercent) / 100;
 
     return MathUtils.allocateFundsByWeights(
         budget,
@@ -3125,7 +3205,7 @@ function calculateBudgetedSizes(slots: any, side: any, budget: any, weightDist: 
  * @param {Object|null} cachedRaw - The rawOnChain cache captured at build time
  * @returns {boolean}
  */
-function chainOrderUnchangedFromCache(chainOrder: any, cachedRaw: any) {
+function chainOrderUnchangedFromCache(chainOrder: ChainOrder | null | undefined, cachedRaw: { sell_price?: { base?: { amount?: unknown }; quote?: { amount?: unknown } }; for_sale?: unknown } | null | undefined) {
     if (!chainOrder || !cachedRaw) return false;
     const base = chainOrder.sell_price?.base;
     const quote = chainOrder.sell_price?.quote;
@@ -3152,11 +3232,11 @@ function chainOrderUnchangedFromCache(chainOrder: any, cachedRaw: any) {
  *
  * Detector only: any internal failure returns null (never blocks a broadcast).
  */
-function detectCrossedBookPlan(manager: any, actions: any[]): string | null {
+function detectCrossedBookPlan(manager: OrderManagerLike, actions: CowAction[]): string | null {
     try {
         const startPrice = Number(manager?.config?.startPrice);
         const book = new Map<string, { type: string; price: number }>();
-        for (const o of Array.from(manager?.orders?.values?.() ?? []) as any[]) {
+        for (const o of manager.orders.values()) {
             if (!o || !o.orderId || o.price == null) continue;
             const price = Number(o.price);
             if (!Number.isFinite(price)) continue;
@@ -3219,18 +3299,18 @@ function detectCrossedBookPlan(manager: any, actions: any[]): string | null {
  *  - the batch's fresh CREATE ids extracted from the broadcast result
  *    (operation_results[i][1] aligns positionally with placedContexts[i]).
  *
- * @param {any} mgr - bot.manager
- * @param {any} placedResults - broadcast result (has operation_results); null when unavailable
- * @param {any[]} placedContexts - opContexts (aligned with operation_results); null when unavailable
+ * @param {unknown} mgr - bot.manager
+ * @param {unknown} placedResults - broadcast result (has operation_results); null when unavailable
+ * @param {unknown[]} placedContexts - opContexts (aligned with operation_results); null when unavailable
  * @param {string[]|null} [extraCreateIds=null] - fresh CREATE chain ids from another
  *   authoritative source (e.g. the uncertain-broadcast poll confirmation) when
  *   no broadcast result exists; merged into createIds so the lagging-create
  *   retry guards them
  * @returns {string[]} Unique, well-formed 1.7.x order ids
  */
-function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContexts: any, extraCreateIds: any = null): { masterIds: string[]; createIds: string[]; all: string[] } {
+function collectKnownOnChainOrderIds(mgr: OrderManagerLike, placedResults: unknown, placedContexts: Array<{ kind?: string; order?: { orderId?: string | null } | null; rotation?: { oldOrder?: { orderId?: string | null } | null } | null; updateInfo?: { partialOrder?: { orderId?: string | null } | null } | null } | null> | null, extraCreateIds: string[] | null = null): { masterIds: string[]; createIds: string[]; all: string[] } {
     const masterIds = new Set<string>();
-    const grid = mgr && mgr.grid;
+    const grid = (mgr as { grid?: unknown }).grid as SlotLike[] | undefined;
     if (Array.isArray(grid)) {
         for (const slot of grid) {
             if (slot && slot.orderId && /^1\.7\.\d+$/.test(String(slot.orderId))) {
@@ -3244,8 +3324,8 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
     // them as fills on a partial snapshot).
     if (mgr && mgr.orders instanceof Map) {
         for (const slot of mgr.orders.values()) {
-            if (slot && (slot as any).orderId && /^1\.7\.\d+$/.test(String((slot as any).orderId))) {
-                masterIds.add(String((slot as any).orderId));
+            if (slot && slot.orderId && /^1\.7\.\d+$/.test(String(slot.orderId))) {
+                masterIds.add(String(slot.orderId));
             }
         }
     }
@@ -3256,9 +3336,10 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
             for (let i = 0; i < placedContexts.length; i++) {
                 const ctx = placedContexts[i];
                 if (!ctx || ctx.kind !== 'create') continue;
-                const opResult = opResults[i] && opResults[i][1];
-                if (opResult && /^1\.7\.\d+$/.test(String(opResult))) {
-                    createIds.add(String(opResult));
+                const rawOpResult = opResults[i] ? opResults[i][1] : undefined;
+                const opResult = typeof rawOpResult === 'string' ? rawOpResult : null;
+                if (opResult && /^1\.7\.\d+$/.test(opResult)) {
+                    createIds.add(opResult);
                 }
             }
         }
@@ -3275,7 +3356,7 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
     if (Array.isArray(placedContexts)) {
         for (const ctx of placedContexts) {
             if (!ctx || ctx.kind === 'create') continue;
-            const refs: any[] = [];
+            const refs: Array<string | null | undefined> = [];
             if (ctx.kind === 'cancel' && ctx.order) refs.push(ctx.order.orderId);
             else if (ctx.kind === 'rotation' && ctx.rotation?.oldOrder) refs.push(ctx.rotation.oldOrder.orderId);
             else if (ctx.kind === 'size-update' && ctx.updateInfo?.partialOrder) refs.push(ctx.updateInfo.partialOrder.orderId);

@@ -5,7 +5,7 @@ const require = createRequire(import.meta.url);
 
 import { NATIVE_CLIENT } from '../constants.js';
 import Logger from '../order/logger.js';
-import { getErrorMessage } from '../utils/errors.js';
+import { getErrorMessage, getErrorField } from '../utils/errors.js';
 
 // Native WebSocket only — Node >= 22 provides globalThis.WebSocket. No fallback package.
 type WebSocketLike = WebSocket;
@@ -13,7 +13,7 @@ type WebSocketLike = WebSocket;
 let _WebSocketCtor: (new (url: string) => WebSocketLike) | null = null;
 function getWebSocketConstructor(): new (url: string) => WebSocketLike {
     if (!_WebSocketCtor) {
-        const ws = (globalThis as any).WebSocket;
+        const ws = (globalThis as { WebSocket?: new (url: string) => WebSocketLike }).WebSocket;
         if (!ws) {
             throw new Error('WebSocket is not available — DEXBot2 requires Node.js >= 22 (native globalThis.WebSocket)');
         }
@@ -67,8 +67,8 @@ class AllNodesFailed extends Error {
 class RpcError extends Error {
     code: string;
     method: string;
-    params: any[];
-    constructor(message: string, code: string | undefined, method: string, params: any[]) {
+    params: unknown[];
+    constructor(message: string, code: string | undefined, method: string, params: unknown[]) {
         super(message);
         this.code = code || 'RPC_ERROR';
         this.method = method;
@@ -77,14 +77,35 @@ class RpcError extends Error {
 }
 
 interface PendingRequest {
-    resolve: (value: any) => void;
-    reject: (reason: any) => void;
+    resolve: (value: unknown) => void;
+    reject: (reason: unknown) => void;
     timer: ReturnType<typeof setTimeout>;
     method: string;
-    params: any[];
+    params: unknown[];
 }
 
 type TransportStatus = 'closed' | 'connecting' | 'connected';
+
+interface SocketEventLike {
+    message?: string;
+    code?: number;
+    reason?: string;
+    wasClean?: boolean;
+}
+
+interface RpcMessage {
+    id?: number;
+    method?: string;
+    params?: unknown;
+    result?: unknown;
+    error?: { message?: string; code?: string };
+}
+
+interface ConnectResult {
+    socket: WebSocketLike;
+    url: string;
+    idx: number;
+}
 
 interface TransportConfig {
     connectTimeoutMs?: number;
@@ -136,7 +157,7 @@ function createTransport(config: TransportConfig = {}) {
     let lastCloseAt: number = 0;
     const closeCoalesceMs = CLOSE_COALESCE_MS;
     let pendingRequests = new Map<string, PendingRequest>();
-    let onMessageHandlers: Array<(params: any) => void> = [];
+    let onMessageHandlers: Array<(params: unknown) => void> = [];
     let status: TransportStatus = 'closed';
     // In-flight connect handshakes (connectOne sockets not yet assigned to ws).
     // disconnect() closes them so a concurrent connect sweep (e.g. a
@@ -162,12 +183,12 @@ function createTransport(config: TransportConfig = {}) {
         if (!failedUrl) return;
         failedNodes.add(failedUrl);
         if (onNodeFailure) {
-            try { onNodeFailure(failedUrl, message, source); } catch (_: any) {}
+            try { onNodeFailure(failedUrl, message, source); } catch (_) {}
         }
     }
 
     /** True when a close code/wasClean pair should NOT count as a node failure. */
-    function isBenignClose(code: any, wasClean: boolean): boolean {
+    function isBenignClose(code: unknown, wasClean: boolean): boolean {
         if (wasClean === false) return false;
         return typeof code === 'number' && BENIGN_CLOSE_CODES.has(code);
     }
@@ -176,7 +197,7 @@ function createTransport(config: TransportConfig = {}) {
     function shouldDeprioritize(url: string): boolean {
         if (failedNodes.has(url)) return true;
         if (shouldSkipNode) {
-            try { return !!shouldSkipNode(url); } catch (_: any) { return false; }
+            try { return !!shouldSkipNode(url); } catch (_) { return false; }
         }
         return false;
     }
@@ -187,7 +208,7 @@ function createTransport(config: TransportConfig = {}) {
             status = newStatus;
             transportLogger.info(`status change: ${prevStatus} -> ${newStatus} (node=${nodeUrl})`);
             if (onStatusChange) {
-                try { onStatusChange(newStatus, nodeUrl); } catch (_: any) {}
+                try { onStatusChange(newStatus, nodeUrl); } catch (_) {}
             }
         }
     }
@@ -260,7 +281,7 @@ function createTransport(config: TransportConfig = {}) {
                         autoreconnect = true;
                         intentionalClose = false;
                         if (ws) {
-                            try { ws.close(); } catch (_: any) {}
+                            try { ws.close(); } catch (_) {}
                         }
                     } else {
                         console.warn(`[TRANSPORT] Keep-alive call failed (${keepAliveFailures}/${MAX_KEEPALIVE_FAILURES}) on ${failedNode || 'unknown node'}`);
@@ -283,7 +304,7 @@ function createTransport(config: TransportConfig = {}) {
                 connectingSockets.add(socket);
                 const timer = setTimeout(() => {
                     connectingSockets.delete(socket);
-                    try { socket.close(); } catch (_: any) {}
+                    try { socket.close(); } catch (_) {}
                     reject(new ConnectionError(`handshake timeout ${connectTimeoutMs}ms for ${url}`));
                 }, connectTimeoutMs);
 
@@ -292,27 +313,27 @@ function createTransport(config: TransportConfig = {}) {
                     clearTimeout(timer);
                     resolve(socket);
                 };
-                socket.onerror = (evt: any) => {
+                socket.onerror = (evt: SocketEventLike) => {
                     connectingSockets.delete(socket);
                     clearTimeout(timer);
                     const msg = evt && evt.message ? evt.message : 'WebSocket connection error';
                     reject(new ConnectionError(msg));
                 };
-                socket.onclose = (evt: any) => {
+                socket.onclose = (evt: SocketEventLike) => {
                     connectingSockets.delete(socket);
                     clearTimeout(timer);
                     reject(new ConnectionError(`handshake closed code=${evt.code} for ${url}`));
                 };
-            } catch (err: any) {
+            } catch (err) {
                 reject(new ConnectionError(`Failed to create WebSocket for ${url}: ${getErrorMessage(err)}`));
             }
         });
     }
 
     function setupMessageHandler(socket: WebSocketLike): void {
-        socket.onmessage = (raw: any) => {
-            let msg: any;
-            try { msg = JSON.parse(raw.data); } catch (_: any) { return; }
+        socket.onmessage = (raw: unknown) => {
+            let msg: RpcMessage;
+            try { msg = JSON.parse((raw as { data: string }).data) as RpcMessage; } catch (_) { return; }
 
             if (typeof msg.id !== 'undefined') {
                 const id = String(msg.id);
@@ -335,12 +356,12 @@ function createTransport(config: TransportConfig = {}) {
 
             if (typeof msg.method === 'string' && msg.method === 'notice') {
                 for (const handler of onMessageHandlers) {
-                    try { handler(msg.params); } catch (_: any) {}
+                    try { handler(msg.params); } catch (_) {}
                 }
             }
         };
 
-        socket.onclose = (evt: any) => {
+        socket.onclose = (evt: SocketEventLike) => {
             if (socket !== ws) return;
             // Consume the keep-alive suppression flag regardless of the
             // coalescing path, so a later unrelated close is never suppressed.
@@ -373,7 +394,7 @@ function createTransport(config: TransportConfig = {}) {
             scheduleReconnect();
         };
 
-        socket.onerror = (evt: any) => {
+        socket.onerror = (evt: SocketEventLike) => {
             const msg = evt && evt.message ? evt.message : 'WebSocket connection error';
             transportLogger.warn(`WebSocket error on ${nodeUrl}: ${msg}`);
         };
@@ -382,7 +403,7 @@ function createTransport(config: TransportConfig = {}) {
     function _onConnected(socket: WebSocketLike, url: string, idx: number, wasReconnect: boolean): Promise<void> {
         if (ws) {
             ws.onclose = null;
-            try { ws.close(); } catch (_: any) {}
+            try { ws.close(); } catch (_) {}
         }
         ws = socket;
         // A new active socket supersedes any pending close-suppression: the
@@ -406,7 +427,7 @@ function createTransport(config: TransportConfig = {}) {
             if (wasReconnect && onReconnect) {
                 try {
                     await onReconnect(nodeUrl);
-                } catch (err: any) {
+                } catch (err) {
                     transportLogger.warn(`Reconnect callback (subscription re-establishment) failed: ${getErrorMessage(err)}`);
                 }
             }
@@ -436,21 +457,22 @@ function createTransport(config: TransportConfig = {}) {
 
         try {
             setStatus('connecting');
-            const winner: any = await Promise.any(connectPromises);
+            const winner = await Promise.any(connectPromises) as ConnectResult;
             // Cancel remaining in-flight connections (best-effort, no throw).
             for (const p of connectPromises) {
-                p.then((other: any) => {
+                p.then((other: ConnectResult) => {
                     if (other.socket && other.socket !== winner?.socket) {
-                        try { other.socket.close(); } catch (_: any) {}
+                        try { other.socket.close(); } catch (_) {}
                     }
                 }).catch(() => {});
             }
             await _onConnected(winner.socket, winner.url, winner.idx, wasReconnect);
             return true;
-        } catch (firstErr: any) {
+        } catch (firstErr) {
             // All parallel attempts failed. Fall back to sequential retry for
             // environments where parallel connection floods are problematic.
-            const errMsg = firstErr?.errors ? firstErr.errors.map((e: any) => e?.message || e).join('; ') : (firstErr?.message || firstErr);
+            const firstErrErrors = getErrorField<unknown[]>(firstErr, 'errors');
+            const errMsg = firstErrErrors ? firstErrErrors.map((e: unknown) => getErrorMessage(e)).join('; ') : (getErrorMessage(firstErr));
             transportLogger.warn(`Parallel connect failed (${candidates.length} nodes), falling back to sequential: ${errMsg}`);
         }
 
@@ -463,13 +485,13 @@ function createTransport(config: TransportConfig = {}) {
                 const socket = await connectOne(url);
                 await _onConnected(socket, url, idx, wasReconnect);
                 return true;
-            } catch (err: any) {
+            } catch (err) {
                 if (ws) {
                     ws.onclose = null;
-                    try { ws.close(); } catch (_: any) {}
+                    try { ws.close(); } catch (_) {}
                     ws = null;
                 }
-                lastConnectErrors.push(err);
+                lastConnectErrors.push(err as Error);
             }
         }
         return false;
@@ -582,7 +604,7 @@ function createTransport(config: TransportConfig = {}) {
         cleanup();
 
         if (ws) {
-            try { ws.close(); } catch (_: any) {}
+            try { ws.close(); } catch (_) {}
             ws = null;
         }
         // Abort any in-flight connect handshakes: ws is only assigned after a
@@ -590,7 +612,7 @@ function createTransport(config: TransportConfig = {}) {
         // handshake that later assigns itself would resurrect a connection the
         // caller explicitly tore down (deadline aborts, node rotation).
         for (const socket of connectingSockets) {
-            try { socket.close(); } catch (_: any) {}
+            try { socket.close(); } catch (_) {}
         }
         connectingSockets.clear();
         nodeUrl = null;
@@ -652,7 +674,7 @@ function createTransport(config: TransportConfig = {}) {
             reconnectTimer = null;
         }
         cleanup();
-        try { oldSocket.close(); } catch (_: any) {}
+        try { oldSocket.close(); } catch (_) {}
         ws = null;
         setStatus('closed');
 
@@ -661,7 +683,7 @@ function createTransport(config: TransportConfig = {}) {
         startConnect().catch(() => scheduleReconnect());
     }
 
-    function call(method: string, params: any[], timeoutMs: number = rpcTimeoutMs): Promise<any> {
+    function call(method: string, params: unknown[], timeoutMs: number = rpcTimeoutMs): Promise<unknown> {
         if (!ws || ws.readyState !== 1) {
             return Promise.reject(new ConnectionError('WebSocket not open'));
         }
@@ -688,7 +710,7 @@ function createTransport(config: TransportConfig = {}) {
                     method,
                     params,
                 }));
-            } catch (err: any) {
+            } catch (err) {
                 clearTimeout(timer);
                 pendingRequests.delete(id);
                 reject(new ConnectionError(`Failed to send: ${getErrorMessage(err)}`));
@@ -696,7 +718,7 @@ function createTransport(config: TransportConfig = {}) {
         });
     }
 
-    function addMessageHandler(handler: (params: any) => void): (() => void) & { isActive: () => boolean } {
+    function addMessageHandler(handler: (params: unknown) => void): (() => void) & { isActive: () => boolean } {
         onMessageHandlers.push(handler);
         const unsubscribe = (() => {
             const idx = onMessageHandlers.indexOf(handler);

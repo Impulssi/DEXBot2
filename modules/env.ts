@@ -1,7 +1,7 @@
 'use strict';
 
-declare const globalThis: any;
-declare const process: any;
+declare const globalThis: { window?: { document?: unknown }; crypto?: unknown };
+declare const process: { execPath?: string; env?: Record<string, string | undefined> };
 
 /**
  * Environment detection — single source of truth for Node-vs-browser.

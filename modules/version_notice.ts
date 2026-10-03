@@ -160,7 +160,7 @@ export interface VersionNoticeOptions {
     /** Override install-kind detection (tests). */
     installKind?: InstallKind;
     /** Injectable fetch, for offline/hermetic tests. */
-    fetchImpl?: (url: string, init: any) => Promise<any>;
+    fetchImpl?: FetchImpl;
     /** Injected clock (tests). */
     now?: number;
     /** Ignore the throttle window. */
@@ -191,7 +191,7 @@ export function compareVersions(a: string, b: string): number {
     // says `1.6.8`. Without this, `v1.6.8` parsed to [0,6,8] and compared as
     // an ancient version — a source-spelling artefact masquerading as "an
     // update is available".
-    const parse = (v: any) =>
+    const parse = (v: unknown) =>
         String(v ?? '').trim().replace(/^[vV]/, '').split(/[-+]/)[0].split('.').map((n) => parseInt(n, 10) || 0);
     const na = parse(a);
     const nb = parse(b);
@@ -215,26 +215,39 @@ export function detectInstallKind(projectRoot: string = PATHS.PROJECT_ROOT): Ins
     return 'other';
 }
 
+/** Minimal structural view of a fetch response used by the probe. */
+export interface FetchResponseLike {
+    ok?: boolean;
+    status?: number;
+    json(): Promise<unknown>;
+}
+
+export type FetchImpl = (
+    url: string,
+    init: { method?: string; headers?: Record<string, string>; signal?: AbortSignal }
+) => Promise<FetchResponseLike | null | undefined>;
+
 /** One place the published version can be read from. */
 export interface VersionSource {
     id: string;
     url: string;
     /** Pull the version out of the source's JSON shape. Returns null when the
      *  document does not carry a usable version (bad payload). */
-    extract: (body: any) => string | null;
+    extract: (body: unknown) => string | null;
 }
 
 /** npm's dist-tag document: `{ "version": "1.6.8", ... }`. */
-const NPM_EXTRACT = (body: any): string | null =>
-    typeof body?.version === 'string' && body.version.trim() ? body.version.trim() : null;
+const NPM_EXTRACT = (body: unknown): string | null =>
+    typeof (body as { version?: unknown } | null)?.version === 'string' && (body as { version: string }).version.trim() ? (body as { version: string }).version.trim() : null;
 
 /**
  * GitHub's latest-release document: `{ "tag_name": "v1.6.8", ... }`. The tag
  * is normalised (leading `v` dropped) by `compareVersions`, so the two
  * sources are directly comparable.
  */
-const GITHUB_EXTRACT = (body: any): string | null => {
-    const tag = body?.tag_name ?? body?.name;
+const GITHUB_EXTRACT = (body: unknown): string | null => {
+    const rec = body as { tag_name?: unknown; name?: unknown } | null;
+    const tag = rec?.tag_name ?? rec?.name;
     return typeof tag === 'string' && tag.trim() ? tag.trim() : null;
 };
 
@@ -291,20 +304,20 @@ export function resolveReleaseSources(options: {
     apiBase?: string;
 } = {}): VersionSource[] {
     const sources: VersionSource[] = [];
-    const npmUrl = options.registryUrl !== undefined ? options.registryUrl : (UPDATER as any)?.REGISTRY_URL;
+    const npmUrl = options.registryUrl !== undefined ? options.registryUrl : UPDATER?.REGISTRY_URL;
     if (npmUrl) sources.push({ id: 'npm', url: String(npmUrl), extract: NPM_EXTRACT });
 
     const configured = options.githubReleaseUrl !== undefined
         ? options.githubReleaseUrl
-        : (UPDATER as any)?.GITHUB_RELEASE_URL;
+        : UPDATER?.GITHUB_RELEASE_URL;
     // 'off' (any case) disables the fallback explicitly; an empty value means
     // "derive it from the repository we already know about".
     const disabled = typeof configured === 'string' && ['off', 'none', 'false', 'disabled'].includes(configured.trim().toLowerCase());
     const githubUrl = disabled
         ? null
         : (String(configured ?? '').trim() || deriveGithubReleaseUrl(
-            options.repositoryUrl !== undefined ? options.repositoryUrl : (UPDATER as any)?.REPOSITORY_URL,
-            options.apiBase ?? (UPDATER as any)?.GITHUB_API_BASE ?? 'https://api.github.com',
+            options.repositoryUrl !== undefined ? options.repositoryUrl : UPDATER?.REPOSITORY_URL,
+            options.apiBase ?? UPDATER?.GITHUB_API_BASE ?? 'https://api.github.com',
         ));
     if (githubUrl) sources.push({ id: 'github', url: githubUrl, extract: GITHUB_EXTRACT });
     return sources;
@@ -361,7 +374,7 @@ function readCache(file: string): VersionCheckCache | null {
         // non-string version would otherwise flow into compareVersions.
         if (payload.latestVersion != null && typeof payload.latestVersion !== 'string') return null;
         if (payload.notifiedVersion != null && typeof payload.notifiedVersion !== 'string') return null;
-        return payload as VersionCheckCache;
+        return payload as unknown as VersionCheckCache;
     } catch {
         return null;
     }
@@ -376,7 +389,7 @@ function writeCache(file: string, cache: VersionCheckCache): void {
 }
 
 function resolveTimeoutMs(override?: number): number {
-    const raw = override !== undefined ? Number(override) : Number((UPDATER as any)?.NOTICE_TIMEOUT_MS);
+    const raw = override !== undefined ? Number(override) : Number(UPDATER?.NOTICE_TIMEOUT_MS);
     if (!Number.isFinite(raw) || raw <= 0) return 2_000;
     return Math.min(raw, MAX_TIMEOUT_MS);
 }
@@ -392,12 +405,13 @@ interface SourceAttempt {
 /** Turn a thrown fetch error into something an operator can act on. The
  *  `cause.code` is the useful part (`ENOTFOUND`, `ECONNREFUSED`,
  *  `CERT_HAS_EXPIRED`, `UND_ERR_SOCKET`); the wrapper message is noise. */
-function describeFetchError(err: any, source: VersionSource, timeoutMs: number): string {
-    const code = err?.cause?.code || err?.code;
+function describeFetchError(err: unknown, source: VersionSource, timeoutMs: number): string {
+    const e = err as { cause?: { code?: unknown }; code?: unknown; name?: unknown; message?: unknown } | null | undefined;
+    const code = e?.cause?.code || e?.code;
     if (code) return `${source.id}: ${code}`;
-    const name = String(err?.name ?? '');
+    const name = String(e?.name ?? '');
     if (name === 'AbortError' || name === 'TimeoutError') return `${source.id}: timeout after ${timeoutMs}ms`;
-    const message = String(err?.message ?? '').trim();
+    const message = String(e?.message ?? '').trim();
     return message ? `${source.id}: ${message.split('\n')[0].slice(0, 60)}` : `${source.id}: request failed`;
 }
 
@@ -406,7 +420,7 @@ function describeFetchError(err: any, source: VersionSource, timeoutMs: number):
  * never rejects, so the sequential fallback in `probeReleaseSources` cannot be
  * short-circuited by a single bad source.
  */
-async function fetchFromSource(source: VersionSource, timeoutMs: number, fetchImpl?: any): Promise<SourceAttempt> {
+async function fetchFromSource(source: VersionSource, timeoutMs: number, fetchImpl?: FetchImpl): Promise<SourceAttempt> {
     const doFetch = fetchImpl || (typeof fetch === 'function' ? fetch : null);
     if (!doFetch) {
         // Node < 18 (or a stripped runtime) has no global fetch. That is a
@@ -436,12 +450,12 @@ async function fetchFromSource(source: VersionSource, timeoutMs: number, fetchIm
             const version = source.extract(body);
             if (!version) return { sourceId: source.id, version: null, reason: `${source.id}: no version in response` };
             return { sourceId: source.id, version };
-        } catch (err: any) {
+        } catch (err) {
             return { sourceId: source.id, version: null, reason: describeFetchError(err, source, timeoutMs) };
         }
     })();
 
-    let timer: any = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const timeout = new Promise<SourceAttempt>((resolve) => {
         timer = setTimeout(() => {
             timedOut = true;
@@ -477,7 +491,7 @@ export interface ProbeResult {
 export async function probeReleaseSources(
     sources: VersionSource[],
     timeoutMs: number,
-    fetchImpl?: any,
+    fetchImpl?: FetchImpl,
 ): Promise<ProbeResult> {
     if (!sources.length) return { version: null, reasons: ['no version source configured'] };
     const perSource = Math.max(1, Math.floor(timeoutMs / sources.length));
@@ -523,13 +537,13 @@ function resolveThrottleMs(previous: VersionCheckCache | null, options: VersionN
     // silently throttle exactly the case an operator turned throttling off to
     // diagnose.
     if (options.intervalMs === 0 || options.retryMs === 0) return 0;
-    if (Number((UPDATER as any)?.NOTICE_INTERVAL_MS ?? 0) === 0) return 0;
+    if (Number(UPDATER?.NOTICE_INTERVAL_MS ?? 0) === 0) return 0;
     const failed = !previous || previous.latestVersion == null;
     const override = failed ? options.retryMs : options.intervalMs;
     if (override !== undefined) return Math.max(0, Number(override) || 0);
     const configured = failed
-        ? Number((UPDATER as any)?.NOTICE_RETRY_MS ?? 0)
-        : Number((UPDATER as any)?.NOTICE_INTERVAL_MS ?? 0);
+        ? Number(UPDATER?.NOTICE_RETRY_MS ?? 0)
+        : Number(UPDATER?.NOTICE_INTERVAL_MS ?? 0);
     return Number.isFinite(configured) ? configured : 0;
 }
 
@@ -546,7 +560,7 @@ export function startVersionStatusCheck(options: VersionNoticeOptions = {}): Pro
 
     if (!hasProcess()) return done(null);
     if (Config.DEXBOT_SKIP_VERSION_NOTICE) return done(null);
-    const noticeEnabled = options.enabled ?? (UPDATER as any)?.NOTICE_ENABLED !== false;
+    const noticeEnabled = options.enabled ?? UPDATER?.NOTICE_ENABLED !== false;
     if (!noticeEnabled) return done(null);
 
     const cacheFile = options.cacheFile || PATHS.PROFILES.VERSION_CHECK_JSON;
@@ -773,7 +787,7 @@ function settleWithin<T>(promise: Promise<T>, ms: number): Promise<{ hit: boolea
     }
     return new Promise((resolve) => {
         let done = false;
-        const timer: any = setTimeout(() => {
+        const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
             if (done) return;
             done = true;
             resolve({ hit: false });
@@ -796,7 +810,7 @@ function settleWithin<T>(promise: Promise<T>, ms: number): Promise<{ hit: boolea
 }
 
 function resolveGraceMs(override?: number): number {
-    const raw = override !== undefined ? Number(override) : Number((UPDATER as any)?.NOTICE_STAGE_GRACE_MS);
+    const raw = override !== undefined ? Number(override) : Number(UPDATER?.NOTICE_STAGE_GRACE_MS);
     if (!Number.isFinite(raw) || raw <= 0) return 1_000;
     return Math.min(raw, MAX_TIMEOUT_MS);
 }
@@ -808,7 +822,7 @@ function resolveFinalTimeoutMs(override?: number, inherited?: number): number {
         ? Number(override)
         : inherited !== undefined
             ? Number(inherited)
-            : Number((UPDATER as any)?.NOTICE_STATUS_TIMEOUT_MS ?? (UPDATER as any)?.NOTICE_TIMEOUT_MS);
+            : Number(UPDATER?.NOTICE_STATUS_TIMEOUT_MS ?? UPDATER?.NOTICE_TIMEOUT_MS);
     if (!Number.isFinite(raw) || raw <= 0) return 3_000;
     return Math.min(raw, MAX_TIMEOUT_MS);
 }

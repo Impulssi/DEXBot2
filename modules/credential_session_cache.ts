@@ -21,7 +21,7 @@ interface CacheSessionKeyOptions {
 
 interface LoadDaemonKeyOptions {
     chainKeys?: typeof chainKeys;
-    chainClient?: any;
+    chainClient?: unknown;
 }
 
 interface SessionState {
@@ -47,9 +47,9 @@ function buildSessionAccountCache(accountsData: AccountsData, masterSecret: stri
         try {
             const privateKey = chainKeysImpl.decrypt(account.encryptedKey, masterSecret);
             cache.set(accountName, chainKeysImpl.encrypt(privateKey, derivedSessionSecret));
-        } catch (err: any) {
+        } catch (err) {
             if (typeof options.onDecryptError === 'function') {
-                options.onDecryptError(accountName, err);
+                options.onDecryptError(accountName, err as Error);
             }
         }
     }
@@ -101,7 +101,7 @@ async function loadDaemonPrivateKey(accountName: string, sessionState: SessionSt
             const privateKey = chainKeysImpl.getPrivateKey(accountName, currentVaultSecret);
             cacheSessionPrivateKey(accountName, privateKey, sessionState, { chainKeys: chainKeysImpl });
             return privateKey;
-        } catch (err: any) {
+        } catch (err) {
             // Authority resolution fallback: when no direct key is stored for this
             // account, try walking on-chain account_auths / key_auths.
             if (options.chainClient && typeof chainKeysImpl.resolvePrivateKey === 'function') {
@@ -113,7 +113,7 @@ async function loadDaemonPrivateKey(accountName: string, sessionState: SessionSt
                     );
                     cacheSessionPrivateKey(accountName, privateKey, sessionState, { chainKeys: chainKeysImpl });
                     return privateKey;
-                } catch (resolutionErr: any) {
+                } catch (resolutionErr) {
                     if (sessionAccountKeys && typeof sessionAccountKeys.delete === 'function') {
                         sessionAccountKeys.delete(accountName);
                     }

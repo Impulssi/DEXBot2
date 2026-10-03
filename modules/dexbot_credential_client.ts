@@ -10,12 +10,13 @@ import {
     isPrivatePathSecure,
 } from './credential_runtime.js';
 import { sendSocketJsonRequest } from './socket_json_client.js';
+import type { SocketJsonFailureKind } from './socket_json_client.js';
 import { getErrorMessage } from './utils/errors.js';
 interface BroadcastUncertainErrorDetails {
-    operations?: any[] | null;
+    operations?: unknown[] | null;
     accountName?: string | null;
     batchId?: string | null;
-    payload?: any;
+    payload?: unknown;
     timeoutMs?: number | null;
 }
 
@@ -48,7 +49,7 @@ interface CredentialClientOptions {
 
 interface CredentialDaemonMeta {
     uncertainOnTimeout?: boolean;
-    operations?: any[] | null;
+    operations?: unknown[] | null;
     accountName?: string | null;
     batchId?: string | null;
 }
@@ -57,12 +58,12 @@ export interface CredentialDaemonResponse {
     success?: boolean;
     error?: string;
     code?: string;
-    raw?: any;
-    operation_results?: any[];
+    raw?: unknown;
+    operation_results?: unknown[];
     /** Transaction envelope returned by some daemon/API broadcast replies. */
     trx?: {
-        operation_results?: any[];
-        [key: string]: any;
+        operation_results?: unknown[];
+        [key: string]: unknown;
     } | null;
     /** Node reported by the daemon as in play at the failure (typed replies). */
     nodeUrl?: string | null;
@@ -71,7 +72,7 @@ export interface CredentialDaemonResponse {
 interface RequestPayload {
     type: string;
     accountName: string;
-    operations: any[];
+    operations: unknown[];
     sessionId?: string | null;
     hmac?: string;
     nodeUrl?: string;
@@ -101,10 +102,10 @@ const DEFAULT_POLL_INTERVAL_MS = TIMING.CHECK_INTERVAL_MS;
  */
 class BroadcastUncertainError extends Error {
     code: string;
-    operations: any[] | null;
+    operations: unknown[] | null;
     accountName: string | null;
     batchId: string | null;
-    payload: any;
+    payload: unknown;
     timeoutMs: number | null;
 
     constructor(message: string, details: BroadcastUncertainErrorDetails = {}) {
@@ -123,15 +124,15 @@ function getSocketPath(options: CredentialClientOptions = {}): string {
     return options.socketPath || DEFAULT_SOCKET_PATH;
 }
 
-function sendCredentialDaemonRequest(socketPath: string, payload: any, timeoutMs: number, meta: CredentialDaemonMeta = {}): Promise<CredentialDaemonResponse> {
+function sendCredentialDaemonRequest(socketPath: string, payload: RequestPayload, timeoutMs: number, meta: CredentialDaemonMeta = {}): Promise<CredentialDaemonResponse> {
     const isBroadcast = !!(meta && meta.uncertainOnTimeout);
     return sendSocketJsonRequest({
         socketPath,
         timeoutMs,
-        writePayload: (socket: any) => {
+        writePayload: (socket: { write(data: string): void }) => {
             socket.write(`${JSON.stringify(payload)}\n`);
         },
-        buildError: (kind: any, detail: any) => {
+        buildError: (kind: SocketJsonFailureKind, detail: unknown) => {
             // For broadcast requests the chain may have already accepted the
             // operations by the time the connection dies (socket error,
             // truncated stream, or outer timeout). Use a typed error so the
@@ -156,10 +157,10 @@ function sendCredentialDaemonRequest(socketPath: string, payload: any, timeoutMs
             }
             return new Error(message);
         },
-        handleResponse: (parsed: any, resolve: any) => {
-            resolve(parsed);
+        handleResponse: (parsed: unknown, resolve: (value: CredentialDaemonResponse) => void) => {
+            resolve(parsed as CredentialDaemonResponse);
         },
-    });
+    }) as Promise<CredentialDaemonResponse>;
 }
 
 function getReadyFilePath(options: CredentialClientOptions = {}): string {
@@ -189,11 +190,11 @@ async function waitForCredentialDaemon(timeoutMs: number = DEFAULT_WAIT_TIMEOUT_
         if (Date.now() - start > timeoutMs) {
             throw new Error(`Timed out waiting for DEXBot2 credential daemon after ${timeoutMs}ms`);
         }
-        await new Promise((resolve: any) => setTimeout(resolve, pollIntervalMs));
+        await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs));
     }
 }
 
-async function executeOperationsViaCredentialDaemon(accountName: string, operations: any[], options: CredentialClientOptions = {}): Promise<CredentialDaemonResponse> {
+async function executeOperationsViaCredentialDaemon(accountName: string, operations: unknown[], options: CredentialClientOptions = {}): Promise<CredentialDaemonResponse> {
     if (!accountName) {
         throw new Error('accountName is required to execute operations');
     }

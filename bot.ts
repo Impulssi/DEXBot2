@@ -130,12 +130,12 @@ function loadBotConfig(name: string) {
         if (!botEntry) {
             const bots = resolveRawBotEntries(config);
             launcherLogger.error(`Bot '${name}' not found in ${PROFILES_BOTS_FILE}`);
-            launcherLogger.error(`Available bots: ${bots.map((b: any) => b.name).join(', ') || 'none'}`);
+            launcherLogger.error(`Available bots: ${bots.map((b: { name?: string }) => b.name).join(', ') || 'none'}`);
             runtime.exit(1);
         }
 
         return botEntry;
-    } catch (err: any) {
+    } catch (err) {
         launcherLogger.error(`Error loading bot config: ${getErrorMessage(err)}`);
         runtime.exit(1);
     }
@@ -151,7 +151,7 @@ function loadBotConfig(name: string) {
 async function getSigningSecretForAccount(accountName: string) {
     const keyStore = getKeyStore();
     const origLog = console.log;
-    console.log = (...args: any[]) => {
+    console.log = (...args: unknown[]) => {
         const isNoisy = args.some(
             (arg) => typeof arg === 'string' && (arg.includes('bitshares_client') || arg.includes('modules/'))
         );
@@ -177,7 +177,7 @@ async function getSigningSecretForAccount(accountName: string) {
           const allBotsConfig = resolveRawBotEntries(allBotsConfigData);
          
          // Find the current bot's index in the unfiltered bots.json array
-          const botIndex = allBotsConfig.findIndex((b: any) => isSameBotName(b.name, botName));
+          const botIndex = allBotsConfig.findIndex((b: { name?: string }) => isSameBotName(b.name, botName));
          if (botIndex === -1) {
              throw new Error(`Bot "${botName}" not found in ${PROFILES_BOTS_FILE}`);
          }
@@ -210,13 +210,13 @@ async function getSigningSecretForAccount(accountName: string) {
               // Attempt graceful cleanup before exiting
               try {
                   await bot.shutdown();
-              } catch (shutdownErr: any) {
+              } catch (shutdownErr) {
                   launcherLogger.error(`Error during cleanup: ${getErrorMessage(shutdownErr)}`);
               }
               throw err;
           }
 
-     } catch (err: any) {
+     } catch (err) {
          launcherLogger.error(`Failed to start bot: ${getErrorMessage(err)}`);
          runtime.exit(1);
      }

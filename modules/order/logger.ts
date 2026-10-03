@@ -4,9 +4,23 @@ import { path } from '../path_api.js';
 import { runtime } from '../runtime.js';
 import * as Format from './format.js';
 import LoggerState from './logger_state.js';
+import type { ManagedOrder, UnknownRecord } from '../types.js';
+
+interface LoggerConfig extends UnknownRecord {
+    display?: {
+        colors?: { enabled?: boolean; [key: string]: unknown };
+        fundStatus?: { enabled?: boolean; showDetailed?: boolean; [key: string]: unknown };
+        statusSummary?: { enabled?: boolean; [key: string]: unknown };
+        [key: string]: unknown;
+    };
+    rotation?: { maxSize?: number; maxFiles?: number; [key: string]: unknown };
+    json?: { enabled?: boolean; [key: string]: unknown };
+    changeTracking?: { enabled?: boolean; [key: string]: unknown };
+}
 import { LOGGING_CONFIG, ORDER_STATES, TIMING } from '../constants.js';
 import { Config } from '../config.js';
 import { getErrorMessage } from '../utils/errors.js';
+import type { OrderManagerLike } from '../types.js';
 import { withTimeout } from './utils/timeout.js';
 import { CLI_COLORS } from '../cli_colors.js';
 
@@ -55,14 +69,14 @@ function getGlobalConsoleLevel(): string | null {
  */
 class Logger {
     level: string;
-    config: any;
+    config: LoggerConfig;
     category: string;
     quiet: boolean;
-    logFile: any;
-    state: any;
+    logFile: string | null;
+    state: LoggerState;
     levels: Record<string, number>;
-    colors: any;
-    marketName: any;
+    colors: Record<string, string>;
+    marketName: string | null;
     correlationId: string | null;
 
     _writeQueue: string[];
@@ -90,7 +104,7 @@ class Logger {
      * @param {Object} [options.configOverride] - Override LOGGING_CONFIG
      * @param {string} [options.correlationId] - Tracing ID for JSON output
      */
-    constructor(category = 'DEXBot', options: { quiet?: boolean; quietUnderPm2?: boolean; logFile?: string; level?: string; configOverride?: any; correlationId?: string } = {}) {
+    constructor(category = 'DEXBot', options: { quiet?: boolean; quietUnderPm2?: boolean; logFile?: string; level?: string; configOverride?: LoggerConfig; correlationId?: string } = {}) {
         this.category = category;
 
         const isUnderPm2 = !!Config.pm_exec_path;
@@ -109,7 +123,7 @@ class Logger {
             this.quiet = !!this.logFile && !isPm2LogCaptureActive();
         }
         this.level = options.level || 'info';
-        this.config = options.configOverride || LOGGING_CONFIG;
+        this.config = (options.configOverride || LOGGING_CONFIG) as LoggerConfig;
 
         this.state = new LoggerState();
 
@@ -175,22 +189,22 @@ class Logger {
         const plainLines = batch.map(t => t.replace(/\x1b\[[0-9;]*m/g, ''));
 
         try {
-            const dir = path.dirname(this.logFile);
+            const dir = path.dirname(this.logFile as string);
             storage.ensureDir(dir);
 
             const perFileLimit = Math.floor(this._maxTotalSize / (this._maxLogFiles + 1));
             if (perFileLimit > 0) {
                 try {
-                    const stat = storage.stat(this.logFile);
+                    const stat = storage.stat(this.logFile as string);
                     if ((stat.size ?? 0) >= perFileLimit) {
                         this._rotateLogFile();
                     }
-                } catch (err: any) {
+                } catch (err) {
                 }
             }
 
-            await storage.appendFileAsync(this.logFile, plainLines.join('\n') + '\n', 'utf8');
-        } catch (err: any) {
+            await storage.appendFileAsync(this.logFile as string, plainLines.join('\n') + '\n', 'utf8');
+        } catch (err) {
             const now = Date.now();
             if (now - this._lastFileErrorTime > 60000) {
                 this._lastFileErrorTime = now;
@@ -231,21 +245,21 @@ class Logger {
             try {
                 storage.access(oldPath);
                 storage.rename(oldPath, newPath);
-            } catch (err: any) {
+            } catch (err) {
             }
         }
 
         try {
-            storage.access(this.logFile);
-            storage.rename(this.logFile, this.logFile + '.1');
-        } catch (err: any) {
+            storage.access(this.logFile as string);
+            storage.rename(this.logFile as string, (this.logFile as string) + '.1');
+        } catch (err) {
         }
     }
 
     _getJsonLine(level: string, message: string, correlationId?: string | null): string | null {
         if (!this._jsonOutput) return null;
         const ts = new Date().toISOString();
-        const entry: any = {
+        const entry: UnknownRecord = {
             timestamp: ts,
             level: level.toUpperCase(),
             category: this.category,
@@ -362,7 +376,7 @@ class Logger {
                 this._flushPromise = null;
             });
         }
-        return withTimeout(this._flushPromise, timeoutMs, { onTimeout: 'resolve', defaultValue: undefined as any });
+        return withTimeout(this._flushPromise, timeoutMs, { onTimeout: 'resolve', defaultValue: undefined });
     }
 
     /**
@@ -370,7 +384,7 @@ class Logger {
      * @param {Array<Object>} orders - The list of orders.
      * @param {number} startPrice - The market start price.
      */
-    logOrderGrid(orders: any[], startPrice: number) {
+    logOrderGrid(orders: ManagedOrder[], startPrice: number) {
         const header = '\n===== ORDER GRID (SAMPLE) =====';
         let output = header + '\n';
         if (this.marketName) output += `Market: ${this.marketName} @ ${startPrice}\n`;
@@ -424,7 +438,7 @@ class Logger {
         this._enqueueWrite(output + footer);
     }
 
-    _logOrderRow(order: any) {
+    _logOrderRow(order: ManagedOrder) {
         const typeColor = this.colors[order.type] || '';
         const stateColor = this.colors[order.state] || '';
         const price = Format.formatPrice4(order.price).padEnd(12);
@@ -447,13 +461,13 @@ class Logger {
      * @param {string} context - Context label (e.g. "AFTER fill")
      * @param {boolean} forceDetailed - Force output even if no change
      */
-    logFundsStatus(manager: any, context = '', forceDetailed = false) {
+    logFundsStatus(manager: OrderManagerLike, context = '', forceDetailed = false) {
         if (!manager) return;
         if (!this.config.display?.fundStatus?.enabled && !forceDetailed) return;
 
         const isDebugMode = this.level === 'debug';
-        const buyName = manager.config?.assetB?.symbol || manager.config?.assetB || 'quote';
-        const sellName = manager.config?.assetA?.symbol || manager.config?.assetA || 'base';
+        const buyName = (manager.config?.assetB as unknown as { symbol?: string } | undefined)?.symbol || manager.config?.assetB || 'quote';
+        const sellName = (manager.config?.assetA as unknown as { symbol?: string } | undefined)?.symbol || manager.config?.assetA || 'base';
         const headerContext = context ? ` [${context}]` : '';
 
         const fundState = {
@@ -477,8 +491,8 @@ class Logger {
             }
         }
 
-        const buyPrecision = manager.config?.assetB?.precision;
-        const sellPrecision = manager.config?.assetA?.precision;
+        const buyPrecision = (manager.config?.assetB as unknown as { precision?: number } | undefined)?.precision;
+        const sellPrecision = (manager.config?.assetA as unknown as { precision?: number } | undefined)?.precision;
         const availableBuy = (Number.isFinite(Number(manager.funds?.available?.buy)) && buyPrecision !== undefined)
             ? Format.formatAmountByPrecision(manager.funds.available.buy, buyPrecision)
             : 'N/A';
@@ -499,11 +513,11 @@ class Logger {
         }
     }
 
-    _logDetailedFunds(manager: any, headerContext = '') {
-        const buyName = manager.config?.assetB?.symbol || manager.config?.assetB || 'quote';
-        const sellName = manager.config?.assetA?.symbol || manager.config?.assetA || 'base';
-        const buyPrecision = manager.config?.assetB?.precision;
-        const sellPrecision = manager.config?.assetA?.precision;
+    _logDetailedFunds(manager: OrderManagerLike, headerContext = '') {
+        const buyName = (manager.config?.assetB as unknown as { symbol?: string } | undefined)?.symbol || manager.config?.assetB || 'quote';
+        const sellName = (manager.config?.assetA as unknown as { symbol?: string } | undefined)?.symbol || manager.config?.assetA || 'base';
+        const buyPrecision = (manager.config?.assetB as unknown as { precision?: number } | undefined)?.precision;
+        const sellPrecision = (manager.config?.assetA as unknown as { precision?: number } | undefined)?.precision;
         if (buyPrecision === undefined || sellPrecision === undefined) {
             this.log(`[Funds] Detailed funds unavailable: missing precision for ${buyName}/${sellName}`, 'debug');
             return;
@@ -560,7 +574,7 @@ class Logger {
      * @param {Object} manager - The manager instance
      * @param {boolean} forceOutput - Force output even if disabled in config
      */
-    displayStatus(manager: any, forceOutput = false) {
+    displayStatus(manager: OrderManagerLike, forceOutput = false) {
         if (!manager) return;
         if (!this.config.display?.statusSummary?.enabled && !forceOutput) return;
 
@@ -569,10 +583,10 @@ class Logger {
         const partialOrders = manager.getOrdersByTypeAndState?.(null, ORDER_STATES.PARTIAL) || [];
         const virtualOrders = manager.getOrdersByTypeAndState?.(null, ORDER_STATES.VIRTUAL) || [];
 
-        const buyName = manager.config?.assetB?.symbol || manager.config?.assetB || 'quote';
-        const sellName = manager.config?.assetA?.symbol || manager.config?.assetA || 'base';
-        const buyPrecision = manager.config?.assetB?.precision;
-        const sellPrecision = manager.config?.assetA?.precision;
+        const buyName = (manager.config?.assetB as unknown as { symbol?: string } | undefined)?.symbol || manager.config?.assetB || 'quote';
+        const sellName = (manager.config?.assetA as unknown as { symbol?: string } | undefined)?.symbol || manager.config?.assetA || 'base';
+        const buyPrecision = (manager.config?.assetB as unknown as { precision?: number } | undefined)?.precision;
+        const sellPrecision = (manager.config?.assetA as unknown as { precision?: number } | undefined)?.precision;
         if (buyPrecision === undefined || sellPrecision === undefined) {
             this.log(`[Status] Status summary unavailable: missing precision for ${buyName}/${sellName}`, 'debug');
             return;

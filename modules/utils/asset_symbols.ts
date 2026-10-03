@@ -22,6 +22,9 @@
  * Browser-safe: no node built-ins.
  */
 
+import type { UnknownRecord } from '../types.js';
+import { isUnknownRecord } from '../types.js';
+
 /** BitShares asset object id, e.g. "1.3.0" (the core asset) or "1.3.529". */
 const ASSET_OBJECT_ID_PATTERN = /^1\.3\.\d+$/;
 
@@ -91,11 +94,11 @@ const LENDING_ASSET_SYMBOL_KEYS = ['asset', 'collateralAsset'];
  * hand-edited lowercase entry never leaks into a chain call, a comparison or
  * a rendered label. The input is never mutated.
  */
-export function canonicalizeBotAssetSymbols<T extends Record<string, any>>(entry: T): T {
+export function canonicalizeBotAssetSymbols<T extends UnknownRecord>(entry: T): T {
   if (!entry || typeof entry !== 'object') return entry;
 
   let changed = false;
-  const out: Record<string, any> = { ...entry };
+  const out: UnknownRecord = { ...entry };
   for (const key of BOT_ASSET_SYMBOL_KEYS) {
     if (typeof out[key] === 'string') {
       const canonical = normalizeAssetSymbol(out[key]);
@@ -108,11 +111,11 @@ export function canonicalizeBotAssetSymbols<T extends Record<string, any>>(entry
 
   if ('debtPolicy' in out) {
     const policy = out.debtPolicy;
-    if (policy && typeof policy === 'object' && Array.isArray(policy.lending)) {
+    if (isUnknownRecord(policy) && Array.isArray(policy.lending)) {
       let lendingChanged = false;
-      const lending = policy.lending.map((item: any) => {
+      const lending = policy.lending.map((item: unknown) => {
         if (!item || typeof item !== 'object') return item;
-        const canonicalItem: Record<string, any> = { ...item };
+        const canonicalItem: UnknownRecord = { ...item };
         for (const key of LENDING_ASSET_SYMBOL_KEYS) {
           if (typeof canonicalItem[key] === 'string') {
             const canonical = normalizeAssetSymbol(canonicalItem[key]);

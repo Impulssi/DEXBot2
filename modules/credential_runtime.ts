@@ -28,11 +28,11 @@ const DEFAULT_RUNTIME_DIR_NAME = 'dexbot2';
 const DEFAULT_SOCKET_BASENAME = 'dexbot-cred-daemon.sock';
 const DEFAULT_READY_BASENAME = 'dexbot-cred-daemon.ready';
 
-function isUsableRuntimeBaseDir(dirPath: any) {
+function isUsableRuntimeBaseDir(dirPath: string) {
     try {
         storage.access(dirPath, 3);
         return storage.stat(dirPath).isDirectory();
-    } catch (err: any) {
+    } catch (err) {
         return false;
     }
 }

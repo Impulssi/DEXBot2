@@ -11,15 +11,18 @@ import { convertToSpreadPlaceholder, parseChainOrder, isNonBlockingUnmatchedOrde
 import { restoreGapEvacStreaks, applyPersistedPendingCrawls, resetLastFillPivot } from './order/utils/system.js';
 import { blockchainToFloat, calculateGapSlots, validatePersistedBoundary, isTransientInBandRejection } from './order/utils/math.js';
 import { ON_MISSING_GENESIS, isMissingGenesisError } from './order/genesis_policy.js';
+import type { ManagedOrder, ChainOrder } from './types.js';
+import type { GridGenesis } from './order/utils/math.js';
 import { hasExecutableActions } from './order/utils/validate.js';
 import { getErrorMessage } from './utils/errors.js';
+import type { BotLike } from './types.js';
 const { isGridBloated } = grid;
 
 /**
  * Persist the current grid state and trigger recovery if validation fails.
  * @param {import('./dexbot_class.js').DEXBot} bot
  */
-async function persistAndRecoverIfNeeded(bot: any) {
+async function persistAndRecoverIfNeeded(bot: BotLike) {
     bot.manager._recentFillKeysSnapshot = bot._getRecentFillKeysSnapshot();
     const validation = await bot.manager.persistGrid();
     if (!validation.isValid) {
@@ -40,7 +43,7 @@ async function persistAndRecoverIfNeeded(bot: any) {
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Record<string, number>}
  */
-function getRecentFillKeysSnapshot(bot: any) {
+function getRecentFillKeysSnapshot(bot: BotLike) {
     const snapshot: Record<string, number> = {};
     const now = Date.now();
     for (const [key, timestamp] of bot._recentlyQueuedFills) {
@@ -63,7 +66,7 @@ function getRecentFillKeysSnapshot(bot: any) {
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} [reason='state recovery sync']
  */
-async function triggerStateRecoverySync(bot: any, reason: any = 'state recovery sync') {
+async function triggerStateRecoverySync(bot: BotLike, reason: string = 'state recovery sync') {
     if (!bot.manager) return;
 
     if (bot._recoverySyncInFlight) {
@@ -79,7 +82,7 @@ async function triggerStateRecoverySync(bot: any, reason: any = 'state recovery 
         // would virtualize live ACTIVE slots (pass-1 phantom cleanup) and let
         // the next cycle re-create them as duplicates. Defer to a clean read.
         const openOrders = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
-            log: (message: string, level: any) => bot.manager.logger.log(message, level),
+            log: (message: string, level?: string) => bot.manager.logger.log(message, level),
             label: 'RECOVERY',
             detail: 'during state recovery sync',
         });
@@ -94,7 +97,7 @@ async function triggerStateRecoverySync(bot: any, reason: any = 'state recovery 
         // recoverBatchSizeDrift) where broadcasting a fresh COW batch would race
         // the batch's own finally cleanup, and from flows holding the fill lock.
         _schedulePostRecoveryRebalance(bot, `state recovery sync (${reason})`);
-    } catch (err: any) {
+    } catch (err) {
         bot.manager.logger.log(
             `[RECOVERY] State recovery sync (${reason}) failed: ${getErrorMessage(err)}. Preserving current state; the next sync cycle will retry.`,
             'error'
@@ -110,7 +113,7 @@ async function triggerStateRecoverySync(bot: any, reason: any = 'state recovery 
  * @param {string} flowContext
  * @returns {Promise<boolean>}
  */
-async function abortFlowIfIllegalState(bot: any, flowContext: any) {
+async function abortFlowIfIllegalState(bot: BotLike, flowContext: string) {
     const illegalSignal = bot.manager?.consumeIllegalStateSignal?.();
     if (!illegalSignal) {
         return false;
@@ -133,11 +136,11 @@ async function abortFlowIfIllegalState(bot: any, flowContext: any) {
  * @param {number} [opsCount=0]
  * @returns {Promise<Object|null>}
  */
-async function handleBatchHardAbort(bot: any, err: any, phase: any = 'batch processing', opsCount: any = 0) {
+async function handleBatchHardAbort(bot: BotLike, err: unknown, phase: string = 'batch processing', opsCount: number = 0) {
     const baseResult = { executed: false, hadRotation: false };
     const opsInfo = opsCount > 0 ? ` with ${opsCount} ops` : '';
 
-    if (err?.code === 'ACCOUNTING_COMMITMENT_FAILED') {
+    if ((err as { code?: string } | null | undefined)?.code === 'ACCOUNTING_COMMITMENT_FAILED') {
         const accountingSignal = bot.manager.consumeAccountingFailureSignal?.();
         const reason = accountingSignal
             ? `accounting lock failure (${accountingSignal.side} ${Format.formatAmount8(accountingSignal.amount)}) during ${accountingSignal.context}`
@@ -164,7 +167,7 @@ async function handleBatchHardAbort(bot: any, err: any, phase: any = 'batch proc
  * @param {string} [context='recoverable-grid-update']
  * @returns {Promise<number>}
  */
-async function applyRecoverableGridUpdates(bot: any, updates: any, context: any = 'recoverable-grid-update') {
+async function applyRecoverableGridUpdates(bot: BotLike, updates: unknown[], context: string = 'recoverable-grid-update') {
     if (!bot.manager || !Array.isArray(updates) || updates.length === 0) {
         return 0;
     }
@@ -177,7 +180,7 @@ async function applyRecoverableGridUpdates(bot: any, updates: any, context: any 
         applied = 0;
         for (const update of updates) {
             if (typeof bot.manager._updateOrder !== 'function') break;
-            await bot.manager._updateOrder(update, context);
+            await bot.manager._updateOrder(update as ManagedOrder, context);
             applied++;
         }
     }
@@ -196,8 +199,8 @@ async function applyRecoverableGridUpdates(bot: any, updates: any, context: any 
  * @param {string} [reason='stale order cleanup']
  * @returns {Promise<Object>}
  */
-async function recoverExplicitStaleOrders(bot: any, staleOrderIds: any, reason: any = 'stale order cleanup') {
-    const staleIds = Array.from(staleOrderIds || []).filter(Boolean) as string[];
+async function recoverExplicitStaleOrders(bot: BotLike, staleOrderIds: unknown, reason: string = 'stale order cleanup') {
+    const staleIds = Array.from((staleOrderIds as Iterable<unknown>) || []).filter(Boolean) as string[];
     if (staleIds.length === 0) {
         return { executed: false, hadRotation: false, stale: false };
     }
@@ -208,7 +211,7 @@ async function recoverExplicitStaleOrders(bot: any, staleOrderIds: any, reason: 
         'warn'
     );
 
-    const updates: any[] = [];
+    const updates: unknown[] = [];
 
     for (const [, gridOrder] of bot.manager.orders.entries()) {
         if (!gridOrder?.orderId || !staleIdSet.has(gridOrder.orderId)) continue;
@@ -246,7 +249,7 @@ async function recoverExplicitStaleOrders(bot: any, staleOrderIds: any, reason: 
  * @param {Array<Object>} [opContexts=[]]
  * @returns {Promise<Object>}
  */
-async function recoverBatchSizeDrift(bot: any, err: any, opContexts: any = []) {
+async function recoverBatchSizeDrift(bot: BotLike, err: unknown, opContexts: unknown = []) {
     const affectedOrderIds = extractSizeDriftOrderIds(opContexts);
     if (affectedOrderIds.length > 0) {
         bot.manager.logger.log(
@@ -295,10 +298,10 @@ async function recoverBatchSizeDrift(bot: any, err: any, opContexts: any = []) {
  * @param {Array<Object>} opContexts
  * @returns {string[]}
  */
-function extractSizeDriftOrderIds(opContexts: any) {
+function extractSizeDriftOrderIds(opContexts: unknown) {
     if (!Array.isArray(opContexts)) return [];
-    const ids = new Set();
-    for (const ctx of opContexts) {
+    const ids = new Set<string>();
+    for (const ctx of opContexts as Array<{ kind?: string; updateInfo?: { partialOrder?: { orderId?: string } }; rotation?: { oldOrder?: { orderId?: string } } }>) {
         if (ctx?.kind === 'size-update' && ctx?.updateInfo?.partialOrder?.orderId) {
             ids.add(ctx.updateInfo.partialOrder.orderId);
         } else if (ctx?.kind === 'rotation' && ctx?.rotation?.oldOrder?.orderId) {
@@ -313,12 +316,12 @@ function extractSizeDriftOrderIds(opContexts: any) {
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Promise<{success: boolean, reason?: string}>}
  */
-async function recoverFromPersistedGrid(bot: any) {
+async function recoverFromPersistedGrid(bot: BotLike) {
     if (!bot.accountOrders || !bot.manager) {
         return { success: false, reason: 'accountOrders or manager unavailable' };
     }
 
-    const accountRef = bot.accountId || bot.account?.id || bot.account;
+    const accountRef = bot.accountId || (bot.account as unknown as { id?: string } | null)?.id || bot.account;
     if (!accountRef) {
         return { success: false, reason: 'no account reference' };
     }
@@ -375,8 +378,8 @@ async function recoverFromPersistedGrid(bot: any) {
             }
         }
 
-        const persistedGenesis = bot.accountOrders.loadGenesis?.(true) ?? null;
-        await grid.loadGrid(bot.manager, persistedGrid, boundaryIdx, persistedGenesis, { tolerateTransientStranding });
+        const persistedGenesis = (bot.accountOrders.loadGenesis?.(true) ?? null) as GridGenesis | null;
+        await grid.loadGrid(bot.manager, persistedGrid as ManagedOrder[], boundaryIdx, persistedGenesis, { tolerateTransientStranding });
         // Restart resilience: same pruning rules as the startup path — streaks
         // only survive for slots that still exist in the reloaded grid.
         const restoredStreaks = restoreGapEvacStreaks(bot.manager, bot.accountOrders.loadGapEvacStreaks?.(true) ?? null);
@@ -393,9 +396,9 @@ async function recoverFromPersistedGrid(bot: any) {
         try {
             await applyPersistedPendingCrawls(bot, {
                 forceReload: true,
-                log: (message: string, level?: any) => bot.manager.logger.log(message, level)
+                log: (message: string, level?: string) => bot.manager.logger.log(message, level)
             });
-        } catch (pendingErr: any) {
+        } catch (pendingErr) {
             bot.manager.logger.log(
                 `[BOUNDARY] Pending-crawl application failed during recovery reload (${getErrorMessage(pendingErr)}); continuing with the restored boundary`,
                 'warn'
@@ -408,9 +411,9 @@ async function recoverFromPersistedGrid(bot: any) {
             // in-memory boundary so subsequent re-derivation (P3) starts clean
             // instead of reusing the stale restored value (131 in the incident).
             try {
-                (bot.manager as any)._restoreBoundary?.(null);
+                (bot.manager as unknown as { _restoreBoundary?(value: unknown): void })._restoreBoundary?.(null);
             } catch {}
-            (bot.manager as any).boundaryIdx = null;
+            (bot.manager as unknown as { boundaryIdx?: number | null }).boundaryIdx = null;
             return { success: false, reason: 'corrupted grid snapshot rejected (fund drift)' };
         }
 
@@ -420,7 +423,7 @@ async function recoverFromPersistedGrid(bot: any) {
         // chain did not complete its contract — fail so the caller escalates
         // to a structural resync (which defers the same way on a clean read).
         let chainOpenOrders = await readOpenOrdersGuarded(chainOrders, accountRef, {
-            log: (message: string, level: any) => bot.manager.logger.log(message, level),
+            log: (message: string, level?: string) => bot.manager.logger.log(message, level),
             label: 'RECOVERY',
             detail: 'full grid reload from persisted snapshot',
         });
@@ -435,18 +438,19 @@ async function recoverFromPersistedGrid(bot: any) {
             // path (adoptPlacedBatchFromChain reads by id immediately after
             // broadcast). When no known ids are available, still defer.
             const knownIds = (persistedGrid || [])
-                .map((s: any) => s && s.orderId)
-                .filter((id: any) => id && /^1\.7\.\d+$/.test(String(id)));
-            let recoveredById: any[] | null = null;
+                .map((s: unknown) => (s as { orderId?: string } | null)?.orderId)
+                .filter((id: unknown) => id && /^1\.7\.\d+$/.test(String(id)));
+            let recoveredById: ChainOrder[] | null = null;
             if (knownIds.length > 0 && typeof chainOrders.batchReadOrders === 'function') {
                 try {
-                    const map = await chainOrders.batchReadOrders(knownIds);
-                    const byId: any[] = [];
-                    if (map && typeof map.forEach === 'function') {
-                        map.forEach((o: any) => { if (o) byId.push(o); });
+                    const map = await Promise.resolve(chainOrders.batchReadOrders(knownIds as string[]));
+                    const byId: ChainOrder[] = [];
+                    if (map && typeof (map as Map<string, ChainOrder>).forEach === 'function') {
+                        (map as Map<string, ChainOrder>).forEach((o) => { if (o) byId.push(o); });
                     }
                     recoveredById = byId;
-                } catch (byIdErr: any) {
+                    recoveredById = byId;
+                } catch (byIdErr) {
                     bot.manager.logger.log(`[RECOVERY] ID-based fallback read failed: ${getErrorMessage(byIdErr)}`, 'warn');
                 }
             }
@@ -461,6 +465,10 @@ async function recoverFromPersistedGrid(bot: any) {
             }
         }
 
+        if (chainOpenOrders === null) {
+            return { success: false, reason: 'truncated open-order read; full grid reload deferred' };
+        }
+
         if (chainOpenOrders.length > 0 && bot.manager?.syncFromOpenOrders) {
             await bot.manager.syncFromOpenOrders(chainOpenOrders, {
                 skipAccounting: true,
@@ -473,7 +481,7 @@ async function recoverFromPersistedGrid(bot: any) {
 
         const assets = bot.manager?.assets;
         const matchedCount = assets
-            ? chainOpenOrders.filter((o: any) => parseChainOrder(o, assets) !== null).length
+            ? chainOpenOrders.filter((o: unknown) => parseChainOrder(o as Parameters<typeof parseChainOrder>[0], assets) !== null).length
             : chainOpenOrders.length;
         bot.manager.logger.log(
             `[RECOVERY] Grid reloaded from persisted snapshot: ${bot.manager.orders.size} orders, ` +
@@ -488,10 +496,10 @@ async function recoverFromPersistedGrid(bot: any) {
         // the frozen rail): they survive every reload, so they must not fail
         // snapshot recovery — otherwise each restart forces a full grid reset
         // while a hold exists. Only adoptable/cancellable orphans reject.
-        const blockingUnmatched = remainingUnmatched.filter((u: any) => !isNonBlockingUnmatchedOrder(u));
+        const blockingUnmatched = remainingUnmatched.filter((u: unknown) => !isNonBlockingUnmatchedOrder(u as Parameters<typeof isNonBlockingUnmatchedOrder>[0]));
         if (blockingUnmatched.length > 0) {
             const sample = blockingUnmatched.slice(0, 3)
-                .map((o: any) => bot._formatUnmatchedChainOrderForLog(o))
+                .map((o: unknown) => bot._formatUnmatchedChainOrderForLog(o))
                 .join(' | ');
             bot.manager.logger.log(
                 `[RECOVERY] Persisted grid reloaded but ${blockingUnmatched.length} unmatched chain order(s) ` +
@@ -509,7 +517,7 @@ async function recoverFromPersistedGrid(bot: any) {
 
         const ordersArr = Array.from(bot.manager.orders.values());
         const bloatPostRecovery = isGridBloated(bot.manager, ordersArr);
-        if (bloatPostRecovery.bloated) {
+        if (bloatPostRecovery.bloated && bloatPostRecovery.details) {
             const d = bloatPostRecovery.details;
             bot.manager.logger.log(
                 `[RECOVERY] Persisted grid reloaded but still bloated ` +
@@ -529,7 +537,7 @@ async function recoverFromPersistedGrid(bot: any) {
         await _rebalanceAfterRecovery(bot, 'persisted grid reload');
 
         return { success: true };
-    } catch (err: any) {
+    } catch (err) {
         if (isMissingGenesisError(err)) {
             // Fail closed on the snapshot, not on the manager: `loadGrid`
             // refused it before touching any state. What happens next is the
@@ -578,7 +586,7 @@ async function recoverFromPersistedGrid(bot: any) {
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} context - Label for logging
  */
-async function _rebalanceAfterRecovery(bot: any, context: any) {
+async function _rebalanceAfterRecovery(bot: BotLike, context: string) {
     if (!bot.manager || typeof bot.manager.performSafeRebalance !== 'function' || typeof bot.updateOrdersOnChainBatch !== 'function') {
         return;
     }
@@ -611,11 +619,11 @@ async function _rebalanceAfterRecovery(bot: any, context: any) {
             return;
         }
         bot.manager.logger?.log?.(
-            `[RECOVERY] Re-placing ${rebalanceResult.actions.length} missing rail(s) after ${context}`,
+            `[RECOVERY] Re-placing ${(rebalanceResult.actions ?? []).length} missing rail(s) after ${context}`,
             'info'
         );
         await bot.updateOrdersOnChainBatch(rebalanceResult);
-    } catch (err: any) {
+    } catch (err) {
         bot.manager.logger?.log?.(
             `[RECOVERY] Target-grid rebalance after ${context} failed ` +
             `(will be handled by maintenance divergence check): ${getErrorMessage(err)}`,
@@ -637,7 +645,7 @@ async function _rebalanceAfterRecovery(bot: any, context: any) {
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} context - Label for logging
  */
-function _schedulePostRecoveryRebalance(bot: any, context: any) {
+function _schedulePostRecoveryRebalance(bot: BotLike, context: string) {
     if (!bot.manager || typeof bot.manager.performSafeRebalance !== 'function' || typeof bot.updateOrdersOnChainBatch !== 'function') {
         return;
     }
@@ -675,7 +683,7 @@ function _schedulePostRecoveryRebalance(bot: any, context: any) {
  * @param {'startup'|'recovery'} context
  * @returns {Promise<boolean>}
  */
-async function rejectCorruptedGridSnapshot(bot: any, context: any) {
+async function rejectCorruptedGridSnapshot(bot: BotLike, context: string) {
     if (!bot.manager?.checkFundDriftAfterFills) return false;
     const driftCheck = bot.manager.checkFundDriftAfterFills();
     if (driftCheck.isValid) return false;
@@ -683,7 +691,7 @@ async function rejectCorruptedGridSnapshot(bot: any, context: any) {
     const tag = context === 'recovery' ? '[RECOVERY][SNAPSHOT-REJECT]' : '[SNAPSHOT-REJECT]';
     bot._warn(
         `${tag} Corrupted grid snapshot detected: ` +
-        `drift sell=${driftCheck.driftSell.toFixed(2)} buy=${driftCheck.driftBuy.toFixed(2)}. ` +
+        `drift sell=${Number(driftCheck.driftSell ?? 0).toFixed(2)} buy=${Number(driftCheck.driftBuy ?? 0).toFixed(2)}. ` +
         `Deleting corrupted snapshot.`
     );
     if (bot.accountOrders && typeof bot.accountOrders.clearGrid === 'function') {
@@ -691,29 +699,35 @@ async function rejectCorruptedGridSnapshot(bot: any, context: any) {
             await bot.accountOrders.clearGrid();
             bot._warn(`${tag} Corrupted grid snapshot deleted.`);
         } catch (clearErr: unknown) {
-            bot._warn(`${tag} Failed to delete corrupted snapshot: ${(clearErr as any)?.message ?? clearErr}`);
+            bot._warn(`${tag} Failed to delete corrupted snapshot: ${getErrorMessage(clearErr)}`);
         }
     }
     // P4: clear in-memory boundary together with snapshot so a stale
     // restored value (e.g. 131 in the incident) is not reused for rebuild.
     // clearGrid() already wiped persisted boundaryIdx; also clear manager
     // state so P3 re-derivation starts from a clean null boundary.
+    const mgrRecovery = bot.manager as unknown as {
+        _restoreBoundary?(value: unknown): void;
+        boundaryIdx?: number | null;
+        _clearPendingFillCrawls?(reason?: string): void;
+        _resetLastFillPivot?(reason?: string): void;
+    };
     try {
-        (bot.manager as any)._restoreBoundary?.(null);
+        mgrRecovery._restoreBoundary?.(null);
     } catch {}
-    (bot.manager as any).boundaryIdx = null;
+    mgrRecovery.boundaryIdx = null;
     // Owed crawls belonged to the rejected generation: the rebuild re-anchors
     // the boundary absolutely, so applying their relative deltas would
     // double-count the movement the new anchor already contains. clearGrid()
     // wiped the persisted copy; drop the in-memory record (marks the grid
     // dirty so the wipe reaches disk on the next flush too).
-    (bot.manager as any)._clearPendingFillCrawls?.('grid snapshot rejected');
+    mgrRecovery._clearPendingFillCrawls?.('grid snapshot rejected');
     // The LAST-FILL-GUARD pivot was armed against the rejected generation's
     // geometry: drop it so the rebuild re-arms on a fresh fill instead of
     // vetoing placements against a boundary that no longer exists.
     try {
-        if (typeof (bot.manager as any)._resetLastFillPivot === 'function') {
-            (bot.manager as any)._resetLastFillPivot('grid snapshot rejected');
+        if (typeof mgrRecovery._resetLastFillPivot === 'function') {
+            mgrRecovery._resetLastFillPivot('grid snapshot rejected');
         } else {
             resetLastFillPivot(bot.manager, 'grid snapshot rejected');
         }
@@ -727,16 +741,16 @@ async function rejectCorruptedGridSnapshot(bot: any, context: any) {
  * @param {string[]} orderIds
  * @returns {Promise<boolean>}
  */
-async function targetedOrderRepair(bot: any, orderIds: any) {
+async function targetedOrderRepair(bot: BotLike, orderIds: string[]) {
     try {
         const objects = await BitShares.db.get_objects(orderIds);
         if (!Array.isArray(objects) || objects.length !== orderIds.length) return false;
 
-        const updates: any[] = [];
+        const updates: unknown[] = [];
         for (let i = 0; i < orderIds.length; i++) {
             const chainOrder = objects[i];
-            const gridOrder = (Array.from(bot.manager.orders.values()) as any[])
-                .find((o: any) => o.orderId === orderIds[i]);
+            const gridOrder = (Array.from(bot.manager.orders.values()) as ManagedOrder[])
+                .find((o) => o.orderId === orderIds[i]);
             if (!gridOrder) continue;
 
             if (!chainOrder || typeof chainOrder.for_sale === 'undefined') {
@@ -769,7 +783,7 @@ async function targetedOrderRepair(bot: any, orderIds: any) {
         return true;
     } catch (err: unknown) {
         bot.manager.logger.log(
-            `[COW] Targeted order repair failed: ${(err as any)?.message ?? err}`,
+            `[COW] Targeted order repair failed: ${getErrorMessage(err)}`,
             'debug'
         );
         return false;

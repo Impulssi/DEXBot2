@@ -51,7 +51,7 @@
  */
 
 class LoggerState {
-    previousState: Record<string, any>;
+    previousState: Record<string, unknown>;
 
     constructor() {
         this.previousState = {
@@ -65,14 +65,14 @@ class LoggerState {
      * @param {Object} current - Current state object
      * @returns {Object} { isNew: boolean, changes: Object }
      */
-    detectChanges(category: any, current: any) {
+    detectChanges(category: string, current: Record<string, unknown>) {
         const prev = this.previousState[category];
         if (!prev) {
             this.previousState[category] = { ...current };
             return { isNew: true, changes: current };
         }
 
-        const changes = this._deepDiff(prev, current);
+        const changes = this._deepDiff(prev as Record<string, unknown>, current);
         this.previousState[category] = { ...current };
         return { isNew: false, changes };
     }
@@ -85,8 +85,8 @@ class LoggerState {
      * @returns {Object} Object with keys that changed
      * @private
      */
-    _deepDiff(prev: any, current: any) {
-        const diff: Record<string, any> = {};
+    _deepDiff(prev: Record<string, unknown>, current: Record<string, unknown>) {
+        const diff: Record<string, unknown> = {};
 
         // Check all keys in current
         for (const key in current) {

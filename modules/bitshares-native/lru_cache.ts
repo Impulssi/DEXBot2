@@ -4,15 +4,15 @@ import { NATIVE_CLIENT } from '../constants.js';
 
 const { RESOLVERS } = NATIVE_CLIENT;
 
-interface CacheEntry {
-    value: any;
+interface CacheEntry<V> {
+    value: V;
     ts: number;
 }
 
-class LRUCache {
+class LRUCache<V = unknown> {
     maxSize: number;
     ttlMs: number | null;
-    cache: Map<string, CacheEntry>;
+    cache: Map<string, CacheEntry<V>>;
 
     constructor(maxSize: number = RESOLVERS.LRU_DEFAULT_SIZE, ttlMs: number | null = null) {
         this.maxSize = maxSize;
@@ -20,7 +20,7 @@ class LRUCache {
         this.cache = new Map();
     }
 
-    get(key: string): any | undefined {
+    get(key: string): V | undefined {
         const entry = this.cache.get(key);
         if (!entry) return undefined;
 
@@ -39,14 +39,14 @@ class LRUCache {
      * Does not delete or LRU-promote the entry — just peeks.
      * Use as a fallback when a fresh fetch fails.
      */
-    getStale(key: string): { value: any; expired: boolean } | undefined {
+    getStale(key: string): { value: V; expired: boolean } | undefined {
         const entry = this.cache.get(key);
         if (!entry) return undefined;
         const expired = this.ttlMs ? Date.now() - entry.ts > this.ttlMs : false;
         return { value: entry.value, expired };
     }
 
-    set(key: string, value: any): void {
+    set(key: string, value: V): void {
         if (this.cache.has(key)) {
             this.cache.delete(key);
         } else if (this.cache.size >= this.maxSize) {

@@ -3,11 +3,12 @@
 import { createRequire } from 'node:module';
 
 const _require = createRequire(import.meta.url);
-let _Buffer: any;
-const Buffer = new Proxy({} as any, {
+type BufferCtor = typeof import('node:buffer').Buffer;
+let _Buffer: BufferCtor | undefined;
+const Buffer: BufferCtor = new Proxy({} as BufferCtor, {
     get(_, prop) {
-        if (!_Buffer && _require) _Buffer = _require('buffer').Buffer;
-        return _Buffer ? _Buffer[prop] : undefined;
+        if (!_Buffer && _require) _Buffer = _require('buffer').Buffer as BufferCtor;
+        return _Buffer ? (_Buffer as unknown as Record<string | symbol, unknown>)[prop] : undefined;
     }
 });
 
@@ -214,25 +215,30 @@ class BufferReader {
     }
 }
 
+interface SerDebug {
+    use_default?: boolean;
+    [key: string]: unknown;
+}
+
 export interface SerializerInstance {
     _name: string;
     _types: Record<string, SerialType>;
     _keys: string[];
-    fromByteBuffer(b: BufferReader): Record<string, any>;
-    appendByteBuffer(b: BufferWriter, obj: any): void;
-    toObject(obj: any, debug?: any): Record<string, any>;
-    fromObject(obj: any): Record<string, any>;
-    toBuffer(obj: any): Buffer;
-    fromBuffer(buf: Buffer): Record<string, any>;
-    toHex(obj: any): string;
-    fromHex(hex: string): Record<string, any>;
+    fromByteBuffer(b: BufferReader): Record<string, unknown>;
+    appendByteBuffer(b: BufferWriter, obj: unknown): void;
+    toObject(obj: unknown, debug?: SerDebug): Record<string, unknown>;
+    fromObject(obj: unknown): Record<string, unknown>;
+    toBuffer(obj: unknown): Buffer;
+    fromBuffer(buf: Buffer): Record<string, unknown>;
+    toHex(obj: unknown): string;
+    fromHex(hex: string): Record<string, unknown>;
 }
 
 interface SerialType {
-    fromByteBuffer(b: BufferReader): any;
-    appendByteBuffer(b: BufferWriter, v: any): void;
-    fromObject(v: any): any;
-    toObject(v: any, debug?: any): any;
+    fromByteBuffer(b: BufferReader): unknown;
+    appendByteBuffer(b: BufferWriter, v: unknown): void;
+    fromObject(v: unknown): unknown;
+    toObject(v: unknown, debug?: SerDebug): unknown;
 }
 
 function Serializer(operation_name: string, types: Record<string, SerialType>): SerializerInstance {
@@ -243,26 +249,27 @@ function Serializer(operation_name: string, types: Record<string, SerialType>): 
         _types: types,
         _keys: typeKeys,
 
-        fromByteBuffer(b: BufferReader): Record<string, any> {
-            const result: Record<string, any> = {};
+        fromByteBuffer(b: BufferReader): Record<string, unknown> {
+            const result: Record<string, unknown> = {};
             for (const key of typeKeys) {
                 result[key] = types[key].fromByteBuffer(b);
             }
             return result;
         },
 
-        appendByteBuffer(b: BufferWriter, obj: any): void {
+        appendByteBuffer(b: BufferWriter, obj: unknown): void {
             if (!obj) throw new Error(`missing object for ${operation_name}`);
+            const rec = obj as Record<string, unknown>;
             for (const key of typeKeys) {
-                const val = obj[key];
+                const val = rec[key];
                 types[key].appendByteBuffer(b, val);
             }
         },
 
-        toObject(obj: any, debug?: any): Record<string, any> {
+        toObject(obj: unknown, debug?: SerDebug): Record<string, unknown> {
             if (!obj) {
                 if (debug && debug.use_default) {
-                    const result: Record<string, any> = {};
+                    const result: Record<string, unknown> = {};
                     for (const key of typeKeys) {
                         result[key] = types[key].toObject(undefined, debug);
                     }
@@ -270,37 +277,39 @@ function Serializer(operation_name: string, types: Record<string, SerialType>): 
                 }
                 throw new Error(`missing object for ${operation_name}`);
             }
-            const result: Record<string, any> = {};
+            const result: Record<string, unknown> = {};
+            const rec = obj as Record<string, unknown>;
             for (const key of typeKeys) {
-                result[key] = types[key].toObject(obj[key], debug);
+                result[key] = types[key].toObject(rec[key], debug);
             }
             return result;
         },
 
-        fromObject(obj: any): Record<string, any> {
+        fromObject(obj: unknown): Record<string, unknown> {
             if (!obj) throw new Error(`missing object for ${operation_name}`);
-            const result: Record<string, any> = {};
+            const result: Record<string, unknown> = {};
+            const rec = obj as Record<string, unknown>;
             for (const key of typeKeys) {
-                result[key] = types[key].fromObject(obj[key]);
+                result[key] = types[key].fromObject(rec[key]);
             }
             return result;
         },
 
-        toBuffer(obj: any): Buffer {
+        toBuffer(obj: unknown): Buffer {
             const w = new BufferWriter();
             s.appendByteBuffer(w, obj);
             return w.toBuffer();
         },
 
-        fromBuffer(buf: Buffer): Record<string, any> {
+        fromBuffer(buf: Buffer): Record<string, unknown> {
             return s.fromByteBuffer(new BufferReader(buf));
         },
 
-        toHex(obj: any): string {
+        toHex(obj: unknown): string {
             return s.toBuffer(obj).toString('hex');
         },
 
-        fromHex(hex: string): Record<string, any> {
+        fromHex(hex: string): Record<string, unknown> {
             return s.fromBuffer(Buffer.from(hex, 'hex'));
         },
     };

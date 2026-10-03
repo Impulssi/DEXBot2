@@ -12,17 +12,17 @@ const { unlink: safeUnlink } = storage;
 const BOOTSTRAP_SOCKET_PREFIX = 'dexbot-cred-bootstrap-';
 const DEFAULT_TIMEOUT_MS = TIMING.DAEMON_STARTUP_TIMEOUT_MS;
 
-function debugLog(message: any, err: any = null) {
+function debugLog(message: string, err: unknown = null) {
     const suffix = err && getErrorMessage(err) ? `: ${getErrorMessage(err)}` : '';
     console.error(`[credential-bootstrap][debug] ${message}${suffix}`);
 }
 
-function cleanupBootstrapArtifacts(socketPath: any, socketDir: any) {
+function cleanupBootstrapArtifacts(socketPath: string | null | undefined, socketDir: string | null | undefined) {
     if (socketPath) {
         safeUnlink(socketPath)
     }
     if (socketDir) {
-        try { storage.rmdir(socketDir); } catch (err: any) { }
+        try { storage.rmdir(socketDir); } catch (err) { }
     }
 }
 
@@ -30,8 +30,8 @@ function cleanupBootstrapArtifacts(socketPath: any, socketDir: any) {
  * Try a short connect to determine whether a Unix socket is live.
  * Returns true if the socket accepted the connection (server is listening).
  */
-function probeBootstrapSocket(socketPath: any, timeoutMs: any) {
-    return new Promise((resolve: any) => {
+function probeBootstrapSocket(socketPath: string, timeoutMs: number): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
         const socket = net.createConnection(socketPath, () => {
             socket.end();
             resolve(true);
@@ -49,7 +49,7 @@ async function cleanupStaleBootstrapDirs() {
     let entries;
     try {
         entries = storage.readdir(tmpDir);
-    } catch (err: any) {
+    } catch (err) {
         return;
     }
     const now = Date.now();
@@ -58,7 +58,7 @@ async function cleanupStaleBootstrapDirs() {
         if (!entry.startsWith(BOOTSTRAP_SOCKET_PREFIX)) continue;
         const dirPath = path.join(tmpDir, entry);
         let stat;
-        try { stat = storage.stat(dirPath); } catch (err: any) { continue; }
+        try { stat = storage.stat(dirPath); } catch (err) { continue; }
         if (!stat.isDirectory()) continue;
         // Only delete if the dir is older than the threshold AND there is no
         // live Unix socket inside.  A stale regular file named `bootstrap.sock`
@@ -67,7 +67,7 @@ async function cleanupStaleBootstrapDirs() {
         const socketPath = path.join(dirPath, 'bootstrap.sock');
         try {
             const socketStat = storage.stat(socketPath);
-            if ((socketStat as any).isSocket()) {
+            if (socketStat.isSocket?.()) {
                 // Probe the socket with a short connect.  If it succeeds the
                 // server is (or was very recently) listening — do not delete.
                 const probeResult = await probeBootstrapSocket(socketPath, 300);
@@ -79,7 +79,7 @@ async function cleanupStaleBootstrapDirs() {
             // proceed to mtime check.
         }
         if (now - stat.mtimeMs <= staleThresholdMs) continue;
-        try { storage.rm(dirPath, { recursive: true, force: true }); } catch (err: any) { }
+        try { storage.rm(dirPath, { recursive: true, force: true }); } catch (err) { }
     }
 }
 
@@ -89,7 +89,7 @@ async function createBootstrapSocketDir() {
     try {
         storage.chmod(dir, 0o700);
         assertPrivatePathSecurity(dir, { expectedType: 'dir', requiredMode: 0o700 });
-    } catch (err: any) {
+    } catch (err) {
         debugLog(`Unable to secure bootstrap dir ${dir}`, err);
     }
     return dir;
@@ -110,11 +110,11 @@ function fetchBootstrapPassword({
 
     return attemptFetch(retries);
 
-    function attemptFetch(remainingRetries: any) {
-        return new Promise((resolve: any, reject: any) => {
+    function attemptFetch(remainingRetries: number): Promise<unknown> {
+        return new Promise<unknown>((resolve, reject) => {
             let settled = false;
             let buffer = '';
-            const socket = (net as any).createConnection(socketPath, () => {
+            const socket = net.createConnection(socketPath as string, () => {
                 socket.write(JSON.stringify({ type: 'bootstrap-password' }) + '\n');
             });
 
@@ -126,14 +126,14 @@ function fetchBootstrapPassword({
                 reject(err);
             }, timeoutMs);
 
-            function finish(fn: any, value: any) {
+            function finish<T>(fn: (value: T) => void, value: T) {
                 if (settled) return;
                 settled = true;
                 clearTimeout(timer);
                 fn(value);
             }
 
-            socket.on('data', (data: any) => {
+            socket.on('data', (data: Buffer) => {
                 buffer += data.toString();
                 const newlineIndex = buffer.indexOf('\n');
                 if (newlineIndex === -1) return;
@@ -156,18 +156,18 @@ function fetchBootstrapPassword({
                         return;
                     }
                     finish(reject, new Error('Invalid bootstrap response'));
-                } catch (error: any) {
+                } catch (error) {
                     finish(reject, new Error('Invalid bootstrap response'));
                 }
             });
 
-            socket.on('error', (error: any) => {
+            socket.on('error', (error: unknown) => {
                 // Retry on transient socket errors (ECONNREFUSED, ECONNRESET)
                 if (!settled && remainingRetries > 0 && isTransientSocketError(error)) {
                     settled = true;
                     clearTimeout(timer);
                     const delay = Math.min(200 * Math.pow(2, retries - remainingRetries), 2000);
-                    debugLog(`Bootstrap socket error (${remainingRetries} retries left), retrying in ${delay}ms`, error as any);
+                    debugLog(`Bootstrap socket error (${remainingRetries} retries left), retrying in ${delay}ms`, error);
                     setTimeout(() => {
                         attemptFetch(remainingRetries - 1).then(resolve, reject);
                     }, delay);
@@ -185,8 +185,8 @@ function fetchBootstrapPassword({
     }
 }
 
-function isTransientSocketError(error: any) {
-    const code = error?.code || '';
+function isTransientSocketError(error: unknown) {
+    const code = (error as { code?: string } | null | undefined)?.code || '';
     // ENOENT can occur when the bootstrap server has not yet created the
     // socket file, or when a previous connection attempt consumed the
     // one-shot socket before the daemon read the secret.  Retry to give
@@ -200,7 +200,7 @@ async function createPasswordBootstrapServer({
     timeoutMs = DEFAULT_TIMEOUT_MS,
 }: {
     password?: string;
-    secret?: any;
+    secret?: unknown;
     timeoutMs?: number;
 } = {}) {
     const credential = typeof secret !== 'undefined' ? secret : password;
@@ -215,14 +215,14 @@ async function createPasswordBootstrapServer({
 
     const socketDir = await createBootstrapSocketDir();
     const socketPath = path.join(socketDir, 'bootstrap.sock');
-    let server: any = null;
+    let server: net.Server | null = null;
     let settled = false;
     let cleanedUp = false;
-    let timeoutHandle: any = null;
-    let resolveTransfer: any;
-    let rejectTransfer: any;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    let resolveTransfer: (value: unknown) => void;
+    let rejectTransfer: (reason: unknown) => void;
 
-    const transferPromise = new Promise((resolve: any, reject: any) => {
+    const transferPromise = new Promise<unknown>((resolve, reject) => {
         resolveTransfer = resolve;
         rejectTransfer = reject;
     });
@@ -235,24 +235,24 @@ async function createPasswordBootstrapServer({
             timeoutHandle = null;
         }
         if (server) {
-            try { server.close(); } catch (err: any) { }
+            try { server.close(); } catch (err) { }
             server = null;
         }
         cleanupBootstrapArtifacts(socketPath, socketDir);
     }
 
-    function settle(fn: any, value: any) {
+    function settle<T>(fn: (value: T) => void, value: T) {
         if (settled) return;
         settled = true;
         fn(value);
         cleanup();
     }
 
-    await new Promise((resolve: any, reject: any) => {
-        server = net.createServer((socket: any) => {
+    await new Promise<void>((resolve, reject) => {
+        server = net.createServer((socket) => {
             let buffer = '';
 
-            socket.on('data', (data: any) => {
+            socket.on('data', (data: Buffer) => {
                 buffer += data.toString();
                 const newlineIndex = buffer.indexOf('\n');
                 if (newlineIndex === -1) return;
@@ -275,7 +275,7 @@ async function createPasswordBootstrapServer({
                     // through to interactive auth.  This is by design — the secret
                     // channel is intentionally single-use.
                     settle(resolveTransfer, undefined);
-                } catch (error: any) {
+                } catch (error) {
                     socket.write(JSON.stringify({ success: false, error: 'Invalid bootstrap request' }) + '\n');
                     socket.end();
                 }
@@ -285,7 +285,7 @@ async function createPasswordBootstrapServer({
             });
         });
 
-        server.on('error', (error: any) => {
+        server.on('error', (error: unknown) => {
             cleanup();
             reject(error);
         });
@@ -293,7 +293,7 @@ async function createPasswordBootstrapServer({
         server.listen(socketPath, () => {
             try {
                 storage.chmod(socketPath, 0o600);
-            } catch (err: any) {
+            } catch (err) {
                 debugLog(`Unable to chmod bootstrap socket ${socketPath}`, err);
             }
             resolve(undefined);

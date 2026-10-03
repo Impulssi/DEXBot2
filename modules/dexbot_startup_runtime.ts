@@ -10,11 +10,13 @@ import { ORDER_STATES, TIMING } from './constants.js';
 import { PATHS } from './paths.js';
 import { getStorage } from './storage/index.js';
 import { normalizeBotEntry } from './bot_settings.js';
+import type { BotEntry } from './bot_settings.js';
 import * as Format from './order/format.js';
 import { AccountOrders } from './account_orders.js';
 import { BitShares, onReconnect as registerReconnectHook } from './bitshares_client.js';
 import orderModule from './order/index.js';
 import { getErrorMessage } from './utils/errors.js';
+import type { BotLike, ManagedOrder } from './types.js';
 import { processSweepOrphanFill } from './dexbot_fill_runtime.js';
 import {
     ON_MISSING_GENESIS,
@@ -22,35 +24,44 @@ import {
     resolvePersistedGenesis
 } from './order/genesis_policy.js';
 const { OrderManager, grid: Grid } = orderModule;
-function initializeFeeCache(...args: any) { return require('./order/utils/system').initializeFeeCache(...args); }
-function parseJsonWithComments(...args: any) { return require('./order/utils/system').parseJsonWithComments(...args); }
-function withBlockchainRetry(...args: any) { return require('./order/utils/system').withBlockchainRetry(...args); }
-function buildFillKey(...args: any) { return require('./order/utils/order').buildFillKey(...args); }
-function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
-function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
-function restoreGapEvacStreaks(...args: any) { return require('./order/utils/system').restoreGapEvacStreaks(...args); }
-function applyPersistedPendingCrawls(...args: any) { return require('./order/utils/system').applyPersistedPendingCrawls(...args); }
-function startupSleep(...args: any) { return require('./order/utils/system').sleep(...args); }
+function initializeFeeCache(...args: unknown[]) { return require('./order/utils/system').initializeFeeCache(...args); }
+function parseJsonWithComments(...args: unknown[]) { return require('./order/utils/system').parseJsonWithComments(...args); }
+function withBlockchainRetry(...args: unknown[]) { return require('./order/utils/system').withBlockchainRetry(...args); }
+function buildFillKey(...args: unknown[]) { return require('./order/utils/order').buildFillKey(...args); }
+function correctAllPriceMismatches(...args: unknown[]) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
+function parseChainOrder(...args: unknown[]) { return require('./order/utils/order').parseChainOrder(...args); }
+function restoreGapEvacStreaks(...args: unknown[]) { return require('./order/utils/system').restoreGapEvacStreaks(...args); }
+function applyPersistedPendingCrawls(...args: unknown[]) { return require('./order/utils/system').applyPersistedPendingCrawls(...args); }
+function startupSleep(...args: unknown[]) { return require('./order/utils/system').sleep(...args); }
 const storage = getStorage();
-function attemptResumePersistedGridByPriceMatch(...args: any) { return require('./order/grid_reconcile').attemptResumePersistedGridByPriceMatch(...args); }
-function decideStartupGridAction(...args: any) { return require('./order/grid_reconcile').decideStartupGridAction(...args); }
-function reconcileGridOrders(...args: any) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
-function botRetryLogger(bot: any): { log: Function } {
-    return { log: (msg: any) => bot._log(msg) };
+function attemptResumePersistedGridByPriceMatch(...args: unknown[]) { return require('./order/grid_reconcile').attemptResumePersistedGridByPriceMatch(...args); }
+function decideStartupGridAction(...args: unknown[]) { return require('./order/grid_reconcile').decideStartupGridAction(...args); }
+function reconcileGridOrders(...args: unknown[]) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
+function botRetryLogger(bot: BotLike): { log: (msg: string) => void } {
+    return { log: (msg: string) => bot._log(msg) };
 }
 
 // Test seams: compiled ESM exports cannot be monkey-patched, so tests may
 // substitute grid/reconcile modules and chain reads at the bot level.
-function botGridModule(bot: any) {
-    return (bot._gridModule && typeof bot._gridModule === 'object') ? bot._gridModule : Grid;
+interface GridModuleLike {
+    initializeGrid(manager: unknown): Promise<void>;
+    loadGrid(...args: unknown[]): Promise<unknown>;
 }
-function botReconcileModule(bot: any) {
+interface GridReconcileModuleLike {
+    decideStartupGridAction(...args: unknown[]): Promise<{ shouldRegenerate: boolean; [key: string]: unknown }>;
+    attemptResumePersistedGridByPriceMatch(...args: unknown[]): unknown;
+    reconcileGridOrders(...args: unknown[]): Promise<unknown>;
+}
+function botGridModule(bot: BotLike): GridModuleLike {
+    return (bot._gridModule && typeof bot._gridModule === 'object') ? bot._gridModule as GridModuleLike : Grid;
+}
+function botReconcileModule(bot: BotLike): GridReconcileModuleLike {
     return (bot._gridReconcileModule && typeof bot._gridReconcileModule === 'object')
-        ? bot._gridReconcileModule
+        ? bot._gridReconcileModule as GridReconcileModuleLike
         : { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileGridOrders };
 }
-async function botGuardedOpenOrdersRead(bot: any, opts: any) {
-    if (typeof bot._readOpenOrdersHook === 'function') return await bot._readOpenOrdersHook();
+async function botGuardedOpenOrdersRead(bot: BotLike, opts: Record<string, unknown>): Promise<unknown[] | null> {
+    if (typeof bot._readOpenOrdersHook === 'function') return await bot._readOpenOrdersHook() as unknown[] | null;
     return await readOpenOrdersGuarded(chainOrders, bot.accountId, opts);
 }
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
@@ -60,8 +71,8 @@ const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Promise<Object>} startupState
  */
-async function initializeStartupState(bot: any) {
-    bot.accountOrders = new AccountOrders({ botKey: bot.config.botKey });
+async function initializeStartupState(bot: BotLike) {
+    bot.accountOrders = new AccountOrders({ botKey: bot.config.botKey ?? '' });
     bot._processedFillStore.configure({
         accountOrders: bot.accountOrders
     });
@@ -76,8 +87,8 @@ async function initializeStartupState(bot: any) {
     const raw = storage.readFile(PROFILES_BOTS_FILE);
     const allBotsConfig = parseJsonWithComments(raw).bots || [];
     const myBotConfig = allBotsConfig
-        .map((b: any, originalIdx: any) => b.active !== false ? normalizeBotEntry(b, originalIdx) : null)
-        .find((b: any) => b && b.botKey === bot.config.botKey);
+        .map((b: BotEntry, originalIdx: number) => b.active !== false ? normalizeBotEntry(b, originalIdx) : null)
+        .find((b: BotEntry | null) => b && b.botKey === bot.config.botKey);
 
     if (myBotConfig) {
         await bot.accountOrders.syncMeta(myBotConfig);
@@ -109,13 +120,13 @@ async function initializeStartupState(bot: any) {
             await bot.manager.fetchAccountTotals(bot.accountId);
             bot._log('Fetched blockchain account balances at startup');
         }
-    } catch (err: any) {
+    } catch (err) {
         bot._log(`Startup balance fetch FAILED: ${getErrorMessage(err)}. Order sizing may be incorrect until next successful sync.`, 'error');
     }
 
     try {
         await initializeFeeCache([bot.config || {}], BitShares);
-    } catch (err: any) {
+    } catch (err) {
         bot._log(`Fee cache initialization FAILED: ${getErrorMessage(err)}. Fee calculations will use defaults until cache is refreshed.`, 'error');
     }
 
@@ -124,16 +135,17 @@ async function initializeStartupState(bot: any) {
     let repairedGrid = persistedGrid;
     if (persistedGrid && persistedGrid.length > 0) {
         let repairCount = 0;
-        repairedGrid = persistedGrid.map((order: any) => {
-            if (order && order.orderId && order.orderId === order.id) {
+        repairedGrid = persistedGrid.map((order: unknown) => {
+            const ord = order as ManagedOrder;
+            if (ord && ord.orderId && ord.orderId === ord.id) {
                 repairCount++;
-                const repairedOrder = { ...order, orderId: '' };
+                const repairedOrder = { ...ord, orderId: '' };
                 if (repairedOrder.state === ORDER_STATES.ACTIVE || repairedOrder.state === ORDER_STATES.PARTIAL) {
                     repairedOrder.state = ORDER_STATES.VIRTUAL;
                 }
                 return repairedOrder;
             }
-            return order;
+            return ord;
         });
         if (repairCount > 0) {
             bot._log(`[REPAIR] Stripped ${repairCount} fake orderId(s) from persisted grid to restore rebalancing logic.`);
@@ -173,11 +185,11 @@ async function initializeStartupState(bot: any) {
  *       bot down and rethrows. Nothing is cancelled without an operator.
  *
  * @param {import('./dexbot_class.js').DEXBot} bot
- * @param {any[]} persistedGrid - Persisted grid array (non-empty).
- * @param {any} persistedGenesis - Persisted ladder row (may be null).
+ * @param {unknown[]} persistedGrid - Persisted grid array (non-empty).
+ * @param {unknown} persistedGenesis - Persisted ladder row (may be null).
  * @returns {{needsRebuild: boolean}}
  */
-function evaluateStartupGenesisGate(bot: any, persistedGrid: any, persistedGenesis: any): { needsRebuild: boolean } {
+function evaluateStartupGenesisGate(bot: BotLike, persistedGrid: unknown, persistedGenesis: unknown): { needsRebuild: boolean } {
     const config = bot.manager?.config || bot.config;
     const resolution = resolvePersistedGenesis({
         config,
@@ -207,7 +219,7 @@ function evaluateStartupGenesisGate(bot: any, persistedGrid: any, persistedGenes
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} startupState
  */
-async function finishStartupSequence(bot: any, startupState: any) {
+async function finishStartupSequence(bot: BotLike, startupState: Awaited<ReturnType<typeof initializeStartupState>>) {
     let {
         persistedGrid,
         persistedBtsFeesOwed,
@@ -223,8 +235,8 @@ async function finishStartupSequence(bot: any, startupState: any) {
             await bot._fillsUnsubscribe().catch(() => { });
         }
         bot._fillsUnsubscribe = (typeof bot._listenForFillsHook === 'function')
-            ? await bot._listenForFillsHook()
-            : await chainOrders.listenForFills(bot.account || undefined, bot._createFillCallback(chainOrders));
+            ? await bot._listenForFillsHook() as (() => Promise<unknown>) | null
+            : await chainOrders.listenForFills(bot.account || undefined, bot._createFillCallback(chainOrders)) as (() => Promise<unknown>) | null;
         if (typeof bot._fillsUnsubscribe !== 'function') {
             bot._warn('Fill listener did not provide an unsubscribe handler. Shutdown cleanup may be incomplete.');
             bot._fillsUnsubscribe = null;
@@ -244,7 +256,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                             // absence decisions (phantom cleanup); a partial
                             // get_full_accounts window must defer instead.
                             const chainOpenOrders = await botGuardedOpenOrdersRead(bot, {
-                                log: (message: string, level: any) => bot._log(message, level),
+                                log: (message: string, level: string) => bot._log(message, level),
                                 label: 'RECONNECT-SYNC',
                             });
                             if (chainOpenOrders === null || bot._shuttingDown) return;
@@ -268,7 +280,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                                         buy: reconnectHealth.buyDustOrders,
                                         sell: reconnectHealth.sellDustOrders,
                                     });
-                                } catch (_dustErr: any) {
+                                } catch (_dustErr) {
                                     bot._warn(`[RECONNECT] Dust cancel failed: ${getErrorMessage(_dustErr)}`);
                                 }
                             }
@@ -276,22 +288,22 @@ async function finishStartupSequence(bot: any, startupState: any) {
                         try {
                             await Promise.race([
                                 workPromise,
-                                new Promise((_: any, reject: any) => {
+                                new Promise((_resolve: unknown, reject: (err: Error) => void) => {
                                     safetyNetTimer = setTimeout(
                                         () => reject(new Error(`Safety-net sync exceeded ${safetyNetTimeoutMs}ms cap`)),
                                         safetyNetTimeoutMs
                                     );
                                 })
                             ]);
-                        } catch (capErr: any) {
+                        } catch (capErr) {
                             const fallback = await Promise.race([
                                 workPromise.then(() => ({ ok: true as const })),
-                                new Promise<{ ok: false }>((resolve: any) => setTimeout(() => resolve({ ok: false }), 0))
+                                new Promise<{ ok: false }>((resolve) => setTimeout(() => resolve({ ok: false }), 0))
                             ]);
                             if (fallback.ok) {
                                 bot._log(`Safety-net sync completed despite timeout — ignoring spurious error.`, 'info');
                             } else {
-                                bot._warn(`Post-reconnect safety-net sync aborted: ${capErr?.message || capErr}`);
+                                bot._warn(`Post-reconnect safety-net sync aborted: ${getErrorMessage(capErr)}`);
                             }
                         } finally {
                             if (safetyNetTimer) clearTimeout(safetyNetTimer);
@@ -299,10 +311,10 @@ async function finishStartupSequence(bot: any, startupState: any) {
                     }
                 };
                 setImmediate(() => {
-                    runSafetyNetSync().catch((err: any) => {
+                    runSafetyNetSync().catch((err: unknown) => {
                         try {
-                            bot._warn('Post-reconnect safety-net sync failed: ' + (err?.message || err));
-                        } catch (_: any) {
+                            bot._warn('Post-reconnect safety-net sync failed: ' + (getErrorMessage(err)));
+                        } catch (_) {
                         }
                     });
                 });
@@ -319,7 +331,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                     bot._log(`[POST-RESET] ${bot._incomingFillQueue.length} fill(s) detected during trigger reset. Processing...`);
 
                     const fills = bot._incomingFillQueue.splice(0);
-                    const processedFillKeys = new Set();
+                    const processedFillKeys = new Set<string>();
                     let requiresOpenOrdersSync = false;
 
                     for (const fill of fills) {
@@ -327,14 +339,14 @@ async function finishStartupSequence(bot: any, startupState: any) {
 
                         const fillOp = fill.op[1];
                         const gridOrder = bot.manager.orders.get(fillOp.order_id) ||
-                            (Array.from(bot.manager.orders.values()) as any[]).find((o: any) => o.orderId === fillOp.order_id);
+                            (Array.from(bot.manager.orders.values()) as ManagedOrder[]).find((o) => o.orderId === fillOp.order_id);
 
                         if (!gridOrder) {
                             if (await processSweepOrphanFill(bot, fill, fillOp, processedFillKeys, {
                                 context: 'POST-RESET',
                                 label: 'POST-RESET',
                                 logger: { log: bot._log.bind(bot) },
-                                replayMessage: (op: any) => `[POST-RESET] Replay detected for orphan fill ${op.order_id}; skipping duplicate credit`
+                                replayMessage: (op: { order_id?: string }) => `[POST-RESET] Replay detected for orphan fill ${op.order_id}; skipping duplicate credit`
                             })) {
                                 requiresOpenOrdersSync = true;
                             }
@@ -353,7 +365,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                             const accountingResult = await bot._applyReplaySafeTrackedFillAccounting(fill, fillOp, {
                                 context: 'POST-RESET',
                                 logger: { log: bot._log.bind(bot) },
-                                replayMessage: (op: any) => `[POST-RESET] Replay detected for ${op.order_id}; skipping duplicate rebalance`
+                                replayMessage: (op: { order_id?: string }) => `[POST-RESET] Replay detected for ${op.order_id}; skipping duplicate rebalance`
                             });
                             if (accountingResult.status === 'missing_key') {
                                 requiresOpenOrdersSync = true;
@@ -379,7 +391,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                         // slots (pass-1 phantom cleanup). Defer — the guarded
                         // pre-spread sync below picks up on a clean read.
                         const postResetChainOpenOrders = await botGuardedOpenOrdersRead(bot, {
-                            log: (message: string, level: any) => bot._log(message, level),
+                            log: (message: string, level: string) => bot._log(message, level),
                             label: 'POST-RESET',
                             detail: 'open-orders fallback',
                         });
@@ -410,8 +422,8 @@ async function finishStartupSequence(bot: any, startupState: any) {
                         BitShares,
                         bot.updateOrdersOnChainPlan.bind(bot)
                     );
-                    if (spreadResult && spreadResult.ordersPlaced > 0) {
-                        bot._log(`✓ Spread correction after trigger reset: ${spreadResult.ordersPlaced} order(s) placed`);
+                    if (spreadResult && (spreadResult.ordersPlaced ?? 0) > 0) {
+                        bot._log(`✓ Spread correction after trigger reset: ${spreadResult.ordersPlaced ?? 0} order(s) placed`);
                         await bot._persistAndRecoverIfNeeded();
                     }
                 }
@@ -425,7 +437,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                             buy: postResetHealth.buyDustOrders,
                             sell: postResetHealth.sellDustOrders,
                         });
-                    } catch (_dustErr: any) {
+                    } catch (_dustErr) {
                         bot._warn(`[POST-RESET] Dust cancel failed: ${getErrorMessage(_dustErr)}`);
                     }
                 }
@@ -459,10 +471,11 @@ async function finishStartupSequence(bot: any, startupState: any) {
         });
         if (bot.config.assetA !== 'BTS' && bot.config.assetB !== 'BTS') {
             if (persistedBtsBalance && typeof persistedBtsBalance === 'object') {
+                const bal = persistedBtsBalance as { free?: number; total?: number; locked?: number };
                 bot.manager.btsBalance = {
-                    free: persistedBtsBalance.free || 0,
-                    total: persistedBtsBalance.total || 0,
-                    locked: persistedBtsBalance.locked || 0
+                    free: bal.free || 0,
+                    total: bal.total || 0,
+                    locked: bal.locked || 0
                 };
             }
         }
@@ -481,7 +494,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
         const guardedChainOrders = bot.config.dryRun
             ? []
             : await botGuardedOpenOrdersRead(bot, {
-                log: (message: string, level: any) => bot._log(message, level),
+                log: (message: string, level: string) => bot._log(message, level),
                 label: 'STARTUP',
             });
         // Truncated reads defer all chain-touching steps below; the decision
@@ -506,10 +519,10 @@ async function finishStartupSequence(bot: any, startupState: any) {
                 // production SYNC_EMPTY_READ_CONFIRM_DELAY_MS pacing (tests
                 // cover the confirm state machine, not the delay duration).
                 if (!bot._skipEmptyReadConfirmDelay) {
-                    await startupSleep(Math.max(0, Number((TIMING as any).SYNC_EMPTY_READ_CONFIRM_DELAY_MS) || 0));
+                    await startupSleep(Math.max(0, Number((TIMING as Record<string, unknown>).SYNC_EMPTY_READ_CONFIRM_DELAY_MS) || 0));
                 }
                 const confirmRead = await botGuardedOpenOrdersRead(bot, {
-                    log: (message: string, level: any) => bot._log(message, level),
+                    log: (message: string, level: string) => bot._log(message, level),
                     label: 'STARTUP-CONFIRM',
                     detail: 'persisted-grid empty confirm re-read',
                 });
@@ -523,7 +536,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                 } else {
                     bot._log('[STARTUP] Empty open-order read confirmed by re-read — accepting empty account', 'info');
                 }
-            } catch (confirmErr: any) {
+            } catch (confirmErr) {
                 bot._log(`[STARTUP] Empty-read confirm re-read failed (${getErrorMessage(confirmErr)}) — deferring chain-touching steps to the sync loop`, 'warn');
                 chainReadTruncated = true;
                 chainOpenOrders = [];
@@ -557,7 +570,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                     chainOpenOrders,
                     manager: bot.manager,
                     logger: botRetryLogger(bot),
-                    storeGrid: async (orders: any) => {
+                    storeGrid: async (orders: ManagedOrder[]) => {
                         await bot.manager.persistGrid(orders);
                     },
                     boundaryIdx: persistedBoundaryIdx,
@@ -572,7 +585,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
 
                 if (shouldRegenerate && chainOpenOrders.length > 0 && bot.manager?.assets) {
                     const orderCount = chainOpenOrders.filter(
-                        (o: any) => parseChainOrder(o, bot.manager.assets) !== null
+                        (o: unknown) => parseChainOrder(o, bot.manager.assets) !== null
                     ).length;
                     if (orderCount === 0) {
                         bot._log(`Persisted grid found with no matching orders (${chainOpenOrders.length} other-pair order(s) on account). Generating new grid.`);
@@ -582,11 +595,12 @@ async function finishStartupSequence(bot: any, startupState: any) {
         }
 
         if (!shouldRegenerate) {
-            if (persistedBtsFeesOwed > 0) {
+            const btsFeesOwed = Number(persistedBtsFeesOwed);
+            if (btsFeesOwed > 0) {
                 await bot.manager._fundLock.acquire(async () => {
-                    bot.manager.funds.btsFeesOwed = persistedBtsFeesOwed;
+                    bot.manager.funds.btsFeesOwed = btsFeesOwed;
                 });
-                bot._log(`✓ Restored BTS fees owed: ${Format.formatAmount8(persistedBtsFeesOwed)} BTS`);
+                bot._log(`✓ Restored BTS fees owed: ${Format.formatAmount8(btsFeesOwed)} BTS`);
             }
         } else {
             bot._log(`ℹ Grid regenerating - resetting BTS fees to clean state`);
@@ -658,7 +672,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                     // paths can never drift. Best-effort: reconcile proceeds
                     // with the restored boundary either way.
                     await applyPersistedPendingCrawls(bot, {
-                        log: (message: string, level?: any) => bot._log(message, level)
+                        log: (message: string, level?: string) => bot._log(message, level)
                     });
                     let startupChainOpenOrders = chainOpenOrders;
                     if (chainReadTruncated) {
@@ -684,7 +698,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
 
                             if (!batchResult?.aborted) {
                                 const reReadOrders = await botGuardedOpenOrdersRead(bot, {
-                                    log: (message: string, level: any) => bot._log(message, level),
+                                    log: (message: string, level: string) => bot._log(message, level),
                                     label: 'STARTUP',
                                     detail: 'post-fill re-read',
                                 });
@@ -745,7 +759,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
                         'fetchAccountTotals',
                         { logger: botRetryLogger(bot) }
                     );
-                } catch (fetchErr: any) {
+                } catch (fetchErr) {
                     bot._log(
                         `[STARTUP] [${bot.config?.botKey || 'unknown'}] fetchAccountTotals failed after retries: ${getErrorMessage(fetchErr)}. Continuing with cached account totals.`,
                         'warn'
@@ -790,7 +804,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
         }
         bot._log(`DEXBot started. OrderManager running (dryRun=${!!bot.config.dryRun})`);
 
-    } catch (err: any) {
+    } catch (err) {
         bot._warn(`Error during grid initialization: ${getErrorMessage(err)}`);
         await bot.shutdown();
         throw err;
@@ -801,7 +815,7 @@ async function finishStartupSequence(bot: any, startupState: any) {
  * Place initial orders on the blockchain (extracted logic from original placeInitialOrders).
  * @param {import('./dexbot_class.js').DEXBot} bot
  */
-async function placeInitialOrdersImpl(bot: any) {
+async function placeInitialOrdersImpl(bot: BotLike) {
     if (!bot.manager) {
         const mgrLogFile = bot.config?.name ? path.join(PATHS.LOGS_DIR, `${bot.config.name}.log`) : undefined;
         bot.manager = new OrderManager({ ...bot.config, logFile: mgrLogFile });
@@ -813,13 +827,13 @@ async function placeInitialOrdersImpl(bot: any) {
     try {
         try {
             const botFunds = bot.config && bot.config.botFunds ? bot.config.botFunds : {};
-            const needsPercent = (v: any) => typeof v === 'string' && v.includes('%');
+            const needsPercent = (v: unknown) => typeof v === 'string' && v.includes('%');
             if ((needsPercent(botFunds.buy) || needsPercent(botFunds.sell)) && (bot.accountId || bot.account)) {
                 if (typeof bot.manager._fetchAccountBalancesAndSetTotals === 'function') {
                     await bot.manager._fetchAccountBalancesAndSetTotals();
                 }
             }
-        } catch (errFetch: any) {
+        } catch (errFetch) {
             bot._warn(`Could not fetch account totals before initializing grid: ${errFetch && getErrorMessage(errFetch) ? getErrorMessage(errFetch) : errFetch}`);
         }
 

@@ -41,18 +41,79 @@ const ASSET_OBJECT_ID_PATTERN = /^1\.3\.\d+$/;
 const POLICY_DENIED_PREFIX = 'POLICY_DENIED: ';
 const EXECUTABLE_TIMEOUT_MS = 5000;
 
+interface AmountRef {
+    asset_id?: string;
+    amount?: number;
+}
+
+interface OpData {
+    to?: unknown;
+    amount?: AmountRef;
+    amount_to_sell?: AmountRef;
+    min_to_receive?: AmountRef;
+    delta_amount_to_sell?: AmountRef;
+    delta_collateral?: AmountRef;
+    delta_debt?: AmountRef;
+    new_price?: { base?: AmountRef; quote?: AmountRef };
+    fill_or_kill?: unknown;
+    extensions?: { target_collateral_ratio?: unknown };
+    offer_id?: unknown;
+    collateral?: AmountRef;
+    borrow_amount?: AmountRef;
+    repay_amount?: AmountRef;
+    credit_fee?: AmountRef;
+    max_fee_rate?: unknown;
+    min_duration_seconds?: unknown;
+    auto_repay?: unknown;
+    pool?: unknown;
+    [key: string]: unknown;
+}
+
+interface PolicyOperation {
+    op_name?: string;
+    op_data?: OpData;
+    [key: string]: unknown;
+}
+
 interface PolicyContext {
     accountName: string;
     requestType: string;
     sessionId: string | null;
     timestamp: string;
-    operations: any[];
+    operations: PolicyOperation[];
+}
+
+interface PolicyLayer {
+    sessionTtlMs?: number;
+    maxOpsPerBatch?: number;
+    allowedAssetIds?: string[] | null;
+    executable?: string | null;
+    botHmacSecret?: string;
+    allowedOps?: Record<string, Record<string, unknown>> | null;
+    [key: string]: unknown;
 }
 
 interface PolicyConfig {
     sessionTtlMs?: number;
-    default?: Record<string, any>;
-    accounts?: Record<string, Record<string, any>>;
+    default?: PolicyLayer;
+    accounts?: Record<string, PolicyLayer>;
+}
+
+interface MergedPolicy {
+    allowedOps: Record<string, Record<string, unknown>>;
+    maxOpsPerBatch?: number;
+    allowedAssetIds?: string[] | null;
+    executable?: string | null;
+    [key: string]: unknown;
+}
+
+interface PolicyRequest {
+    accountName: string;
+    type: string;
+    sessionId?: string | null;
+    operations?: PolicyOperation[];
+    hmac?: unknown;
+    [key: string]: unknown;
 }
 
 // Hardcoded baseline policy used when resolving policy layers in-process.
@@ -76,8 +137,8 @@ const BUILTIN_DEFAULT_POLICY = Object.freeze({
 });
 
 
-const policyCache = new Map();
-const assetRefResolutionCache = new LRUCache(RESOLVERS.LRU_DEFAULT_SIZE, RESOLVERS.ASSET_TTL_MS);
+const policyCache = new Map<string, PolicyConfig | null>();
+const assetRefResolutionCache = new LRUCache<string>(RESOLVERS.LRU_DEFAULT_SIZE, RESOLVERS.ASSET_TTL_MS);
 
 type AssetResolver = (assetRef: string) => Promise<string | null>;
 let _externalAssetResolver: AssetResolver | null = null;
@@ -112,7 +173,7 @@ async function resolveAssetRefToId(assetRef: string): Promise<string | null> {
                 assetRefResolutionCache.set(cacheKey, result);
                 return result;
             }
-        } catch (_: any) {
+        } catch {
             // fall through — native client may not be connected yet
         }
         // Don't cache null from external resolver; the native client may not
@@ -126,7 +187,7 @@ async function resolveAssetRefToId(assetRef: string): Promise<string | null> {
             const asset = await resolveAssetByRef(BitShares, cacheKey);
             resolvedId = asset?.id ? String(asset.id) : null;
         }
-    } catch (_: any) {
+    } catch {
         resolvedId = null;
     }
 
@@ -168,7 +229,7 @@ function createMinimalPolicyConfig(): { accounts: Record<string, never> } {
     };
 }
 
-function readPolicyConfigDetailed(filePath: string): { status: string; config: any; error: string | null } {
+function readPolicyConfigDetailed(filePath: string): { status: string; config: PolicyConfig | null; error: string | null } {
     if (!storage.exists(filePath)) {
         return {
             status: 'missing',
@@ -180,7 +241,7 @@ function readPolicyConfigDetailed(filePath: string): { status: string; config: a
     let raw;
     try {
         raw = readJSON(filePath);
-    } catch (error: any) {
+    } catch (error) {
         return {
             status: 'invalid',
             config: null,
@@ -229,8 +290,8 @@ function ensurePolicyConfig(filePath: string): PolicyConfig {
         try {
             storage.ensureDir(path.dirname(filePath));
             storage.writeJSON(filePath, createMinimalPolicyConfig(), { mode: 0o600, flag: 'wx' });
-        } catch (err: any) {
-            if (err.code !== 'EEXIST') {
+        } catch (err) {
+            if ((err as { code?: string }).code !== 'EEXIST') {
                 const wrapped = new Error(`Failed to create required policy config: ${getErrorMessage(err)}`) as Error & { code: string };
                 wrapped.code = 'POLICY_CONFIG_CREATE_FAILED';
                 throw wrapped;
@@ -253,7 +314,7 @@ function ensurePolicyConfig(filePath: string): PolicyConfig {
 function loadPolicyConfig(filePath: string, options: { forceReload?: boolean } = {}): PolicyConfig | null {
     const forceReload = options.forceReload || false;
     if (!forceReload && policyCache.has(filePath)) {
-        return policyCache.get(filePath);
+        return policyCache.get(filePath) ?? null;
     }
 
     const detailed = readPolicyConfigDetailed(filePath);
@@ -285,7 +346,7 @@ function reloadPolicyFromDisk(filePath: string, options: { strict?: boolean } = 
     const strict = options.strict === true;
     try {
         return loadRequiredPolicyConfig(filePath);
-    } catch (err: any) {
+    } catch (err) {
         if (strict) throw err;
         policyLogger.warn(`[policy] Reload from ${filePath} failed: ${getErrorMessage(err)} — keeping in-memory config`);
         return null;
@@ -312,21 +373,21 @@ function loadRequiredPolicyConfig(filePath: string): PolicyConfig {
     }
 
     policyCache.set(filePath, detailed.config);
-    return detailed.config;
+    return detailed.config as PolicyConfig;
 }
 
 /**
  * Helper: check if value is an array of strings
  */
-function isStringArray(v: any): v is string[] {
-    return Array.isArray(v) && v.every((x: any) => typeof x === 'string');
+function isStringArray(v: unknown): v is string[] {
+    return Array.isArray(v) && v.every((x) => typeof x === 'string');
 }
 
 /**
  * Validate per-operation constraints. Returns { errors: string[] }.
  * Constraint fields are validated based on operation type.
  */
-function validateOpConstraints(opName: string, constraints: any): { errors: string[] } {
+function validateOpConstraints(opName: string, constraints: Record<string, unknown>): { errors: string[] } {
     const errors: string[] = [];
 
     // transfer
@@ -441,27 +502,28 @@ function validateOpConstraints(opName: string, constraints: any): { errors: stri
 /**
  * Validate raw policy config. Returns { valid: boolean, errors: string[] }.
  */
-function validatePolicyConfig(raw: any): { valid: boolean; errors: string[] } {
+function validatePolicyConfig(raw: unknown): { valid: boolean; errors: string[] } {
     const errors: string[] = [];
 
     if (typeof raw !== 'object' || raw === null) {
         errors.push('root must be an object');
         return { valid: false, errors };
     }
+    const cfg = raw as Record<string, unknown>;
 
     // sessionTtlMs: optional positive integer
-    if (raw.sessionTtlMs !== undefined) {
-        if (typeof raw.sessionTtlMs !== 'number' || raw.sessionTtlMs <= 0) {
+    if (cfg.sessionTtlMs !== undefined) {
+        if (typeof cfg.sessionTtlMs !== 'number' || cfg.sessionTtlMs <= 0) {
             errors.push('sessionTtlMs must be a positive integer');
         }
     }
 
     // default: optional policy object
-    if (raw.default !== undefined) {
-        if (typeof raw.default !== 'object' || raw.default === null) {
+    if (cfg.default !== undefined) {
+        if (typeof cfg.default !== 'object' || cfg.default === null) {
             errors.push('default must be an object');
         } else {
-            const { valid: validDefault, errors: defaultErrors } = validatePolicyObject(raw.default);
+            const { valid: validDefault, errors: defaultErrors } = validatePolicyObject(cfg.default);
             if (!validDefault) {
                 errors.push(`default: ${defaultErrors.join('; ')}`);
             }
@@ -469,11 +531,11 @@ function validatePolicyConfig(raw: any): { valid: boolean; errors: string[] } {
     }
 
     // accounts: optional object of policies
-    if (raw.accounts !== undefined) {
-        if (typeof raw.accounts !== 'object' || Array.isArray(raw.accounts)) {
+    if (cfg.accounts !== undefined) {
+        if (typeof cfg.accounts !== 'object' || Array.isArray(cfg.accounts)) {
             errors.push('accounts must be an object');
         } else {
-            for (const [accountName, policy] of Object.entries(raw.accounts)) {
+            for (const [accountName, policy] of Object.entries(cfg.accounts as Record<string, unknown>)) {
                 if (typeof policy !== 'object' || policy === null) {
                     errors.push(`accounts.${accountName} must be an object`);
                 } else {
@@ -492,8 +554,9 @@ function validatePolicyConfig(raw: any): { valid: boolean; errors: string[] } {
 /**
  * Validate a single policy object (used by both default and per-account policies).
  */
-function validatePolicyObject(policy: any): { valid: boolean; errors: string[] } {
+function validatePolicyObject(policyInput: unknown): { valid: boolean; errors: string[] } {
     const errors: string[] = [];
+    const policy = (policyInput && typeof policyInput === 'object' ? policyInput : {}) as Record<string, unknown>;
 
     // maxOpsPerBatch: must be positive integer
     if (policy.maxOpsPerBatch !== undefined) {
@@ -507,7 +570,7 @@ function validatePolicyObject(policy: any): { valid: boolean; errors: string[] }
         if (policy.allowedAssetIds !== null) {
             if (!Array.isArray(policy.allowedAssetIds)) {
                 errors.push('allowedAssetIds must be an array or null');
-            } else if (!policy.allowedAssetIds.every((x: any) => typeof x === 'string')) {
+            } else if (!(policy.allowedAssetIds as unknown[]).every((x) => typeof x === 'string')) {
                 errors.push('allowedAssetIds must be an array of strings');
             }
         }
@@ -533,12 +596,12 @@ function validatePolicyObject(policy: any): { valid: boolean; errors: string[] }
             if (typeof policy.allowedOps !== 'object' || Array.isArray(policy.allowedOps)) {
                 errors.push('allowedOps must be an object or null');
             } else {
-                for (const [opName, constraints] of Object.entries(policy.allowedOps)) {
+                for (const [opName, constraints] of Object.entries(policy.allowedOps as Record<string, unknown>)) {
                     if (constraints !== null) {
                         if (typeof constraints !== 'object' || Array.isArray(constraints)) {
                             errors.push(`allowedOps.${opName} must be an object or null`);
                         } else {
-                            const { errors: cErrors } = validateOpConstraints(opName, constraints);
+                            const { errors: cErrors } = validateOpConstraints(opName, constraints as Record<string, unknown>);
                             for (const e of cErrors) errors.push(`allowedOps.${opName}: ${e}`);
                         }
                     }
@@ -561,7 +624,7 @@ function validatePolicyObject(policy: any): { valid: boolean; errors: string[] }
  *   - allowedCollateralAssets (string[]) — if multiple collaterals are used
  *   - allowedDebtAssets (string[]) — debt assets used in credit lending items
  */
-function deriveDebtPolicyConstraints(accountName: string): Record<string, any> {
+function deriveDebtPolicyConstraints(accountName: string): Record<string, Record<string, unknown>> {
     if (!accountName) return {};
     try {
         if (!storage.exists(BOTS_JSON_PATH)) return {};
@@ -594,7 +657,7 @@ function deriveDebtPolicyConstraints(accountName: string): Record<string, any> {
             }
         }
 
-        const constraints: Record<string, any> = {};
+        const constraints: Record<string, Record<string, unknown>> = {};
 
         if (mpaCollaterals.size > 0) {
             constraints.call_order_update = {};
@@ -633,12 +696,13 @@ function deriveDebtPolicyConstraints(accountName: string): Record<string, any> {
  * Resolve the effective policy for an account by merging layers:
  * builtin default → auto-derived debt constraints → config.default → config.accounts[accountName]
  */
-function mergePolicyLayer(base: any, layer: any): any {
+function mergePolicyLayer(base: MergedPolicy, layer: unknown): MergedPolicy {
     if (!layer || typeof layer !== 'object') return base;
-    const merged = { ...base, ...layer };
-    if (layer.allowedOps && typeof layer.allowedOps === 'object') {
-        const allowedOps: Record<string, any> = { ...(base.allowedOps || {}) };
-        for (const [opName, constraints] of Object.entries(layer.allowedOps)) {
+    const l = layer as Record<string, unknown>;
+    const merged: MergedPolicy = { ...base, ...l, allowedOps: { ...base.allowedOps } };
+    if (l.allowedOps && typeof l.allowedOps === 'object') {
+        const allowedOps: Record<string, Record<string, unknown>> = { ...base.allowedOps };
+        for (const [opName, constraints] of Object.entries(l.allowedOps as Record<string, unknown>)) {
             if (opName === '__proto__' || opName === 'constructor' || opName === 'prototype') continue;
             allowedOps[opName] = { ...(allowedOps[opName] || {}), ...((constraints && typeof constraints === 'object') ? constraints : {}) };
         }
@@ -647,16 +711,16 @@ function mergePolicyLayer(base: any, layer: any): any {
     return merged;
 }
 
-function resolveAccountPolicy(config: any, accountName: string): any {
+function resolveAccountPolicy(config: PolicyConfig | null, accountName: string): MergedPolicy {
     // Start with builtin (shallow copy — avoids JSON parse + stringify GC pressure)
-    let policy = { ...BUILTIN_DEFAULT_POLICY, allowedOps: { ...BUILTIN_DEFAULT_POLICY.allowedOps } };
+    let policy: MergedPolicy = { ...BUILTIN_DEFAULT_POLICY, allowedOps: { ...BUILTIN_DEFAULT_POLICY.allowedOps } } as unknown as MergedPolicy;
 
     // Layer auto-derived debt constraints from bots.json
     const debtConstraints = deriveDebtPolicyConstraints(accountName);
     if (Object.keys(debtConstraints).length > 0) {
         policy.allowedOps = { ...policy.allowedOps };
         for (const [opName, constraints] of Object.entries(debtConstraints)) {
-            policy.allowedOps[opName as keyof typeof policy.allowedOps] = { ...(policy.allowedOps[opName as keyof typeof policy.allowedOps] || {}), ...constraints };
+            policy.allowedOps[opName] = { ...(policy.allowedOps[opName] || {}), ...constraints };
         }
     }
 
@@ -676,7 +740,7 @@ function resolveAccountPolicy(config: any, accountName: string): any {
 /**
  * Build the PolicyContext passed to evaluatePolicy and to executable hooks.
  */
-function buildPolicyContext(request: any): PolicyContext {
+function buildPolicyContext(request: PolicyRequest): PolicyContext {
     return {
         accountName: request.accountName,
         requestType: request.type,
@@ -694,7 +758,7 @@ function asDeny(reason: string): { allow: false; reason: string; policyId: 'opPa
     return { allow: false, reason, policyId: 'opParams' };
 }
 
-function denyNotInList(opName: string, word: string, id: any, listName: string, list: any, requirePresent?: boolean): { allow: false; reason: string; policyId: 'opParams' } | null {
+function denyNotInList(opName: string, word: string, id: unknown, listName: string, list: unknown, requirePresent?: boolean): { allow: false; reason: string; policyId: 'opParams' } | null {
     if (!Array.isArray(list) || list.length === 0) return null;
     if (requirePresent) {
         if (!list.includes(String(id))) {
@@ -706,18 +770,20 @@ function denyNotInList(opName: string, word: string, id: any, listName: string, 
     return null;
 }
 
-function denyBoundExceeded(opName: string, label: string, compareValue: number | null, shownValue: any, boundLabel: string, bound: any, opts: { lower?: boolean; verb?: string } = {}): { allow: false; reason: string; policyId: 'opParams' } | null {
-    if (bound == null) return null;
-    if (compareValue == null || !Number.isFinite(compareValue)) return null;
-    const over = opts.lower ? compareValue < bound : compareValue > bound;
+function denyBoundExceeded(opName: string, label: string, compareValue: unknown, shownValue: unknown, boundLabel: string, bound: unknown, opts: { lower?: boolean; verb?: string } = {}): { allow: false; reason: string; policyId: 'opParams' } | null {
+    if (bound == null || compareValue == null) return null;
+    const cmp = Number(compareValue);
+    const bnd = Number(bound);
+    if (!Number.isFinite(cmp) || !Number.isFinite(bnd)) return null;
+    const over = opts.lower ? cmp < bnd : cmp > bnd;
     if (!over) return null;
     const verb = opts.verb ?? (opts.lower ? 'below' : 'exceeds');
     return asDeny(`${opName}: ${label} ${shownValue} ${verb} ${boundLabel} ${bound}`);
 }
 
-async function denyAssetRefMismatch(opName: string, word: string, assetId: any, refs: any, refLabel: string, opts: { active?: boolean; matchOnly?: boolean } = {}): Promise<{ allow: false; reason: string; policyId: 'opParams' } | null> {
+async function denyAssetRefMismatch(opName: string, word: string, assetId: unknown, refs: unknown, refLabel: string, opts: { active?: boolean; matchOnly?: boolean } = {}): Promise<{ allow: false; reason: string; policyId: 'opParams' } | null> {
     if (!opts.active) return null;
-    const resolved = await resolveConfiguredAssetRefs(refs, refLabel);
+    const resolved = await resolveConfiguredAssetRefs(Array.isArray(refs) ? refs.map((r) => String(r)) : [], refLabel);
     if (!resolved.ok) return asDeny(`${opName}: ${resolved.reason}`);
     if (assetId && resolved.values && !resolved.values.includes(String(assetId))) {
         const phrase = opts.matchOnly ? 'does not match' : 'not in';
@@ -726,9 +792,9 @@ async function denyAssetRefMismatch(opName: string, word: string, assetId: any, 
     return null;
 }
 
-async function evaluateOpConstraints(opName: string, opData: any, constraints: any): Promise<{ allow: boolean; reason: string | null; policyId: string | null }> {
+async function evaluateOpConstraints(opName: string, opData: OpData | null | undefined, constraints: Record<string, unknown> | null | undefined): Promise<{ allow: boolean; reason: string | null; policyId: string | null }> {
     if (!constraints) return { allow: true, reason: null, policyId: null };
-    const d = opData || {};
+    const d: OpData = opData || {};
 
     if (opName === 'transfer') {
         // allowedToAccounts
@@ -769,7 +835,7 @@ async function evaluateOpConstraints(opName: string, opData: any, constraints: a
         const receiveDenied = denyNotInList('limit_order_update', 'quote asset', d.new_price && d.new_price.quote && d.new_price.quote.asset_id, 'allowedReceiveAssets', constraints.allowedReceiveAssets);
         if (receiveDenied) return receiveDenied;
         // maxDeltaSellAmount (abs value)
-        const maxDeltaSellDenied = denyBoundExceeded('limit_order_update', '|delta|', Math.abs(d.delta_amount_to_sell && d.delta_amount_to_sell.amount), Math.abs(d.delta_amount_to_sell && d.delta_amount_to_sell.amount), 'maxDeltaSellAmount', constraints.maxDeltaSellAmount);
+        const maxDeltaSellDenied = denyBoundExceeded('limit_order_update', '|delta|', Math.abs(Number(d.delta_amount_to_sell && d.delta_amount_to_sell.amount)), Math.abs(Number(d.delta_amount_to_sell && d.delta_amount_to_sell.amount)), 'maxDeltaSellAmount', constraints.maxDeltaSellAmount);
         if (maxDeltaSellDenied) return maxDeltaSellDenied;
     }
 
@@ -787,13 +853,13 @@ async function evaluateOpConstraints(opName: string, opData: any, constraints: a
         if (allowedCollateralDenied) return allowedCollateralDenied;
 
         // maxDeltaCollateral
-        const maxDeltaCollateralDenied = denyBoundExceeded('call_order_update', '|delta_collateral|', Math.abs(d.delta_collateral && d.delta_collateral.amount), Math.abs(d.delta_collateral && d.delta_collateral.amount), 'maxDeltaCollateral', constraints.maxDeltaCollateral);
+        const maxDeltaCollateralDenied = denyBoundExceeded('call_order_update', '|delta_collateral|', Math.abs(Number(d.delta_collateral && d.delta_collateral.amount)), Math.abs(Number(d.delta_collateral && d.delta_collateral.amount)), 'maxDeltaCollateral', constraints.maxDeltaCollateral);
         if (maxDeltaCollateralDenied) return maxDeltaCollateralDenied;
         // maxDeltaDebt
-        const maxDeltaDebtDenied = denyBoundExceeded('call_order_update', '|delta_debt|', Math.abs(d.delta_debt && d.delta_debt.amount), Math.abs(d.delta_debt && d.delta_debt.amount), 'maxDeltaDebt', constraints.maxDeltaDebt);
+        const maxDeltaDebtDenied = denyBoundExceeded('call_order_update', '|delta_debt|', Math.abs(Number(d.delta_debt && d.delta_debt.amount)), Math.abs(Number(d.delta_debt && d.delta_debt.amount)), 'maxDeltaDebt', constraints.maxDeltaDebt);
         if (maxDeltaDebtDenied) return maxDeltaDebtDenied;
 
-        const targetCollateralRatio = d.extensions && d.extensions.target_collateral_ratio != null ? normalizeGrapheneCollateralRatio(d.extensions.target_collateral_ratio) : NaN;
+        const targetCollateralRatio = d.extensions && d.extensions.target_collateral_ratio != null ? normalizeGrapheneCollateralRatio(Number(d.extensions.target_collateral_ratio)) : NaN;
         const minRatioDenied = denyBoundExceeded('call_order_update', 'target_collateral_ratio', targetCollateralRatio, targetCollateralRatio, 'minCollateralRatio', constraints.minCollateralRatio, { lower: true });
         if (minRatioDenied) return minRatioDenied;
         const maxRatioDenied = denyBoundExceeded('call_order_update', 'target_collateral_ratio', targetCollateralRatio, targetCollateralRatio, 'maxCollateralRatio', constraints.maxCollateralRatio, { verb: 'above' });
@@ -860,7 +926,7 @@ async function evaluateOpConstraints(opName: string, opData: any, constraints: a
  * Evaluate a policy against a context. AND semantics: short-circuit on first denial.
  * Returns Promise<{ allow: boolean, reason: string|null, policyId: string|null }>
  */
-async function evaluatePolicy(policy: any, context: PolicyContext): Promise<{ allow: boolean; reason: string | null; policyId: string | null }> {
+async function evaluatePolicy(policy: MergedPolicy, context: PolicyContext): Promise<{ allow: boolean; reason: string | null; policyId: string | null }> {
     try {
         // Step 1: allowedOps check (if present)
         if (policy.allowedOps && typeof policy.allowedOps === 'object') {
@@ -878,8 +944,8 @@ async function evaluatePolicy(policy: any, context: PolicyContext): Promise<{ al
                 }
 
                 // Get per-op constraints and evaluate
-                const constraints = policy.allowedOps[opName];
-                const result = await evaluateOpConstraints(opName, op.op_data, constraints);
+                const constraints = policy.allowedOps[String(opName)];
+                const result = await evaluateOpConstraints(String(opName), op.op_data, constraints);
                 if (!result.allow) {
                     return result;
                 }
@@ -995,7 +1061,7 @@ async function evaluatePolicy(policy: any, context: PolicyContext): Promise<{ al
 
         // All checks passed
         return { allow: true, reason: null, policyId: null };
-    } catch (error: any) {
+    } catch (error) {
         // Any evaluation error → deny
         return {
             allow: false,
@@ -1015,10 +1081,10 @@ async function evaluatePolicy(policy: any, context: PolicyContext): Promise<{ al
 const X_OK = 1;
 
 function evaluateExecutable(exePath: string, context: PolicyContext): Promise<{ allow: boolean; reason: string | null }> {
-    return new Promise((resolve: any) => {
+    return new Promise((resolve) => {
         let spawn;
         try {
-            const cp = require('child_process') as any;
+            const cp = require('child_process') as typeof import('node:child_process');
             spawn = cp.spawn;
         } catch {
             return resolve({ allow: false, reason: `executable not supported in this environment: ${exePath}` });
@@ -1039,15 +1105,15 @@ function evaluateExecutable(exePath: string, context: PolicyContext): Promise<{ 
             timeout: EXECUTABLE_TIMEOUT_MS,
         });
 
-        child.stdout.on('data', (data: any) => {
+        child.stdout.on('data', (data: Buffer) => {
             stdout += data.toString();
         });
 
-        child.stderr.on('data', (data: any) => {
+        child.stderr.on('data', (data: Buffer) => {
             stderr += data.toString();
         });
 
-        child.on('error', (error: any) => {
+        child.on('error', (error: NodeJS.ErrnoException) => {
             if (error.code === 'ETIMEDOUT') {
                 resolve({ allow: false, reason: `executable timed out after ${EXECUTABLE_TIMEOUT_MS}ms` });
             } else {
@@ -1055,7 +1121,7 @@ function evaluateExecutable(exePath: string, context: PolicyContext): Promise<{ 
             }
         });
 
-        child.on('close', (code: any, signal: any) => {
+        child.on('close', (code: number | null, signal: string | null) => {
             if (signal === 'SIGTERM') {
                 return resolve({ allow: false, reason: `executable timed out after ${EXECUTABLE_TIMEOUT_MS}ms` });
             }
@@ -1067,15 +1133,15 @@ function evaluateExecutable(exePath: string, context: PolicyContext): Promise<{ 
 
             // Parse JSON output
             try {
-                const result = JSON.parse(stdout.trim());
+                const result = JSON.parse(stdout.trim()) as { allow?: unknown; reason?: unknown };
                 if (typeof result.allow !== 'boolean') {
                     return resolve({ allow: false, reason: 'executable output missing "allow" field' });
                 }
                 resolve({
                     allow: result.allow,
-                    reason: result.allow ? null : (result.reason || 'denied by executable'),
+                    reason: result.allow ? null : (typeof result.reason === 'string' ? result.reason : 'denied by executable'),
                 });
-            } catch (error: any) {
+            } catch (error) {
                 resolve({ allow: false, reason: `executable output invalid JSON: ${getErrorMessage(error)}` });
             }
         });
@@ -1084,7 +1150,7 @@ function evaluateExecutable(exePath: string, context: PolicyContext): Promise<{ 
         try {
             child.stdin.write(JSON.stringify(context));
             child.stdin.end();
-        } catch (error: any) {
+        } catch (error) {
             child.kill();
             resolve({ allow: false, reason: `failed to pipe context to executable: ${getErrorMessage(error)}` });
         }
@@ -1174,15 +1240,16 @@ function loadBotHmacSecret(accountName: string, policyConfigPath: string, option
             } else {
                 warn(`[policy] Ready file ${readyFile} has no numeric pid field; skipping SIGHUP`);
             }
-        } catch (e: any) {
-            if (e && e.code === 'ENOENT') {
+        } catch (e) {
+            const err = e as { code?: string };
+            if (err && err.code === 'ENOENT') {
                 info(`[policy] Ready file not present; daemon not running, SIGHUP skipped`);
             } else if (e instanceof SyntaxError) {
                 warn(`[policy] Ready file is malformed JSON (${getErrorMessage(e)}); SIGHUP skipped, fs.watch will pick up the change`);
-            } else if (e && (e.code === 'ESRCH' || e.code === 'EPERM')) {
-                warn(`[policy] SIGHUP to daemon failed (${e.code}: ${getErrorMessage(e)}); fs.watch will pick up the change`);
+            } else if (err && (err.code === 'ESRCH' || err.code === 'EPERM')) {
+                warn(`[policy] SIGHUP to daemon failed (${err.code}: ${getErrorMessage(e)}); fs.watch will pick up the change`);
             } else {
-                warn(`[policy] Unexpected error signalling daemon (${e && getErrorMessage(e)}); fs.watch will pick up the change`);
+                warn(`[policy] Unexpected error signalling daemon (${getErrorMessage(e)}); fs.watch will pick up the change`);
             }
         }
         secret = newSecret;
@@ -1198,7 +1265,7 @@ function loadBotHmacSecret(accountName: string, policyConfigPath: string, option
  * @param {object|null} policyConfig - Loaded daemon-policies.json content
  * @returns {{ valid: boolean, reason: string|null }}
  */
-function verifySourceHmac(request: any, policyConfig: any): { valid: boolean; reason: string | null } {
+function verifySourceHmac(request: PolicyRequest, policyConfig: PolicyConfig | null): { valid: boolean; reason: string | null } {
     const accountPolicy =
         policyConfig && policyConfig.accounts && policyConfig.accounts[request.accountName];
     const secretHex = accountPolicy && accountPolicy.botHmacSecret;

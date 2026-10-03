@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { getErrorMessage, getErrorCode } from './modules/utils/errors.js';
 import { fileURLToPath } from 'node:url';
 import { CLI_COLORS } from './modules/cli_colors.js';
 import { dirname as _esmDirname } from 'node:path';
@@ -113,7 +114,7 @@ async function _resolveCollateralAssetId(ref: string): Promise<string | null> {
             const res = await BitShares.db.lookup_asset_symbols([key]);
             if (res && res[0] && res[0].id) result = String(res[0].id);
         }
-    } catch (_err: any) {
+    } catch (_err) {
         result = null;
     }
     _collateralAssetIdCache.set(key, result);
@@ -133,9 +134,22 @@ const { parseWorkerArgs, LAUNCHER_WORKER_COMMAND } = require('./modules/launcher
 const { PATHS, getHomeProfilesDir, getRecalculateTriggerFile, printRelocationNotices } = require('./modules/paths');
 const credentialPolicy = require('./modules/credential_policy');
 const { Config } = require('./modules/config');
-const { getErrorMessage } = require('./modules/utils/errors');
 const { isSameBotName } = require('./modules/utils/sanitize_key');
 const { normalizeAssetRef } = require('./modules/utils/asset_symbols');
+import type { BotEntry } from './modules/bot_settings.js';
+
+interface LauncherStyle {
+    botName?: string | null;
+    dryRun?: boolean;
+}
+
+interface Pm2Proc {
+    pid?: number | string;
+    name?: string;
+    pm2_env?: { pm_uptime?: unknown; status?: string };
+    monit?: { memory?: number };
+    [key: string]: unknown;
+}
 
 // Setup graceful shutdown handlers
 
@@ -185,7 +199,7 @@ const STARTUP_COLORS = {
     error: CLI_COLORS.boldRed,
 };
 
-function colorStartupOutput(text: string, color: string, stream: any = process.stdout): string {
+function colorStartupOutput(text: string, color: string, stream: { isTTY?: boolean } = process.stdout): string {
     return stream.isTTY && !Config.NO_COLOR
         ? `${color}${text}${STARTUP_COLORS.reset}`
         : text;
@@ -303,7 +317,7 @@ if (cliArgs.includes(CLI_EXAMPLES_FLAG)) {
  */
 // Extend SharedDEXBot for dexbot.ts context (thin wrapper)
 class DEXBot extends SharedDEXBot {
-    constructor(config: any) {
+    constructor(config: BotEntry) {
         super(config, { logPrefix: '' });
     }
 }
@@ -344,7 +358,7 @@ async function runAccountManager({ waitForConnection = false, exitAfter = false,
          if (disconnectAfter) {
              try {
                  disconnectClient();
-     } catch (err: any) {
+     } catch (err) {
          console.warn('Failed to disconnect BitShares connection after key manager exited:', getErrorMessage(err) || err);
      }
          }
@@ -364,7 +378,7 @@ async function runAccountManager({ waitForConnection = false, exitAfter = false,
 async function authenticateMasterPassword() {
     try {
         return await chainKeys.authenticate();
-    } catch (err: any) {
+    } catch (err) {
         if (!keySetupInProgress && err && getErrorMessage(err) && getErrorMessage(err).includes('No master password set')) {
             keySetupInProgress = true;
             try {
@@ -380,7 +394,7 @@ async function authenticateMasterPassword() {
     }
 }
 
-function printStartLauncherHeader({ botName = null, dryRun = false } = {}) {
+function printStartLauncherHeader({ botName = null, dryRun = false }: { botName?: string | null; dryRun?: boolean } = {}): void {
     console.log('='.repeat(50));
     console.log('DEXBot2 Start Launcher');
     if (botName) {
@@ -395,7 +409,7 @@ function printStartLauncherHeader({ botName = null, dryRun = false } = {}) {
     console.log();
 }
 
-function printStartLauncherSuccess({ botName = null, dryRun = false } = {}) {
+function printStartLauncherSuccess({ botName = null, dryRun = false }: { botName?: string | null; dryRun?: boolean } = {}): void {
     const dryrunFlag = dryRun ? ' --dryrun' : '';
     console.log();
     console.log('='.repeat(50));
@@ -409,15 +423,15 @@ function printStartLauncherSuccess({ botName = null, dryRun = false } = {}) {
     console.log();
 }
 
-function printMasterPasswordFailure(err: any) {
+function printMasterPasswordFailure(err: unknown) {
     console.error();
     console.error(startupError(`❌ ${getErrorMessage(err)}`));
 }
 
 const BOT_START_RESTART = Object.freeze({ MAX_ATTEMPTS: 3, RETRY_DELAY_MS: 30000 });
-const botStartRetryState = new Map<string, { attempts: number; timer: any }>();
+const botStartRetryState = new Map<string, { attempts: number; timer: ReturnType<typeof setTimeout> | null }>();
 
-function botRetryKey(entry: any): string {
+function botRetryKey(entry: BotEntry | null | undefined): string {
     return String(entry?.name || entry?.botKey || 'unnamed');
 }
 
@@ -429,7 +443,7 @@ function clearBotStartRetry(botName: string): void {
     botStartRetryState.delete(botName);
 }
 
-function scheduleBotStartRetry(entry: any, { forceDryRun = false, reason = '' }: { forceDryRun?: boolean; reason?: string } = {}): void {
+function scheduleBotStartRetry(entry: BotEntry | null | undefined, { forceDryRun = false, reason = '' }: { forceDryRun?: boolean; reason?: string } = {}): void {
     const botName = botRetryKey(entry);
     if (botName === 'unnamed') return;
     const state = botStartRetryState.get(botName) || { attempts: 0, timer: null };
@@ -452,7 +466,7 @@ function scheduleBotStartRetry(entry: any, { forceDryRun = false, reason = '' }:
         try {
             const { config } = loadSettingsFile(PROFILES_BOTS_FILE);
             const entries = resolveRawBotEntries(config);
-            const match = entries.find((b: any) => isSameBotName(b.name, botName));
+            const match = entries.find((b: BotEntry) => isSameBotName(b.name, botName));
             if (!match || match.active === false) {
                 console.log(`Auto-restart: bot '${botName}' is no longer active in ${path.basename(PROFILES_BOTS_FILE)}; giving up.`);
                 clearBotStartRetry(botName);
@@ -465,7 +479,7 @@ function scheduleBotStartRetry(entry: any, { forceDryRun = false, reason = '' }:
                 forceDryRun,
                 sourceName: `auto-restart (attempt ${state.attempts}/${BOT_START_RESTART.MAX_ATTEMPTS})`,
             });
-        } catch (err: any) {
+        } catch (err) {
             scheduleBotStartRetry(entry, { forceDryRun, reason: getErrorMessage(err) });
         }
     }, BOT_START_RESTART.RETRY_DELAY_MS);
@@ -485,7 +499,7 @@ function scheduleBotStartRetry(entry: any, { forceDryRun = false, reason = '' }:
  * @param {Object} [options.launcherStyle=null] - Launcher presentation options
  * @returns {Promise<Array>} Array of started DEXBot instances
  */
-async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceName = 'settings', launcherStyle }: { forceDryRun?: boolean; sourceName?: string; launcherStyle?: any } = {}) {
+async function runBotInstances(botEntries: BotEntry[], { forceDryRun = false, sourceName = 'settings', launcherStyle }: { forceDryRun?: boolean; sourceName?: string; launcherStyle?: LauncherStyle } = {}) {
     setSuppressConnectionLog(true);
 
     const shouldAnnounceLauncher = !!launcherStyle;
@@ -493,7 +507,7 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
     const launcherDryRun = !!launcherStyle?.dryRun;
     let connectionAnnounced = false;
     let authenticationAnnounced = false;
-    const activeCount = (botEntries || []).filter((entry: any) => entry && entry.active !== false).length;
+    const activeCount = (botEntries || []).filter((entry) => entry && entry.active !== false).length;
 
     const announceConnection = () => {
         if (shouldAnnounceLauncher && !connectionAnnounced) {
@@ -519,7 +533,7 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
             return [];
         }
 
-        const prepared = botEntries.map((entry: any) => ({
+        const prepared = botEntries.map((entry) => ({
             ...entry,
             dryRun: forceDryRun ? true : entry.dryRun,
         }));
@@ -531,12 +545,12 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
 
         if (errors.length) {
             console.error(startupError('ERROR: Invalid configuration for one or more **active** bots:'));
-            errors.forEach((e: any) => console.error(startupError(`  - ${e}`)));
+            errors.forEach((e: string) => console.error(startupError(`  - ${e}`)));
             console.error(startupError(`Fix the configuration problems in ${PROFILES_BOTS_FILE} and restart. Aborting.`));
             process.exit(1);
         }
 
-        const needMaster = prepared.some((b: any) => b.active && b.preferredAccount);
+        const needMaster = prepared.some((b) => b.active && b.preferredAccount);
         let masterPassword = null;
         if (needMaster) {
             const daemonReady = await chainKeys.isDaemonResponsive();
@@ -566,8 +580,8 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
         try {
             await waitForConnected();
             announceConnection();
-            await initializeFeeCache(prepared.filter((b: any) => b.active), BitShares);
-        } catch (err: any) {
+            await initializeFeeCache(prepared.filter((b) => b.active), BitShares);
+        } catch (err) {
             console.error(startupError(`Fee cache initialization failed: ${getErrorMessage(err)}`));
             console.error(startupError('Cannot proceed without fee cache for fill processing. Aborting.'));
             process.exit(1);
@@ -591,8 +605,8 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
 
         // Phase 5: Atomic startup — pre-register all bot allocations before any bot starts.
         // This ensures proportional fund allocation is computed correctly for shared accounts.
-        const activeBots = prepared.filter((e: any) => e.active);
-        const accountGroups: Record<string, any[]> = {};
+        const activeBots = prepared.filter((e) => e.active);
+        const accountGroups: Record<string, BotEntry[]> = {};
         for (const entry of activeBots) {
             const account = entry.preferredAccount;
             if (account) {
@@ -608,7 +622,7 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
             for (const entry of activeBots) {
                 if (entry.debtPolicy?.lending && (entry.preferredAccount && accountGroups[entry.preferredAccount]?.length > 1)) {
                     for (const item of entry.debtPolicy.lending) {
-                        if (item.collateralAsset) allCollateralRefs.add(item.collateralAsset);
+                        if (item.collateralAsset) allCollateralRefs.add(String(item.collateralAsset));
                     }
                 }
             }
@@ -624,7 +638,7 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
                         for (const side of sides) {
                             const pct = entry.botFunds[side];
                             if (pct !== undefined && pct !== null) {
-                                await fundRegistry.registerAllocation(account, botName, side, pct);
+                                await fundRegistry.registerAllocation(account, botName, side, Number(pct));
                             }
                         }
                     }
@@ -633,7 +647,7 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
                     if (botName && entry.debtPolicy?.lending) {
                         const dp = entry.debtPolicy;
                         const globalPct = dp.maxCollateralAmount ?? '100%';
-                        for (const item of dp.lending) {
+                        for (const item of dp.lending || []) {
                             const collateralRef = item.collateralAsset;
                             if (!collateralRef) continue;
                             const collateralAssetId = _collateralAssetIdCache.get(normalizeAssetRef(collateralRef)) ?? null;
@@ -648,23 +662,23 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
             }
         }
 
-        const instances: any[] = [];
+        const instances: DEXBot[] = [];
         for (const entry of prepared) {
             if (!entry.active) {
                 continue;
             }
 
             const botCleanupName = `Bot: ${entry.name || entry.botKey || instances.length + 1}`;
-            let bot: any = null;
+            let bot: DEXBot | null = null;
             let botCleanupHandler: (() => Promise<void>) | null = null;
             try {
                 bot = new DEXBot(entry);
-                botCleanupHandler = () => bot.shutdown();
+                botCleanupHandler = () => bot!.shutdown();
                 registerCleanup(botCleanupName, botCleanupHandler);
                 await bot.start(masterPassword);
                 clearBotStartRetry(botRetryKey(entry));
                 instances.push(bot);
-            } catch (err: any) {
+            } catch (err) {
                 // The bot's _runStartupSequence already invoked shutdown() once on
                 // the failure path. Remove the registered cleanup so the LIFO
                 // cleanup loop in graceful_shutdown.ts does not call shutdown() a
@@ -677,7 +691,7 @@ async function runBotInstances(botEntries: any[], { forceDryRun = false, sourceN
                 if (bot) {
                     try {
                         await bot.shutdown();
-                    } catch (shutdownErr: any) {
+                    } catch (shutdownErr) {
                         console.error(startupError(`Error during cleanup: ${getErrorMessage(shutdownErr)}`));
                     }
                 }
@@ -733,9 +747,9 @@ async function startBotByName(botName: string | null | undefined, { dryRun = fal
         console.error(startupError('No bot definitions exist in the tracked settings.'));
         process.exit(1);
     }
-    const match = entries.find((b: any) => isSameBotName(b.name, botName));
+    const match = entries.find((b: BotEntry) => isSameBotName(b.name, botName));
     if (!match) {
-        console.error(startupError(`Could not find any bot named '${botName}' in the tracked settings.`));
+        console.error(startupError(`No bot named '${botName}' was found in the tracked settings.`));
         process.exit(1);
     }
     const entryCopy = JSON.parse(JSON.stringify(match));
@@ -764,7 +778,7 @@ async function setBotActiveState(botName: string | null | undefined, active: boo
     const outWord = active ? 'inactive' : 'active';
     if (!botName) {
         let updated = false;
-        entries.forEach((entry: any) => {
+        entries.forEach((entry: BotEntry) => {
             const effectiveActive = entry.active !== false;
             if (effectiveActive !== active) {
                 entry.active = active;
@@ -779,9 +793,9 @@ async function setBotActiveState(botName: string | null | undefined, active: boo
         console.log(`Marked all bots ${inWord} in ${path.basename(filePath)}.`);
         return;
     }
-    const match = entries.find((b: any) => isSameBotName(b.name, botName));
+    const match = entries.find((b: BotEntry) => isSameBotName(b.name, botName));
     if (!match) {
-        console.error(startupError(`Could not find any bot named '${botName}' to ${action}.`));
+        console.error(startupError(`No bot named '${botName}' was found to ${action}.`));
         process.exit(1);
     }
     if ((match.active !== false) === active) {
@@ -814,9 +828,9 @@ async function resetBotByName(botName: string | null | undefined) {
     const entries = normalizeBotEntries(resolveRawBotEntries(config));
 
     // Filter targets
-    const targets = botName ? entries.filter((b: any) => isSameBotName(b.name, botName)) : entries.filter((b: any) => b.active);
+    const targets = botName ? entries.filter((b: BotEntry) => isSameBotName(b.name, botName)) : entries.filter((b: BotEntry) => b.active);
     if (botName && targets.length === 0) {
-        console.error(startupError(`Could not find any bot named '${botName}' to reset.`));
+        console.error(startupError(`No bot named '${botName}' was found to reset.`));
         process.exit(1);
     }
 
@@ -827,7 +841,7 @@ async function resetBotByName(botName: string | null | undefined) {
             const triggerFile = getRecalculateTriggerFile(bot.botKey);
             storage.writeFile(triggerFile, '');
             console.log(startupSuccess(`✓ Trigger set for '${bot.name}' (${path.basename(triggerFile)})`));
-        } catch (err: any) {
+        } catch (err) {
             console.warn(`Failed to set trigger for '${bot.name}': ${getErrorMessage(err)}`);
         }
     }
@@ -853,7 +867,7 @@ async function exportBotTrades(botName: string | undefined) {
 
         // Load bots configuration
         const { config: botsData } = loadSettingsFile(PROFILES_BOTS_FILE);
-        const bot = resolveRawBotEntries(botsData).find((b: any) => isSameBotName(b.name, botName));
+        const bot = resolveRawBotEntries(botsData).find((b: BotEntry) => isSameBotName(b.name, botName));
 
         if (!bot) {
             console.error(startupError(`Bot '${botName}' not found in ${PROFILES_BOTS_FILE}`));
@@ -885,7 +899,7 @@ async function exportBotTrades(botName: string | undefined) {
             console.error(startupError(`\n✗ Export failed: ${result.error || 'Unknown error'}\n`));
             process.exit(1);
         }
-    } catch (err: any) {
+    } catch (err) {
         console.error(startupError(`\nExport error: ${getErrorMessage(err)}\n`));
         process.exit(1);
     }
@@ -937,7 +951,7 @@ async function handleCLICommands() {
             await resetBotByName(target === 'all' ? null : target);
             process.exit(0);
         case 'default': {
-            const { spawnSync } = require('child_process') as any as any;
+            const { spawnSync } = require('child_process') as typeof import('node:child_process');
             const resetScript = path.join(PATHS.PROJECT_ROOT, 'scripts', 'reset-settings.sh');
             const scriptEnv = {
                 ...process.env,
@@ -984,14 +998,14 @@ async function handleCLICommands() {
              } finally {
                  try {
                      disconnectClient();
-                  } catch (err: any) {
+                  } catch (err) {
                       console.warn('Failed to disconnect BitShares after bot helper exit:', err && getErrorMessage(err) ? getErrorMessage(err) : err);
                   }
              }
              process.exit(0);
              return true;
         case 'pm2': {
-            const { spawnSync } = require('child_process') as any as any;
+            const { spawnSync } = require('child_process') as typeof import('node:child_process');
             // Forward the remaining CLI args to pm2.js so subcommands work
             // (`dexbot pm2 stop <bot>`, `dexbot pm2 restart all`, `dexbot pm2
             // help`...). Previously the subcommand was silently dropped and the
@@ -1026,7 +1040,7 @@ async function handleCLICommands() {
             process.exit(0);
             return true;
         case 'order': {
-            const { spawnSync } = require('child_process') as any as any;
+            const { spawnSync } = require('child_process') as typeof import('node:child_process');
             const scriptArgs = buildRuntimeScriptArgs({
                 codeRoot: __dirname,
                 scriptSegments: ['scripts', 'analyze-orders'],
@@ -1044,7 +1058,7 @@ async function handleCLICommands() {
             return true;
         }
         case 'credit': {
-            const { spawnSync } = require('child_process') as any as any;
+            const { spawnSync } = require('child_process') as typeof import('node:child_process');
             const scriptArgs = buildRuntimeScriptArgs({
                 codeRoot: __dirname,
                 scriptSegments: ['scripts', 'analyze-credit'],
@@ -1064,7 +1078,7 @@ async function handleCLICommands() {
         case 'tv':
         case 'dw':
         case 'pnl': {
-            const { spawnSync } = require('child_process') as any as any;
+            const { spawnSync } = require('child_process') as typeof import('node:child_process');
             const scriptArgs = buildRuntimeScriptArgs({
                 codeRoot: __dirname,
                 scriptSegments: ['scripts', command],
@@ -1082,7 +1096,7 @@ async function handleCLICommands() {
             return true;
         }
         case 'unlock': {
-            const { spawnSync } = require('child_process') as any as any;
+            const { spawnSync } = require('child_process') as typeof import('node:child_process');
             // buildRuntimeScriptArgs resolves the unlock entry point for the
             // active runtime layout: dist/unlock.js when compiled, unlock.ts
             // in source layouts. A hard-coded dist path silently no-ops
@@ -1103,7 +1117,7 @@ async function handleCLICommands() {
         case 'clear-orders':
         case 'clear-market-adapter':
         case 'clear-all': {
-            const { spawnSync } = require('child_process') as any as any;
+            const { spawnSync } = require('child_process') as typeof import('node:child_process');
             const scriptMap: Record<string, string> = {
                 clear: 'clear-logs.sh',
                 'clear-orders': 'clear-orders.sh',
@@ -1178,7 +1192,7 @@ async function handleCLICommands() {
                 process.exit(code);
                 return true;
             };
-            const { spawnSync, execSync } = require('child_process') as any as any;
+            const { spawnSync, execSync } = require('child_process') as typeof import('node:child_process');
             const MONOLITHIC_PID_FILE = PATHS.PROFILES.MONOLITHIC_PID;
             const MONOLITHIC_CRED_PID_FILE = PATHS.PROFILES.MONOLITHIC_CRED_PID;
             const SUPERVISOR_SOCK = PATHS.PROFILES.SUPERVISOR_SOCK;
@@ -1188,11 +1202,11 @@ async function handleCLICommands() {
                 try {
                     const pid = Number(storage.readFile(MONOLITHIC_PID_FILE).trim());
                     if (Number.isInteger(pid) && pid > 0) {
-                        try { process.kill(pid, 0); unlockRunning = true; } catch (err: any) {
-                            if (err.code === 'EACCES') {
+                        try { process.kill(pid, 0); unlockRunning = true; } catch (err) {
+                            if (getErrorCode(err) === 'EACCES') {
                                 console.warn('[dexbot]', `process.kill(${pid}, 0) EACCES — process exists but permission denied`);
                                 unlockRunning = true;
-                            } else if (err.code !== 'ESRCH') {
+                            } else if (getErrorCode(err) !== 'ESRCH') {
                                 console.warn('[dexbot]', `process.kill(${pid}, 0) unexpected error: ${getErrorMessage(err)}`);
                             }
                         }
@@ -1212,8 +1226,8 @@ async function handleCLICommands() {
                 try {
                     const pid = Number(storage.readFile(MONOLITHIC_CRED_PID_FILE).trim());
                     if (Number.isInteger(pid) && pid > 0) {
-                        try { process.kill(pid, 0); unlockRunning = true; } catch (err: any) {
-                            if (err.code === 'EACCES') unlockRunning = true;
+                        try { process.kill(pid, 0); unlockRunning = true; } catch (err) {
+                            if (getErrorCode(err) === 'EACCES') unlockRunning = true;
                         }
                     }
                 } catch (_) {}
@@ -1256,7 +1270,7 @@ async function handleCLICommands() {
                     }
                 } catch (_) {}
 
-                const dexbotProcs = allProcs.filter((p: any) => {
+                const dexbotProcs = allProcs.filter((p: Pm2Proc) => {
                     const name = String(p?.name || '');
                     return serviceNames.has(name) || botNames.has(name);
                 });
@@ -1271,9 +1285,9 @@ async function handleCLICommands() {
                 console.log('='.repeat(50));
                 console.log('');
 
-                const fmtUptime = (p: any) => {
+                const fmtUptime = (p: Pm2Proc): string => {
                     if (!p?.pm2_env?.pm_uptime) return '-';
-                    const ms = Date.now() - new Date(p.pm2_env.pm_uptime).getTime();
+                    const ms = Date.now() - new Date(p.pm2_env.pm_uptime as string | number).getTime();
                     const s = Math.floor(Math.abs(ms) / 1000);
                     if (s < 60) return `${s}s`;
                     const m = Math.floor(s / 60);
@@ -1284,7 +1298,7 @@ async function handleCLICommands() {
                     return `${d}d ${h % 24}h`;
                 };
 
-                const fmtMem = (p: any) => {
+                const fmtMem = (p: Pm2Proc): string => {
                     const bytes = p?.monit?.memory;
                     if (!bytes || bytes <= 0) return '-';
                     if (bytes < 1024) return `${bytes}B`;
@@ -1292,7 +1306,7 @@ async function handleCLICommands() {
                     return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
                 };
 
-                const rows = dexbotProcs.map((p: any) => ({
+                const rows = dexbotProcs.map((p: Pm2Proc) => ({
                     pid: String(p?.pid || '-'),
                     name: String(p?.name || '-'),
                     status: String(p?.pm2_env?.status || '-'),
@@ -1317,7 +1331,7 @@ async function handleCLICommands() {
         case 'stop':
         case 'restart':
         case 'reload': {
-            const { spawnSync } = require('child_process') as any as any;
+            const { spawnSync } = require('child_process') as typeof import('node:child_process');
             const unlockArgs = buildRuntimeScriptArgs({
                 codeRoot: __dirname,
                 scriptSegments: ['unlock'],
@@ -1347,7 +1361,7 @@ async function handleCLICommands() {
  * @param {Object} [options.launcherStyle=null] - Launcher presentation options.
  * @returns {Promise<void>}
  */
-async function runDefaultBots({ forceDryRun = false, sourceName = 'settings', launcherStyle }: { forceDryRun?: boolean; sourceName?: string; launcherStyle?: any } = {}) {
+async function runDefaultBots({ forceDryRun = false, sourceName = 'settings', launcherStyle }: { forceDryRun?: boolean; sourceName?: string; launcherStyle?: LauncherStyle } = {}): Promise<void> {
     const { config } = loadSettingsFile(PROFILES_BOTS_FILE);
     const entries = resolveRawBotEntries(config);
     const normalized = normalizeBotEntries(entries);
@@ -1376,9 +1390,9 @@ async function bootstrap() {
     let isNewSetup = false;
     try {
         isNewSetup = ensureProfilesDirectory(PROFILES_DIR);
-    } catch (err: any) {
-        if (err && (err.code === 'EACCES' || err.code === 'EPERM' || err.code === 'EROFS')) {
-            const { spawnSync: respawn } = require('child_process') as any as any;
+    } catch (err) {
+        if (err && (getErrorCode(err) === 'EACCES' || getErrorCode(err) === 'EPERM' || getErrorCode(err) === 'EROFS')) {
+            const { spawnSync: respawn } = require('child_process') as typeof import('node:child_process');
             const fallbackDir = getHomeProfilesDir();
             console.log(`Config directory not writable at: ${PROFILES_DIR}`);
             console.log(`Auto-using ${fallbackDir} instead. Set DEXBOT_PROFILE_ROOT to override.\n`);
@@ -1474,7 +1488,7 @@ const { writeJSON } = storage;
     await runDefaultBots();
 }
 
-function handleFatalBootstrapError(err: any) {
+function handleFatalBootstrapError(err: unknown) {
     if (chainKeys.isMasterPasswordFailure(err)) {
         printMasterPasswordFailure(err);
         process.exit(1);

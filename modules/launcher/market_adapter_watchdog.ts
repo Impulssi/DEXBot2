@@ -17,6 +17,15 @@ import { getStorage } from '../storage/index.js';
 const storage = getStorage();
 const { readJSON, unlink: safeUnlink } = storage;
 
+interface WatchdogOptions {
+    codeRoot?: string;
+    root?: string;
+    lockFile?: string;
+    botsFile?: string;
+    logWarn?: (...args: unknown[]) => void;
+    logError?: (...args: unknown[]) => void;
+}
+
 function createMarketAdapterWatchdog({
     codeRoot = DEFAULT_CODE_ROOT,
     root = PATHS.PROJECT_ROOT,
@@ -24,9 +33,9 @@ function createMarketAdapterWatchdog({
     botsFile = PATHS.PROFILES.BOTS_JSON,
     logWarn = console.warn,
     logError = console.error,
-}: any = {}) {
-    let _watchdogTimer: any = null;
-    let _child: any = null;
+}: WatchdogOptions = {}) {
+    let _watchdogTimer: ReturnType<typeof setInterval> | null = null;
+    let _child: ReturnType<typeof spawn> | null = null;
     let _childStartedAt = 0;
     let _restartCount = 0;
     let _restartExhaustedAt = 0;
@@ -71,7 +80,8 @@ function createMarketAdapterWatchdog({
             _child.kill('SIGTERM');
         } catch (_) {}
         const exited = await withTimeout(
-            new Promise((resolve: any) => {
+            new Promise<boolean>((resolve) => {
+                if (!_child) { resolve(true); return; }
                 _child.once('close', () => resolve(true));
             }),
             LAUNCHER.SUPERVISOR.SHUTDOWN_TIMEOUT_MS,
@@ -87,14 +97,14 @@ function createMarketAdapterWatchdog({
         safeUnlink(lockFile)
     }
 
-    function spawnChild(errorLog: any) {
+    function spawnChild(errorLog: string) {
         const args = buildRuntimeScriptArgs({ codeRoot, scriptSegments: ['market_adapter', 'market_adapter'] });
         const child = spawn(Config.EXEC_PATH, args, {
             cwd: root,
             env: buildScopedChildEnv(),
             stdio: ['ignore', 'ignore', 'pipe'],
         });
-        const childLogStreams: any[] = [];
+        const childLogStreams: fs.WriteStream[] = [];
         if (child.stderr) {
             const errStream = fs.createWriteStream(errorLog, { flags: 'a' });
             childLogStreams.push(errStream);
@@ -144,7 +154,7 @@ function createMarketAdapterWatchdog({
         return !!(status.pid && status.alive);
     }
 
-    function schedule(errorLog: any) {
+    function schedule(errorLog: string) {
         clearTimer();
 
         const tick = () => {
@@ -206,16 +216,16 @@ function createMarketAdapterWatchdog({
                 logWarn(`[market-adapter-watchdog] spawning market adapter (attempt ${_restartCount}/${MARKET_ADAPTER.WATCHDOG_DEFAULTS.maxRestarts})`);
                 try {
                     spawnChild(errorLog);
-                } catch (err: any) {
+                } catch (err) {
                     logError(`[market-adapter-watchdog] spawn failed: ${getErrorMessage(err)}`);
                 }
-            } catch (err: any) {
+            } catch (err) {
                 logWarn(`[market-adapter-watchdog] tick error: ${getErrorMessage(err)}`);
             }
         };
 
         _watchdogTimer = setInterval(tick, MARKET_ADAPTER.WATCHDOG_DEFAULTS.intervalMs);
-        if (_watchdogTimer && typeof (_watchdogTimer as any).unref === 'function') {
+        if (_watchdogTimer && typeof _watchdogTimer.unref === 'function') {
             _watchdogTimer.unref();
         }
 

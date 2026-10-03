@@ -85,13 +85,17 @@ import { TIMING, DEFAULT_CONFIG } from '../constants.js';
 import { PATHS } from '../paths.js';
 import Logger from '../order/logger.js';
 import { getErrorMessage } from '../utils/errors.js';
+import type { GridConfig, UnknownRecord } from '../types.js';
 import { nowIso } from './utils/system.js';
 const _require = createRequire(import.meta.url);
 const storage = getStorage();
-let _readline: any;
-function getReadline() {
+interface ReadlineModule {
+    createInterface(options: { input: unknown; crlfDelay?: number }): AsyncIterable<string>;
+}
+let _readline: ReadlineModule | null = null;
+function getReadline(): ReadlineModule {
     if (!_readline && _require) _readline = _require('readline');
-    return _readline;
+    return _readline!;
 }
 const exportLogger = new Logger('Export');
 
@@ -103,7 +107,7 @@ const exportLogger = new Logger('Export');
  * @returns {Object|null} Parsed fill object or null on no match
  */
 interface FillCore {
-    side: any;
+    side: string;
     amount: number;
     price: number;
     proceeds: number;
@@ -119,7 +123,7 @@ interface FillEntry extends FillCore {
 interface FeeEntry {
     count: number;
     fee_per_fill: number;
-    fee_asset: any;
+    fee_asset: string;
     total_fee: number;
     timestamp: number;
 }
@@ -300,8 +304,14 @@ function deriveTradeFromFillBlock(block: FillBlock, ctx: ExportAssetContext | nu
  * all persisted grids for a matching meta.key/meta.name. No chain access.
  * @returns ExportAssetContext or null when nothing usable was found
  */
-function resolveExportAssetContext(botKey: string, botConfig: any): ExportAssetContext | null {
-    const readGridFile = (fileName: string): any | null => {
+interface GridFileDoc extends UnknownRecord {
+    assets?: { assetA?: { id?: unknown; precision?: number; symbol?: string }; assetB?: { id?: unknown; precision?: number; symbol?: string } };
+    meta?: { key?: unknown; name?: unknown };
+    grid?: unknown;
+}
+
+function resolveExportAssetContext(botKey: string, botConfig: GridConfig | null | undefined): ExportAssetContext | null {
+    const readGridFile = (fileName: string): GridFileDoc | null => {
         try {
             return JSON.parse(storage.readFile(path.join(PATHS.ORDERS_DIR, fileName), 'utf8'));
         } catch {
@@ -312,14 +322,14 @@ function resolveExportAssetContext(botKey: string, botConfig: any): ExportAssetC
     // Exact bot file first, then a meta.key/meta.name scan over all grids.
     let dirFiles: string[] = [];
     try {
-        dirFiles = storage.readdir(PATHS.ORDERS_DIR).filter((f: any) => f.endsWith('.json'));
+        dirFiles = storage.readdir(PATHS.ORDERS_DIR).filter((f: string) => f.endsWith('.json'));
     } catch { /* no orders dir */ }
     const exactName = `${botKey}.json`;
     const ordered = [exactName, ...dirFiles.filter((f) => f !== exactName)];
     const wantKey = String(botKey).toLowerCase();
     const wantName = String(botConfig?.name || botKey).toLowerCase();
 
-    let doc: any | null = null;
+    let doc: GridFileDoc | null = null;
     for (const fileName of ordered) {
         const candidate = readGridFile(fileName);
         if (!candidate || !candidate.assets) continue;
@@ -341,14 +351,14 @@ function resolveExportAssetContext(botKey: string, botConfig: any): ExportAssetC
     if (!Number.isFinite(assetA.precision) || !Number.isFinite(assetB.precision)) return null;
 
     const ctx: ExportAssetContext = {
-        assetA: { id: String(assetA.id), precision: assetA.precision, symbol: assetA.symbol },
-        assetB: { id: String(assetB.id), precision: assetB.precision, symbol: assetB.symbol }
+        assetA: { id: String(assetA.id), precision: assetA.precision as number, symbol: assetA.symbol },
+        assetB: { id: String(assetB.id), precision: assetB.precision as number, symbol: assetB.symbol }
     };
 
     try {
         const grid = Array.isArray(doc.grid) ? doc.grid : Object.values(doc.grid || {});
         const prices = grid
-            .map((o: any) => Number(o?.price))
+            .map((o: { price?: unknown }) => Number(o?.price))
             .filter((p: number) => Number.isFinite(p) && p > 0)
             .sort((a: number, b: number) => a - b);
         if (prices.length > 0) ctx.gridMedianPrice = prices[Math.floor(prices.length / 2)];
@@ -365,9 +375,9 @@ function resolveExportAssetContext(botKey: string, botConfig: any): ExportAssetC
  * @param {ExportAssetContext|null} [assetContext] - Offline asset metadata for block derivation
  * @returns {Promise<Array>} Array of trade objects
  */
-async function parseLogFile(logFilePath: any, assetContext: ExportAssetContext | null = null) {
-    const fills: any[] = [];
-    const fees: any[] = [];
+async function parseLogFile(logFilePath: string | null | undefined, assetContext: ExportAssetContext | null = null) {
+    const fills: FillEntry[] = [];
+    const fees: FeeEntry[] = [];
     let pendingBlock: FillBlock | null = null;
     let skippedBlocks = 0;
 
@@ -379,7 +389,7 @@ async function parseLogFile(logFilePath: any, assetContext: ExportAssetContext |
     };
 
     try {
-        const fileStream = storage.createReadStream(logFilePath);
+        const fileStream = storage.createReadStream(logFilePath as string);
         const rl = getReadline().createInterface({
             input: fileStream,
             crlfDelay: Infinity
@@ -454,10 +464,10 @@ async function parseLogFile(logFilePath: any, assetContext: ExportAssetContext |
         // for the single-fill case); the closest fee line in the window wins.
         for (const fill of fills) {
             if (fill.fee_amount === 0 && fees.length > 0) {
-                let best: any = null;
+                let best: FeeEntry | null = null;
                 let bestDist = Infinity;
                 for (const f of fees) {
-                    const dist = Math.abs((f as any).timestamp - fill.timestamp);
+                    const dist = Math.abs((f as { timestamp?: number }).timestamp! - fill.timestamp);
                     if (dist < 5 && dist < bestDist) {
                         best = f;
                         bestDist = dist;
@@ -474,7 +484,7 @@ async function parseLogFile(logFilePath: any, assetContext: ExportAssetContext |
         }
 
         return fills;
-    } catch (err: any) {
+    } catch (err) {
         exportLogger.error(`Failed to parse log file ${logFilePath}: ${getErrorMessage(err)}`);
         return [];
     }
@@ -486,13 +496,13 @@ async function parseLogFile(logFilePath: any, assetContext: ExportAssetContext |
  * @param {string} outputPath - Path to output CSV file
  * @returns {Promise<Object>} { success: boolean, count: number } or { success: false, error: string }
  */
-async function writeTradesCSV(trades: any, outputPath: any) {
+async function writeTradesCSV(trades: FillEntry[], outputPath: string) {
     try {
         // CSV header
         const headers = ['unix', 'price', 'amount', 'side', 'fee_asset', 'fee_amount', 'order_id'];
 
         // CSV rows
-        const rows = trades.map((trade: any) => [
+        const rows = trades.map((trade: FillEntry) => [
             trade.timestamp.toFixed(1),
             Format.formatPrice(trade.price),
             Format.formatAmount8(trade.amount),
@@ -504,7 +514,7 @@ async function writeTradesCSV(trades: any, outputPath: any) {
 
         // Combine and write
         const csv = [headers, ...rows]
-            .map((row: any) => row.map((val: any) => {
+            .map((row: Array<string | number>) => row.map((val: string | number) => {
                 // Wrap in quotes when the value contains a comma, double-quote,
                 // or newline; escape embedded quotes by doubling them
                 if (typeof val === 'string' && (val.includes(',') || val.includes('"') || val.includes('\n'))) {
@@ -518,7 +528,7 @@ async function writeTradesCSV(trades: any, outputPath: any) {
         exportLogger.info(`✓ Exported ${trades.length} trades to ${outputPath}`);
 
         return { success: true, count: trades.length };
-    } catch (err: any) {
+    } catch (err) {
         exportLogger.error(`Failed to write CSV: ${getErrorMessage(err)}`);
         return { success: false, error: getErrorMessage(err) };
     }
@@ -532,7 +542,7 @@ async function writeTradesCSV(trades: any, outputPath: any) {
  * @param {string} outputPath - Path to output JSON file
  * @returns {Promise<Object>} Write result { success, count } or { success: false, error }
  */
-async function writeSettingsJSON(botConfig: any, botName: any, outputPath: any) {
+async function writeSettingsJSON(botConfig: GridConfig, botName: string, outputPath: string) {
     try {
         const sanitized = {
             bot_name: botName,
@@ -562,7 +572,7 @@ async function writeSettingsJSON(botConfig: any, botName: any, outputPath: any) 
         exportLogger.info(`✓ Exported settings to ${outputPath}`);
 
         return { success: true };
-    } catch (err: any) {
+    } catch (err) {
         exportLogger.error(`Failed to write settings JSON: ${getErrorMessage(err)}`);
         return { success: false, error: getErrorMessage(err) };
     }
@@ -575,7 +585,7 @@ async function writeSettingsJSON(botConfig: any, botName: any, outputPath: any) 
  * @param {string} outputDir - Output directory for exports (default: './exports')
  * @returns {Promise<Object>} Export result status
  */
-async function exportBotTrades(botKey: any, botConfig: any, outputDir: any = './exports') {
+async function exportBotTrades(botKey: string, botConfig: GridConfig, outputDir: string = './exports') {
     try {
         // Ensure output directory exists
         storage.ensureDir(outputDir);
@@ -590,17 +600,17 @@ async function exportBotTrades(botKey: any, botConfig: any, outputDir: any = './
             // Case-insensitive: log files use the display name (XRP-BTS.log)
             // while bot keys are lowercase (xrp-bts). Prefer the exact
             // "<key>.log" hit, fall back to any non-error log containing the key.
-            const exactLog = logFiles.find((f: any) =>
+            const exactLog = logFiles.find((f: string) =>
                 f.toLowerCase() === `${want}.log`
             );
-            const matchingLog = exactLog || logFiles.find((f: any) =>
+            const matchingLog = exactLog || logFiles.find((f: string) =>
                 f.toLowerCase().includes(want) && f.endsWith('.log') && !f.toLowerCase().includes('error')
             );
 
             if (matchingLog) {
                 logFilePath = path.join(logsDir, matchingLog);
             }
-        } catch (err: any) {
+        } catch (err) {
             exportLogger.warn(`Could not read logs directory: ${getErrorMessage(err)}`);
         }
 
@@ -634,7 +644,7 @@ async function exportBotTrades(botKey: any, botConfig: any, outputDir: any = './
             output_dir: outputDir,
             timestamp: nowIso()
         };
-    } catch (err: any) {
+    } catch (err) {
         exportLogger.error(`Export failed for ${botKey}: ${getErrorMessage(err)}`);
         return {
             success: false,

@@ -5,7 +5,7 @@ const require = createRequire(import.meta.url);
 
 import { NATIVE_CLIENT } from '../constants.js';
 import Logger from '../order/logger.js';
-import { getErrorMessage } from '../utils/errors.js';
+import { getErrorMessage, getErrorField } from '../utils/errors.js';
 
 const { SUBSCRIPTIONS, OPERATIONS } = NATIVE_CLIENT;
 
@@ -14,9 +14,100 @@ const OP_FILL_ORDER = OPERATIONS.FILL_ORDER;
 
 const subscriptionsLogger = new Logger('Subscriptions');
 
-function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
-    const subscriptions = new Map();
-    let unsubscribeNotice: any = null;
+interface WarnThrottleState {
+    lastAt: number;
+    suppressed: number;
+}
+
+interface HistoryEntry {
+    id?: string;
+    op?: unknown[];
+    block_num?: number;
+    trx_in_block?: number;
+    [key: string]: unknown;
+}
+
+interface FillObject {
+    [key: string]: unknown;
+    type: string;
+    op: unknown[];
+    block_num?: number;
+    trx_in_block?: number;
+    id?: string;
+}
+
+interface AccountInfo {
+    account?: { id?: string; statistics?: string };
+    [key: string]: unknown;
+}
+
+interface SubscriptionEntry {
+    accountName: string;
+    accountId: string | null;
+    statisticsId: string | null;
+    lastDeliveredHistoryId: string;
+    lastNoticeAt: number;
+    active: boolean;
+    callbacks: Set<(fills: HistoryEntry[]) => unknown>;
+    onError: ((err: unknown) => void) | null;
+    reconnectRetryTimer: ReturnType<typeof setTimeout> | null;
+    reconnecting: boolean;
+    _gapRecovery: boolean;
+    _channelFailures: number;
+    _channelDegraded: boolean;
+    _channelRecoveryCycles: number;
+    _recoveryAlerted: boolean;
+    _channelRetryTimer: ReturnType<typeof setTimeout> | null;
+    _channelRetryStep: number;
+    _channelRetryRefills: number;
+    _warnThrottle: Record<string, WarnThrottleState>;
+    _processingHistory?: boolean;
+    [key: string]: unknown;
+}
+
+interface SubscriptionChainClient {
+    transport: {
+        getNodeUrl?(): string | undefined;
+        addMessageHandler(handler: (params: unknown) => void): UnsubscribeFn;
+    };
+    db: {
+        get_full_accounts(refs: string[], subscribe: boolean): Promise<Array<[string, AccountInfo]>>;
+        call(method: string, args: unknown[]): Promise<unknown>;
+        [key: string]: (...args: never[]) => Promise<unknown>;
+    };
+    history?: {
+        getAccountHistory?: (...args: unknown[]) => Promise<unknown[]>;
+        get_account_history?: (...args: unknown[]) => Promise<unknown[]>;
+        getAccountHistoryOperations?: (...args: unknown[]) => Promise<unknown[]>;
+        call(method: string, args: unknown[]): Promise<unknown>;
+    };
+    forceReconnect?(reason: string): unknown;
+    reportNodeFailure?(node: string, message: string, source: string): void;
+    getApiLimitGetAccountHistory?(): number | null;
+    [key: string]: unknown;
+}
+
+type UnsubscribeFn = { (): void; isActive?(): boolean };
+
+interface SubscriptionOverrides {
+    noticeCoalesceMs?: number;
+    channelErrorLogIntervalMs?: number;
+    channelRetryLadderMs?: number[];
+    channelRetryMaxRefills?: number;
+    [key: string]: unknown;
+}
+
+interface ProcessOptions {
+    lookbackOps?: number;
+    maxPages?: number;
+    throwOnError?: boolean;
+    context?: string;
+    [key: string]: unknown;
+}
+
+function createSubscriptionManager(chainClient: SubscriptionChainClient, overrides: SubscriptionOverrides = {}) {
+    const subscriptions = new Map<string, SubscriptionEntry>();
+    let unsubscribeNotice: UnsubscribeFn | null = null;
     const reconnectRetryDelayMs = Number.isFinite(SUBSCRIPTIONS.RECONNECT_RETRY_DELAY_MS)
         ? Math.max(1000, SUBSCRIPTIONS.RECONNECT_RETRY_DELAY_MS)
         : SUBSCRIPTIONS.RECONNECT_RETRY_DELAY_MS;
@@ -28,16 +119,16 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
     // timers exist to batch RAPID notices, and tests issue notices strictly
     // sequentially — no batching to preserve, so inline is equivalent.
     const noticeCoalesceMs = Number.isFinite(overrides?.noticeCoalesceMs)
-        ? Math.max(0, overrides.noticeCoalesceMs)
+        ? Math.max(0, Number(overrides.noticeCoalesceMs))
         : (Number.isFinite(SUBSCRIPTIONS.NOTICE_COALESCE_MS)
             ? Math.max(0, SUBSCRIPTIONS.NOTICE_COALESCE_MS)
             : 0);
     // Per-subscription pending scan state for coalescing. Keyed by sub object
     // (Map iteration order is stable so we can reuse a single timer per entry).
-    const pendingScans = new Map<any, { timer: any; lastNoticeAt: number }>();
+    const pendingScans = new Map<SubscriptionEntry, { timer: ReturnType<typeof setTimeout> | null; lastNoticeAt: number }>();
 
     // Fill polling timer + re-entrancy guard for discovering fills via history scan.
-    let fillPollTimer: any = null;
+    let fillPollTimer: ReturnType<typeof setInterval> | null = null;
     let fillPollInProgress = false;
 
     // Fill-channel health. A history channel can be dead (stale api id, wedged
@@ -49,7 +140,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
         ? Math.max(1, SUBSCRIPTIONS.CHANNEL_DEGRADED_FAILURE_THRESHOLD)
         : 3;
     const channelErrorLogIntervalMs = Number.isFinite(overrides?.channelErrorLogIntervalMs)
-        ? Math.max(0, overrides.channelErrorLogIntervalMs)
+        ? Math.max(0, Number(overrides.channelErrorLogIntervalMs))
         : (Number.isFinite(SUBSCRIPTIONS.CHANNEL_ERROR_LOG_INTERVAL_MS)
             ? Math.max(0, SUBSCRIPTIONS.CHANNEL_ERROR_LOG_INTERVAL_MS)
             : 60000);
@@ -57,27 +148,27 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
     const channelRetryLadderMs = (Array.isArray(overrides?.channelRetryLadderMs)
         ? overrides.channelRetryLadderMs
         : (Array.isArray(SUBSCRIPTIONS.CHANNEL_RETRY_LADDER_MS) ? SUBSCRIPTIONS.CHANNEL_RETRY_LADDER_MS : [5000, 10000, 15000]))
-        .map((d: any) => Math.max(0, Number(d) || 0))
+        .map((d) => Math.max(0, Number(d) || 0))
         .filter((d: number) => d > 0);
     const channelRecoveryAlertAfter = Number.isFinite(SUBSCRIPTIONS.CHANNEL_RECOVERY_ALERT_AFTER)
         ? Math.max(1, SUBSCRIPTIONS.CHANNEL_RECOVERY_ALERT_AFTER)
         : 3;
     const channelRetryMaxRefills = Number.isFinite(overrides?.channelRetryMaxRefills)
-        ? Math.max(0, overrides.channelRetryMaxRefills)
+        ? Math.max(0, Number(overrides.channelRetryMaxRefills))
         : (Number.isFinite(SUBSCRIPTIONS.CHANNEL_RETRY_MAX_REFILLS) ? Math.max(0, SUBSCRIPTIONS.CHANNEL_RETRY_MAX_REFILLS) : 3);
     // NOTE: the forced-reconnect cooldown is NOT debounced here. It is enforced
     // once per client in chain_client.forceReconnect so this watchdog and the
     // stale api_id escalation share a single window (a wedged session trips both
     // counters in the same tick and must not stack two reconnects).
 
-    function parseObjectIdInstance(id: any): number {
+    function parseObjectIdInstance(id: unknown): number {
         if (typeof id !== 'string') return Number.NaN;
         const match = id.match(/\.(\d+)$/);
         return match ? Number(match[1]) : Number.NaN;
     }
 
-    function sortEntriesOldestFirst(entries: any[]): any[] {
-        return entries.sort((left: any, right: any) => {
+    function sortEntriesOldestFirst(entries: HistoryEntry[]): HistoryEntry[] {
+        return entries.sort((left, right) => {
             const leftInstance = parseObjectIdInstance(left?.id);
             const rightInstance = parseObjectIdInstance(right?.id);
             if (!Number.isFinite(leftInstance) || !Number.isFinite(rightInstance)) {
@@ -87,7 +178,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
         });
     }
 
-    function decrementObjectId(id: any): string | null {
+    function decrementObjectId(id: unknown): string | null {
         if (typeof id !== 'string') return null;
         const match = id.match(/^(.+\.)(\d+)$/);
         if (!match) return null;
@@ -98,7 +189,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
 
     // Decrement an object id (e.g. "1.11.1234") by `n` instances, returning the
     // resulting id string, or null if it would underflow below 0.
-    function decrementObjectIdBy(id: any, n: number): string | null {
+    function decrementObjectIdBy(id: unknown, n: number): string | null {
         if (typeof id !== 'string' || !Number.isFinite(n) || n <= 0) return null;
         const match = id.match(/^(.+\.)(\d+)$/);
         if (!match) return null;
@@ -114,12 +205,12 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
     function activeNodeUrl(): string {
         try {
             return chainClient?.transport?.getNodeUrl?.() || 'unknown node';
-        } catch (_: any) {
+        } catch (_) {
             return 'unknown node';
         }
     }
 
-    function warnSubscription(sub: any, message: string, err: any = null, throttleKey: string = 'channel'): void {
+    function warnSubscription(sub: SubscriptionEntry | null | undefined, message: string, err: unknown = null, throttleKey: string = 'channel'): void {
         const account = sub?.accountName || sub?.accountId || 'unknown';
         const now = Date.now();
         // Throttle per-account AND per-category. A dead channel otherwise logs
@@ -133,12 +224,12 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
         }
         if (channelErrorLogIntervalMs > 0 && sub && now - state!.lastAt < channelErrorLogIntervalMs) {
             state!.suppressed += 1;
-            sub._warnThrottle[throttleKey] = state;
+            sub._warnThrottle[throttleKey] = state!;
             return;
         }
         const suppressed = state ? (Number(state.suppressed) || 0) : 0;
         if (sub) sub._warnThrottle[throttleKey] = { lastAt: now, suppressed: 0 };
-        const detail = err?.message ? `: ${getErrorMessage(err)}` : '';
+        const detail = (err as { message?: unknown } | null)?.message ? `: ${getErrorMessage(err)}` : '';
         const suppressedDetail = suppressed > 0 ? ` (+${suppressed} suppressed)` : '';
         subscriptionsLogger.warn(`${message} for ${account}${detail}${suppressedDetail} (node=${activeNodeUrl()})`);
     }
@@ -148,7 +239,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
      * consecutive-failure run and the recovery-cycle counter, and logs a single
      * recovery line when it was previously degraded.
      */
-    function recordChannelSuccess(sub: any): void {
+    function recordChannelSuccess(sub: SubscriptionEntry | null | undefined): void {
         if (!sub) return;
         const account = sub.accountName || sub.accountId || 'unknown';
         if (sub._channelDegraded || sub._channelRecoveryCycles > 0) {
@@ -177,7 +268,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
      * step index resets whenever a reconnect is actually issued (a new recovery
      * attempt deserves a fresh verification ladder) and on any successful scan.
      */
-    function scheduleChannelRetry(sub: any, context?: string): void {
+    function scheduleChannelRetry(sub: SubscriptionEntry | null | undefined, context?: string): void {
         if (!sub || channelRetryLadderMs.length === 0) return;
         if (sub._channelRetryTimer) return;
         const step = Number(sub._channelRetryStep) || 0;
@@ -202,7 +293,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
             if (sub.reconnecting || sub._processingHistory || pendingScans.has(sub)) return;
             sub._processingHistory = true;
             processObjects(sub, [sub.accountId], { context: retryContext })
-                .catch((err: any) => {
+                .catch((err: unknown) => {
                     // processObjects handles its own errors; this only guards
                     // against a throw from the retry plumbing itself.
                     recordChannelFailure(sub, err, retryContext);
@@ -215,7 +306,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
         if (typeof timer?.unref === 'function') timer.unref();
     }
 
-    function clearChannelRetry(sub: any): void {
+    function clearChannelRetry(sub: SubscriptionEntry | null | undefined): void {
         if (sub?._channelRetryTimer) {
             clearTimeout(sub._channelRetryTimer);
             sub._channelRetryTimer = null;
@@ -235,10 +326,10 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
      * chain_client.forceReconnect, so re-arming here cannot storm. Only the
      * DEGRADED log line and the operator alert are transition-gated.
      */
-    function recordChannelFailure(sub: any, err: any, context?: string): void {
+    function recordChannelFailure(sub: SubscriptionEntry | null | undefined, err: unknown, context?: string): void {
         if (!sub) return;
         const label = `processObjects${context ? ` (${context})` : ''}`;
-        if (err?.subscriptionErrorReported) {
+        if ((err as { subscriptionErrorReported?: unknown } | null)?.subscriptionErrorReported) {
             warnSubscription(sub, `${label}: callback error`, err, 'callback');
             return;
         }
@@ -311,7 +402,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
      * rotated off and recovers before striking; a wedge shared by all nodes
      * legitimately accumulates strikes against each of them.
      */
-    function reportChannelNodeFailure(account: string, err: any): void {
+    function reportChannelNodeFailure(account: string, err: unknown): void {
         const node = activeNodeUrl();
         // 'unknown node' is the activeNodeUrl() fallback, not a reportable URL.
         if (!node || node === 'unknown node') return;
@@ -323,7 +414,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                     'fill-channel-unrecoverable'
                 );
             }
-        } catch (_: any) {
+        } catch (_) {
             // Best-effort: never let strike bookkeeping break the watchdog.
         }
     }
@@ -334,7 +425,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
      * informational reconnect looping is invisible in the logs, which is how the
      * original incident went unnoticed for hours.
      */
-    function maybeAlertUnrecoverableChannel(sub: any, account: string, err: any): void {
+    function maybeAlertUnrecoverableChannel(sub: SubscriptionEntry, account: string, err: unknown): void {
         if (sub._recoveryAlerted) return;
         const cycles = Number(sub._channelRecoveryCycles) || 0;
         if (cycles < channelRecoveryAlertAfter) return;
@@ -370,23 +461,23 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                 return outcome;
             }
             return outcome === true ? 'issued' : 'unavailable';
-        } catch (_: any) {
+        } catch (_) {
             // Best-effort recovery; the next failure re-requests (the watchdog
             // no longer latches, so a broken recovery is retried, not dropped).
             return 'unavailable';
         }
     }
 
-    function getAccountHistoryFetcher(): any {
+    function getAccountHistoryFetcher(): (...args: unknown[]) => Promise<unknown[]> {
         return chainClient.history?.getAccountHistory
             || chainClient.history?.get_account_history
             || (chainClient.history?.getAccountHistoryOperations
-                ? ((accountId: string, stop: string, limit: number, start: string) => chainClient.history.getAccountHistoryOperations(accountId, OP_FILL_ORDER, start, stop, limit))
+                ? ((accountId: string, stop: string, limit: number, start: string) => chainClient.history!.getAccountHistoryOperations!(accountId, OP_FILL_ORDER, start, stop, limit)) as (...args: unknown[]) => Promise<unknown[]>
                 : null)
-            || ((...args: any[]) => chainClient.history.call('get_account_history', args));
+            || ((...args: unknown[]) => chainClient.history!.call('get_account_history', args) as Promise<unknown[]>);
     }
 
-    async function fetchFullAccountWithRetry(sub: any, subscribe: boolean = false): Promise<any> {
+    async function fetchFullAccountWithRetry(sub: SubscriptionEntry, subscribe: boolean = false): Promise<AccountInfo | null> {
         const accountRef = sub.accountId || sub.accountName;
         let lastErr = null;
 
@@ -396,7 +487,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                 const account = accounts?.[0]?.[1];
                 if (account) return account;
                 warnSubscription(sub, `get_full_accounts returned no account data on attempt ${attempt}`);
-            } catch (err: any) {
+            } catch (err) {
                 lastErr = err;
                 warnSubscription(sub, `get_full_accounts failed on attempt ${attempt}`, err);
             }
@@ -412,10 +503,10 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
     // when they exist on chain for the account. The unfiltered API uses the
     // efficient by_op index and returns ALL operation types. We filter for
     // OP_FILL_ORDER client-side in processObjects.
-    async function fetchFillHistoryEntries(accountId: string, cursorHistoryId: string, options: any = {}): Promise<any[]> {
+    async function fetchFillHistoryEntries(accountId: string, cursorHistoryId: string, options: ProcessOptions = {}): Promise<HistoryEntry[]> {
         const fetchPage = getAccountHistoryFetcher();
 
-        const entries: any[] = [];
+        const entries: HistoryEntry[] = [];
         const seenIds = new Set();
         const cursorInstance = parseObjectIdInstance(cursorHistoryId);
 
@@ -425,7 +516,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
         // window is safe: downstream dedups every fill by its history id (see
         // dexbot_fill_runtime _isNewFillKey). See AGENTS/bitshares-core for the
         // get_account_history range semantics this relies on.
-        const lookbackOps = Number.isFinite(options?.lookbackOps) ? Math.max(0, Math.floor(options.lookbackOps)) : 0;
+        const lookbackOps = Number.isFinite(options?.lookbackOps) ? Math.max(0, Math.floor(Number(options.lookbackOps))) : 0;
         let lookbackStopHistoryId = cursorHistoryId;
         let lookbackStopInstance = cursorInstance;
         // Actual `stop` handed to get_account_history. For the no-lookback case this is
@@ -457,7 +548,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
         let startHistoryId = SUBSCRIPTIONS.HISTORY_API_OBJECT;
         let pagesFetched = 0;
         const maxPagesDefault = SUBSCRIPTIONS.HISTORY_MAX_PAGES;
-        const maxPages = Number.isFinite(options.maxPages) ? options.maxPages : maxPagesDefault;
+        const maxPages = Number.isFinite(options.maxPages) ? Number(options.maxPages) : maxPagesDefault;
 
         // Cap page size to the node's api_limit_get_account_history to avoid FC_ASSERT.
         const configuredLimit = typeof chainClient.getApiLimitGetAccountHistory === 'function'
@@ -499,18 +590,18 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                     pageLimit,
                     startHistoryId
                 )),
-                new Promise<any[]>((_, reject) => {
+                new Promise<HistoryEntry[]>((_, reject) => {
                     pageTimer = setTimeout(() => {
                         reject(new Error(`fetchFillHistoryEntries: page ${pagesFetched + 1} timed out after ${FETCH_PAGE_TIMEOUT_MS}ms`));
                     }, FETCH_PAGE_TIMEOUT_MS);
                     // Never hold the process open on a watchdog: the race settles
                     // via the fetch branch in the common case; the timer only
                     // matters while the loop is alive for other reasons.
-                    if (typeof (pageTimer as any)?.unref === 'function') (pageTimer as any).unref();
+                    if (typeof pageTimer?.unref === 'function') pageTimer.unref();
                 })
             ]).finally(() => {
                 if (pageTimer) clearTimeout(pageTimer);
-            });
+            }) as HistoryEntry[];
             pagesFetched++;
 
             const pageLen = Array.isArray(page) ? page.length : 0;
@@ -566,7 +657,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
         return sortEntriesOldestFirst(entries);
     }
 
-    async function primeLastDeliveredHistoryId(sub: any): Promise<string> {
+    async function primeLastDeliveredHistoryId(sub: SubscriptionEntry | null | undefined): Promise<string> {
         if (!sub?.accountId) return SUBSCRIPTIONS.HISTORY_API_OBJECT;
 
         // Use get_account_history (unfiltered) to find the
@@ -580,12 +671,12 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                 1,
                 SUBSCRIPTIONS.HISTORY_API_OBJECT
             ));
-            const latestId = entries?.[0]?.id;
+            const latestId = (entries?.[0] as { id?: string } | undefined)?.id;
             if (latestId) {
                 subscriptionsLogger.info(`primeLastDeliveredHistoryId: resolved to ${latestId} for ${sub.accountName}`);
                 return latestId;
             }
-        } catch (err: any) {
+        } catch (err) {
             subscriptionsLogger.warn(`primeLastDeliveredHistoryId: get_account_history failed for ${sub.accountName}: ${getErrorMessage(err)}`);
         }
 
@@ -613,12 +704,12 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
      * Each fill_order_operation has an `account_id` field identifying
      * the account whose order was filled.
      */
-    function fillMatchesAccount(fill: any, accountId: string): boolean {
-        const fillAccountId = fill?.op?.[1]?.account_id;
+    function fillMatchesAccount(fill: FillObject | HistoryEntry, accountId: string | null | undefined): boolean {
+        const fillAccountId = (fill?.op?.[1] as { account_id?: unknown } | undefined)?.account_id;
         return fillAccountId === accountId;
     }
 
-    async function handleNotice(params: any): Promise<void> {
+    async function handleNotice(params: unknown): Promise<void> {
         if (!Array.isArray(params) || params.length < 2) {
             subscriptionsLogger.info('handleNotice: skipping (invalid params)');
             return;
@@ -633,7 +724,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
         // The BitShares node sends full 1.11.x operation history objects in the
         // notice when a fill occurs. We pass them straight to callbacks — no
         // history scan, no cursor tracking needed for live fills.
-        const fillObjects: Array<{ type: string; op: any[]; block_num: any; trx_in_block: any; id: any; }> = [];
+        const fillObjects: FillObject[] = [];
         for (const item of data) {
             if (!item || typeof item !== 'object') continue;
             const op = item.op;
@@ -669,7 +760,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                 }
             }
             const now = Date.now();
-            const eligible: Array<{ active: any; lastDeliveredHistoryId: any; lastNoticeAt: any; accountName: any; accountId: any; _processingHistory: any; callbacks: any; onError: any; }> = [];
+            const eligible: SubscriptionEntry[] = [];
             for (const [, sub] of subscriptions) {
                 if (!sub.active) continue;
                 // Skip when the notice carries a 1.11.x id that this sub's cursor
@@ -709,10 +800,10 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                 sub._processingHistory = true;
 
                 if (noticeCoalesceMs > 0) {
-                    const entry = { timer: null as any, lastNoticeAt: now };
+                    const entry = { timer: null as ReturnType<typeof setTimeout> | null, lastNoticeAt: now };
                     entry.timer = setTimeout(() => {
                         pendingScans.delete(sub);
-                        (processObjects(sub, data).catch((err: any) => {
+                        (processObjects(sub, data).catch((err: unknown) => {
                             subscriptionsLogger.warn(`processObjects (coalesced) error for ${sub.accountName}: ${getErrorMessage(err)}`);
                         })).finally(() => {
                             sub._processingHistory = false;
@@ -735,7 +826,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
 
         // Batch fills per-subscription and dispatch all at once, so a single
         // callback receives all fills from one notice.
-        const gapRecoveryArmed: any[] = [];
+        const gapRecoveryArmed: SubscriptionEntry[] = [];
         for (const [, sub] of subscriptions) {
             if (!sub.active) continue;
             const subFills = fillObjects.filter((fill) => fillMatchesAccount(fill, sub.accountId));
@@ -758,15 +849,15 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                 const inst = parseObjectIdInstance(fill.id);
                 if (Number.isFinite(inst) && inst > latestInstance) {
                     latestInstance = inst;
-                    latestId = fill.id;
+                    latestId = fill.id ?? null;
                 }
             }
 
-            const failed: any[] = [];
+            const failed: unknown[] = [];
             for (const callback of sub.callbacks) {
                 try {
                     await Promise.resolve(callback(subFills));
-                } catch (err: any) {
+                } catch (err) {
                     subscriptionsLogger.warn(`handleNotice: callback error for ${sub.accountName}: ${getErrorMessage(err)}`);
                     failed.push(err);
                 }
@@ -780,7 +871,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
             if (failed.length > 0) {
                 if (sub.onError) {
                     for (const err of failed) {
-                        try { sub.onError(err); } catch (_: any) {}
+                        try { sub.onError(err); } catch (_) {}
                     }
                 }
                 // Cursor NOT advanced — retry on next scan.
@@ -814,10 +905,10 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
             if (pendingScans.has(sub)) continue;
             sub._processingHistory = true;
             if (noticeCoalesceMs > 0) {
-                const entry = { timer: null as any, lastNoticeAt: Date.now() };
+                const entry = { timer: null as ReturnType<typeof setTimeout> | null, lastNoticeAt: Date.now() };
                 entry.timer = setTimeout(() => {
                     pendingScans.delete(sub);
-                    (processObjects(sub, [sub.accountId]).catch((err: any) => {
+                    (processObjects(sub, [sub.accountId]).catch((err: unknown) => {
                         subscriptionsLogger.warn(`processObjects (eager gap-recovery) error for ${sub.accountName}: ${getErrorMessage(err)}`);
                     })).finally(() => {
                         sub._processingHistory = false;
@@ -826,7 +917,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                 if (typeof entry.timer.unref === 'function') entry.timer.unref();
                 pendingScans.set(sub, entry);
             } else {
-                (processObjects(sub, [sub.accountId]).catch((err: any) => {
+                (processObjects(sub, [sub.accountId]).catch((err: unknown) => {
                     subscriptionsLogger.warn(`processObjects (eager gap-recovery) error for ${sub.accountName}: ${getErrorMessage(err)}`);
                 })).finally(() => {
                     sub._processingHistory = false;
@@ -835,19 +926,19 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
         }
     }
 
-    async function processObjects(sub: any, data: any, options: any = {}): Promise<void> {
+    async function processObjects(sub: SubscriptionEntry, data: unknown[], options: ProcessOptions = {}): Promise<void> {
         if (!data || !Array.isArray(data)) return;
 
         const noticeObjectIds: string[] = [];
         for (const item of data) {
             if (!item) continue;
-            const id = typeof item === 'object' ? item.id : item;
+            const id = item && typeof item === 'object' ? (item as { id?: unknown }).id : item;
             if (typeof id !== 'string') continue;
             noticeObjectIds.push(id);
         }
 
         if (noticeObjectIds.length === 0) {
-            subscriptionsLogger.debug(`processObjects: no identifiable object IDs in notice data for ${sub.accountName} (dataLen=${data?.length}, types=${data.map((d: any) => typeof d).join(',')})`);
+            subscriptionsLogger.debug(`processObjects: no identifiable object IDs in notice data for ${sub.accountName} (dataLen=${data?.length}, types=${data.map((d) => typeof d).join(',')})`);
             // NOTE: Do NOT return early here. The notice data is just a trigger signal;
             // we must always scan fill history to catch actual fills, because the node
             // may send objects without string `id` fields (e.g. bare account/statistics objects).
@@ -885,7 +976,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                 subscriptionsLogger.debug(`processObjects: primed lastDeliveredHistoryId=${sub.lastDeliveredHistoryId} for ${sub.accountName}`);
             }
 
-            let history: any[];
+            let history: HistoryEntry[];
             if (sub._gapRecovery) {
                 // Gap-recovery: a notice-driven cursor advance (or a reconnect) may have
                 // skipped fills that sit BELOW the cursor. Do a single lookback scan
@@ -924,7 +1015,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                 : 'empty';
             subscriptionsLogger.debug(`processObjects: ${history.length} history entries for ${sub.accountName} range=${historyRange} cursor=${sub.lastDeliveredHistoryId}`);
 
-            const fills: Array<{ type: string; op: any[]; block_num: any; trx_in_block: any; id: any; }> = [];
+            const fills: FillObject[] = [];
             for (const entry of history) {
                 if (!entry || !entry.op || !entry.id) continue;
                 const opData = entry.op;
@@ -943,11 +1034,11 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                 const fillIds = fills.map(f => f.id).join(', ');
                 const newCursor = history[history.length - 1]?.id || sub.lastDeliveredHistoryId;
                 subscriptionsLogger.info(`processObjects: dispatching ${fills.length} fill(s) to ${sub.callbacks.size} callback(s) for ${sub.accountName} cursor=${newCursor} fills=[${fillIds}]`);
-                const failed: any[] = [];
+                const failed: unknown[] = [];
                 for (const callback of sub.callbacks) {
                     try {
                         await Promise.resolve(callback(fills));
-                    } catch (err: any) {
+                    } catch (err) {
                         warnSubscription(sub, 'processObjects: callback error', err, 'callback');
                         failed.push(err);
                     }
@@ -957,14 +1048,14 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                     sub.lastNoticeAt = Date.now();
                     if (sub.onError) {
                         for (const err of failed) {
-                            try { sub.onError(err); } catch (_: any) {}
+                            try { sub.onError(err); } catch (_) {}
                         }
                     }
                     if (options.throwOnError) {
                         // Do NOT advance cursor on throwOnError failure — the caller
                         // (resubscribeEntry/resubscribeAll) will retry and must find
                         // the same fills again.
-                        failed[0].subscriptionErrorReported = true;
+                        (failed[0] as { subscriptionErrorReported?: boolean }).subscriptionErrorReported = true;
                         throw failed[0];
                     }
                     // Non-throwing path (e.g. handleNotice fallback scan): also do NOT
@@ -983,28 +1074,28 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                 sub.lastNoticeAt = Date.now();
                 subscriptionsLogger.debug(`processObjects: history had entries but none were FILL_ORDER operations for ${sub.accountName}`);
             }
-        } catch (err: any) {
+        } catch (err) {
             sub.lastNoticeAt = Date.now();
             recordChannelFailure(sub, err, options?.context);
-            if (sub.onError && !err?.subscriptionErrorReported) {
-                try { sub.onError(err); } catch (_: any) {}
+            if (sub.onError && !getErrorField<boolean>(err, 'subscriptionErrorReported')) {
+                try { sub.onError(err); } catch (_) {}
             }
             if (options.throwOnError) throw err;
         }
     }
 
-    function clearReconnectRetry(entry: any): void {
+    function clearReconnectRetry(entry: SubscriptionEntry | null | undefined): void {
         if (!entry?.reconnectRetryTimer) return;
         clearTimeout(entry.reconnectRetryTimer);
         entry.reconnectRetryTimer = null;
     }
 
-    function scheduleReconnectRetry(entry: any, err: any): void {
+    function scheduleReconnectRetry(entry: SubscriptionEntry | null | undefined, err: unknown): void {
         if (!entry || entry.reconnectRetryTimer || !entry.active || entry.callbacks?.size === 0) return;
 
         entry.reconnectRetryTimer = setTimeout(() => {
             entry.reconnectRetryTimer = null;
-            resubscribeEntry(entry, 'retry').catch((retryErr: any) => {
+            resubscribeEntry(entry, 'retry').catch((retryErr: unknown) => {
                 warnSubscription(entry, 'Failed to resubscribe', retryErr);
                 scheduleReconnectRetry(entry, retryErr);
             });
@@ -1022,8 +1113,8 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
      * _subscribed_accounts for every account. Every active entry must be re-subscribed after
      * every call, not just the current one.
      */
-    async function refreshSubscriptions(): Promise<any[]> {
-        const failures: { entry: any; err: any; }[] = [];
+    async function refreshSubscriptions(): Promise<Array<{ entry: SubscriptionEntry; err: unknown }>> {
+        const failures: Array<{ entry: SubscriptionEntry; err: unknown }> = [];
         ensureNoticeSubscription();
         await chainClient.db.call('set_subscribe_callback', [
             SUBSCRIBE_CALLBACK_ID,
@@ -1033,7 +1124,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
             if (!subEntry.active) continue;
             try {
                 await chainClient.db.get_full_accounts([subEntry.accountName], true);
-            } catch (err: any) {
+            } catch (err) {
                 warnSubscription(subEntry, 'Failed to re-subscribe account after set_subscribe_callback', err);
                 failures.push({ entry: subEntry, err });
             }
@@ -1041,7 +1132,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
         return failures;
     }
 
-    async function resubscribeEntry(entry: any, reason: string = 'reconnect') {
+    async function resubscribeEntry(entry: SubscriptionEntry | null | undefined, reason: string = 'reconnect') {
         if (!entry?.active) return;
         if (entry.reconnecting) return;
         entry.reconnecting = true;
@@ -1050,15 +1141,15 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
             try {
                 const accounts = await chainClient.db.get_full_accounts([entry.accountName], true);
                 if (accounts && accounts[0] && accounts[0][1] && accounts[0][1].account) {
-                    entry.accountId = accounts[0][1].account.id;
+                    entry.accountId = accounts[0][1].account.id ?? null;
                     entry.statisticsId = accounts[0][1].account.statistics || null;
                 }
-            } catch (err: any) {
+            } catch (err) {
                 warnSubscription(entry, 'Failed to refresh account data', err);
             }
 
             const refreshFailures = await refreshSubscriptions();
-            const entryRefreshFailure = refreshFailures.find((failure: any) => failure.entry === entry);
+            const entryRefreshFailure = refreshFailures.find((failure) => failure.entry === entry);
             if (entryRefreshFailure) throw entryRefreshFailure.err;
             for (const failure of refreshFailures) {
                 scheduleReconnectRetry(failure.entry, failure.err);
@@ -1110,7 +1201,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                     // is only the safety-net fallback.
                     try {
                         await processObjects(entry, [entry.accountId], { context: 'fill-poll' });
-                    } catch (err: any) {
+                    } catch (err) {
                         subscriptionsLogger.warn(`Fill poll failed for ${entry.accountName}: ${getErrorMessage(err)}`);
                     }
                 }
@@ -1131,7 +1222,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
         }
     }
 
-    async function subscribe(accountName: string, callback: any, onError: any = null): Promise<any> {
+    async function subscribe(accountName: string, callback: (fills: HistoryEntry[]) => unknown, onError: ((err: unknown) => void) | null = null) {
         if (!accountName || typeof accountName !== 'string') {
             throw new Error('accountName is required');
         }
@@ -1188,7 +1279,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                 return () => {};
             }
             if (accounts && accounts[0] && accounts[0][1] && accounts[0][1].account) {
-                entry.accountId = accounts[0][1].account.id;
+                entry.accountId = accounts[0][1].account.id ?? null;
                 entry.statisticsId = accounts[0][1].account.statistics || null;
             }
             if (!entry.accountId) {
@@ -1227,7 +1318,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                     // become unreachable and will be GC'd on process exit.
                     return () => {};
                 }
-                const entryRefreshFailure = refreshFailures.find((failure: any) => failure.entry === entry);
+                const entryRefreshFailure = refreshFailures.find((failure) => failure.entry === entry);
                 if (entryRefreshFailure) throw entryRefreshFailure.err;
                 startFillPolling();
                 for (const failure of refreshFailures) {
@@ -1238,7 +1329,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                 // The startup sync (synchronizeWithChain) handles all fills from downtime.
                 // processObjects is called on reconnect (resubscribeEntry/resubscribeAll)
                 // to catch fills missed during disconnect, at which point the grid is loaded.
-            } catch (err: any) {
+            } catch (err) {
                 // Only clean up if WE still own the entry. If a rollback already
                 // deleted it from the Map during the await that threw, the
                 // unsubscribe() rollback path is responsible for state — touching
@@ -1264,7 +1355,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
         return () => unsubscribe(accountName, callback);
     }
 
-    async function unsubscribe(accountName: string, callback?: any): Promise<void> {
+    async function unsubscribe(accountName: string, callback?: (fills: HistoryEntry[]) => unknown): Promise<void> {
         const entry = subscriptions.get(accountName);
         if (!entry) return;
 
@@ -1308,12 +1399,12 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
         for (const [, entry] of subscriptions) {
             if (!entry.active) continue;
             refreshTasks.push(
-                chainClient.db.get_full_accounts([entry.accountName], true).then((accounts: any) => {
+                chainClient.db.get_full_accounts([entry.accountName], true).then((accounts) => {
                     if (accounts && accounts[0] && accounts[0][1] && accounts[0][1].account) {
-                        entry.accountId = accounts[0][1].account.id;
+                        entry.accountId = accounts[0][1].account.id ?? null;
                         entry.statisticsId = accounts[0][1].account.statistics || null;
                     }
-                }).catch((err: any) => {
+                }).catch((err: unknown) => {
                     warnSubscription(entry, 'Failed to refresh account data', err);
                 })
             );
@@ -1322,7 +1413,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
 
         // Centralized subscription setup — one set_subscribe_callback + re-subscribe all.
         const refreshFailures = await refreshSubscriptions();
-        const refreshFailureEntries = new Set(refreshFailures.map((failure: any) => failure.entry));
+        const refreshFailureEntries = new Set(refreshFailures.map((failure) => failure.entry));
         for (const failure of refreshFailures) {
             scheduleReconnectRetry(failure.entry, failure.err);
         }
@@ -1344,7 +1435,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
             scanTasks.push(
                 processObjects(entry, [entry.accountId], { throwOnError: true })
                     .then(() => clearReconnectRetry(entry))
-                    .catch((err: any) => {
+                    .catch((err: unknown) => {
                         warnSubscription(entry, 'Failed to resubscribe', err);
                         scheduleReconnectRetry(entry, err);
                     })

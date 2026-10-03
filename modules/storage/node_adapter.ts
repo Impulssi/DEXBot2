@@ -18,24 +18,26 @@
 
 
 import { createRequire } from 'node:module';
+import type * as NodeFs from 'node:fs';
 import { path } from '../path_api.js';
 import { randomBytes } from '../crypto/sync.js';
 import { runtime } from '../runtime.js';
+import type { FileStat } from './types.js';
 const _require = createRequire(import.meta.url);
-let _fs: any;
-const fs = new Proxy({} as any, {
-    get(_: any, prop: any) {
-        if (!_fs && _require) _fs = _require('fs');
-        return _fs ? _fs[prop] : undefined;
+let _fs: typeof NodeFs | null = null;
+const fs = new Proxy({} as typeof NodeFs, {
+    get(_target: typeof NodeFs, prop: string | symbol) {
+        if (!_fs && _require) _fs = _require('fs') as typeof NodeFs;
+        return _fs ? Reflect.get(_fs, prop) : undefined;
     }
 });
 
 class NodeStorageAdapter {
-  readJSON(filePath: any) {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  readJSON<T = unknown>(filePath: string): T {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8')) as T;
   }
 
-  writeJSON = (filePath: string, data: any, options: any = {}) => {
+  writeJSON = (filePath: string, data: unknown, options: { mode?: number; fsync?: boolean; tmpPrefix?: string; flag?: 'w' | 'wx' } = {}) => {
     const dir = path.dirname(filePath);
     if (dir && !this.exists(dir)) {
       this.ensureDir(dir);
@@ -81,106 +83,106 @@ class NodeStorageAdapter {
     }
   }
 
-  exists(path: any) {
+  exists(path: string): boolean {
     return fs.existsSync(path);
   }
 
-  ensureDir(path: string, options: any = {}) {
-    const opts: any = { recursive: true };
+  ensureDir(path: string, options: { mode?: number } = {}) {
+    const opts: { recursive: boolean; mode?: number } = { recursive: true };
     if (options.mode !== undefined) opts.mode = options.mode;
     fs.mkdirSync(path, opts);
   }
 
-  unlink(path: any) {
+  unlink(path: string): void {
     if (!path) return;
     try { fs.unlinkSync(path); } catch (_) {}
   }
 
-  readFile(path: any, encoding: any = 'utf8') {
-    return fs.readFileSync(path, encoding);
+  readFile(path: string, encoding: string = 'utf8'): string {
+    return fs.readFileSync(path, encoding as BufferEncoding);
   }
 
-  writeFile(path: any, data: any, options: any) {
-    fs.writeFileSync(path, data, options ?? 'utf8');
+  writeFile(path: string, data: string, options?: { mode?: number } | string): void {
+    fs.writeFileSync(path, data, (options ?? 'utf8') as NodeFs.WriteFileOptions);
   }
 
-  rename(oldPath: any, newPath: any) {
+  rename(oldPath: string, newPath: string): void {
     fs.renameSync(oldPath, newPath);
   }
 
-  stat(path: any) {
+  stat(path: string): FileStat {
     return fs.statSync(path);
   }
 
-  readdir(path: any) {
+  readdir(path: string): string[] {
     return fs.readdirSync(path);
   }
 
-  open(path: any, flags: any, mode: any) {
+  open(path: string, flags: string | number, mode?: number): number {
     return fs.openSync(path, flags, mode);
   }
 
-  close(fd: any) {
+  close(fd: number): void {
     fs.closeSync(fd);
   }
 
-  write(fd: any, buffer: any, position: any, encoding: any) {
-    fs.writeSync(fd, buffer, position, encoding);
+  write(fd: number, buffer: string, position?: number | null, encoding?: string): void {
+    fs.writeSync(fd, buffer, position ?? null, (encoding ?? 'utf8') as BufferEncoding);
   }
 
-  fsync(fd: any) {
+  fsync(fd: number): void {
     fs.fsyncSync(fd);
   }
 
-  chmod(path: any, mode: any) {
+  chmod(path: string, mode: number): void {
     fs.chmodSync(path, mode);
   }
 
-  realpath(path: any) {
+  realpath(path: string): string {
     return fs.realpathSync(path);
   }
 
-  access(path: any, mode: any) {
-    return fs.accessSync(path, mode);
+  access(path: string, mode?: number): void {
+    fs.accessSync(path, mode);
   }
 
-  utimes(path: any, atime: any, mtime: any) {
+  utimes(path: string, atime: Date | number, mtime: Date | number): void {
     fs.utimesSync(path, atime, mtime);
   }
 
-  lstat(path: any) {
+  lstat(path: string): FileStat {
     return fs.lstatSync(path);
   }
 
-  rmdir(path: any) {
+  rmdir(path: string): void {
     fs.rmdirSync(path);
   }
 
-  rm(path: any, options: any = {}) {
+  rm(path: string, options?: { recursive?: boolean; force?: boolean }): void {
     fs.rmSync(path, options);
   }
 
-  mkdtemp(prefix: any) {
+  mkdtemp(prefix: string): string {
     return fs.mkdtempSync(prefix);
   }
 
-  readlink(path: any) {
+  readlink(path: string): string {
     return fs.readlinkSync(path);
   }
 
-  appendFile(path: any, data: any, options: any) {
-    fs.appendFileSync(path, data, options ?? 'utf8');
+  appendFile(path: string, data: string, options?: { mode?: number } | string): void {
+    fs.appendFileSync(path, data, (options ?? 'utf8') as NodeFs.WriteFileOptions);
   }
 
-  async appendFileAsync(path: any, data: any, options: any) {
-    await fs.promises.appendFile(path, data, options ?? 'utf8');
+  async appendFileAsync(path: string, data: string, options?: { mode?: number } | string): Promise<void> {
+    await fs.promises.appendFile(path, data, (options ?? 'utf8') as NodeFs.WriteFileOptions);
   }
 
-  createReadStream(path: any) {
+  createReadStream(path: string) {
     return fs.createReadStream(path);
   }
 
-  createWriteStream(path: any) {
+  createWriteStream(path: string) {
     return fs.createWriteStream(path);
   }
 }

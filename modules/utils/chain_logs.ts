@@ -12,7 +12,7 @@ function muteChainLogs(): void {
     const _consoleLog = console.log.bind(console);
     const _consoleInfo = console.info.bind(console);
     const _consoleWarn = console.warn.bind(console);
-    const mute = (orig: (...args: any[]) => void) => (...args: any[]) => {
+    const mute = (orig: (...args: unknown[]) => void) => (...args: unknown[]) => {
         if (args.length > 0 && typeof args[0] === 'string' && CHAIN_LOG_RE.test(args[0])) return;
         orig(...args);
     };

@@ -70,7 +70,7 @@ import { hasGenesisLadder } from './order/genesis_policy.js';
 import * as Format from './order/format.js';
 import { ensureDir, nowIso, normalizeLastFillPivot } from './order/utils/system.js';
 import Logger from './order/logger.js';
-import { getErrorMessage } from './utils/errors.js';
+import { getErrorMessage, getErrorCode } from './utils/errors.js';
 import { sanitizeKey } from './utils/sanitize_key.js';
 const storage = getStorage();
 const { toFiniteNumber } = Format;
@@ -83,7 +83,7 @@ const accountOrdersLogger = new Logger('AccountOrders');
  * @param {string} filePath - The file path to check.
  * @private
  */
-function ensureDirExists(filePath: any) {
+function ensureDirExists(filePath: string) {
   ensureDir(path.dirname(filePath));
 }
 
@@ -96,7 +96,7 @@ function ensureDirExists(filePath: any) {
  * @param {number} index - Index in bots array (used for unnamed fallback)
  * @returns {string} Sanitized key
  */
-function createBotKey(bot: any, index: any) {
+function createBotKey(bot: Record<string, unknown> | null | undefined, index: number) {
   if (bot && bot.name) {
     return sanitizeKey(bot.name);
   }
@@ -110,30 +110,30 @@ function createBotKey(bot: any, index: any) {
 
 const SENSITIVE_KEY_PATTERN = /(private|secret|password|credential|wif|token|hmac|memo)/i;
 
-function cloneForDebug(value: any, seen: any = new WeakSet()): any {
+function cloneForDebug(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
   if (typeof value === 'bigint') return value.toString();
   if (value === null || typeof value !== 'object') return value;
   if (seen.has(value)) return '[Circular]';
   if (value instanceof Map) {
     seen.add(value);
-    return Object.fromEntries(Array.from(value.entries(), ([key, item]: any) => [
+    return Object.fromEntries(Array.from(value.entries(), ([key, item]) => [
       key,
       SENSITIVE_KEY_PATTERN.test(String(key)) ? '[REDACTED]' : cloneForDebug(item, seen)
     ]));
   }
   if (value instanceof Set) {
     seen.add(value);
-    return Array.from(value.values(), (item: any) => cloneForDebug(item, seen));
+    return Array.from(value.values(), (item) => cloneForDebug(item, seen));
   }
   if (value instanceof Date) return value.toISOString();
 
   seen.add(value);
 
   if (Array.isArray(value)) {
-    return value.map((item: any) => cloneForDebug(item, seen));
+    return value.map((item) => cloneForDebug(item, seen));
   }
 
-  const result: Record<string, any> = {};
+  const result: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
     if (typeof item === 'function') continue;
     result[key] = SENSITIVE_KEY_PATTERN.test(key) ? '[REDACTED]' : cloneForDebug(item, seen);
@@ -165,6 +165,45 @@ function emptyData() {
   };
 }
 
+interface BotMeta {
+  key: string;
+  name: string | null;
+  assetA: string | null;
+  assetB: string | null;
+  active: boolean;
+  index: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface SerializedOrder {
+  id: string | null;
+  type: string | null;
+  state: string | null;
+  price: number;
+  size: number;
+  orderId: string;
+  createUncertain?: boolean;
+}
+
+interface BotData {
+  meta: BotMeta | null;
+  grid: SerializedOrder[];
+  btsFeesOwed: number;
+  btsBalance: Record<string, unknown> | null;
+  boundaryIdx: number | null;
+  assets: Record<string, unknown> | null;
+  debugInputs: Record<string, unknown> | null;
+  processedFills: Record<string, number>;
+  recentFillKeys: Record<string, unknown>;
+  genesis: Record<string, unknown> | null;
+  createdAt: string;
+  lastUpdated: string;
+  gapEvacStreaks?: Record<string, number>;
+  pendingFillCrawls?: { slotId: string; side: string; ts: number }[];
+  lastFillPivot?: unknown;
+}
+
 /**
  * AccountOrders class - manages order grid persistence
  *
@@ -181,9 +220,10 @@ function emptyData() {
 class AccountOrders {
   botKey: string;
   profilesPath: string;
-  _persistenceLock: any;
+  _persistenceLock: AsyncLock;
   _needsBootstrapSave: boolean;
-  data: any;
+  data: BotData;
+  _rejectedGenesis?: { reason: string; at: number };
 
   /**
    * Create an AccountOrders instance.
@@ -226,12 +266,12 @@ class AccountOrders {
    * @returns {Object|null} The parsed object or null on failure.
    * @private
    */
-  _readFile(filePath: any) {
+  _readFile(filePath: string): BotData | null {
     try {
       const parsed = storage.readJSON(filePath);
-      if (typeof parsed === 'object' && parsed !== null) return parsed;
-    } catch (err: any) {
-      if (err?.code === 'ENOENT') {
+      if (typeof parsed === 'object' && parsed !== null) return parsed as unknown as BotData;
+    } catch (err) {
+      if (getErrorCode(err) === 'ENOENT') {
         return null;
       }
       if (err instanceof SyntaxError) {
@@ -261,14 +301,15 @@ class AccountOrders {
    * meta in place if it has drifted. The grid and other state are not touched.
    * @param {Object} botConfig - The bot config matching this.botKey
    */
-  async syncMeta(botConfig: any) {
+  async syncMeta(botConfig: unknown) {
     if (!botConfig) return;
 
     await this._persistenceLock.acquire(async () => {
       // Reload from disk to ensure we have the latest state
       this.data = this._loadData() || emptyData();
 
-      const newMeta = this._buildMeta(botConfig, this.botKey, botConfig.botIndex ?? 0, this.data.meta);
+      const cfg = botConfig as Record<string, unknown>;
+      const newMeta = this._buildMeta(botConfig, this.botKey, typeof cfg.botIndex === 'number' ? cfg.botIndex : 0, this.data.meta);
       const prevMeta = this.data.meta;
 
       if (this._metaChanged(prevMeta, newMeta)) {
@@ -293,7 +334,7 @@ class AccountOrders {
    * @returns {boolean} True if meta has changed.
    * @private
    */
-  _metaChanged(existing: any, next: any) {
+  _metaChanged(existing: BotMeta | null, next: BotMeta) {
     if (!existing) return true;
     return existing.name !== next.name ||
       existing.assetA !== next.assetA ||
@@ -311,14 +352,15 @@ class AccountOrders {
    * @returns {Object} The new meta object.
    * @private
    */
-  _buildMeta(bot: any, key: string, index: number, existing: { createdAt?: string } | null = null) {
+  _buildMeta(bot: unknown, key: string, index: number, existing: { createdAt?: string } | null = null): BotMeta {
     const timestamp = nowIso();
+    const b = bot as Record<string, unknown>;
     return {
       key,
-      name: bot.name || null,
-      assetA: bot.assetA || null,
-      assetB: bot.assetB || null,
-      active: !!bot.active,
+      name: (b.name as string) || null,
+      assetA: (b.assetA as string) || null,
+      assetB: (b.assetB as string) || null,
+      active: !!b.active,
       index,
       createdAt: (existing && existing.createdAt) || timestamp,
       updatedAt: timestamp
@@ -336,19 +378,19 @@ class AccountOrders {
    * @param {Object|null} recentFillKeys - Optional fill key dedup snapshot for crash recovery
    * @param {Object|null} genesis - Optional frozen genesis (priceLevels etc)
    */
-  async storeMasterGrid(orders: any[] = [], btsFeesOwed: any = null, boundaryIdx: any = null, assets: any = null, debugInputs: any = null, recentFillKeys: any = null, genesis: any = null, gapEvacStreaks: any = undefined, pendingFillCrawls: any = undefined, lastFillPivot: any = undefined) {
+  async storeMasterGrid(orders: unknown[] = [], btsFeesOwed: number | null = null, boundaryIdx: number | null = null, assets: Record<string, unknown> | null = null, debugInputs: unknown = null, recentFillKeys: Record<string, unknown> | null = null, genesis: unknown = null, gapEvacStreaks: unknown = undefined, pendingFillCrawls: unknown = undefined, lastFillPivot: unknown = undefined) {
     // Use AsyncLock to serialize read-modify-write operations
     await this._persistenceLock.acquire(async () => {
       // Reload from disk before writing to prevent race conditions
       this.data = this._loadData() || emptyData();
 
-      const snapshot = Array.isArray(orders) ? orders.map((order: any) => this._serializeOrder(order)) : [];
-      const debugSnapshot = debugInputs ? cloneForDebug(debugInputs) : null;
+      const snapshot = Array.isArray(orders) ? orders.map((order) => this._serializeOrder(order)) : [];
+      const debugSnapshot = debugInputs ? cloneForDebug(debugInputs) as Record<string, unknown> : null;
 
       this.data.grid = snapshot;
 
       if (Number.isFinite(btsFeesOwed)) {
-        this.data.btsFeesOwed = btsFeesOwed;
+        this.data.btsFeesOwed = btsFeesOwed as number;
       }
 
       if (Number.isFinite(boundaryIdx)) {
@@ -365,7 +407,7 @@ class AccountOrders {
 
       // Persist btsBalance for non-BTS pairs (passed via debugInputs)
       if (debugSnapshot && debugSnapshot.btsBalance) {
-        this.data.btsBalance = debugSnapshot.btsBalance;
+        this.data.btsBalance = debugSnapshot.btsBalance as Record<string, unknown>;
       }
 
       // Initialize processedFills if missing (backward compat)
@@ -380,8 +422,8 @@ class AccountOrders {
         this.data.recentFillKeys = {};
       }
 
-      if (genesis && typeof genesis === 'object' && Array.isArray(genesis.priceLevels)) {
-        this.data.genesis = genesis;
+      if (genesis && typeof genesis === 'object' && Array.isArray((genesis as Record<string, unknown>).priceLevels)) {
+        this.data.genesis = genesis as Record<string, unknown>;
       }
 
       // Persist gap-evacuation streaks (Phase 3 restart resilience): only
@@ -398,7 +440,7 @@ class AccountOrders {
         if (Object.keys(sanitized).length > 0) {
           this.data.gapEvacStreaks = sanitized;
         } else {
-          delete (this.data as any).gapEvacStreaks;
+          delete this.data.gapEvacStreaks;
         }
       }
       // Persist pending fill crawls (restart resilience): fills whose
@@ -418,7 +460,7 @@ class AccountOrders {
         if (sanitized.length > 0) {
           this.data.pendingFillCrawls = sanitized;
         } else {
-          delete (this.data as any).pendingFillCrawls;
+          delete this.data.pendingFillCrawls;
         }
       }
 
@@ -438,13 +480,13 @@ class AccountOrders {
         if (lastFillPivot === undefined) {
           // Legacy no-op (backward-compatible callers), mirror gapEvacStreaks.
         } else if (lastFillPivot === null) {
-          delete (this.data as any).lastFillPivot;
+          delete this.data.lastFillPivot;
         } else {
           const normalized = normalizeLastFillPivot(lastFillPivot);
           if (normalized) {
-            (this.data as any).lastFillPivot = normalized;
+            this.data.lastFillPivot = normalized;
           } else {
-            delete (this.data as any).lastFillPivot;
+            delete this.data.lastFillPivot;
           }
         }
       }
@@ -487,7 +529,7 @@ class AccountOrders {
   async clearPersistedLastFillPivot() {
     await this._persistenceLock.acquire(async () => {
       this.data = this._loadData() || emptyData();
-      delete (this.data as any).lastFillPivot;
+      delete this.data.lastFillPivot;
       this.data.lastUpdated = nowIso();
       this._persist();
     });
@@ -542,12 +584,14 @@ class AccountOrders {
    * Record why a persisted genesis row was refused (observability for the
    * schema gate above; loadGrid cannot report a row it never receives).
    */
-  private _noteRejectedGenesis(genesis: any) {
+  private _noteRejectedGenesis(genesis: unknown) {
     try {
-      const reason = !Array.isArray(genesis?.priceLevels)
+      const g = (genesis && typeof genesis === 'object') ? genesis as { priceLevels?: unknown } : null;
+      const levels = g?.priceLevels;
+      const reason = !Array.isArray(levels)
         ? 'priceLevels is not an array'
-        : (genesis?.priceLevels?.length === 0 ? 'priceLevels is empty' : 'malformed');
-      (this as any)._rejectedGenesis = { reason, at: Date.now() };
+        : (levels.length === 0 ? 'priceLevels is empty' : 'malformed');
+      this._rejectedGenesis = { reason, at: Date.now() };
     } catch { /* never fail a load for telemetry */ }
   }
 
@@ -572,7 +616,7 @@ class AccountOrders {
     }
     // Shared row gate (normalizeLastFillPivot): identical validation to the
     // storeMasterGrid sanitizer, one shape contract for the whole ledger.
-    return normalizeLastFillPivot(this.data && (this.data as any).lastFillPivot);
+    return normalizeLastFillPivot(this.data && this.data.lastFillPivot);
   }
 
   /**
@@ -585,7 +629,7 @@ class AccountOrders {
       this.data = this._loadData() || emptyData();
     }
     const out: { slotId: string; side: string; ts: number }[] = [];
-    const stored = this.data && (this.data as any).pendingFillCrawls;
+    const stored = this.data && this.data.pendingFillCrawls;
     if (Array.isArray(stored)) {
       for (const e of stored) {
         if (e && typeof e.slotId === 'string' && e.slotId.length > 0
@@ -693,11 +737,11 @@ class AccountOrders {
       // Snapshot wipe takes the boundary bookkeeping with it: owed fill crawls
       // are relative deltas against the deleted boundary/grid, so a rebuilt
       // generation must not inherit them (the rebuild re-anchors absolutely).
-      delete (this.data as any).pendingFillCrawls;
+      delete this.data.pendingFillCrawls;
       // The persisted LAST-FILL-GUARD pivot belongs to the deleted snapshot's
       // generation (its slot ids and genesis): a rebuilt grid must re-arm on
       // a fresh fill, not inherit a pivot validated against wiped geometry.
-      delete (this.data as any).lastFillPivot;
+      delete this.data.lastFillPivot;
       this.data.lastUpdated = nowIso();
       this._persist();
       return true;
@@ -722,8 +766,8 @@ class AccountOrders {
 
     if (this.data) {
       const fills = this.data.processedFills || {};
-      const entries = Object.entries(fills).filter(([, timestamp]: any) =>
-        minTimestamp == null || (Number.isFinite(timestamp) && (timestamp as number) >= minTimestamp!)
+      const entries = Object.entries(fills).filter(([, timestamp]) =>
+        minTimestamp == null || (Number.isFinite(timestamp) && timestamp >= minTimestamp!)
       );
       return new Map(entries);
     }
@@ -778,7 +822,7 @@ class AccountOrders {
       let deletedCount = 0;
 
       for (const [fillKey, timestamp] of Object.entries(fills)) {
-        if (now - (timestamp as number) > olderThanMs) {
+        if (now - timestamp > olderThanMs) {
           delete fills[fillKey];
           deletedCount++;
         }
@@ -803,7 +847,7 @@ class AccountOrders {
     }
 
     if (!this.data) return null;
-    const meta = this.data.meta || {};
+    const meta: Partial<BotMeta> = this.data.meta || {};
     const grid = Array.isArray(this.data.grid) ? this.data.grid : [];
     const sums = {
       assetA: { active: 0, virtual: 0 },
@@ -834,24 +878,25 @@ class AccountOrders {
    * @returns {Object} The serialized order.
    * @private
    */
-  _serializeOrder(order: any = {}) {
-    const priceValue = toFiniteNumber(order.price);
-    const sizeValue = toFiniteNumber(order.size);
+  _serializeOrder(order: unknown = {}): SerializedOrder {
+    const o = order as Record<string, unknown>;
+    const priceValue = toFiniteNumber(o.price);
+    const sizeValue = toFiniteNumber(o.size);
 
     // SANITY CHECK: If order is ACTIVE/PARTIAL but has no orderId, it's corrupted.
     // Downgrade to VIRTUAL to prevent persisting phantom active orders.
     // This fixes the root cause of "Active No ID" state in JSON files.
-    let state = order.state || null;
-    let orderId = order.orderId || '';
+    let state = (o.state as string) || null;
+    let orderId = (o.orderId as string) || '';
 
-    if (isPhantomOrder(order)) {
+    if (isPhantomOrder(order as Parameters<typeof isPhantomOrder>[0])) {
         state = ORDER_STATES.VIRTUAL;
         orderId = '';
     }
 
-    const serialized: Record<string, any> = {
-      id: order.id || null,
-      type: order.type || null,
+    const serialized: SerializedOrder = {
+      id: (o.id as string) || null,
+      type: (o.type as string) || null,
       state: state,
       price: Number.isFinite(priceValue) ? priceValue : 0,
       size: Number.isFinite(sizeValue) ? sizeValue : 0,
@@ -862,7 +907,7 @@ class AccountOrders {
     // leaves the slot VIRTUAL with its planned size. Only that flagged state
     // is a true sized-orphan candidate at load (grid.ts sanitizer) — plain
     // sized VIRTUAL slots are the normal planned-but-unplaced grid state.
-    if (order.createUncertain === true) {
+    if (o.createUncertain === true) {
       serialized.createUncertain = true;
     }
 

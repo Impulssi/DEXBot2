@@ -18,6 +18,16 @@
  *   collateralValueInDebt = collateralAmount * conversionRate.
  */
 
+interface PriceLeg {
+    amount?: unknown;
+    asset_id?: unknown;
+}
+
+interface OfferPrice {
+    base?: PriceLeg;
+    quote?: PriceLeg;
+}
+
 function toFiniteOrNull(value: unknown): number | null {
     const num = typeof value === 'string' && value.trim() !== '' ? Number(value) : Number(value);
     return Number.isFinite(num) ? num : null;
@@ -33,27 +43,28 @@ function positiveOrNull(value: unknown): number | null {
  * in different shapes depending on the API path (Map, [[id, price]] pairs,
  * [{key, value}] entries, or a plain {assetId: price} object).
  */
-function normalizeCollateralMap(raw: unknown): Map<string, any> {
-    const out = new Map<string, any>();
+function normalizeCollateralMap(raw: unknown): Map<string, OfferPrice> {
+    const out = new Map<string, OfferPrice>();
     if (raw instanceof Map) {
         for (const [key, value] of raw.entries()) {
-            if (key && value) out.set(String(key), value);
+            if (key && value) out.set(String(key), value as OfferPrice);
         }
         return out;
     }
     if (Array.isArray(raw)) {
         for (const entry of raw) {
             if (Array.isArray(entry) && entry.length >= 2 && entry[0] && entry[1]) {
-                out.set(String(entry[0]), entry[1]);
-            } else if (entry && typeof entry === 'object' && (entry as any).key && (entry as any).value) {
-                out.set(String((entry as any).key), (entry as any).value);
+                out.set(String(entry[0]), entry[1] as OfferPrice);
+            } else if (entry && typeof entry === 'object') {
+                const pair = entry as { key?: unknown; value?: unknown };
+                if (pair.key && pair.value) out.set(String(pair.key), pair.value as OfferPrice);
             }
         }
         return out;
     }
     if (raw && typeof raw === 'object') {
         for (const [key, value] of Object.entries(raw)) {
-            if (key && value) out.set(String(key), value);
+            if (key && value) out.set(String(key), value as OfferPrice);
         }
     }
     return out;
@@ -74,7 +85,7 @@ function creditPriceOrientation(
     return 'core';
 }
 
-function priceLegToFloat(leg: any, precision: number | null): number | null {
+function priceLegToFloat(leg: PriceLeg | null | undefined, precision: number | null): number | null {
     const raw = toFiniteOrNull(leg?.amount);
     if (raw === null || raw <= 0 || precision === null || !Number.isFinite(precision) || precision < 0) {
         return null;
@@ -118,11 +129,11 @@ function extractOfferConversionRate(
  * full acceptable_collateral map (looked up by collateral asset ID) or the
  * bare { base, quote } price object the runtime already selected.
  */
-function asOfferPrice(collateralPriceOrMap: any, collateralAssetId: string): any {
+function asOfferPrice(collateralPriceOrMap: unknown, collateralAssetId: string): OfferPrice | null {
     const hit = normalizeCollateralMap(collateralPriceOrMap).get(String(collateralAssetId));
     if (hit) return hit;
-    const raw = collateralPriceOrMap;
-    if (raw && typeof raw === 'object' && (raw as any).base && (raw as any).quote) return raw;
+    const raw = collateralPriceOrMap as OfferPrice | null | undefined;
+    if (raw && typeof raw === 'object' && raw.base && raw.quote) return raw;
     return null;
 }
 
@@ -133,7 +144,7 @@ function asOfferPrice(collateralPriceOrMap: any, collateralAssetId: string): any
 function collateralValueFromOfferPrice(
     collateralAmountInt: unknown,
     collateralPrecision: unknown,
-    collateralPriceOrMap: any,
+    collateralPriceOrMap: unknown,
     debtAssetId: string,
     collateralAssetId: string,
     precisionOf: (assetId: string) => number | null,
@@ -156,7 +167,7 @@ function collateralValueFromOfferPrice(
  */
 function requiredCollateralForBorrow(
     borrowAmountInt: unknown,
-    collateralPrice: any,
+    collateralPrice: OfferPrice | null | undefined,
     debtAssetId: string | null = null,
     collateralAssetId: string | null = null,
 ): number | null {
@@ -184,7 +195,7 @@ function requiredCollateralForBorrow(
  */
 function borrowAmountForCollateral(
     collateralAmountInt: unknown,
-    collateralPrice: any,
+    collateralPrice: OfferPrice | null | undefined,
     debtAssetId: string | null = null,
     collateralAssetId: string | null = null,
 ): number | null {
@@ -247,7 +258,7 @@ function averageCollateralRatio(entries: Array<{ debt: unknown; value: unknown }
  * Returns 0 for missing/non-positive inputs (matches runtime gating, where
  * a zero daily rate never exceeds maxFeeRatePerDay).
  */
-function dailyOfferFeeRate(offer: any, feeDenom: unknown): number {
+function dailyOfferFeeRate(offer: { fee_rate?: unknown; max_duration_seconds?: unknown } | null | undefined, feeDenom: unknown): number {
     const feeRate = toFiniteOrNull(offer?.fee_rate);
     const maxDurationSeconds = toFiniteOrNull(offer?.max_duration_seconds);
     const denom = toFiniteOrNull(feeDenom);

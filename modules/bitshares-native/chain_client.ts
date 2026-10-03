@@ -28,8 +28,9 @@ function toRpcMethodName(method: string): string {
  * without a status 'closed' event, or when the node drops the login session
  * server-side; the id then points past the new session's _local_apis map.
  */
-function isStaleApiIdError(err: any): boolean {
-    const message = err && err.message ? String(err.message) : String(err ?? '');
+function isStaleApiIdError(err: unknown): boolean {
+    const e = err as { message?: unknown } | null | undefined;
+    const message = e && e.message ? String(e.message) : String(err ?? '');
     if (!message) return false;
     return message.includes('_local_apis') || (message.includes('api_id') && message.includes('Assert Exception'));
 }
@@ -70,7 +71,7 @@ export type ForcedReconnectOutcome = 'issued' | 'coalesced' | 'unavailable';
  * genuinely new teardown from one coalesced onto another source's, so
  * escalation accounting is not starved when the cooldown is already spent.
  */
-function createForcedReconnectGate(transport: any): (reason?: string) => ForcedReconnectOutcome {
+function createForcedReconnectGate(transport: ReturnType<typeof createTransport>): (reason?: string) => ForcedReconnectOutcome {
     const cooldownMs = Number.isFinite(TRANSPORT.FORCED_RECONNECT_COOLDOWN_MS)
         ? Math.max(0, TRANSPORT.FORCED_RECONNECT_COOLDOWN_MS)
         : 30000;
@@ -88,7 +89,7 @@ function createForcedReconnectGate(transport: any): (reason?: string) => ForcedR
         lastForcedReconnectAt = now;
         try {
             transport.forceReconnect(reason);
-        } catch (_: any) {
+        } catch (_) {
             // Keep the stamp: a throwing recovery must not become a tight loop.
         }
         return 'issued';
@@ -187,21 +188,21 @@ function createChainClient(config: ChainClientConfig = {}) {
                 _dbApiId = await registerApi('database');
             }
 
-            const chainId: string = await transport.call('call', [_dbApiId, 'get_chain_id', []]);
+            const chainId = await transport.call('call', [_dbApiId, 'get_chain_id', []]) as string;
             let addressPrefix = GRAPHENE_ADDRESS_PREFIX;
             let coreAsset = CHAIN.CORE_ASSET_ID;
 
             try {
-                const props = await transport.call('call', [_dbApiId, 'get_chain_properties', []]);
+                const props = await transport.call('call', [_dbApiId, 'get_chain_properties', []]) as { address_prefix?: string } | null;
                 if (props && props.address_prefix) addressPrefix = props.address_prefix;
-            } catch (err: any) { console.warn('[chain_client]', 'get_chain_properties failed:', getErrorMessage(err)); }
+            } catch (err) { console.warn('[chain_client]', 'get_chain_properties failed:', getErrorMessage(err)); }
 
             try {
-                const globals = await transport.call('call', [_dbApiId, 'get_global_properties', []]);
+                const globals = await transport.call('call', [_dbApiId, 'get_global_properties', []]) as { parameters?: { core_asset?: string } } | null;
                 if (globals && globals.parameters && globals.parameters.core_asset) {
                     coreAsset = globals.parameters.core_asset;
                 }
-            } catch (err: any) { console.warn('[chain_client]', 'get_global_properties failed:', getErrorMessage(err)); }
+            } catch (err) { console.warn('[chain_client]', 'get_global_properties failed:', getErrorMessage(err)); }
 
             try {
                 // login_api.get_config() returns application_options (which
@@ -211,11 +212,11 @@ function createChainClient(config: ChainClientConfig = {}) {
                 // (API id 1) directly. get_config requires the user to be
                 // logged in; the empty-creds login above is sufficient on nodes
                 // with the default api_access.json (anonymous full access).
-                const nodeConfig = await transport.call('call', [1, 'get_config', []]);
+                const nodeConfig = await transport.call('call', [1, 'get_config', []]) as { api_limit_get_account_history?: number } | null;
                 if (nodeConfig && typeof nodeConfig.api_limit_get_account_history === 'number') {
                     _apiLimitGetAccountHistory = nodeConfig.api_limit_get_account_history;
                 }
-            } catch (_: any) {
+            } catch (_) {
                 // get_config may be denied (locked-down node) or unsupported;
                 // fall back to the static HISTORY_LOOKBACK_MAX default.
             }
@@ -244,7 +245,7 @@ function createChainClient(config: ChainClientConfig = {}) {
 
     async function registerApi(apiName: string): Promise<number> {
         const apiId = await transport.call('call', [1, apiName, []]);
-        return apiId;
+        return apiId as number;
     }
 
     /**
@@ -257,10 +258,10 @@ function createChainClient(config: ChainClientConfig = {}) {
     async function callWithApiRecovery(
         apiName: string,
         method: string,
-        args: any[],
+        args: unknown[],
         getApiId: () => number | null,
         setApiId: (id: number | null) => void,
-    ): Promise<any> {
+    ): Promise<unknown> {
         let apiId = getApiId();
         if (apiId == null) {
             apiId = await registerApi(apiName);
@@ -268,7 +269,7 @@ function createChainClient(config: ChainClientConfig = {}) {
         }
         try {
             return await transport.call('call', [apiId, method, args]);
-        } catch (err: any) {
+        } catch (err) {
             if (!isStaleApiIdError(err)) throw err;
             noteStaleApiError(apiName);
             setApiId(null);
@@ -304,7 +305,7 @@ function createChainClient(config: ChainClientConfig = {}) {
         forceReconnect(`repeated stale api_id for ${apiName} (${threshold}x)`);
     }
 
-    async function dbCall(method: string, args?: any[]): Promise<any> {
+    async function dbCall(method: string, args?: unknown[]): Promise<unknown> {
         return callWithApiRecovery(
             'database',
             toRpcMethodName(method),
@@ -314,7 +315,7 @@ function createChainClient(config: ChainClientConfig = {}) {
         );
     }
 
-    async function historyCall(method: string, args?: any[]): Promise<any> {
+    async function historyCall(method: string, args?: unknown[]): Promise<unknown> {
         return callWithApiRecovery(
             'history',
             toRpcMethodName(method),
@@ -324,7 +325,7 @@ function createChainClient(config: ChainClientConfig = {}) {
         );
     }
 
-    async function broadcastCall(method: string, args?: any[]): Promise<any> {
+    async function broadcastCall(method: string, args?: unknown[]): Promise<unknown> {
         return callWithApiRecovery(
             'network_broadcast',
             method,
@@ -334,7 +335,7 @@ function createChainClient(config: ChainClientConfig = {}) {
         );
     }
 
-    async function broadcastTx(signedTx: any): Promise<any> {
+    async function broadcastTx(signedTx: unknown): Promise<unknown> {
         return broadcastCall('broadcast_transaction', [signedTx]);
     }
 
@@ -363,7 +364,7 @@ function createChainClient(config: ChainClientConfig = {}) {
     function getCoreAsset(): string { return _chainConfig ? _chainConfig.coreAsset : CHAIN.CORE_ASSET_ID; }
     function getApiLimitGetAccountHistory(): number | null { return _apiLimitGetAccountHistory; }
 
-    const db: Record<string, (...args: any[]) => Promise<any>> = {};
+    const db: Record<string, (...args: never[]) => Promise<unknown>> = {};
 
     const DB_METHODS = [
         'get_assets', 'getAssets', 'lookup_asset_symbols', 'lookupAssetSymbols',
@@ -376,12 +377,12 @@ function createChainClient(config: ChainClientConfig = {}) {
     ];
 
     for (const method of DB_METHODS) {
-        db[method] = (...args: any[]) => dbCall(method, args);
+        db[method] = (...args: unknown[]) => dbCall(method, args);
     }
 
     db.call = dbCall;
 
-    const history: Record<string, (...args: any[]) => Promise<any>> = {};
+    const history: Record<string, (...args: never[]) => Promise<unknown>> = {};
 
     const HISTORY_METHODS = [
         'getMarketHistory', 'get_market_history', 'getMarketHistoryBuckets', 'get_market_history_buckets',
@@ -392,18 +393,18 @@ function createChainClient(config: ChainClientConfig = {}) {
     ];
 
     for (const method of HISTORY_METHODS) {
-        history[method] = (...args: any[]) => historyCall(method, args);
+        history[method] = (...args: unknown[]) => historyCall(method, args);
     }
 
     history.call = historyCall;
 
-    const broadcast: Record<string, (...args: any[]) => Promise<any>> = {
+    const broadcast: Record<string, (...args: never[]) => Promise<unknown>> = {
         call: broadcastCall,
-        broadcast_transaction: (tx: any) => broadcastTx(tx),
-        broadcast_transaction_synchronous: (tx: any) => broadcastCall('broadcast_transaction_synchronous', [tx]),
+        broadcast_transaction: (tx: unknown) => broadcastTx(tx),
+        broadcast_transaction_synchronous: (tx: unknown) => broadcastCall('broadcast_transaction_synchronous', [tx]),
     };
 
-    const client: any = {
+    const client = {
         transport,
         connect,
         disconnect,
@@ -483,10 +484,10 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
                 throw new ConnectionError('Login error');
             }
             if (_dbApiId == null) {
-                _dbApiId = await transport.call('call', [1, 'database', []]);
+                _dbApiId = await transport.call('call', [1, 'database', []]) as number;
             }
             if (_historyApiId == null) {
-                _historyApiId = await transport.call('call', [1, 'history', []]);
+                _historyApiId = await transport.call('call', [1, 'history', []]) as number;
             }
         })().finally(() => {
             _recoverPromise = null;
@@ -497,14 +498,14 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
     async function validateChain(): Promise<Error | null> {
         if (!validateChainId || _dbApiId == null) return null;
         try {
-            const chainId: string = await transport.call('call', [_dbApiId, 'get_chain_id', []]);
+            const chainId = await transport.call('call', [_dbApiId, 'get_chain_id', []]) as string;
             if (chainId !== expectedChainId) {
                 disconnect();
                 return new ChainConfigError(
                     `Chain ID mismatch: expected ${expectedChainId}, got ${chainId}`
                 );
             }
-        } catch (err: any) {
+        } catch (err) {
             if (err instanceof ChainConfigError) return err;
             // Transient RPC failure — reset API IDs so the next call retries cleanly.
             // The caller must treat null API IDs after validateChain() as a failure
@@ -528,10 +529,10 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
      */
     async function callWithRecovery(
         method: string,
-        args: any[],
+        args: unknown[],
         getApiId: () => number | null,
         setApiId: (id: number | null) => void,
-    ): Promise<any> {
+    ): Promise<unknown> {
         if (getApiId() == null) {
             await recoverApis();
             const err = await validateChain();
@@ -540,7 +541,7 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
         const apiId = getApiId();
         try {
             return await transport.call('call', [apiId, method, args]);
-        } catch (err: any) {
+        } catch (err) {
             if (!isStaleApiIdError(err)) throw err;
             noteStaleApiError();
             setApiId(null);
@@ -575,7 +576,7 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
         forceReconnect(`repeated stale api_id on read channel (${threshold}x)`);
     }
 
-    async function db(method: string, args?: any[]): Promise<any> {
+    async function db(method: string, args?: unknown[]): Promise<unknown> {
         return callWithRecovery(
             toRpcMethodName(method),
             args || [],
@@ -584,7 +585,7 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
         );
     }
 
-    async function history(method: string, args?: any[]): Promise<any> {
+    async function history(method: string, args?: unknown[]): Promise<unknown> {
         return callWithRecovery(
             toRpcMethodName(method),
             args || [],

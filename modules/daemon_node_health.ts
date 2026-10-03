@@ -112,7 +112,7 @@ export function createNodeHealthLedger(options: NodeHealthLedgerOptions = {}): N
             if (removed) {
                 logger.log?.(`[credential-daemon] Excluded ${nodeUrl.substring(0, 40)}... from shared health cache (blacklisted)`);
             }
-        } catch (err: any) {
+        } catch (err) {
             logger.warn?.(`[credential-daemon] Failed to update health cache after blacklisting ${nodeUrl}: ${getErrorMessage(err)}`);
         }
     }

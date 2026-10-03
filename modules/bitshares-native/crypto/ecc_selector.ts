@@ -18,8 +18,10 @@ import { isBrowser } from '../../env.js';
  * e.g. signing_client.wifToBuffer, which is on a read-only hot path —
  * can defer the require until first use.
  */
-function getEcc(): any {
-    return isBrowser() ? require('./ecc.browser') : require('./ecc');
+type EccModule = typeof import('./ecc.js');
+
+function getEcc(): EccModule {
+    return (isBrowser() ? require('./ecc.browser') : require('./ecc')) as EccModule;
 }
 
 export default getEcc

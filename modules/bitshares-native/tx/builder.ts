@@ -40,9 +40,11 @@ class TransactionTooLargeError extends Error {
     }
 }
 
+type OpParams = Record<string, unknown>;
+
 interface SerializerInstance {
-    toBuffer(obj: any): Buffer;
-    toObject(obj: any, debug?: any): Record<string, any>;
+    toBuffer(obj: unknown): Buffer;
+    toObject(obj: unknown, debug?: unknown): Record<string, unknown>;
 }
 
 interface SerialOps {
@@ -58,11 +60,44 @@ interface ChainClientRef {
     };
     reportNodeFailure?(nodeUrl: string, errorMessage?: string, source?: string): void;
     db: {
-        call(method: string, args: any[]): Promise<any>;
-        get_objects(ids: string[]): Promise<any[]>;
-        get_dynamic_global_properties(): Promise<any>;
-        [key: string]: (...args: any[]) => Promise<any>;
+        call(method: string, args: unknown[]): Promise<unknown>;
+        get_objects(ids: string[]): Promise<unknown[]>;
+        get_dynamic_global_properties(): Promise<unknown>;
+        [key: string]: (...args: never[]) => Promise<unknown>;
     };
+}
+
+interface SignedTxResult {
+    signedTx: Buffer;
+    signedTxObject: Record<string, unknown>;
+    digest: Buffer;
+    signature: Buffer;
+}
+
+interface TransactionBuilder {
+    addOperation(type: string, params: OpParams): this;
+    limit_order_create(data: OpParams): this;
+    limit_order_cancel(data: OpParams): this;
+    limit_order_update(data: OpParams): this;
+    call_order_update(data: OpParams): this;
+    asset_settle(data: OpParams): this;
+    transfer(data: OpParams): this;
+    credit_offer_accept(data: OpParams): this;
+    credit_deal_repay(data: OpParams): this;
+    credit_deal_update(data: OpParams): this;
+    liquidity_pool_exchange(data: OpParams): this;
+    setRequiredFees(feeAssetId?: string): Promise<void>;
+    fetchRefBlock(): Promise<void>;
+    setExpiration(seconds?: number): void;
+    prepare(feeAssetId?: string): Promise<Buffer>;
+    _serializeUnsigned(): Buffer;
+    _buildSerializedOp(type: string, params: OpParams): [number, unknown];
+    _castParamsToSerializable(type: string, params: OpParams): OpParams;
+    sign(privateKey: Buffer): SignedTxResult;
+    broadcast(): Promise<never>;
+    _getSerializedOps(): Array<[number, unknown]>;
+    getOperationCount(): number;
+    getOperations(): Array<{ type: string; params: OpParams }>;
 }
 
 function getChainIdBuffer(chainClient: ChainClientRef | null): Buffer {
@@ -80,13 +115,13 @@ function assertTxSize(buffer: Buffer): void {
 }
 
 function createTransactionBuilder(chainClient: ChainClientRef) {
-    const ops: Array<{ type: string; params: any }> = [];
+    const ops: Array<{ type: string; params: OpParams }> = [];
     let refBlockNum = 0;
     let refBlockPrefix = 0;
     let expiration: number | null = null;
 
-    const tx: any = {
-        addOperation(type: string, params: any) {
+    const tx: TransactionBuilder & Record<string, unknown> = {
+        addOperation(type: string, params: OpParams) {
             if (ops.length >= MAX_OPS_PER_TX) {
                 throw new TransactionTooLargeError(`Max operations per tx (${MAX_OPS_PER_TX}) exceeded`);
             }
@@ -94,34 +129,34 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
             return this;
         },
 
-        limit_order_create(data: any) {
+        limit_order_create(data: OpParams) {
             return this.addOperation('limit_order_create', data);
         },
-        limit_order_cancel(data: any) {
+        limit_order_cancel(data: OpParams) {
             return this.addOperation('limit_order_cancel', data);
         },
-        limit_order_update(data: any) {
+        limit_order_update(data: OpParams) {
             return this.addOperation('limit_order_update', data);
         },
-        call_order_update(data: any) {
+        call_order_update(data: OpParams) {
             return this.addOperation('call_order_update', data);
         },
-        asset_settle(data: any) {
+        asset_settle(data: OpParams) {
             return this.addOperation('asset_settle', data);
         },
-        transfer(data: any) {
+        transfer(data: OpParams) {
             return this.addOperation('transfer', data);
         },
-        credit_offer_accept(data: any) {
+        credit_offer_accept(data: OpParams) {
             return this.addOperation('credit_offer_accept', data);
         },
-        credit_deal_repay(data: any) {
+        credit_deal_repay(data: OpParams) {
             return this.addOperation('credit_deal_repay', data);
         },
-        credit_deal_update(data: any) {
+        credit_deal_update(data: OpParams) {
             return this.addOperation('credit_deal_update', data);
         },
-        liquidity_pool_exchange(data: any) {
+        liquidity_pool_exchange(data: OpParams) {
             return this.addOperation('liquidity_pool_exchange', data);
         },
 
@@ -150,7 +185,7 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
                         ops[i].params.fee = fees[i];
                     }
                 }
-            } catch (err: any) {
+            } catch (err) {
                 if (stale && stale.length === ops.length) {
                     builderLogger.info(
                         `setRequiredFees: chain fetch failed (${getErrorMessage(err)}), using stale cached fees`
@@ -173,29 +208,29 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
 
         async fetchRefBlock() {
             try {
-                const globals = await chainClient.db.get_objects(['2.0.0', '2.1.0']);
+                const globals = await chainClient.db.get_objects(['2.0.0', '2.1.0']) as Array<Record<string, unknown>>;
                 if (globals && globals.length >= 2) {
-                    const dgp = globals[1];
+                    const dgp = globals[1] as { head_block_number?: unknown; head_block_id?: string } | undefined;
                     if (dgp) {
                         refBlockNum = Number(dgp.head_block_number) & 0xFFFF;
-                        refBlockPrefix = Buffer.from(dgp.head_block_id, 'hex').readUInt32LE(4);
+                        refBlockPrefix = Buffer.from(dgp.head_block_id as string, 'hex').readUInt32LE(4);
                         return;
                     }
                 }
-            } catch (err: any) { console.warn('[builder]', 'fetchRefBlock (get_objects) failed:', getErrorMessage(err)); }
+            } catch (err) { console.warn('[builder]', 'fetchRefBlock (get_objects) failed:', getErrorMessage(err)); }
 
             try {
-                const dgp = await chainClient.db.get_dynamic_global_properties();
+                const dgp = await chainClient.db.get_dynamic_global_properties() as { head_block_number?: unknown; head_block_id?: string } | null | undefined;
                 if (dgp) {
                     refBlockNum = Number(dgp.head_block_number) & 0xFFFF;
                     try {
-                        refBlockPrefix = Buffer.from(dgp.head_block_id, 'hex').readUInt32LE(4);
-                    } catch (err2: any) {
+                        refBlockPrefix = Buffer.from(dgp.head_block_id as string, 'hex').readUInt32LE(4);
+                    } catch (err2) {
                         refBlockPrefix = 0;
                     }
                     return;
                 }
-            } catch (err2: any) {
+            } catch (err2) {
                 // Fallback attempts exhausted below
             }
 
@@ -218,7 +253,7 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
 
 
         _serializeUnsigned() {
-            const unsignedOps: Array<[number, any]> = [];
+            const unsignedOps: Array<[number, unknown]> = [];
             for (const { type, params } of ops) {
                 unsignedOps.push(this._buildSerializedOp(type, params));
             }
@@ -236,7 +271,7 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
             return buffer;
         },
 
-        _buildSerializedOp(type: string, params: any): [number, any] {
+        _buildSerializedOp(type: string, params: OpParams): [number, unknown] {
             const typeId = OP_TYPE_IDS[type];
             const serializer = (serialOps as unknown as SerialOps)[type];
 
@@ -249,8 +284,8 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
             return [typeId, castFn];
         },
 
-        _castParamsToSerializable(type: string, params: any): any {
-            const result: any = { ...params };
+        _castParamsToSerializable(type: string, params: OpParams): OpParams {
+            const result: OpParams = { ...params };
 
             result.fee = result.fee || { amount: 0, asset_id: DEFAULT_FEE_ASSET };
 
@@ -260,10 +295,11 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
 
             if (type === 'limit_order_update') {
                 if (result.new_price) {
+                    const np = result.new_price as Record<string, unknown>;
                     result.new_price = {
-                        ...result.new_price,
-                        base: { ...result.new_price.base },
-                        quote: { ...result.new_price.quote },
+                        ...np,
+                        base: { ...(np.base as Record<string, unknown>) },
+                        quote: { ...(np.quote as Record<string, unknown>) },
                     };
                 }
             }
@@ -285,7 +321,7 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
 
             const sig = sign(digest, privateKey);
 
-            const opList: Array<[number, any]> = [];
+            const opList: Array<[number, unknown]> = [];
             for (const { type, params } of ops) {
                 opList.push(this._buildSerializedOp(type, params));
             }
@@ -306,7 +342,7 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
                 ...txData,
                 signatures: [sig.toString('hex')],
             };
-            const signedTxObject = (serialOps as unknown as SerialOps).signed_transaction.toObject(txDataForJson);
+            const signedTxObject = (serialOps as unknown as SerialOps).signed_transaction.toObject(txDataForJson) as Record<string, unknown>;
 
             return {
                 signedTx,
@@ -320,12 +356,12 @@ function createTransactionBuilder(chainClient: ChainClientRef) {
             throw new Error('TransactionBuilder.broadcast() not implemented; use createSigningClient wrapper');
         },
 
-        _getSerializedOps(): Array<[number, any]> {
+        _getSerializedOps(): Array<[number, unknown]> {
             return ops.map(o => this._buildSerializedOp(o.type, o.params));
         },
 
         getOperationCount(): number { return ops.length; },
-        getOperations(): Array<{ type: string; params: any }> { return [...ops]; },
+        getOperations(): Array<{ type: string; params: OpParams }> { return [...ops]; },
     };
 
     return tx;
