@@ -57,17 +57,40 @@ import { clamp } from '../../modules/order/utils/math.js';
 // trigger reasons from docs/GRID_RECALCULATION.md.
 const GRID_RESET_NONE = 0;
 const GRID_RESET_BOOTSTRAP = 1;
+interface GridResetEvent {
+    index: number;
+    reason?: unknown;
+    [key: string]: unknown;
+}
+
+interface GridSimCfg {
+    clampMin?: number | null;
+    clampMax?: number | null;
+    clipPercentile?: number | null;
+    erPeriod?: number;
+    lookbackBars?: number;
+    maxSlopeOffset?: number;
+    maxSlopePct?: number;
+    neutralZonePct?: number;
+    priceDeltaThresholdPercent?: number;
+    slopeDeltaThresholdPercent?: number;
+    slopeEnabled?: boolean;
+    slopePersistBars?: number;
+    warmupBars?: number;
+    slopeEstimator?: ((amaValues: unknown, index: number, lookbackBars: unknown) => number | null) | null;
+}
+
 const GRID_RESET_PRICE = 2;
 const GRID_RESET_SLOPE = 3;
 
 // Prefixed helpers: these run inside the generated page, where every embedded
 // function shares one scope with the chart's own code.
-function gridSimPositiveNumber(value: any, fallback: any) {
+function gridSimPositiveNumber(value: unknown, fallback: number): number {
     const n = Number(value);
     return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-function gridSimNonNegativeInt(value: any, fallback: any) {
+function gridSimNonNegativeInt(value: unknown, fallback: number): number {
     const n = Number(value);
     return Number.isFinite(n) && n >= 0 ? Math.ceil(n) : fallback;
 }
@@ -78,7 +101,7 @@ function gridSimNonNegativeInt(value: any, fallback: any) {
  * → neutral zone → trend → slopeOffset). The delta trigger itself compares the
  * UNCLIPPED `slopePct`; the clipped value only feeds the range tilt.
  */
-function gridSimSlopeSignal(slopePct: any, clipThreshold: any, cfg: any) {
+function gridSimSlopeSignal(slopePct: unknown, clipThreshold: unknown, cfg: GridSimCfg) {
     const maxSlopePct = gridSimPositiveNumber(cfg?.maxSlopePct, 0.09);
     const neutralZonePct = Number.isFinite(Number(cfg?.neutralZonePct)) ? Number(cfg.neutralZonePct) : 0;
     const maxSlopeOffset = gridSimPositiveNumber(cfg?.maxSlopeOffset, 0.5);
@@ -113,7 +136,7 @@ function gridSimSlopeSignal(slopePct: any, clipThreshold: any, cfg: any) {
  * model without touching this module — it takes the whole series plus the index
  * because windowed estimators need the window, not just the two endpoints.
  */
-function gridSimResolveSlopeEstimator(cfg: any) {
+function gridSimResolveSlopeEstimator(cfg: GridSimCfg) {
     const custom = cfg?.slopeEstimator;
     if (typeof custom === 'function') return custom;
     return computeHuberWindowSlopePct;
@@ -130,8 +153,9 @@ function gridSimResolveSlopeEstimator(cfg: any) {
  *   maxSlopeOffset, clipPercentile, clampMin, clampMax.
  * @returns per-bar series (same length as `amaSeries`) + `events` + `stats`.
  */
-function simulateGridResetSeries(amaSeries: any, cfg: any) {
-    const n = Array.isArray(amaSeries) ? amaSeries.length : 0;
+function simulateGridResetSeries(amaSeries: unknown, cfg: GridSimCfg) {
+    const amaArr: unknown[] = Array.isArray(amaSeries) ? amaSeries : [];
+    const n = amaArr.length;
     const priceThreshold = Number(cfg?.priceDeltaThresholdPercent);
     const priceTriggerArmed = Number.isFinite(priceThreshold) && priceThreshold > 0;
     const slopeThreshold = Number(cfg?.slopeDeltaThresholdPercent);
@@ -165,7 +189,7 @@ function simulateGridResetSeries(amaSeries: any, cfg: any) {
     const acceptedSlopePct = new Array(n).fill(null);
     const acceptedSlopeOffset = new Array(n).fill(null);
     const acceptedTrend = new Array(n).fill(null);
-    const events: any[] = [];
+    const events: GridResetEvent[] = [];
 
     if (n === 0) {
         return {
@@ -213,7 +237,7 @@ function simulateGridResetSeries(amaSeries: any, cfg: any) {
     let slopePersistDir = 0;
 
     for (let i = 0; i < n; i++) {
-        const ama = Number(amaSeries[i]);
+        const ama = Number(amaArr[i]);
         const hasAma = Number.isFinite(ama) && ama > 0;
         // Feed the clip tracker every bar (non-finite values keep their slot,
         // exactly like the batch threshold). The chart's AMA is computed over
@@ -225,7 +249,7 @@ function simulateGridResetSeries(amaSeries: any, cfg: any) {
         const clipThreshold = clipTracker.push(hasAma ? ama : NaN);
         let slopePct: number | null = null;
         if (hasAma && i >= readyBars) {
-            const s = estimateSlope(amaSeries, i, lookbackBars);
+            const s = estimateSlope(amaArr, i, lookbackBars);
             if (Number.isFinite(s)) slopePct = s as number;
         }
         slopePctSeries[i] = slopePct;
@@ -330,7 +354,7 @@ function simulateGridResetSeries(amaSeries: any, cfg: any) {
         acceptedTrend[i] = acceptedDir;
     }
 
-    const resetIndices = events.map((e: any) => e.index);
+    const resetIndices = events.map((e) => e.index);
     const gaps: number[] = [];
     for (let k = 1; k < resetIndices.length; k++) gaps.push(resetIndices[k] - resetIndices[k - 1]);
 
@@ -355,7 +379,7 @@ function simulateGridResetSeries(amaSeries: any, cfg: any) {
             bootstrapIndex: resetIndices.length > 0 ? resetIndices[0] : null,
             lastResetIndex,
             barsSinceLastReset: lastResetIndex == null ? null : (n - 1 - lastResetIndex),
-            avgBarsBetweenResets: gaps.length > 0 ? (gaps.reduce((a: any, b: any) => a + b, 0) / gaps.length) : null,
+            avgBarsBetweenResets: gaps.length > 0 ? (gaps.reduce((a, b) => a + b, 0) / gaps.length) : null,
             warmupBars,
             priceDeltaThresholdPercent: priceTriggerArmed ? priceThreshold : null,
             slopeDeltaThresholdPercent: slopeTriggerArmed ? slopeThreshold : null,

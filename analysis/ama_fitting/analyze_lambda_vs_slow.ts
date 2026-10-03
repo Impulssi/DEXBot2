@@ -98,7 +98,18 @@ Options:
 
 // ── Metrics ─────────────────────────────────────────────────────────────────────
 
-function calcTotalAmaMovement(amaValues: any, erPeriod: any) {
+interface MetricEntry {
+    slow: number;
+    movement: number;
+    distance: number;
+}
+
+interface BestEntry extends MetricEntry {
+    score: number;
+    lambda: number;
+}
+
+function calcTotalAmaMovement(amaValues: number[], erPeriod: number): number {
     const skip = erPeriod + 1;
     let total = 0;
     for (let i = skip + 1; i < amaValues.length; i++) {
@@ -107,7 +118,7 @@ function calcTotalAmaMovement(amaValues: any, erPeriod: any) {
     return total;
 }
 
-function calcTotalRelativeDistance(amaValues: any, candles: any, erPeriod: any) {
+function calcTotalRelativeDistance(amaValues: number[], candles: Array<{ close: number }>, erPeriod: number): number {
     const skip = erPeriod + 1;
     let total = 0;
     for (let i = skip; i < candles.length; i++) {
@@ -119,7 +130,7 @@ function calcTotalRelativeDistance(amaValues: any, candles: any, erPeriod: any) 
 
 // ── Geometric range ─────────────────────────────────────────────────────────────
 
-function geometricRange(min: any, max: any, count: any) {
+function geometricRange(min: number, max: number, count: number): number[] {
     const ratio = Math.pow(max / min, 1 / (count - 1));
     const out: number[] = [];
     for (let i = 0; i < count; i++) {
@@ -133,8 +144,8 @@ function geometricRange(min: any, max: any, count: any) {
 
 // ── Precompute (movement, distance) per slow ───────────────────────────────────
 
-function precomputeMetrics(closes: any, candles: any, erPeriod: any, fastPeriod: any, slowValues: any) {
-    const cache: any[] = [];
+function precomputeMetrics(closes: number[], candles: Array<{ close: number }>, erPeriod: number, fastPeriod: number, slowValues: number[]): MetricEntry[] {
+    const cache: MetricEntry[] = [];
     for (const slow of slowValues) {
         if (fastPeriod >= slow) continue;
         const ama = calculateAMA(closes, { erPeriod, fastPeriod, slowPeriod: slow });
@@ -145,8 +156,8 @@ function precomputeMetrics(closes: any, candles: any, erPeriod: any, fastPeriod:
     return cache;
 }
 
-function findBestForLambda(lambda: any, metricCache: any) {
-    let best: any = null;
+function findBestForLambda(lambda: number, metricCache: MetricEntry[]): BestEntry | null {
+    let best: BestEntry | null = null;
     for (const m of metricCache) {
         const score = m.movement + lambda * m.distance;
         if (!best || score < best.score) {
@@ -159,7 +170,7 @@ function findBestForLambda(lambda: any, metricCache: any) {
 // ── Derive start lambda from maxSlow ───────────────────────────────────────────
 // Binary search: find the smallest lambda where optimal slow < maxSlow.
 
-function findStartLambda(metricCache: any, maxSlow: any, lambdaEnd: any) {
+function findStartLambda(metricCache: MetricEntry[], maxSlow: number, lambdaEnd: number): number | null {
     let lo = 0;
     let hi = 1;
     // Expand hi until the best slow drops below maxSlow
@@ -179,13 +190,13 @@ function findStartLambda(metricCache: any, maxSlow: any, lambdaEnd: any) {
 
 // ── HTML Chart (λ → Slow) ──────────────────────────────────────────────────────
 
-function generateChartHtml(results: any, metricCache: any, fixEr: any, fixFast: any, dataLabel: any, _chartOutPath: any) {
-    const xs = results.map((r: any) => r.lambda);
-    const ys = results.map((r: any) => r.slow);
-    const dist = results.map((r: any) => r.distance);
-    const move = results.map((r: any) => r.movement);
-    const cacheSlow = metricCache.map((m: any) => m.slow);
-    const cacheMove = metricCache.map((m: any) => m.movement);
+function generateChartHtml(results: BestEntry[], metricCache: MetricEntry[], fixEr: number, fixFast: number, dataLabel: string, _chartOutPath: string): string {
+    const xs = results.map((r) => r.lambda);
+    const ys = results.map((r) => r.slow);
+    const dist = results.map((r) => r.distance);
+    const move = results.map((r) => r.movement);
+    const cacheSlow = metricCache.map((m) => m.slow);
+    const cacheMove = metricCache.map((m) => m.movement);
 
     const amaAnnotations = [
         { label: 'AMA1', lambda: 0.0031, slow: 62.1, color: '#ef5350' },
@@ -357,7 +368,7 @@ async function run() {
     const lambdaValues = geometricRange(lambdaStart, cfg.lambdaEnd, cfg.lambdaSteps);
 
     // Score each lambda against the cache — no AMA recalculation
-    const results: any[] = [];
+    const results: BestEntry[] = [];
     for (let idx = 0; idx < lambdaValues.length; idx++) {
         const lambda = lambdaValues[idx];
         const best = findBestForLambda(lambda, metricCache);

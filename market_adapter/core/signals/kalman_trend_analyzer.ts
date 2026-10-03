@@ -166,7 +166,7 @@ class KalmanFilter {
 
 const MIN_PRICE_DENOMINATOR = 1e-10;
 
-function safePct(numerator: any, denominator: any) {
+function safePct(numerator: number, denominator: number): number {
     const pct = Math.abs(denominator) > MIN_PRICE_DENOMINATOR
         ? (numerator / denominator) * 100
         : 0;

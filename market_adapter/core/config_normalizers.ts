@@ -3,7 +3,7 @@
 import { MARKET_ADAPTER } from '../../modules/constants.js';
 
 
-function normalizeAtrPeriod(period: any, defaultValue = MARKET_ADAPTER.DYNAMIC_WEIGHT_ATR_PERIOD_DEFAULT) {
+function normalizeAtrPeriod(period: unknown, defaultValue = MARKET_ADAPTER.DYNAMIC_WEIGHT_ATR_PERIOD_DEFAULT) {
     // Treat null/undefined/empty as "not provided" BEFORE Number() coercion:
     // Number(null) === 0 would otherwise turn explicit JSON null into a
     // fallback hit instead of using the default.
@@ -15,14 +15,14 @@ function normalizeAtrPeriod(period: any, defaultValue = MARKET_ADAPTER.DYNAMIC_W
     return Math.max(MARKET_ADAPTER.DYNAMIC_WEIGHT_ATR_PERIOD_MIN, Math.min(MARKET_ADAPTER.DYNAMIC_WEIGHT_ATR_PERIOD_MAX, rounded));
 }
 
-function normalizeMaxVolatilityOffset(value: any, defaultValue = MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_CLAMP) {
+function normalizeMaxVolatilityOffset(value: unknown, defaultValue = MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_CLAMP) {
     if (value == null || value === '') return defaultValue;
     const numeric = Number(value);
     // Allow 0 to explicitly disable volatility shift
     return Number.isFinite(numeric) && numeric >= 0 ? numeric : defaultValue;
 }
 
-function normalizeVolatilityThreshold(value: any, defaultValue = MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_THRESHOLD) {
+function normalizeVolatilityThreshold(value: unknown, defaultValue = MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_THRESHOLD) {
     if (value == null || value === '') return defaultValue;
     const numeric = Number(value);
     return Number.isFinite(numeric) && numeric >= 0 ? numeric : defaultValue;

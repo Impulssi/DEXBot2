@@ -2,7 +2,7 @@
 
 import { fillCandleGaps, tradesToCandles } from '../candle_utils.js';
 import { kibanaSearch, DEFAULT_CONFIG as BASE_CONFIG } from './kibana_client.js';
-import { isTransientNetworkError, sleepMs } from '../../modules/utils/errors.js';
+import { isTransientNetworkError, sleepMs, getErrorMessage } from '../../modules/utils/errors.js';
 
 const DEFAULT_CONFIG = {
     ...BASE_CONFIG,
@@ -22,7 +22,84 @@ const DEFAULT_CONFIG = {
     kibanaRetryDelayMs: 1000,
 };
 
-function sourceField(field: any) {
+export interface AssetRef {
+    id?: string | null;
+    symbol?: string | null;
+}
+
+interface Trade {
+    tsMs: number;
+    sequence: number;
+    kibanaSortKey: string;
+    sell: { amount: number; asset_id?: string | null };
+    received: { amount: number; asset_id?: string | null };
+}
+
+type FieldMap = Record<string, string | undefined>;
+
+export interface KibanaCandleConfig {
+    intervalSeconds?: number;
+    lookbackHours?: number;
+    timeRange?: { gte?: string; lte?: string } | null;
+    fillGaps?: boolean;
+    fillGapsToRequestedRange?: boolean;
+    kibanaMaxPages?: number;
+    kibanaPageSize?: number;
+    kibanaPageRetries?: number;
+    kibanaRetryDelayMs?: number;
+    kibanaSearchRetries?: number;
+    kibanaSearch?: (cfg: unknown, query: unknown) => Promise<unknown>;
+    onPage?: (info: Record<string, unknown>) => void;
+    [key: string]: unknown;
+}
+
+interface DirectionalQueryParams {
+    opType: number;
+    soldAssetField?: string;
+    receivedAssetField?: string;
+    poolField?: string;
+    soldAssetId?: string | null;
+    receivedAssetId?: string | null;
+    lookbackHours?: number;
+    poolId?: unknown;
+    timeRange?: { gte?: string; lte?: string } | null;
+    size: number;
+    searchAfter?: unknown[] | null;
+    sourceFields?: string[];
+}
+
+interface TradeFields {
+    soldAsset: AssetRef;
+    receivedAsset: AssetRef;
+    soldAmountField?: string;
+    receivedAmountField?: string;
+    operationIdField?: string;
+}
+
+interface KibanaCandlesParams {
+    opType: number;
+    fieldMap: FieldMap;
+    assetA: AssetRef;
+    assetB: AssetRef;
+    config?: KibanaCandleConfig;
+    poolId?: unknown;
+}
+
+interface DirectionalFetchParams {
+    search: (cfg: unknown, query: unknown) => Promise<unknown>;
+    cfg: KibanaCandleConfig;
+    opType: number;
+    fieldMap: FieldMap;
+    soldAsset: AssetRef;
+    receivedAsset: AssetRef;
+    lookbackHours?: number;
+    poolId?: unknown;
+    timeRange?: { gte?: string; lte?: string } | null;
+    onPage?: (info: Record<string, unknown>) => void;
+    direction?: string;
+}
+
+function sourceField(field: unknown): string {
     return String(field || '').replace(/\.keyword$/, '');
 }
 
@@ -48,7 +125,7 @@ const SOURCE_EXTRA_FIELDS = [
  * @param {Object} fieldMap - { soldAssetField, receivedAssetField, ..., operationIdField }
  * @returns {Array<string>} distinct _source paths
  */
-function sourceFieldsForFieldMap(fieldMap: any) {
+function sourceFieldsForFieldMap(fieldMap: FieldMap | null | undefined): string[] {
     const prefixes = new Set<string>();
     for (const key of [
         'soldAssetField',
@@ -74,13 +151,13 @@ function sourceFieldsForFieldMap(fieldMap: any) {
     return [...prefixes];
 }
 
-function buildDirectionalDocumentQuery({ opType, soldAssetField, receivedAssetField, poolField, soldAssetId, receivedAssetId, lookbackHours, poolId, timeRange, size, searchAfter, sourceFields }: { opType: any; soldAssetField: any; receivedAssetField: any; poolField: any; soldAssetId: any; receivedAssetId: any; lookbackHours: any; poolId: any; timeRange: any; size: any; searchAfter?: any; sourceFields?: any }) {
+function buildDirectionalDocumentQuery({ opType, soldAssetField, receivedAssetField, poolField, soldAssetId, receivedAssetId, lookbackHours, poolId, timeRange, size, searchAfter, sourceFields }: DirectionalQueryParams) {
     const rangeValue = timeRange
         ? { gte: timeRange.gte, lte: timeRange.lte }
         : { gte: `now-${lookbackHours}h`, lte: 'now' };
 
-    const filters = [
-        { term: { [soldAssetField]: soldAssetId } },
+    const filters: Array<Record<string, unknown>> = [
+        { term: { [soldAssetField as string]: soldAssetId } },
         { term: { operation_type: opType } },
         { range: { 'block_data.block_time': rangeValue } },
     ];
@@ -93,7 +170,7 @@ function buildDirectionalDocumentQuery({ opType, soldAssetField, receivedAssetFi
         filters.push({ term: { [poolField]: poolId } });
     }
 
-    const query: any = {
+    const query: Record<string, unknown> = {
         size,
         track_total_hits: false,
         _source: Array.isArray(sourceFields) && sourceFields.length > 0 ? sourceFields : true,
@@ -108,26 +185,28 @@ function buildDirectionalDocumentQuery({ opType, soldAssetField, receivedAssetFi
     return query;
 }
 
-function getByPath(obj: any, path: any) {
+function getByPath(obj: unknown, path: unknown): unknown {
     const parts = sourceField(path).split('.').filter(Boolean);
-    let cur = obj;
+    let cur: unknown = obj;
     for (const part of parts) {
         if (cur == null) return undefined;
-        cur = cur[part];
+        cur = (cur as Record<string, unknown>)[part];
     }
     return cur;
 }
 
-function numericAmount(value: any) {
+function numericAmount(value: unknown): number {
     if (Array.isArray(value)) {
-        const first = value.find((entry: any) => entry && entry.amount != null);
+        const first = value.find((entry: unknown) => entry && (entry as { amount?: unknown }).amount != null);
         return numericAmount(first);
     }
-    if (value && typeof value === 'object' && value.amount != null) return Number(value.amount);
+    if (value && typeof value === 'object' && (value as { amount?: unknown }).amount != null) {
+        return Number((value as { amount?: unknown }).amount);
+    }
     return Number(value);
 }
 
-function amountForAsset(source: any, amountField: any, assetId: any) {
+function amountForAsset(source: unknown, amountField: unknown, assetId: unknown): number {
     const direct = getByPath(source, amountField);
     if (!Array.isArray(direct)) {
         const n = numericAmount(direct);
@@ -137,7 +216,7 @@ function amountForAsset(source: any, amountField: any, assetId: any) {
     const arrayPath = sourceField(amountField).replace(/\.amount$/, '');
     const entries = getByPath(source, arrayPath);
     if (Array.isArray(entries)) {
-        const matched = entries.find((entry: any) => String(entry?.asset_id || '') === String(assetId || ''));
+        const matched = entries.find((entry: unknown) => String((entry as { asset_id?: unknown })?.asset_id || '') === String(assetId || ''));
         const n = numericAmount(matched || entries[0]);
         if (Number.isFinite(n)) return n;
     }
@@ -145,18 +224,19 @@ function amountForAsset(source: any, amountField: any, assetId: any) {
     return Number.NaN;
 }
 
-function parseOperationIdOrder(value: any) {
+function parseOperationIdOrder(value: unknown): number {
     const raw = String(value || '');
     const m = raw.match(/(\d+)$/);
     return m ? Number(m[1]) : Number.NaN;
 }
 
-function hitSortKey(hit: any) {
-    const sort = Array.isArray(hit?.sort) ? hit.sort : [];
-    return sort.map((v: any) => String(v)).join('|') || String(hit?._id || '');
+function hitSortKey(hit: unknown): string {
+    const h = hit as { sort?: unknown; _id?: unknown };
+    const sort = Array.isArray(h?.sort) ? h.sort : [];
+    return sort.map((v) => String(v)).join('|') || String(h?._id || '');
 }
 
-function hitSequence(source: any, operationIdField: any) {
+function hitSequence(source: unknown, operationIdField: unknown): number {
     const candidates = [
         getByPath(source, 'operation_id_num'),
         getByPath(source, 'account_history.operation_id'),
@@ -171,8 +251,8 @@ function hitSequence(source: any, operationIdField: any) {
     return Number.NaN;
 }
 
-function hitToTrade(hit: any, { soldAsset, receivedAsset, soldAmountField, receivedAmountField, operationIdField = 'account_history.operation_id' }: any) {
-    const source = hit?._source || {};
+function hitToTrade(hit: unknown, { soldAsset, receivedAsset, soldAmountField, receivedAmountField, operationIdField = 'account_history.operation_id' }: TradeFields): Trade | null {
+    const source = (hit as { _source?: unknown })?._source || {};
     const rawTime = String(getByPath(source, 'block_data.block_time') || '');
     const tsMs = Date.parse(rawTime.endsWith('Z') ? rawTime : `${rawTime}Z`);
     if (!Number.isFinite(tsMs)) return null;
@@ -198,7 +278,7 @@ function hitToTrade(hit: any, { soldAsset, receivedAsset, soldAmountField, recei
     };
 }
 
-async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAsset, receivedAsset, lookbackHours, poolId, timeRange, onPage, direction }: any) {
+async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAsset, receivedAsset, lookbackHours, poolId, timeRange, onPage, direction }: DirectionalFetchParams): Promise<Trade[]> {
     const size = Math.min(Math.max(1, Number(cfg.kibanaPageSize) || DEFAULT_CONFIG.kibanaPageSize), 10000);
     const retriesRaw = Number(cfg.kibanaPageRetries);
     // kibanaPageRetries is the total number of attempts per page (not retries
@@ -210,14 +290,14 @@ async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAs
     const maxPagesRaw = Number(cfg.kibanaMaxPages);
     const maxPages = Number.isFinite(maxPagesRaw) && maxPagesRaw >= 1 ? Math.floor(maxPagesRaw) : DEFAULT_CONFIG.kibanaMaxPages;
     const directionLabel = direction || `${soldAsset?.symbol || soldAsset?.id || '?'}→${receivedAsset?.symbol || receivedAsset?.id || '?'}`;
-    const reportPage = (info: any) => {
+    const reportPage = (info: Record<string, unknown>) => {
         const cb = typeof onPage === 'function' ? onPage : (typeof cfg?.onPage === 'function' ? cfg.onPage : null);
         if (cb) {
             try { cb({ direction: directionLabel, ...info }); } catch (_) { /* progress must never fail the fetch */ }
         }
     };
-    const trades: any[] = [];
-    let searchAfter: any = null;
+    const trades: Trade[] = [];
+    let searchAfter: unknown[] | null = null;
     let page = 0;
     let droppedTotal = 0;
 
@@ -250,8 +330,8 @@ async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAs
         // A failed page is safe to retry: search_after pagination is
         // stateless on the server, so replaying the same page yields the
         // same documents.
-        let result: any = null;
-        let lastErr: any = null;
+        let result: { hits?: { hits?: unknown[] } } | null = null;
+        let lastErr: unknown = null;
         let attempts = 0;
         // The page loop owns the retry budget here, so the client-level
         // retry is disabled for these calls (avoids page budget x client
@@ -260,18 +340,18 @@ async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAs
         for (let attempt = 1; attempt <= retries; attempt++) {
             attempts = attempt;
             try {
-                result = await search(pageCfg, query);
+                result = await search(pageCfg, query) as { hits?: { hits?: unknown[] } };
                 lastErr = null;
                 break;
-            } catch (err: any) {
+            } catch (err) {
                 lastErr = err;
                 if (attempt >= retries || !isTransientNetworkError(err)) throw err;
-                reportPage({ page, event: 'retry', attempt, error: String(err?.message || err || 'unknown') });
+                reportPage({ page, event: 'retry', attempt, error: String(getErrorMessage(err) || 'unknown') });
                 if (retryDelayMs > 0) await sleepMs(retryDelayMs * attempt);
             }
         }
         if (lastErr) throw lastErr;
-        const hits = result?.hits?.hits || [];
+        const hits: unknown[] = result?.hits?.hits || [];
         let droppedPage = 0;
         if (!Array.isArray(hits) || hits.length === 0) {
             reportPage({ page, event: 'page', hits: 0, dropped: 0, attempts, elapsedMs: Date.now() - pageStartMs, done: true });
@@ -293,7 +373,7 @@ async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAs
         reportPage({ page, event: 'page', hits: Array.isArray(hits) ? hits.length : 0, dropped: droppedPage, attempts, elapsedMs: Date.now() - pageStartMs, done: hits.length < size });
 
         if (hits.length < size) break;
-        const lastSort = hits[hits.length - 1]?.sort;
+        const lastSort = (hits[hits.length - 1] as { sort?: unknown } | undefined)?.sort;
         if (!Array.isArray(lastSort)) {
             throw new Error('Kibana document pagination requires sort values on hits');
         }
@@ -313,7 +393,7 @@ async function fetchDirectionalTradeDocs({ search, cfg, opType, fieldMap, soldAs
     return trades;
 }
 
-function resolveRequestedFillRange(cfg: any, nowMs: any = Date.now()) {
+function resolveRequestedFillRange(cfg: KibanaCandleConfig, nowMs: number = Date.now()): { startTs: number | null; endTs: number | null } {
     const bucketMs = Number(cfg.intervalSeconds) * 1000;
     if (!Number.isFinite(bucketMs) || bucketMs <= 0) return { startTs: null, endTs: null };
 
@@ -349,9 +429,9 @@ function resolveRequestedFillRange(cfg: any, nowMs: any = Date.now()) {
  *   synthesized carries of the last close. Close-only callers lose the
  *   filled-vs-real distinction — keep the volume column when it matters.
  */
-async function fetchKibanaCandles({ opType, fieldMap, assetA, assetB, config = {}, poolId = null }: any) {
-    const cfg: any = { ...DEFAULT_CONFIG, ...config };
-    const search = typeof cfg.kibanaSearch === 'function' ? cfg.kibanaSearch : kibanaSearch;
+async function fetchKibanaCandles({ opType, fieldMap, assetA, assetB, config = {}, poolId = null }: KibanaCandlesParams): Promise<number[][]> {
+    const cfg: KibanaCandleConfig = { ...DEFAULT_CONFIG, ...config };
+    const search = (typeof cfg.kibanaSearch === 'function' ? cfg.kibanaSearch : kibanaSearch) as (cfg: unknown, query: unknown) => Promise<unknown>;
 
     const dirAtoB = `${assetA?.symbol || assetA?.id || '?'}→${assetB?.symbol || assetB?.id || '?'}`;
     const dirBtoA = `${assetB?.symbol || assetB?.id || '?'}→${assetA?.symbol || assetA?.id || '?'}`;
@@ -388,8 +468,8 @@ async function fetchKibanaCandles({ opType, fieldMap, assetA, assetB, config = {
         }),
     ]);
 
-    let tradesAtoB: any[] = [];
-    let tradesBtoA: any[] = [];
+    let tradesAtoB: Trade[] = [];
+    let tradesBtoA: Trade[] = [];
     const failures: string[] = [];
     if (resAtoB.status === 'fulfilled') tradesAtoB = resAtoB.value;
     else failures.push(`${dirAtoB}: ${resAtoB.reason?.message || resAtoB.reason}`);
@@ -408,7 +488,7 @@ async function fetchKibanaCandles({ opType, fieldMap, assetA, assetB, config = {
         } catch (_) { /* ignored */ }
     }
 
-    const allTrades = [...tradesAtoB, ...tradesBtoA].sort((a: any, b: any) => {
+    const allTrades = [...tradesAtoB, ...tradesBtoA].sort((a: Trade, b: Trade) => {
         const tsDelta = a.tsMs - b.tsMs;
         if (tsDelta !== 0) return tsDelta;
         const aSeq = Number(a.sequence);
@@ -431,9 +511,9 @@ async function fetchKibanaCandles({ opType, fieldMap, assetA, assetB, config = {
     return fillCandleGaps(consolidated, cfg.intervalSeconds, startTs, endTs);
 }
 
-async function fetchKibanaClosePrices(params: any) {
+async function fetchKibanaClosePrices(params: KibanaCandlesParams): Promise<number[]> {
     const candles = await fetchKibanaCandles(params);
-    return candles.map(([, , , , close]: any) => close);
+    return candles.map((candle) => candle[4]);
 }
 
 export { buildDirectionalDocumentQuery, resolveRequestedFillRange, fetchKibanaCandles, fetchKibanaClosePrices, sourceFieldsForFieldMap }

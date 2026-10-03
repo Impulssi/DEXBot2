@@ -25,7 +25,7 @@
 import { loadBotSettings, computeBotKey, persistBotAccountId } from './bot_key_utils.js';
 import { setGlobalConsoleLevel, getGlobalConsoleLevel } from '../modules/order/logger.js';
 import { sleep } from '../modules/order/utils/system.js';
-import { getErrorMessage } from '../modules/utils/errors.js';
+import { getErrorMessage, getErrorCode } from '../modules/utils/errors.js';
 
 const DEFAULT_TIMEOUT_MS = 20000;
 
@@ -46,10 +46,27 @@ Options:
 `);
 }
 
-function parseArgs() {
+import type { BotEntry } from '../modules/bot_settings.js';
+
+interface ResolveOpts {
+    botKey: string | null;
+    refresh: boolean;
+    timeoutMs: number;
+    dryRun: boolean;
+    json: boolean;
+}
+
+interface ResolveResult {
+    key: string;
+    name: string;
+    status: string;
+    detail: string;
+}
+
+function parseArgs(): ResolveOpts {
     const args = process.argv.slice(2);
     if (args.includes('--help') || args.includes('-h')) { printHelp(); process.exit(0); }
-    const opts: any = {
+    const opts: ResolveOpts = {
         botKey: null,
         refresh: false,
         timeoutMs: DEFAULT_TIMEOUT_MS,
@@ -75,8 +92,8 @@ function parseArgs() {
     return opts;
 }
 
-async function resolveWithTimeout(chainOrders: any, ref: string, timeoutMs: number): Promise<{ id: string | null; reason: string }> {
-    const timeoutErr: any = new Error(`lookup timed out after ${timeoutMs}ms`);
+async function resolveWithTimeout(chainOrders: typeof import('../modules/chain_orders.js'), ref: string, timeoutMs: number): Promise<{ id: string | null; reason: string }> {
+    const timeoutErr = new Error(`lookup timed out after ${timeoutMs}ms`) as Error & { code?: string };
     timeoutErr.code = 'ACCOUNT_LOOKUP_TIMEOUT';
     try {
         const id = await Promise.race([
@@ -85,8 +102,8 @@ async function resolveWithTimeout(chainOrders: any, ref: string, timeoutMs: numb
         ]);
         if (id && /^1\.2\.\d+$/.test(String(id))) return { id: String(id), reason: 'resolved' };
         return { id: null, reason: 'not-found' };
-    } catch (err: any) {
-        return { id: null, reason: err && err.code === 'ACCOUNT_LOOKUP_TIMEOUT' ? 'timeout' : 'error' };
+    } catch (err) {
+        return { id: null, reason: err && getErrorCode(err) === 'ACCOUNT_LOOKUP_TIMEOUT' ? 'timeout' : 'error' };
     }
 }
 
@@ -99,10 +116,10 @@ async function main() {
         process.exit(0);
     }
 
-    let targets = entries.map((bot: any, index: number) => ({ bot, index, key: computeBotKey(bot, index) }));
+    let targets = entries.map((bot: BotEntry, index: number) => ({ bot, index, key: computeBotKey(bot, index) }));
     if (opts.botKey) {
         const want = String(opts.botKey).toLowerCase();
-        targets = targets.filter((t: any) => t.key === want || String(t.bot?.name ?? '').toLowerCase() === want);
+        targets = targets.filter((t) => t.key === want || String(t.bot?.name ?? '').toLowerCase() === want);
         if (!targets.length) {
             console.error(`Error: bot '${opts.botKey}' not found in profiles/bots.json.`);
             process.exit(1);
@@ -112,11 +129,11 @@ async function main() {
     // Suppress chain INFO spam for the whole batch; restored in finally.
     // (setSuppressConnectionLog is read lazily so this file never drags the
     // chain stack in when it cannot be loaded.)
-    let chainClient: any = null;
+    let chainClient: typeof import('../modules/bitshares_client.js') | null = null;
     let prevSuppress = false;
     let prevGlobalLevel: string | null = null;
     let suppressionArmed = false;
-    let chainOrders: any = null;
+    let chainOrders: typeof import('../modules/chain_orders.js') | null = null;
     try {
         chainClient = await import('../modules/bitshares_client.js');
         prevSuppress = chainClient.isSuppressConnectionLog();
@@ -125,12 +142,12 @@ async function main() {
         chainClient.setSuppressConnectionLog(true);
         setGlobalConsoleLevel('warn');
         chainOrders = await import('../modules/chain_orders.js');
-    } catch (err: any) {
+    } catch (err) {
         console.error(`Error: could not load the chain stack (${getErrorMessage(err)}).`);
         process.exit(1);
     }
 
-    const results: any[] = [];
+    const results: ResolveResult[] = [];
     try {
         for (const t of targets) {
             const name = t.bot?.name ?? t.key;
@@ -183,8 +200,8 @@ async function main() {
         }
     }
 
-    const failed = results.filter((r: any) => r.status === 'failed');
-    const skipped = results.filter((r: any) => r.status === 'skipped').length;
+    const failed = results.filter((r) => r.status === 'failed');
+    const skipped = results.filter((r) => r.status === 'skipped').length;
     const ok = results.length - failed.length - skipped;
     console.log(`\nDone: ${ok} resolved, ${skipped} skipped, ${failed.length} failed${opts.dryRun ? ' (dry run, nothing written)' : ''}.`);
     if (opts.json) {
@@ -193,7 +210,7 @@ async function main() {
     process.exit(failed.length ? 1 : 0);
 }
 
-main().catch((err: any) => {
+main().catch((err: unknown) => {
     console.error('Fatal:', getErrorMessage(err));
     process.exit(1);
 });

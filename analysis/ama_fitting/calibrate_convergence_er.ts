@@ -43,7 +43,7 @@ function parseArgs() {
  * Compute per-bar SC values and return { scAvg, erValues, avgER }.
  * scAvg = mean of (ER × deltaSC + slowSC)² across all bars.
  */
-function computeSCstats(closes: any, erPeriod: any, fastPeriod: any, slowPeriod: any) {
+function computeSCstats(closes: number[], erPeriod: number, fastPeriod: number, slowPeriod: number): { scAvg: number; erValues: number[]; avgER: number; count: number } {
     const fastSC = 2 / (fastPeriod + 1);
     const slowSC = 2 / (slowPeriod + 1);
     const deltaSC = fastSC - slowSC;
@@ -67,8 +67,8 @@ function computeSCstats(closes: any, erPeriod: any, fastPeriod: any, slowPeriod:
 /**
  * Format a column-aligned markdown table row.
  */
-function row(cells: any, widths: any) {
-    const parts = cells.map((c: any, i: any) => {
+function row(cells: Array<string | number>, widths: number[]): string {
+    const parts = cells.map((c, i) => {
         const s = String(c);
         return i < widths.length ? s.padEnd(widths[i]) : s;
     });
@@ -79,9 +79,9 @@ function main() {
     // ── Load and validate data ──────────────────────────────────────────
     let data;
     try {
-        data = readJSON(opts.data);
+        data = readJSON(opts.data) as { candles?: unknown[] };
     } catch (err: unknown) {
-        const e = err as any;
+        const e = err as { code?: string; message?: string };
         if (e.code === 'ENOENT') {
             console.error(`Data file not found: ${opts.data}`);
             console.error('Export LP candles first, or point --data at an existing file.');
@@ -95,8 +95,8 @@ function main() {
         process.exit(1);
     }
     // Canonical candle accessor (handles array rows and object candles alike).
-    const closes = (data.candles || []).map((c: any) => Number(getCandleClose(c)))
-        .filter((v: any) => Number.isFinite(v) && v > 0);
+    const closes = ((data.candles as unknown[] | undefined) || []).map((c) => Number(getCandleClose(c)))
+        .filter((v) => Number.isFinite(v) && v > 0);
     if (closes.length < 100) {
         console.error(`Not enough candles (need > 100, got ${closes.length})`);
         process.exit(1);
@@ -121,7 +121,20 @@ function main() {
     console.log(`  p5 ${p5}  p50 ${p50}  p95 ${p95}  avg ${refAvgER.toFixed(4)}`);
     console.log('');
     // ── Per-AMA analysis (compute once, cache results) ─────────────────
-    const results: any[] = [];
+    interface ScResult {
+        key: string;
+        cfg: { erPeriod: number; fastPeriod: number; slowPeriod: number };
+        fastSC: number;
+        slowSC: number;
+        deltaSC: number;
+        scAvg: number;
+        avgER: number;
+        naiveSC: number;
+        impliedER: number;
+        convBars: number;
+        count: number;
+    }
+    const results: ScResult[] = [];
     // Validate erPeriod / fastPeriod consistency for meaningful naiveSC comparison
     const erPeriods = new Set();
     const fastPeriods = new Set();

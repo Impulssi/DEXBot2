@@ -37,72 +37,91 @@ import {
 // state hydration and the two compute paths all clamp to the same numbers).
 const RANGE_SPAN_MIN = 1.3;
 const RANGE_SPAN_MAX = 2.1;
+interface MarketMeta {
+    intervalSeconds?: unknown;
+    pool?: unknown;
+    poolId?: unknown;
+    feed?: unknown;
+    assetA?: { symbol?: string; id?: string };
+    assetB?: { symbol?: string; id?: string };
+}
+
+interface AmaDefaultsInput {
+    amaDefaults?: { erPeriod?: unknown; fastPeriod?: unknown; slowPeriod?: unknown } | null;
+    amaErPeriod?: unknown;
+    amaFastPeriod?: unknown;
+    amaSlowPeriod?: unknown;
+}
+
 const RANGE_SPAN_DEFAULT = 1.55;
 
-function inferBaseIntervalSeconds(candles: any[], fallback: any = 3600) {
+function inferBaseIntervalSeconds(candles: unknown, fallback: number = 3600): number {
     if (!Array.isArray(candles) || candles.length < 2) return fallback;
+    const rows = candles as Array<Record<string, unknown>>;
     const deltas: number[] = [];
-    for (let i = 1; i < candles.length; i++) {
-        const prev = Number(candles[i - 1]?.time);
-        const curr = Number(candles[i]?.time);
+    for (let i = 1; i < rows.length; i++) {
+        const prev = Number(rows[i - 1]?.time);
+        const curr = Number(rows[i]?.time);
         if (!Number.isFinite(prev) || !Number.isFinite(curr)) continue;
         const d = curr - prev;
         if (d > 0) deltas.push(d);
     }
     if (deltas.length === 0) return fallback;
-    deltas.sort((a: any, b: any) => a - b);
+    deltas.sort((a, b) => a - b);
     const mid = Math.floor(deltas.length / 2);
     const med = deltas.length % 2 === 0 ? (deltas[mid - 1] + deltas[mid]) / 2 : deltas[mid];
     return Math.max(60, Math.round(med));
 }
 
-function loadMarketProfiles(filePath: any = PATHS.PROFILES.MARKET_PROFILES_JSON) {
+function loadMarketProfiles(filePath: string | null | undefined = PATHS.PROFILES.MARKET_PROFILES_JSON): { profiles?: Array<Record<string, unknown>> } | null {
     if (!filePath || !fs.existsSync(filePath)) return null;
     try {
-        return readJSON(filePath);
-    } catch (err: any) {
+        return readJSON(filePath) as { profiles?: Array<Record<string, unknown>> };
+    } catch (err) {
         console.warn(`[WARN] Failed to parse ${filePath}: ${getErrorMessage(err)}. Falling back to built-in AMA defaults.`);
         return null;
     }
 }
 
-function findMarketProfile(profiles: any, meta: any = {}) {
-    const entries = Array.isArray(profiles?.profiles) ? profiles.profiles : [];
+function findMarketProfile(profiles: unknown, meta: MarketMeta = {}): Record<string, unknown> | null {
+    const container = profiles as { profiles?: unknown } | null | undefined;
+    const entries: unknown[] = Array.isArray(container?.profiles) ? container.profiles : [];
     if (!entries.length) return null;
     const assetA = meta.assetA?.symbol || meta.assetA?.id || meta.assetA;
     const assetB = meta.assetB?.symbol || meta.assetB?.id || meta.assetB;
     const intervalSeconds = Number(meta.intervalSeconds);
-    return entries.find((entry: any) => {
+    return (entries.find((entry) => {
         if (!entry || typeof entry !== 'object') return false;
+        const e = entry as Record<string, unknown>;
         if (assetA && assetB) {
-            const matchesPair = (String(entry.assetA) === String(assetA) || String(entry.assetAId) === String(assetA))
-                && (String(entry.assetB) === String(assetB) || String(entry.assetBId) === String(assetB));
+            const matchesPair = (String(e.assetA) === String(assetA) || String(e.assetAId) === String(assetA))
+                && (String(e.assetB) === String(assetB) || String(e.assetBId) === String(assetB));
             if (!matchesPair) return false;
         } else {
             return false;
         }
-        if (Number.isFinite(intervalSeconds) && intervalSeconds > 0 && Number(entry.intervalSeconds) !== intervalSeconds) {
+        if (Number.isFinite(intervalSeconds) && intervalSeconds > 0 && Number(e.intervalSeconds) !== intervalSeconds) {
             return false;
         }
         return true;
-    }) || null;
+    }) || null) as Record<string, unknown> | null;
 }
 
-function resolveAmaDefaults({ meta, data, marketProfiles }: any = {}) {
+function resolveAmaDefaults({ meta, data, marketProfiles }: { meta?: MarketMeta; data?: AmaDefaultsInput; marketProfiles?: unknown } = {}) {
     const amaDefaultsSource = MARKET_ADAPTER.AMAS.AMA3;
-    const profile = findMarketProfile(marketProfiles, meta);
+    const profile = findMarketProfile(marketProfiles, meta) as { defaultAma?: string; amas?: Record<string, { erPeriod?: unknown; fastPeriod?: unknown; slowPeriod?: unknown }> } | null;
     const profileAmaKey = profile?.defaultAma && profile.amas && profile.amas[profile.defaultAma]
         ? profile.defaultAma
         : null;
-    const profileAma = profileAmaKey ? profile.amas[profileAmaKey] : null;
+    const profileAma = profileAmaKey && profile?.amas ? profile.amas[profileAmaKey] : null;
     const source = data?.amaDefaults || profileAma || amaDefaultsSource;
     return {
         erPeriod: Math.max(1, Math.round(Number(data?.amaErPeriod ?? source.erPeriod))),
         fastPeriod: Number.isFinite(Number(data?.amaFastPeriod))
-            ? Number(data.amaFastPeriod)
+            ? Number(data?.amaFastPeriod)
             : Number(source.fastPeriod),
         slowPeriod: Number.isFinite(Number(data?.amaSlowPeriod))
-            ? Number(data.amaSlowPeriod)
+            ? Number(data?.amaSlowPeriod)
             : Number(source.slowPeriod),
     };
 }
@@ -110,7 +129,7 @@ function resolveAmaDefaults({ meta, data, marketProfiles }: any = {}) {
 const TRADINGVIEW_PREFS_KEY_PREFIX = 'dexbot2-tradingview-uplot-v3';
 const TRADINGVIEW_SYNC_KEY = 'dexbot2-tradingview-sync';
 
-function sanitizeStorageComponent(value: any, fallback: string) {
+function sanitizeStorageComponent(value: unknown, fallback: string): string {
     // Objects (e.g. a meta asset node missing both id and symbol) stringify to
     // "[object Object]", which would collapse distinct assets onto one key.
     if (value == null || typeof value === 'object') return fallback;
@@ -120,7 +139,7 @@ function sanitizeStorageComponent(value: any, fallback: string) {
 }
 
 // Prefer asset ids over symbols: ids are immutable, symbols can be relabeled.
-function resolveChartStorageKey(meta: any = {}, baseIntervalSeconds: any = 0) {
+function resolveChartStorageKey(meta: MarketMeta = {}, baseIntervalSeconds: number = 0): string {
     const pool = sanitizeStorageComponent(meta?.pool ?? meta?.poolId, 'nipool');
     const assetA = sanitizeStorageComponent(meta?.assetA?.id ?? meta?.assetA?.symbol ?? meta?.assetA, 'assetA');
     const assetB = sanitizeStorageComponent(meta?.assetB?.id ?? meta?.assetB?.symbol ?? meta?.assetB, 'assetB');
@@ -128,7 +147,31 @@ function resolveChartStorageKey(meta: any = {}, baseIntervalSeconds: any = 0) {
     return `${TRADINGVIEW_PREFS_KEY_PREFIX}:${pool}:${assetA}_${assetB}:${interval || 'base'}`;
 }
 
-function generateHTML(data: any, title: any = 'TradingView Style Research') {
+interface TvChartInput extends AmaDefaultsInput {
+    candles?: unknown[];
+    meta?: MarketMeta;
+    defaultTimeframe?: string;
+    marketProfiles?: unknown;
+    smaPeriod?: number;
+    smaEnabled?: boolean;
+    amaEnabled?: boolean;
+    vwapEnabled?: boolean;
+    vwapBars?: number;
+    priceScale?: string;
+    rangeWidthPct?: number;
+    rangeSpan?: number;
+    grid?: { minPrice?: unknown; maxPrice?: unknown; incrementPercent?: number | null; maxAsymmetryFactor?: number | null; minScaleSlots?: number | null; [key: string]: unknown } | null;
+    gridSim?: { enabled?: boolean; [key: string]: unknown } | null;
+    gridBounds?: { low?: unknown; high?: unknown };
+    orders?: { buys?: unknown[]; sells?: unknown[] };
+    storageKey?: string;
+    defaultPairMode?: string;
+    updateMarkerTsSec?: number | null;
+    updateMarkerNewBars?: number | null;
+    [key: string]: unknown;
+}
+
+function generateHTML(data: TvChartInput, title: string = 'TradingView Style Research') {
     const rawCandles = Array.isArray(data.candles) ? data.candles : [];
     const candles = rawCandles.map(normalizeCandle).filter(Boolean);
     if (candles.length === 0) throw new Error('No candle data in input');
@@ -138,16 +181,15 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         ? Number(meta.intervalSeconds)
         : inferBaseIntervalSeconds(candles, 3600);
 
-    const timeframes = [
-        { label: '1h', seconds: 3600 },
+    const timeframes: Array<{ label: string; seconds: number; calendar?: string; enabled: boolean }> = ([
         { label: '4h', seconds: 14400 },
         { label: '1d', seconds: 86400 },
         { label: '1w', seconds: 604800 },
         { label: '1M', seconds: 2592000, calendar: 'month' },
-    ].map((item: any) => ({ ...item, enabled: item.seconds >= baseIntervalSeconds }));
+    ] as Array<{ label: string; seconds: number; calendar?: string; enabled: boolean }>).map((item) => ({ ...item, enabled: item.seconds >= baseIntervalSeconds }));
 
-    const defaultTimeframe = timeframes.find((item: any) => item.label === data.defaultTimeframe && item.enabled)
-        || timeframes.find((item: any) => item.enabled)
+    const defaultTimeframe = timeframes.find((item) => item.label === data.defaultTimeframe && item.enabled)
+        || timeframes.find((item) => item.enabled)
         || timeframes[0];
 
     const marketProfiles = data.marketProfiles || loadMarketProfiles();
@@ -245,14 +287,14 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         rangeWidthPct: defaults.rangeWidthPct,
         rangeSpan: defaults.rangeSpan,
         grid: defaults.grid,
-        orderBuys: Array.isArray((data as any).orders?.buys) ? (data as any).orders.buys.map(Number).filter(Number.isFinite) : [],
-        orderSells: Array.isArray((data as any).orders?.sells) ? (data as any).orders.sells.map(Number).filter(Number.isFinite) : [],
+        orderBuys: Array.isArray(data.orders?.buys) ? data.orders.buys.map(Number).filter(Number.isFinite) : [],
+        orderSells: Array.isArray(data.orders?.sells) ? data.orders.sells.map(Number).filter(Number.isFinite) : [],
         gridBounds: {
-            low: Number.isFinite(Number((data as any).gridBounds?.low)) && Number((data as any).gridBounds.low) > 0 ? Number((data as any).gridBounds.low) : null,
-            high: Number.isFinite(Number((data as any).gridBounds?.high)) && Number((data as any).gridBounds.high) > 0 ? Number((data as any).gridBounds.high) : null,
+            low: Number.isFinite(Number(data.gridBounds?.low)) && Number(data.gridBounds?.low) > 0 ? Number(data.gridBounds?.low) : null,
+            high: Number.isFinite(Number(data.gridBounds?.high)) && Number(data.gridBounds?.high) > 0 ? Number(data.gridBounds?.high) : null,
         },
-        updateMarkerTsSec: Number((data as any).updateMarkerTsSec) > 0 ? Number((data as any).updateMarkerTsSec) : null,
-        updateMarkerNewBars: Number((data as any).updateMarkerNewBars) || null,
+        updateMarkerTsSec: Number(data.updateMarkerTsSec) > 0 ? Number(data.updateMarkerTsSec) : null,
+        updateMarkerNewBars: Number(data.updateMarkerNewBars) || null,
         rangeSlope,
         gridSim: defaults.gridSim,
         gridSimEnabled: defaults.gridSimEnabled,
@@ -264,7 +306,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         poolLabel,
         intervalLabel,
         amaDefaultsSource: marketProfiles ? 'market_profiles' : 'constants',
-        volumeIsCount: !!((meta as any)?.feed),
+        volumeIsCount: !!meta?.feed,
     };
 
     return `<!doctype html>
@@ -559,7 +601,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                     </div>
                 </div>
                 <div class="group" id="tf-group">
-                    ${timeframes.map((item: any) => `<button class="time-btn${item.label === defaultTimeframe.label ? ' active' : ''}" data-timeframe="${escapeHtml(item.label)}"${item.enabled ? '' : ' disabled'}>${escapeHtml(item.label)}</button>`).join('')}
+                    ${timeframes.map((item) => `<button class="time-btn${item.label === defaultTimeframe.label ? ' active' : ''}" data-timeframe="${escapeHtml(item.label)}"${item.enabled ? '' : ' disabled'}>${escapeHtml(item.label)}</button>`).join('')}
                 </div>
                 <div class="group">
                     <div class="indicator">

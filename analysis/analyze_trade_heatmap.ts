@@ -14,6 +14,7 @@
  * Output:
  *   Self-contained HTML file with inline CSS (no JS dependencies).
  */
+import { getErrorMessage } from '../modules/utils/errors.js';
 import path from 'node:path';
 import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
 import { MARKET_ADAPTER } from '../modules/constants.js';
@@ -108,7 +109,7 @@ async function main() {
         if (!cfg.quiet) console.log(`[TradeHeatmap] Computing ${cfg.ama} on ${closes.length} candles (warmup=${cfg.warmup})...`);
 
         const amaValues = calculateAMA(closes, amaCfg);
-        const records: any[] = [];
+        const records: Array<{ devPct: number; vol: number; ts: number }> = [];
         for (let i = cfg.warmup; i < closes.length; i++) {
             const ama = amaValues[i];
             if (!Number.isFinite(ama) || ama === 0) continue;
@@ -158,7 +159,7 @@ async function main() {
         const minDate = new Date(minTs);
         const maxDate = new Date(maxTs);
         const sliceMonths = cfg.sliceMonths;
-        const slices: any[] = [];
+        const slices: Array<{ label: string; start: number; end: number }> = [];
         let sliceStart = new Date(minDate.getFullYear(), minDate.getMonth(), 1);
         while (sliceStart <= maxDate) {
             const sliceEnd = new Date(sliceStart);
@@ -353,8 +354,8 @@ table.heatmap td.yl { color: #8b949e; font-size: 10px; text-align: right; paddin
 </html>`;
         writeChartFile(cfg.output, html);
         if (!cfg.quiet) console.log(`[TradeHeatmap] ✓ Heatmap saved to ${cfg.output}`);
-    } catch (err: any) {
-        console.error(`[TradeHeatmap] Error: ${err?.message ?? err}`);
+    } catch (err) {
+        console.error(`[TradeHeatmap] Error: ${getErrorMessage(err)}`);
         process.exit(1);
     }
 }

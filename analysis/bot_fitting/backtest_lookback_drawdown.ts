@@ -151,12 +151,19 @@ function run() {
     const cfg = parseArgs();
     const amaDef = resolveAma(cfg.amaName);
     const { candles, files } = loadCandles(cfg.dataPath);
-    const closes = candles.map((c: any) => c.close);
+    const closes = candles.map((c) => c.close);
     const amaValues = calculateAMA(closes, { erPeriod: amaDef.er, fastPeriod: amaDef.fast, slowPeriod: amaDef.slow });
     const warmupBars = getAmaWarmupBars(amaDef.er, amaDef.slow, 0, amaDef.fast);
 
     const weightEntries = Object.entries(WEIGHT_PROFILES);
-    const combos: any[] = [];
+    interface Combo {
+        spreadPct: number;
+        incrementPct: number;
+        maxMinRatio: number;
+        weightName: string;
+        weightFactor: number;
+    }
+    const combos: Combo[] = [];
     for (const spreadPct of cfg.spreads)
         for (const incrementPct of cfg.increments)
             for (const maxMinRatio of cfg.ratios)
@@ -172,9 +179,9 @@ function run() {
     console.log(`  Bounds:     asymmetricBounds ${cfg.asymmetricBounds ? 'ON (trigger B + slope offset active)' : 'OFF (lookback-independent)'}`);
     console.log(`  Reference:  ${REFERENCE_LOOKBACK}h (shipped default) for the paired delta\n`);
 
-    const byLookback: Record<number, Record<string, any>> = {};
+    const byLookback: Record<number, Record<string, ReturnType<typeof simulatePersistentGrid>>> = {};
     for (const lb of cfg.lookbacks) {
-        const perGeom: Record<string, any> = {};
+        const perGeom: Record<string, ReturnType<typeof simulatePersistentGrid>> = {};
         for (const c of combos) {
             const sim = simulatePersistentGrid(candles, amaValues, {
                 spreadPct: c.spreadPct,
@@ -218,7 +225,7 @@ function run() {
     for (const [label, field, mul, d] of fields) {
         let row = `  ${label.padEnd(20).slice(0, 20)} |`;
         for (const lb of cfg.lookbacks) {
-            row += fmt(median(keys.map((k) => byLookback[lb][k][field] * mul)), d).padStart(12);
+            row += fmt(median(keys.map((k) => (byLookback[lb][k] as unknown as Record<string, number>)[field] * mul)), d).padStart(12);
         }
         console.log(row);
     }

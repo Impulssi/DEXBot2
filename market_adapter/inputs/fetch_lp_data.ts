@@ -71,6 +71,48 @@ const FETCH_RETRY_BACKOFF_BASE_MS = MARKET_ADAPTER.LP_FETCH_RETRY_BACKOFF_BASE_M
 
 const BOTS_JSON = PATHS.PROFILES.BOTS_JSON;
 
+interface AssetRef {
+    id?: string;
+    precision?: number;
+    symbol?: string | null;
+    [key: string]: unknown;
+}
+
+interface LpPageInfo {
+    event?: string;
+    direction?: string;
+    page?: number;
+    attempt?: number;
+    error?: string;
+    [key: string]: unknown;
+}
+
+interface LpConfig {
+    intervalSeconds: number;
+    lookbackHours?: number;
+    apiKey?: string | null;
+    chunkMonths: number;
+    timeRange?: { gte?: string; lte?: string };
+    outPath?: string;
+    onPage?: (info: LpPageInfo) => void;
+    [key: string]: unknown;
+}
+
+interface BotConfig {
+    name?: string;
+    active?: boolean;
+    startPrice?: unknown;
+    assetA?: string;
+    assetB?: string;
+    [key: string]: unknown;
+}
+
+interface FetchWindow {
+    index: number;
+    gte: string;
+    lte: string;
+}
+
 // ─── CLI ──────────────────────────────────────────────────────────────────────
 
 function parseArgs() {
@@ -131,32 +173,32 @@ function parseArgs() {
 
 // ─── Output path ──────────────────────────────────────────────────────────────
 
-function pairFolderName(assetA: any, assetB: any) {
+function pairFolderName(assetA: AssetRef | null | undefined, assetB: AssetRef | null | undefined): string {
     return `${slugPart(assetA?.symbol)}_${slugPart(assetB?.symbol)}`;
 }
 
-function outputPath(poolId: any, intervalSeconds: any, assetA: any, assetB: any) {
+function outputPath(poolId: unknown, intervalSeconds: number, assetA: AssetRef, assetB: AssetRef): string {
     const label = toIntervalLabel(intervalSeconds);
     const id  = String(poolId).replace('1.19.', '');
     const pairFolder = pairFolderName(assetA, assetB);
     return path.join(PATHS.MARKET_ADAPTER.LP_DATA_DIR, pairFolder, `lp_pool_${id}_${label}.json`);
 }
 
-function applyPrecisionOverrides(assetA: any, assetB: any, precA: any, precB: any) {
+function applyPrecisionOverrides(assetA: AssetRef, assetB: AssetRef, precA: number | null, precB: number | null): { assetA: AssetRef; assetB: AssetRef } {
     return {
         assetA: precA != null ? { ...assetA, precision: precA } : assetA,
         assetB: precB != null ? { ...assetB, precision: precB } : assetB,
     };
 }
 
-function pairFolderPath(assetASymbol: any, assetBSymbol: any) {
+function pairFolderPath(assetASymbol: string | null | undefined, assetBSymbol: string | null | undefined): string {
     return path.join(PATHS.MARKET_ADAPTER.LP_DATA_DIR, pairFolderName(
         { symbol: assetASymbol },
         { symbol: assetBSymbol }
     ));
 }
 
-function resolveChunkMonths(config: any) {
+function resolveChunkMonths(config: LpConfig): number {
     const months = Number(config.chunkMonths);
     if (!Number.isFinite(months) || months <= 0) {
         throw new Error(`Invalid chunkMonths: ${config.chunkMonths}`);
@@ -164,7 +206,7 @@ function resolveChunkMonths(config: any) {
     return Math.max(1, Math.round(months));
 }
 
-function normalizeLookbackRange(config: any, nowMs: any = Date.now()) {
+function normalizeLookbackRange(config: LpConfig, nowMs: number = Date.now()): { gte: string; lte: string } {
     const lookbackHours = Number(config.lookbackHours);
     if (!Number.isFinite(lookbackHours) || lookbackHours <= 0) {
         throw new Error(`Invalid lookbackHours: ${config.lookbackHours}`);
@@ -180,32 +222,32 @@ function normalizeLookbackRange(config: any, nowMs: any = Date.now()) {
     };
 }
 
-function buildRequestKey(config: any, fullPoolId: any, assetA: any, assetB: any, timeRange: any, outPath: any) {
+function buildRequestKey(config: LpConfig, fullPoolId: string, assetA: AssetRef, assetB: AssetRef, timeRange: unknown, outPath: string): { pool: string; assetA: AssetRef; assetB: AssetRef; intervalSeconds: number; lookbackHours: number | null; timeRange: unknown; outPath: string; chunkMonths: number } {
     const chunkMonths = resolveChunkMonths(config);
     return {
         pool: fullPoolId,
         assetA: { id: assetA.id, precision: assetA.precision, symbol: assetA.symbol },
         assetB: { id: assetB.id, precision: assetB.precision, symbol: assetB.symbol },
         intervalSeconds: config.intervalSeconds,
-        lookbackHours: config.timeRange ? null : config.lookbackHours,
+        lookbackHours: config.timeRange ? null : (config.lookbackHours ?? null),
         timeRange,
         outPath: path.resolve(outPath),
         chunkMonths,
     };
 }
 
-function loadCachedFetchContext(bot: any, intervalSeconds: any) {
+function loadCachedFetchContext(bot: BotConfig, intervalSeconds: number): { poolId: string; assetA: AssetRef; assetB: AssetRef; source: string; path: string } | null {
     const dir = pairFolderPath(bot.assetA, bot.assetB);
     if (!storage.exists(dir)) return null;
 
     const label = toIntervalLabel(intervalSeconds);
     const dataFiles = storage.readdir(dir)
-        .filter((name: any) => name.endsWith(`${label}.json`))
+        .filter((name) => name.endsWith(`${label}.json`))
         .sort();
 
     for (const file of dataFiles) {
         try {
-            const parsed = readJSON(path.join(dir, file));
+            const parsed = readJSON<{ meta?: { intervalSeconds?: number; assetA?: AssetRef; assetB?: AssetRef; pool?: string } }>(path.join(dir, file));
             const meta = parsed?.meta;
             if (!meta) continue;
             if (meta.intervalSeconds !== intervalSeconds) continue;
@@ -220,7 +262,7 @@ function loadCachedFetchContext(bot: any, intervalSeconds: any) {
                 source: 'data',
                 path: path.join(dir, file),
             };
-        } catch (_: any) {}
+        } catch (_) {}
     }
 
     return null;
@@ -233,7 +275,9 @@ function loadCachedFetchContext(bot: any, intervalSeconds: any) {
 // entry point. Storage is fixed calendar-month shards, so there is no
 // orphan cleanup and no per-run rewrite.
 
-function isLpShardMatch(meta: any, requestKey: any) {
+function isLpShardMatch(metaInput: unknown, requestKeyInput: unknown): boolean {
+    const meta = metaInput as { pool?: unknown; intervalSeconds?: unknown; assetA?: AssetRef; assetB?: AssetRef };
+    const requestKey = requestKeyInput as { pool: string; intervalSeconds: number; assetA: AssetRef; assetB: AssetRef };
     if (meta.pool !== requestKey.pool) return false;
     if (meta.intervalSeconds !== requestKey.intervalSeconds) return false;
     if (meta.assetA?.id !== requestKey.assetA.id || meta.assetB?.id !== requestKey.assetB.id) return false;
@@ -241,7 +285,7 @@ function isLpShardMatch(meta: any, requestKey: any) {
     return true;
 }
 
-async function fetchCandlesSequentially(fullPoolId: any, assetA: any, assetB: any, config: any, outPath: any) {
+async function fetchCandlesSequentially(fullPoolId: string, assetA: AssetRef, assetB: AssetRef, config: LpConfig, outPath: string): Promise<number[][]> {
     // Pool, book and feed fetches share ONE cache function: runCachedWindows
     // in window_cache.js. Stable shard files are the only cache format.
     const chunkMonths = resolveChunkMonths(config);
@@ -254,7 +298,7 @@ async function fetchCandlesSequentially(fullPoolId: any, assetA: any, assetB: an
     const plainWindows = buildFetchWindowsFromRange(effectiveTimeRange, chunkMonths);
     // Windows are fetch-planning splits only (query batching + progress);
     // storage layout is fixed calendar-month shards, so no per-window file.
-    const windows = plainWindows.map((window: any, idx: any) => ({
+    const windows: FetchWindow[] = plainWindows.map((window, idx) => ({
         index: idx + 1,
         gte: window.gte,
         lte: window.lte,
@@ -265,16 +309,17 @@ async function fetchCandlesSequentially(fullPoolId: any, assetA: any, assetB: an
         console.log(`  Auto-splitting fetch into ${total} sequential ${chunkMonths}-month fetch windows`);
     }
 
-    const fetchRange = async (gte: string, lte: string, window: any, signal?: AbortSignal) => {
-        const tag = formatWindowLine('Window', window.index, total, window.gte, window.lte);
+    const fetchRange = async (gte: string, lte: string, window: unknown, signal?: AbortSignal): Promise<number[][] | { candles: number[][]; complete: false }> => {
+        const w = window as FetchWindow;
+        const tag = formatWindowLine('Window', w.index, total, w.gte, w.lte);
         const attemptStartMs = Date.now();
         // A partial window (one swap direction failed) is still returned for
         // this run's output, but flagged so the shared runner withholds it
         // from disk — persisting it would bake the missing side in as
         // gap-filled zeros that are never re-queried.
         let sawPartial = false;
-        const userOnPage = (config as any)?.onPage;
-        const onPage = (info: any) => {
+        const userOnPage = config.onPage;
+        const onPage = (info: LpPageInfo) => {
             if (info?.event === 'partial') sawPartial = true;
             // Per-page progress stays silent; only page retries are reported.
             if (info?.event === 'retry') {
@@ -302,7 +347,7 @@ async function fetchCandlesSequentially(fullPoolId: any, assetA: any, assetB: an
         outPath,
         requestKey,
         isMatch: isLpShardMatch,
-        metaForWindow: (window: any) => ({
+        metaForWindow: (window) => ({
             source: `https://kibana.bitshares.dev (bitshares-*, op_type 63, pool ${requestKey.pool})`,
             pool: requestKey.pool,
             assetA: requestKey.assetA,
@@ -317,7 +362,7 @@ async function fetchCandlesSequentially(fullPoolId: any, assetA: any, assetB: an
         allowSubFetch: true,
         fetchAttempts: FETCH_MAX_ATTEMPTS,
         fetchBackoffBaseMs: FETCH_RETRY_BACKOFF_BASE_MS,
-        onFetchRetry: (info: any) => {
+        onFetchRetry: (info: { attempt: number; attempts: number; backoffMs: number; error: unknown; gte: string; lte: string }) => {
             console.warn(`  Window fetch retry ${info.attempt}/${info.attempts} for ${String(info.gte).slice(0, 10)} → ${String(info.lte).slice(0, 10)} in ${info.backoffMs}ms after failure: ${getErrorMessage(info.error)}`);
         },
     });
@@ -334,7 +379,7 @@ function loadBotsJson() {
     return parseBotsConfig(storage.readFile(BOTS_JSON), BOTS_JSON);
 }
 
-function parseBotsConfig(raw: any, sourceLabel: any = BOTS_JSON) {
+function parseBotsConfig(raw: string, sourceLabel: string = BOTS_JSON): BotConfig[] {
     const parsed = parseJsonWithComments(raw);
     const bots = Array.isArray(parsed?.bots) ? parsed.bots : (Array.isArray(parsed) ? parsed : null);
     if (!bots) {
@@ -346,13 +391,13 @@ function parseBotsConfig(raw: any, sourceLabel: any = BOTS_JSON) {
 /**
  * Pick a bot: by name if given, otherwise first active bot with startPrice: "pool".
  */
-function selectBot(bots: any, botName: any) {
+function selectBot(bots: BotConfig[], botName: string | null | undefined): BotConfig {
     if (botName) {
-        const bot = bots.find((b: any) => isSameBotName(b.name, botName));
+        const bot = bots.find((b) => isSameBotName(b.name, botName));
         if (!bot) throw new Error(`Bot "${botName}" not found in bots.json`);
         return bot;
     }
-    const bot = bots.find((b: any) => b.active && b.startPrice === 'pool');
+    const bot = bots.find((b) => b.active && b.startPrice === 'pool');
     if (!bot) throw new Error('No active pool-price bot found in bots.json. Use --bot NAME to specify one.');
     return bot;
 }
@@ -368,24 +413,26 @@ async function run() {
     console.log(' Kibana LP Fetcher — Pool-centric');
     console.log('══════════════════════════════════════════════');
 
-    let fullPoolId, assetA, assetB;
+    let fullPoolId = '';
+    let assetA: AssetRef = {};
+    let assetB: AssetRef = {};
 
     // ── Mode A: manual --pool override (no blockchain connection needed) ──────
     if (cliPoolId) {
         console.log(`  Mode:     Manual (--pool ${cliPoolId})`);
-        fullPoolId = normalizePoolId(cliPoolId);
+        fullPoolId = normalizePoolId(cliPoolId) ?? '';
 
         // Still need to discover asset IDs from Kibana; precisions from CLI or default
         console.log(`  Pool:     ${fullPoolId}`);
         console.log(`  Interval: ${bucketLabel} candles`);
-        console.log(`  Range:    ${config.timeRange ? `${config.timeRange.gte} → ${config.timeRange.lte}` : `last ${config.lookbackHours}h (${(config.lookbackHours / 24 / 365).toFixed(2)} years)`}`);
+        console.log(`  Range:    ${config.timeRange ? `${config.timeRange.gte} → ${config.timeRange.lte}` : `last ${config.lookbackHours ?? 0}h (${((config.lookbackHours ?? 0) / 24 / 365).toFixed(2)} years)`}`);
         console.log('══════════════════════════════════════════════');
 
         console.log(`\n[1/4] Discovering assets in pool ${fullPoolId}...`);
-        let assetIds;
+        let assetIds: string[];
         try {
             assetIds = await kibanaSource.discoverPoolAssets(fullPoolId, config);
-        } catch (err: any) {
+        } catch (err) {
             console.error(`  Discovery failed: ${getErrorMessage(err)}`);
             process.exit(1);
         }
@@ -425,7 +472,7 @@ async function run() {
         console.log(`  Mode:     Auto (bots.json → blockchain → Kibana)`);
         console.log(`  Bot:      ${bot.name} (${bot.assetA} / ${bot.assetB})`);
         console.log(`  Interval: ${bucketLabel} candles`);
-        console.log(`  Range:    ${config.timeRange ? `${config.timeRange.gte} → ${config.timeRange.lte}` : `last ${config.lookbackHours}h (${(config.lookbackHours / 24 / 365).toFixed(2)} years)`}`);
+        console.log(`  Range:    ${config.timeRange ? `${config.timeRange.gte} → ${config.timeRange.lte}` : `last ${config.lookbackHours ?? 0}h (${((config.lookbackHours ?? 0) / 24 / 365).toFixed(2)} years)`}`);
         console.log(`  Auth:     ${config.apiKey ? 'API key set' : 'open (no auth)'}`);
         console.log('══════════════════════════════════════════════');
 
@@ -453,7 +500,7 @@ async function run() {
                     resolveAsset(bot.assetA, bitsharesClient),
                     resolveAsset(bot.assetB, bitsharesClient),
                 ]);
-            } catch (err: any) {
+            } catch (err) {
                 console.error(`  Asset resolution failed: ${getErrorMessage(err)}`);
                 process.exit(1);
             }
@@ -469,13 +516,13 @@ async function run() {
             console.log(`\n[2/4] Finding liquidity pool for ${bot.assetA} / ${bot.assetB}...`);
             let pool;
             try {
-                pool = await findPoolByAssets(assetA.id, assetB.id, { bitsharesClient, sortBy: 'assetABalance' });
-            } catch (err: any) {
+                pool = await findPoolByAssets(String(assetA.id), String(assetB.id), { bitsharesClient, sortBy: 'assetABalance' });
+            } catch (err) {
                 console.error(`  Pool lookup failed: ${getErrorMessage(err)}`);
                 process.exit(1);
             }
 
-            fullPoolId = pool.id;
+            fullPoolId = String(pool.id);
             console.log(`  Pool:    ${fullPoolId}`);
         }
     }
@@ -488,7 +535,7 @@ async function run() {
     // it checks the range actually being fetched; otherwise a cheap recent
     // window capped at 48h. The resolved window below feeds BOTH the query and
     // the labels, so they can never diverge.
-    const probeCapHours = Math.min(config.lookbackHours, 48);
+    const probeCapHours = Math.min(config.lookbackHours ?? 0, 48);
     const probeTimeRange = config.timeRange
         ? {
             gte: config.timeRange.gte ?? new Date(Date.now() - probeCapHours * 3600 * 1000).toISOString(),
@@ -509,8 +556,8 @@ async function run() {
             fillGapsToRequestedRange: false,
             timeRange: probeTimeRange,
         });
-        const volumeCandles = probeCandles.filter((c: any) => Number(c[5] || 0) > 0);
-        const nonFlatCandles = volumeCandles.filter((c: any) => c[1] !== c[2] || c[1] !== c[3] || c[1] !== c[4]);
+        const volumeCandles = probeCandles.filter((c) => Number(c[5] || 0) > 0);
+        const nonFlatCandles = volumeCandles.filter((c) => c[1] !== c[2] || c[1] !== c[3] || c[1] !== c[4]);
 
         console.log(`  Candles with trades in probed window: ${volumeCandles.length}`);
         console.log(`  Non-flat OHLC candles:               ${nonFlatCandles.length}`);
@@ -521,7 +568,7 @@ async function run() {
         } else {
             console.warn('  No trade candles in the probed window — pool may be inactive during this period. Proceeding with full fetch.');
         }
-    } catch (err: any) {
+    } catch (err) {
         console.error(`  Probe failed: ${getErrorMessage(err)}`);
         process.exit(1);
     }
@@ -533,7 +580,7 @@ async function run() {
     // ── Fetch full history ────────────────────────────────────────────────────
     const fetchModeLabel = config.timeRange
         ? `${config.timeRange.gte ?? '…'} → ${config.timeRange.lte ?? '…'}`
-        : `${config.lookbackHours}h`;
+        : `${config.lookbackHours ?? 0}h`;
     console.log(`\n[${stepFetch}/4] Fetching full history (${fetchModeLabel}, ${bucketLabel} buckets)...`);
     let candles;
     try {
@@ -547,15 +594,15 @@ async function run() {
 
         const firstTs  = new Date(candles[0][0]).toISOString();
         const lastTs   = new Date(candles[candles.length - 1][0]).toISOString();
-        const closes   = candles.map((c: any) => c[4]);
+        const closes   = candles.map((c) => c[4]);
         const minPrice = Math.min(...closes);
         const maxPrice = Math.max(...closes);
-        const avgPrice = closes.reduce((a: any, b: any) => a + b, 0) / closes.length;
+        const avgPrice = closes.reduce((a, b) => a + b, 0) / closes.length;
 
         console.log(`  Date range:  ${firstTs}  →  ${lastTs}`);
         console.log(`  Price range: ${minPrice.toFixed(8)} – ${maxPrice.toFixed(8)}`);
         console.log(`  Avg price:   ${avgPrice.toFixed(8)}  (${assetB.symbol} per ${assetA.symbol})`);
-    } catch (err: any) {
+    } catch (err) {
         console.error(`  Fetch failed: ${getErrorMessage(err)}`);
         process.exit(1);
     }
@@ -578,7 +625,7 @@ async function run() {
             assetB,
             pair,
             intervalSeconds: config.intervalSeconds,
-            lookbackHours:   config.lookbackHours,
+            lookbackHours:   config.lookbackHours ?? 0,
             candleCount:     candles.length,
             priceUnit:       `${assetB.symbol} per ${assetA.symbol}`,
             // Candle format: [timestamp_ms, open, high, low, close, volume_in_assetA]
@@ -592,7 +639,7 @@ async function run() {
     };
 
     writeJsonAtomic(outPath, output);
-    const kb = ((storage.stat(outPath) as any).size / 1024).toFixed(1);
+    const kb = ((storage.stat(outPath) as { size: number }).size / 1024).toFixed(1);
     console.log(`  Saved: ${path.relative(process.cwd(), outPath)}  (${kb} KB)`);
 
     console.log('\nNext — chart it:');
@@ -600,7 +647,7 @@ async function run() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-    run().catch((err: any) => {
+    run().catch((err: unknown) => {
         console.error('Fatal:', err);
         process.exit(1);
     });

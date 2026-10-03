@@ -14,7 +14,18 @@
  * into generated HTML — do not add imports referenced from the function body.
  */
 
-function computeVolatilityShift(weightVariance: any, opts: any = {}) {
+interface VolatilityShiftOpts {
+    exponent?: number;
+    scaleX?: number;
+    threshold?: number;
+    clampValue?: number;
+    minWeight?: number;
+    maxWeight?: number;
+    baselineWeight?: number;
+    [key: string]: unknown;
+}
+
+function computeVolatilityShift(weightVariance: number, opts: VolatilityShiftOpts = {}) {
     const {
         exponent = 1.0,
         scaleX = 10.0,

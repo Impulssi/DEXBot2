@@ -5,24 +5,46 @@ import { escapeHtml, serializeJsonForScript, uplotInlineTags } from '../analysis
 import { fixedTo, roundTo, roundToDecimals } from '../modules/order/utils/math.js';
 
 
-function formatPct(v: any) {
+function formatPct(v: unknown): string {
     const num = Number(v);
     if (!Number.isFinite(num)) return 'n/a';
     return `${num >= 0 ? '+' : ''}${num.toFixed(2)}%`;
 }
 
-function padRange(min: any, max: any, lower = 0.04, upper = 0.04) {
-    if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
-    if (min === max) {
-        const delta = Math.abs(min) * 0.03 || 1;
-        return [min - delta, max + delta];
+function padRange(min: unknown, max: unknown, lower = 0.04, upper = 0.04): [number, number] | null {
+    const lo = Number(min);
+    const hi = Number(max);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+    if (lo === hi) {
+        const delta = Math.abs(lo) * 0.03 || 1;
+        return [lo - delta, hi + delta];
     }
-    const span = max - min;
-    return [min - span * lower, max + span * upper];
+    const span = hi - lo;
+    return [lo - span * lower, hi + span * upper];
 }
 
-function generateHTML(meta: any, candles: any, amaResults: any) {
-    const { assetA = {}, assetB = {}, intervalSeconds, fetchedAt, pool, thresholds = [], sigmaAmaDelta } = meta || {};
+interface ChartMeta {
+    assetA?: unknown;
+    assetB?: unknown;
+    intervalSeconds?: unknown;
+    fetchedAt?: unknown;
+    pool?: unknown;
+    thresholds?: Array<{ quantile: number; multiplier: unknown }>;
+    sigmaAmaDelta?: unknown;
+}
+
+interface AmaResult {
+    values?: unknown[];
+    erPeriod?: unknown;
+    name?: unknown;
+    color?: unknown;
+    lineWidth?: number;
+    fastPeriod?: unknown;
+    slowPeriod?: unknown;
+}
+
+function generateHTML(meta: ChartMeta | null, candles: unknown, amaResults: AmaResult[]): string {
+    const { assetA = {}, assetB = {}, intervalSeconds, fetchedAt, pool, thresholds = [], sigmaAmaDelta } = (meta || {}) as ChartMeta & { assetA?: { symbol?: unknown }; assetB?: { symbol?: unknown } };
     if (!Array.isArray(candles) || candles.length === 0) {
         throw new Error('No candles supplied to LP uPlot renderer');
     }
@@ -33,25 +55,26 @@ function generateHTML(meta: any, candles: any, amaResults: any) {
     const poolLabel = pool
         ? `Pool ${String(pool).replace('1.19.', '')}`
         : `${assetA.symbol || '?'} / ${assetB.symbol || '?'}`;
-    const intervalLabel = toIntervalLabel(intervalSeconds);
+    const intervalLabel = toIntervalLabel(Number(intervalSeconds));
 
-    const ts = candles.map((c) => Math.round(Number(c[0]) / 1000));
-    const closes = candles.map((c) => roundToDecimals(Number(c[4]), 6));
-    const volumes = candles.map((c) => roundToDecimals(Number(c[5] ?? 0), 4));
+    const candleRows = candles as unknown[][];
+    const ts = candleRows.map((c) => Math.round(Number(c[0]) / 1000));
+    const closes = candleRows.map((c) => roundToDecimals(Number(c[4]), 6));
+    const volumes = candleRows.map((c) => roundToDecimals(Number(c[5] ?? 0), 4));
 
     const primary = amaResults[0];
     const primaryValues = Array.isArray(primary.values) ? primary.values : [];
-    const primarySkip = Number.isFinite(primary.erPeriod) ? primary.erPeriod : 0;
+    const primarySkip = Number(primary.erPeriod) || 0;
     const validCloses = closes.slice(primarySkip);
     const validPrimary = primaryValues.slice(primarySkip);
     const maxDev = validCloses.length && validPrimary.length
-        ? Math.max(...validCloses.map((p, i) => Math.abs((p - validPrimary[i]) / validPrimary[i]) * 100))
+        ? Math.max(...validCloses.map((p, i) => { const vp = Number(validPrimary[i]); return vp === 0 ? 0 : Math.abs((p - vp) / vp) * 100; }))
         : 0;
 
     const lastPrice = closes[closes.length - 1];
     const amaStats = amaResults.map((a) => {
         const values = Array.isArray(a.values) ? a.values : [];
-        const lastVal = values[values.length - 1];
+        const lastVal = Number(values[values.length - 1]);
         const dev = Number.isFinite(lastVal) && lastVal !== 0
             ? ((lastPrice - lastVal) / lastVal) * 100
             : 0;
@@ -195,7 +218,7 @@ function generateHTML(meta: any, candles: any, amaResults: any) {
 <div id="header">
     <h1><span style="color:#fb8c00">${escapeHtml(poolLabel)}</span> &nbsp; LP Swap Price</h1>
     <span class="sub">BitShares DEX · ${escapeHtml(intervalLabel)} buckets · ${amaResults.length} AMAs</span>
-    <span class="sub" style="margin-left:auto">Fetched: ${fetchedAt ? escapeHtml(new Date(fetchedAt).toLocaleString()) : 'n/a'}</span>
+    <span class="sub" style="margin-left:auto">Fetched: ${fetchedAt ? escapeHtml(new Date(String(fetchedAt)).toLocaleString()) : 'n/a'}</span>
 </div>
 
 <div id="right-panel">
@@ -205,7 +228,7 @@ function generateHTML(meta: any, candles: any, amaResults: any) {
         ${amaStats.map((s) => `<div><span style="color:${s.color}">● </span><span class="label" style="font-size:11px">${escapeHtml(String(s.name || '').padEnd(22))}</span><span class="${s.dev >= 0 ? 'pos' : 'neg'}">${formatPct(s.dev)}</span></div>`).join('\n    ')}
         <div style="margin-top:6px"><span class="label">Max |dev|   </span><span class="val">${maxDev.toFixed(3)}% (primary)</span></div>
         ${thresholds.length ? `<div style="margin-top:4px; margin-bottom:2px"><span class="label" style="font-size:10px">── Clamping Thresholds ──</span></div>
-        ${thresholds.map((t: any) => `<div><span class="label" style="font-size:11px">${(t.quantile * 100).toFixed(3)}%</span><span class="val" style="margin-left:8px">${t.multiplier}x</span></div>`).join('')}` : ''}
+        ${thresholds.map((t) => `<div><span class="label" style="font-size:11px">${(t.quantile * 100).toFixed(3)}%</span><span class="val" style="margin-left:8px">${t.multiplier}x</span></div>`).join('')}` : ''}
         ${sigmaAmaDelta !== null && sigmaAmaDelta !== undefined ? `<div><span class="label">σ_ama_delta </span><span class="val">${sigmaAmaDelta}% (hourly)</span></div>` : ''}
         <div style="margin-top:6px"><span class="label">Candles     </span><span class="val">${candles.length}</span></div>
         <div><span class="label">Source      </span><span class="label" style="font-size:10px">Kibana LP (op_type 63)</span></div>
@@ -232,7 +255,7 @@ function generateHTML(meta: any, candles: any, amaResults: any) {
     closes,
     volumes,
     amaMeta,
-    amaArrays: amaResults.map((a: any) => (Array.isArray(a.values) ? a.values.map((v: any) => roundToDecimals(Number(v), 6)) : [])),
+    amaArrays: amaResults.map((a) => (Array.isArray(a.values) ? a.values.map((v) => roundToDecimals(Number(v), 6)) : [])),
 })}</script>
 
 <script>
@@ -574,7 +597,7 @@ priceChart = initChart('price-chart', {
     padding: [8, 8, 12, 8],
     series: [
         { label: 'Time' },
-        lineSeries('${escapeHtml(assetA.symbol || '?')}/${escapeHtml(assetB.symbol || '?')} VWAP', '#5c9ee6', 1.5),
+        lineSeries('${escapeHtml(String(assetA.symbol || '?'))}/${escapeHtml(String(assetB.symbol || '?'))} VWAP', '#5c9ee6', 1.5),
         ...amaMeta.map((cfg) => lineSeries(cfg.name, cfg.color, cfg.lineWidth || 1.5)),
     ],
 }, priceData);
@@ -623,7 +646,7 @@ volChart = initChart('vol-chart', {
     series: [
         { label: 'Time' },
         {
-            label: 'Volume (' + ${JSON.stringify(escapeHtml(assetA.symbol || '?'))} + ')',
+            label: 'Volume (' + ${JSON.stringify(escapeHtml(String(assetA.symbol || '?')))} + ')',
             stroke: 'rgba(92,158,230,1)',
             fill: 'rgba(92,158,230,1)',
             width: 1,

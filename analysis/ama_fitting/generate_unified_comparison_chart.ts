@@ -1,5 +1,6 @@
 'use strict';
 
+import { getErrorMessage } from '../../modules/utils/errors.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -56,7 +57,7 @@ const DEFAULT_STRATEGIES = buildDefaultStrategies();
 
 // ── Data loading (canonical implementations, no local copies) ────────────────
 
-function loadCandles(dataFile: any) {
+function loadCandles(dataFile: string) {
     const resolved = path.resolve(dataFile);
     if (!fs.existsSync(resolved)) throw new Error(`File not found: ${resolved}`);
 
@@ -68,7 +69,7 @@ function loadCandles(dataFile: any) {
 
     // normalizeCandle is the canonical accessor transform (market_adapter/
     // candle_utils.ts via math_utils re-export); it returns seconds-based time.
-    const normalized = candles.map((c: any, i: number) => {
+    const normalized = candles.map((c: unknown, i: number) => {
         const nc = normalizeCandle(c);
         if (!nc) throw new Error(`Invalid candle at index ${i}`);
         return nc;
@@ -88,13 +89,24 @@ function loadCandles(dataFile: any) {
 
 // ── Output path ────────────────────────────────────────────────────────────────
 
-function defaultChartPath(meta: any) {
-    const intervalLabel = meta?.intervalSeconds
-        ? toIntervalLabel(meta.intervalSeconds)
+interface ChartMetaLike {
+    intervalSeconds?: unknown;
+    pool?: unknown;
+    assetA?: unknown;
+    assetB?: unknown;
+    [key: string]: unknown;
+}
+
+function defaultChartPath(meta: ChartMetaLike | null) {
+    const intervalSeconds = Number(meta?.intervalSeconds);
+    const intervalLabel = Number.isFinite(intervalSeconds) && intervalSeconds > 0
+        ? toIntervalLabel(intervalSeconds)
         : '1h';
+    const assetA = meta?.assetA as { symbol?: unknown } | undefined;
+    const assetB = meta?.assetB as { symbol?: unknown } | undefined;
     const suffix = meta?.pool
         ? `pool_${String(meta.pool).replace('1.19.', '')}`
-        : `${meta?.assetA?.symbol || 'unknown'}_${meta?.assetB?.symbol || 'pair'}`;
+        : `${assetA?.symbol || 'unknown'}_${assetB?.symbol || 'pair'}`;
     return path.join(CHARTS_DIR, `lp_chart_${suffix}_${intervalLabel}_UNIFIED_COMPARISON.html`);
 }
 
@@ -116,7 +128,7 @@ Options:
 
 Notes:
   - If --data is omitted, the newest lp_pool_*.json under market_adapter/data/lp is used.
-  - Accepts any candle JSON: flat [[ts,o,h,l,c,v],...], {candles: [...]}, or {data: [...]}.
+  - Accepts several candle JSON shapes: flat [[ts,o,h,l,c,v],...], {candles: [...]}, or {data: [...]}.
   - Separate from Kibana fetching — use fetch_lp_candles.ts to pull data first.
 `);
 }
@@ -145,7 +157,15 @@ function parseArgs(argv: string[]) {
     return cfg;
 }
 
-function generateChart(options = {} as Record<string, any>) {
+interface GenerateChartOptions {
+    logger?: { log: (...args: unknown[]) => void };
+    dataFile?: string | null;
+    outFile?: string | null;
+    strategies?: typeof DEFAULT_STRATEGIES;
+    [key: string]: unknown;
+}
+
+function generateChart(options: GenerateChartOptions = {}) {
     const logger = options.logger ?? console;
 
     const dataFile = options.dataFile
@@ -172,7 +192,7 @@ function generateChart(options = {} as Record<string, any>) {
 
     logger.log(`Data:        ${path.relative(process.cwd(), dataFile)} (${candleObjects.length} candles)`);
 
-    const amaResults: any[] = [];
+    const amaResults: Array<Record<string, unknown> & { values: number[] }> = [];
     logger.log('');
     for (const [index, strategy] of strategies.entries()) {
         const values = calculateAMA(closes, strategy);
@@ -219,7 +239,7 @@ function run(argv = process.argv.slice(2)) {
             logger: quiet ? { log() {} } : console,
         });
     } catch (e: unknown) {
-        console.error('Error:', (e as any)?.message ?? e);
+        console.error('Error:', getErrorMessage(e));
         process.exitCode = 1;
     }
 }

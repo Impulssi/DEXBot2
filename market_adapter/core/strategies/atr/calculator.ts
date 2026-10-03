@@ -36,7 +36,13 @@ import { normalizeAtrPeriod } from '../../config_normalizers.js';
  *                 even when the final row is missing/invalid).
  * @returns {number[]} Per-candle ATR values (0 during warmup / across breaks)
  */
-function computeATRSeries(candles: any, period = 14, stats: any = null) {
+interface AtrStats {
+    validRanges?: number;
+    atr?: number;
+    [key: string]: unknown;
+}
+
+function computeATRSeries(candles: unknown, period = 14, stats: AtrStats | null = null): number[] {
     const atrs: number[] = [];
     if (!Array.isArray(candles)) return atrs;
 
@@ -100,21 +106,21 @@ function computeATRSeries(candles: any, period = 14, stats: any = null) {
  * @param {number} period - ATR period
  * @returns {number} Average True Range value
  */
-function calculateATR(candles: any, period = 14) {
+function calculateATR(candles: unknown, period = 14): number {
     const safePeriod = normalizeAtrPeriod(period);
     if (!Array.isArray(candles)) return Number.NaN;
     if (candles.length < safePeriod + 1) return 0;
 
-    const stats: any = {};
+    const stats: AtrStats = {};
     const series = computeATRSeries(candles, safePeriod, stats);
     if (series.length === 0) return Number.NaN;
 
     // No valid true ranges at all (all rows missing/invalid) → NaN, not 0.
-    if (stats.validRanges === 0) return Number.NaN;
+    if ((stats.validRanges ?? 0) === 0) return Number.NaN;
     // Fewer valid true ranges than the period → warmup 0.
-    if (stats.validRanges < safePeriod) return 0;
+    if ((stats.validRanges ?? 0) < safePeriod) return 0;
 
-    return Number.isFinite(stats.atr) ? stats.atr : 0;
+    return Number.isFinite(stats.atr) ? (stats.atr as number) : 0;
 }
 
 export { calculateATR, computeATRSeries }

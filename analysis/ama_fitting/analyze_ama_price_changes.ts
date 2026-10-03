@@ -28,7 +28,7 @@ const REPOS_THRESHOLD_PCT = MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT;
  * the last reposition baseline.  When drift ≥ threshold, a reposition fires:
  * record step-count since previous reposition, reset baseline to current AMA.
  */
-function trackRepositions(amaValues: any, thresholdPct: any, warmup: any) {
+function trackRepositions(amaValues: number[], thresholdPct: number, warmup: number) {
     let events = 0;
     const steps: number[] = [];
     let baseline = amaValues[warmup];
@@ -52,19 +52,25 @@ function trackRepositions(amaValues: any, thresholdPct: any, warmup: any) {
 }
 
 // ── Load data ─────────────────────────────────────────────────────────────────
-function loadData(filePath: any) {
-    const json    = readJSON(filePath);
-    const candles = json.candles ?? json;
+interface DataMeta {
+    pool?: unknown;
+    intervalSeconds?: unknown;
+    [key: string]: unknown;
+}
+
+function loadData(filePath: string): { candles: Array<{ timestamp: number; close: number }>; meta: DataMeta | null } {
+    const json = readJSON(filePath) as { candles?: unknown; meta?: DataMeta | null };
+    const candles = (json.candles ?? json) as unknown[];
     return {
         candles: candles
-            .map((c: any) => normalizeCandle(c))
-            .filter(Boolean)
-            .map((c: any) => ({ timestamp: c.time * 1000, close: c.close })),
+            .map((c) => normalizeCandle(c))
+            .filter((c) => c != null)
+            .map((c) => ({ timestamp: c!.time * 1000, close: c!.close })),
         meta: json.meta ?? null,
     };
 }
-function loadAmaParams(resultsPath: any) {
-    const json = readJSON(resultsPath);
+function loadAmaParams(resultsPath: string) {
+    const json = readJSON(resultsPath) as { meta?: { amas?: Record<string, { label?: unknown; er: number; fast: number; slow: number }> } };
     const amas = json.meta?.amas;
     if (!amas) throw new Error('No amas found in results file');
     return [
@@ -90,13 +96,13 @@ function run() {
     const resultsFile = path.resolve(process.argv[resultsArgIdx + 1]);
     const { candles, meta } = loadData(dataFile);
     const amaParams         = loadAmaParams(resultsFile);
-    const closes            = candles.map((c: any) => c.close);
+    const closes            = candles.map((c) => c.close);
     const totalSteps        = closes.length - 1; // candle-to-candle transitions
     const label = meta?.pool
         ? `LP Pool ${meta.pool}`
         : path.basename(dataFile, '.json');
     const interval = meta?.intervalSeconds
-        ? `${meta.intervalSeconds / 3600}h`
+        ? `${Number(meta.intervalSeconds) / 3600}h`
         : '?h';
     console.log('');
     console.log('════════════════════════════════════════════════════════════════════════════════');
@@ -109,7 +115,13 @@ function run() {
     console.log(' Logic: set baseline at warmup end, count steps until AMA drifts ≥ threshold,');
     console.log('        record reposition + reset baseline.  Repeat for full live window.');
     console.log('');
-    const results: any[] = [];
+    interface RepoResult {
+        label: string;
+        events: number;
+        avg: number;
+        freq: number;
+    }
+    const results: RepoResult[] = [];
     for (const params of amaParams) {
         const values = calculateAMA(closes, {
             erPeriod:   params.er,

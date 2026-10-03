@@ -60,7 +60,47 @@ function countTrend(arr: number[]) {
         return acc;
     }, { total: 0, up: 0, down: 0, neutral: 0 });
 }
-function countStates(arr: any[], positive: string, negative: string) {
+interface AnalysisRow {
+    timestamp?: unknown;
+    price: number;
+    slowSma?: number | null;
+    fastSmaValue?: number | null;
+    smaRawTrend?: string;
+    smaConfidence?: number;
+    fastSmaRawTrend?: string;
+    fastSmaConfidence?: number;
+    macdHistogram?: number | null;
+    macdLine?: number | null;
+    macdSignal?: number | null;
+    rsi?: number | null;
+    interpretation?: string;
+    interpretationBars?: number;
+    entryBias?: string;
+    isBullWeakEntry?: boolean;
+    isBullConfirmation?: boolean;
+    isLateBullWithoutWeak?: boolean;
+    isBearWeakEntry?: boolean;
+    isBearConfirmation?: boolean;
+    isLateBearWithoutWeak?: boolean;
+    macdTrend?: string;
+    rsiZone?: string;
+}
+
+interface DerivativeChartData {
+    allResults?: AnalysisRow[];
+    config?: {
+        source?: string;
+        slowSmaPeriod?: number | string;
+        fastSmaPeriod?: number | string | null;
+        macdFastPeriod?: number;
+        macdSlowPeriod?: number;
+        macdSignalPeriod?: number;
+        rsiPeriod?: number;
+        rsiExtreme?: number;
+    };
+}
+
+function countStates(arr: string[], positive: string, negative: string) {
     return arr.reduce((acc: {total:number, positive:number, negative:number, neutral:number}, v: string) => {
         acc.total += 1;
         if (v === positive) acc.positive += 1;
@@ -69,39 +109,39 @@ function countStates(arr: any[], positive: string, negative: string) {
         return acc;
     }, { total: 0, positive: 0, negative: 0, neutral: 0 });
 }
-function generateHTML(data: any, title: string) {
+function generateHTML(data: DerivativeChartData, title: string): string {
     const results = data.allResults || [];
     if (results.length === 0) throw new Error('No analysis results in input');
     const source = data.config?.source || 'Unknown';
     const smaPeriod = data.config?.slowSmaPeriod || 'N/A';
     const fastSmaPeriod = data.config?.fastSmaPeriod || null;
-    const hasFastSma = fastSmaPeriod !== null && results.some((r: any) => r.fastSmaValue !== null && r.fastSmaValue !== undefined);
+    const hasFastSma = fastSmaPeriod !== null && results.some((r) => r.fastSmaValue !== null && r.fastSmaValue !== undefined);
     const macdFast = data.config?.macdFastPeriod ?? 12;
     const macdSlow = data.config?.macdSlowPeriod ?? 26;
     const macdSig = data.config?.macdSignalPeriod ?? 9;
     const rsiPeriod = data.config?.rsiPeriod ?? 14;
     const rsiOB = data.config?.rsiExtreme ?? 90;
     const rsiOS = 100 - rsiOB;
-    const dates = results.map((r: any, idx: number) => toEpochSeconds(r.timestamp || Date.now(), idx));
-    const prices = results.map((r: any) => r.price);
-    const smaValues = results.map((r: any) => r.slowSma);
-    const fastSmaValues = results.map((r: any) => r.fastSmaValue);
-    const smaNum = results.map((r: any) => trendToNum(r.smaRawTrend));
-    const smaUp = smaNum.map((v: any) => (v > 0 ? 1 : 0));
-    const smaDown = smaNum.map((v: any) => (v < 0 ? -1 : 0));
-    const smaConf = results.map((r: any) => r.smaConfidence ?? 0);
-    const fastSmaNum = results.map((r: any) => trendToNum(r.fastSmaRawTrend));
-    const fastSmaUp = fastSmaNum.map((v: any) => (v > 0 ? 1 : 0));
-    const fastSmaDown = fastSmaNum.map((v: any) => (v < 0 ? -1 : 0));
-    const fastSmaConf = results.map((r: any) => r.fastSmaConfidence || 0);
-    const macdHistogram = results.map((r: any) => r.macdHistogram ?? null);
-    const macdLine = results.map((r: any) => r.macdLine ?? null);
-    const macdSignal = results.map((r: any) => r.macdSignal ?? null);
-    const macdHistUp = macdHistogram.map((v: any) => (v !== null && v > 0 ? v : null));
-    const macdHistDown = macdHistogram.map((v: any) => (v !== null && v < 0 ? v : null));
-    const rsiValues = results.map((r: any) => r.rsi ?? null);
-    const interpState = results.map((r: any) => r.interpretation || 'NEUTRAL');
-    const interpBars = results.map((r: any) => r.interpretationBars ?? 0);
+    const dates = results.map((r, idx: number) => toEpochSeconds(r.timestamp || Date.now(), idx));
+    const prices = results.map((r) => r.price);
+    const smaValues = results.map((r) => r.slowSma);
+    const fastSmaValues = results.map((r) => r.fastSmaValue);
+    const smaNum = results.map((r) => trendToNum(r.smaRawTrend ?? ''));
+    const smaUp = smaNum.map((v) => (v > 0 ? 1 : 0));
+    const smaDown = smaNum.map((v) => (v < 0 ? -1 : 0));
+    const smaConf = results.map((r) => r.smaConfidence ?? 0);
+    const fastSmaNum = results.map((r) => trendToNum(r.fastSmaRawTrend ?? ''));
+    const fastSmaUp = fastSmaNum.map((v) => (v > 0 ? 1 : 0));
+    const fastSmaDown = fastSmaNum.map((v) => (v < 0 ? -1 : 0));
+    const fastSmaConf = results.map((r) => r.fastSmaConfidence || 0);
+    const macdHistogram = results.map((r) => r.macdHistogram ?? null);
+    const macdLine = results.map((r) => r.macdLine ?? null);
+    const macdSignal = results.map((r) => r.macdSignal ?? null);
+    const macdHistUp = macdHistogram.map((v) => (v !== null && v > 0 ? v : null));
+    const macdHistDown = macdHistogram.map((v) => (v !== null && v < 0 ? v : null));
+    const rsiValues = results.map((r) => r.rsi ?? null);
+    const interpState = results.map((r) => r.interpretation || 'NEUTRAL');
+    const interpBars = results.map((r) => r.interpretationBars ?? 0);
     const interpValues = interpState.map((s: string) => (
         s === 'BULL' ? 0.75
             : s === 'BULL_WEAK' ? 0.35
@@ -123,7 +163,7 @@ function generateHTML(data: any, title: string) {
     const interpBearBlock = interpState.map((s: string) => (s === 'BEAR' ? -1 : 0));
     const interpBearWeakBlock = interpState.map((s: string) => (s === 'BEAR_WEAK' ? -1 : 0));
     const interpOSBlock = interpState.map((s: string) => (s === 'OVERSOLD' ? -1 : 0));
-    const entryBias = results.map((r: any) => r.entryBias || 'NONE');
+    const entryBias = results.map((r) => r.entryBias || 'NONE');
     const entryLabelMap = {
         NONE: 'No fresh entry',
         EARLY_LONG: 'Early long entry',
@@ -133,9 +173,9 @@ function generateHTML(data: any, title: string) {
         CONFIRM_SHORT: 'Confirmed short entry',
         LATE_SHORT: 'Late short entry',
     };
-    const entryBiasLabel = entryBias.map((v: any) => (entryLabelMap as Record<string, any>)[v] || v);
-    const signalPhase = results.map((_r: any, i: any) => {
-        if (entryBias[i] !== 'NONE') return (entryLabelMap as Record<string, any>)[entryBias[i]] || entryBias[i];
+    const entryBiasLabel = entryBias.map((v) => (entryLabelMap as Record<string, string>)[v] || v);
+    const signalPhase = results.map((_r, i: number) => {
+        if (entryBias[i] !== 'NONE') return (entryLabelMap as Record<string, string>)[entryBias[i]] || entryBias[i];
         switch (interpState[i]) {
         case 'BULL':
             return 'Bull trend active';
@@ -153,13 +193,13 @@ function generateHTML(data: any, title: string) {
             return 'No active setup';
         }
     });
-    const bullWeakEntryMarkers = results.map((r: any) => (r.isBullWeakEntry ? 0.38 : null));
-    const bullConfirmationMarkers = results.map((r: any) => (r.isBullConfirmation ? 0.88 : null));
-    const lateBullMarkers = results.map((r: any) => (r.isLateBullWithoutWeak ? 0.88 : null));
-    const bearWeakEntryMarkers = results.map((r: any) => (r.isBearWeakEntry ? -0.38 : null));
-    const bearConfirmationMarkers = results.map((r: any) => (r.isBearConfirmation ? -0.88 : null));
-    const lateBearMarkers = results.map((r: any) => (r.isLateBearWithoutWeak ? -0.88 : null));
-    const priceSeries = prices.filter((v: any) => Number.isFinite(v));
+    const bullWeakEntryMarkers = results.map((r) => (r.isBullWeakEntry ? 0.38 : null));
+    const bullConfirmationMarkers = results.map((r) => (r.isBullConfirmation ? 0.88 : null));
+    const lateBullMarkers = results.map((r) => (r.isLateBullWithoutWeak ? 0.88 : null));
+    const bearWeakEntryMarkers = results.map((r) => (r.isBearWeakEntry ? -0.38 : null));
+    const bearConfirmationMarkers = results.map((r) => (r.isBearConfirmation ? -0.88 : null));
+    const lateBearMarkers = results.map((r) => (r.isLateBearWithoutWeak ? -0.88 : null));
+    const priceSeries = prices.filter((v) => Number.isFinite(v));
     const priceStart = priceSeries.length ? priceSeries[0] : null;
     const priceEnd = priceSeries.length ? priceSeries[priceSeries.length - 1] : null;
     const priceHigh = priceSeries.length ? Math.max(...priceSeries) : null;
@@ -170,8 +210,8 @@ function generateHTML(data: any, title: string) {
         : null;
     const smaTotals = countTrend(smaNum);
     const fastSmaTotals = countTrend(fastSmaNum);
-    const macdTotals = countTrend(results.map((r: any) => (r.macdTrend === 'BULL' ? 1 : r.macdTrend === 'BEAR' ? -1 : 0)));
-    const rsiTotals = countStates(results.map((r: any) => r.rsiZone || 'NEUTRAL'), 'OVERBOUGHT', 'OVERSOLD');
+    const macdTotals = countTrend(results.map((r) => (r.macdTrend === 'BULL' ? 1 : r.macdTrend === 'BEAR' ? -1 : 0)));
+    const rsiTotals = countStates(results.map((r) => r.rsiZone || 'NEUTRAL'), 'OVERBOUGHT', 'OVERSOLD');
     const signalTotals = (() => {
         let up = 0, down = 0, prev = null;
         for (const state of interpState) {
@@ -187,10 +227,10 @@ function generateHTML(data: any, title: string) {
         return { up, down };
     })();
     const candleCount = results.length;
-    const fmtPrice = (v: any) => (v === null ? 'n/a' : fixedTo(v, 6));
-    const fmtSignedPrice = (v: any) => (v === null ? 'n/a' : `${v >= 0 ? '+' : ''}${Math.round(Number(v))}`);
-    const fmtPct = (v: any) => (v === null ? 'n/a' : `${v >= 0 ? '+' : ''}${Math.round(Number(v))}%`);
-    const fmtShare = (count: any) => (candleCount > 0 ? `${Math.round((count / candleCount) * 100)}%` : 'n/a');
+    const fmtPrice = (v: number | null) => (v === null ? 'n/a' : fixedTo(v, 6));
+    const fmtSignedPrice = (v: number | null) => (v === null ? 'n/a' : `${v >= 0 ? '+' : ''}${Math.round(Number(v))}`);
+    const fmtPct = (v: number | null) => (v === null ? 'n/a' : `${v >= 0 ? '+' : ''}${Math.round(Number(v))}%`);
+    const fmtShare = (count: number) => (candleCount > 0 ? `${Math.round((count / candleCount) * 100)}%` : 'n/a');
     const headerParts: string[] = [];
     if (smaPeriod !== 'N/A') headerParts.push(`SMA(${smaPeriod})`);
     if (hasFastSma) headerParts.push(`fastSMA(${fastSmaPeriod})`);
@@ -870,5 +910,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         process.exit(1);
     });
 }
-export { generateHTML }
+export { generateHTML };
+export type { AnalysisRow };
 

@@ -13,6 +13,8 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
+import { getErrorMessage } from '../modules/utils/errors.js';
+import type { TrendAnalysis } from './trend_detection/kalman_trend_analyzer.js';
 import path from 'node:path';
 import { KalmanTrendAnalyzer } from './trend_detection/kalman_trend_analyzer.js';
 import { HurstAnalyzer } from './trend_detection/hurst_analyzer.js';
@@ -57,10 +59,10 @@ function parseArgs() {
         source: { type: string; config: SourceConfig };
         chartFile: string;
         title: string | null;
-        alpha: any;
-        gain: any;
-        dispWeight: any;
-        clipPct: any;
+        alpha?: number;
+        gain?: number;
+        dispWeight?: number;
+        clipPct?: number;
         quiet: boolean;
         listBots: boolean;
         lookbackBars?: number;
@@ -136,16 +138,30 @@ async function main() {
             window: PE_CONFIG.window,
         });
 
-        const allResults: any[] = [];
+        interface DynamicWeightResult extends Omit<TrendAnalysis, 'hurst' | 'pe'> {
+            timestamp: number;
+            price: number;
+            hurst: number | null;
+            pe: number | null;
+            ama3Price?: number | null;
+            atr?: number;
+            weightVariance?: number;
+            amaSlopePct?: number | null;
+            amaWeightReady?: boolean;
+            amaSlopeOffset?: number | null;
+            amaSymmetricDelta?: number | null;
+        }
+
+        const allResults: DynamicWeightResult[] = [];
         for (let i = 0; i < candles.length; i++) {
             const { marketPrice, timestamp } = source.extractMarketPrice(candles[i]);
-            const result = analyzer.update(marketPrice);
+            const result = analyzer.update(marketPrice) as DynamicWeightResult;
             const hurst = hurstAnalyzer.update(marketPrice);
             const pe    = peAnalyzer.update(marketPrice);
             result.timestamp = timestamp;
             result.price = marketPrice;
-            (result as any).hurst = hurst.isReady ? (hurst as any).hurst : null;
-            (result as any).pe    = pe.isReady    ? (pe as any).normalizedEntropy : null;
+            result.hurst = hurst.isReady ? hurst.hurst : null;
+            result.pe    = pe.isReady    ? pe.normalizedEntropy : null;
             allResults.push(result);
         }
 
@@ -186,13 +202,13 @@ async function main() {
                 clipThreshold: amaClipThreshold,
             });
 
-            (allResults[i] as any).ama3Price = amaValues[i] ?? null;
-            (allResults[i] as any).atr = atr;
-            (allResults[i] as any).weightVariance = weightVariance;
-            (allResults[i] as any).amaSlopePct = weights.slopePct;
-            (allResults[i] as any).amaWeightReady = weights.isReady;
-            (allResults[i] as any).amaSlopeOffset = weights.slopeOffset;
-            (allResults[i] as any).amaSymmetricDelta = weights.symmetricDelta;
+            allResults[i].ama3Price = amaValues[i] ?? null;
+            allResults[i].atr = atr;
+            allResults[i].weightVariance = weightVariance;
+            allResults[i].amaSlopePct = weights.slopePct;
+            allResults[i].amaWeightReady = weights.isReady;
+            allResults[i].amaSlopeOffset = weights.slopeOffset;
+            allResults[i].amaSymmetricDelta = weights.symmetricDelta;
         }
 
         // ── Generate chart ───────────────────────────────────────────────────
@@ -232,7 +248,7 @@ async function main() {
 
         if (!config.quiet) console.log(`\n[DynamicWeight] ✓ Chart saved. Open chart: (${toFileUrl(config.chartFile)})`);
     } catch (err: unknown) {
-        console.error(`[DynamicWeight] Error: ${(err as any)?.message ?? err}`);
+        console.error(`[DynamicWeight] Error: ${getErrorMessage(err)}`);
         process.exit(1);
     }
 }

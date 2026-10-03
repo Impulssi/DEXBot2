@@ -1,6 +1,6 @@
 'use strict';
 
-function toIntervalLabel(intervalSeconds: any) {
+function toIntervalLabel(intervalSeconds: number) {
     if (intervalSeconds % 86400 === 0) return `${intervalSeconds / 86400}d`;
     if (intervalSeconds % 3600 === 0) return `${intervalSeconds / 3600}h`;
     if (intervalSeconds % 60 === 0) return `${intervalSeconds / 60}m`;
@@ -13,7 +13,7 @@ function toIntervalLabel(intervalSeconds: any) {
  * previously copied into fetch_lp_data.ts, kibana_feed_source.ts,
  * fetch_book_data.ts and scripts/chart_command.ts.
  */
-function slugPart(value: any) {
+function slugPart(value: unknown) {
     return String(value || '')
         .trim()
         .toLowerCase()
@@ -31,7 +31,7 @@ function slugPart(value: any) {
  * gate and the startup sleep must agree on "the newest closed bucket" by
  * construction, not by two copies happening to match.
  */
-function bucketStartMs(nowMs: any, intervalSeconds: any) {
+function bucketStartMs(nowMs: number, intervalSeconds: number) {
     const bucketMs = Number(intervalSeconds) * 1000;
     if (!Number.isFinite(bucketMs) || bucketMs <= 0) return null;
     const now = Number(nowMs);
@@ -44,7 +44,7 @@ function bucketStartMs(nowMs: any, intervalSeconds: any) {
  * before the one that contains `nowMs`. Null when `bucketStartMs` cannot
  * evaluate the interval/clock.
  */
-function latestClosedBucketStartMs(nowMs: any, intervalSeconds: any) {
+function latestClosedBucketStartMs(nowMs: number, intervalSeconds: number) {
     const currentBucketStart = bucketStartMs(nowMs, intervalSeconds);
     if (currentBucketStart === null) return null;
     return currentBucketStart - Number(intervalSeconds) * 1000;

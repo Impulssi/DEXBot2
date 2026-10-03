@@ -23,7 +23,7 @@ const PE_NOISE = MARKET_ADAPTER.PE_NODES[MARKET_ADAPTER.PE_NODES.length - 1];
  * greenFn/redFn return true when the value falls in that zone.
  * Returns an array of { from, to, color } objects (null-color segments omitted).
  */
-function buildSegments(values: any[], greenFn: any, redFn: any) {
+function buildSegments(values: Array<number | null>, greenFn: (v: number) => boolean, redFn: (v: number) => boolean) {
     const segments: { from: number; to: number; color: string }[] = [];
     let start = 0, color: string | null = null;
 
@@ -44,7 +44,32 @@ function buildSegments(values: any[], greenFn: any, redFn: any) {
     return segments;
 }
 
-function generateRegimeHTML(data: any, title = 'Regime Analysis') {
+interface RegimeRow {
+    [key: string]: unknown;
+    timestamp: string | number;
+    price: number;
+    ama3Price?: number | null;
+    hurstReady?: boolean;
+    hurst?: number | null;
+    peReady?: boolean;
+    normalizedEntropy?: number | null;
+}
+
+interface RegimeChartInput {
+    allResults?: RegimeRow[];
+    hurstConfig?: { window?: number; scales?: number[] };
+    peConfig?: { m?: number; window?: number };
+    dates?: number[];
+    prices?: (number | null)[];
+    hurstArr?: (number | null)[];
+    peArr?: (number | null)[];
+    hurstSegments?: unknown[];
+    peSegments?: unknown[];
+    realBarCount?: number;
+    [key: string]: unknown;
+}
+
+function generateRegimeHTML(data: RegimeChartInput, title = 'Regime Analysis') {
     const results = data.allResults || [];
     if (results.length === 0) throw new Error('No analysis results in input');
 
@@ -55,11 +80,11 @@ function generateRegimeHTML(data: any, title = 'Regime Analysis') {
         ? (new Date(results[1].timestamp).getTime() - new Date(results[0].timestamp).getTime()) / 1000
         : 3600;
 
-    const dates      = results.map((r: any, i: number) => toEpochSeconds(r.timestamp, i));
-    const prices     = results.map((r: any)    => r.price);
-    const ama3Prices = results.map((r: any)    => r.ama3Price ?? null);
-    const hurstArr   = results.map((r: any)    => r.hurstReady  ? r.hurst             : null);
-    const peArr      = results.map((r: any)    => r.peReady     ? r.normalizedEntropy : null);
+    const dates      = results.map((r: RegimeRow, i: number) => toEpochSeconds(r.timestamp, i));
+    const prices: (number | null)[] = results.map((r: RegimeRow) => r.price);
+    const ama3Prices = results.map((r: RegimeRow) => r.ama3Price ?? null);
+    const hurstArr: (number | null)[] = results.map((r: RegimeRow) => r.hurstReady ? (r.hurst ?? null) : null);
+    const peArr: (number | null)[]    = results.map((r: RegimeRow) => r.peReady ? (r.normalizedEntropy ?? null) : null);
 
     const realBarCount = results.length;
 
@@ -74,8 +99,8 @@ function generateRegimeHTML(data: any, title = 'Regime Analysis') {
     }
 
     // Background shading segments (server-side, passed to browser via JSON payload)
-    const hurstSegments = buildSegments(hurstArr.slice(0, realBarCount), (v: any) => v >= H_UPPER, (v: any) => v <= H_LOWER);
-    const peSegments    = buildSegments(peArr.slice(0, realBarCount),    (v: any) => v < PE_STRUCTURED, (v: any) => v > PE_NOISE);
+    const hurstSegments = buildSegments(hurstArr.slice(0, realBarCount), (v: number) => v >= H_UPPER, (v: number) => v <= H_LOWER);
+    const peSegments    = buildSegments(peArr.slice(0, realBarCount),    (v: number) => v < PE_STRUCTURED, (v: number) => v > PE_NOISE);
 
     const payload = {
         dates, prices, ama3Prices, hurstArr, peArr,
@@ -334,5 +359,6 @@ function generateRegimeHTML(data: any, title = 'Regime Analysis') {
 </html>`;
 }
 
-export { generateRegimeHTML }
+export { generateRegimeHTML };
+export type { RegimeRow };
 

@@ -29,7 +29,68 @@ const EMBEDDED_SHARED_FUNCS = embedFunctionSources([
     roundToN,
 ]);
 
-function generateHTML(data: any, title = 'Dynamic Weight Research') {
+interface DynamicWeightRow {
+    timestamp: string | number;
+    price: number;
+    hurst?: number | null;
+    pe?: number | null;
+    hurstSegment?: number | null;
+    peSegment?: number | null;
+    amaSlopePct?: number | null;
+    velocityRawPct?: number | null;
+    velocityPct?: number | null;
+    displacementRawPct?: number | null;
+    displacementPct?: number | null;
+    isReady?: boolean;
+    signal?: string | null;
+    ama3Price?: number | null;
+}
+
+interface DynWeightCfg {
+    alpha?: number;
+    gain?: number;
+    dispWeight?: number;
+    neutralZonePct?: number;
+    amaNeutralZonePct?: number;
+    lookbackBars?: number;
+    amaLookbackBars?: number;
+    amaMaxSlopePct?: number;
+    kalmanMaxSlopePct?: number;
+    clipPercentile?: number;
+    minOutputThreshold?: number;
+    outputClamp?: number;
+    dispScaleMinPct?: number;
+    regimeSensitivity?: number;
+    absoluteThreshold?: number;
+}
+
+interface DynamicWeightChartInput {
+    allResults?: DynamicWeightRow[];
+    marketAdapter?: DynWeightCfg;
+    amaWeightConfig?: DynWeightCfg;
+    amaConfig?: { erPeriod?: number; fastPeriod?: number; slowPeriod?: number };
+    alpha?: number;
+    gain?: number;
+    dispWeight?: number;
+    clipPct?: number;
+    minOutputThreshold?: number;
+    outputClamp?: number;
+    absoluteThreshold?: number;
+    lookbackBars?: number;
+    neutralZonePct?: number;
+    amaMaxSlopePct?: number;
+    kalmanMaxSlopePct?: number;
+    dispScaleMinPct?: number;
+    regimeSensitivity?: number;
+    signalConfirmBars?: number;
+    kalmanSmoothPct?: number;
+    kalmanDispScaleMult?: number;
+    kalmanDispThresholdMult?: number;
+    kalmanSmoothSpanPct?: number;
+    [key: string]: unknown;
+}
+
+function generateHTML(data: DynamicWeightChartInput, title = 'Dynamic Weight Research') {
     const results = data.allResults || [];
     if (results.length === 0) throw new Error('No analysis results in input');
 
@@ -122,17 +183,17 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
     const interval = results.length > 1 ?
         (new Date(results[1].timestamp).getTime() - new Date(results[0].timestamp).getTime()) / 1000 : 3600;
 
-    const dates              = results.map((r: any, idx: number) => toEpochSeconds(r.timestamp || Date.now(), idx));
-    const prices             = results.map((r: any) => r.price);
-    const hurstArr           = results.map((r: any) => r.hurst ?? null);
-    const peArr             = results.map((r: any) => r.pe ?? null);
-    const hurstSegments     = results.map((r: any) => r.hurstSegment ?? null);
-    const peSegments        = results.map((r: any) => r.peSegment ?? null);
-    const amaSlopePct       = results.map((r: any) => r.amaSlopePct ?? null);
-    const kalmanVelocityPctRaw = results.map((r: any) => r.velocityRawPct ?? r.velocityPct ?? null);
-    const kalmanDisplacementPct = results.map((r: any) => r.displacementRawPct ?? r.displacementPct ?? null);
+    const dates              = results.map((r: DynamicWeightRow, idx: number) => toEpochSeconds(r.timestamp || Date.now(), idx));
+    const prices: (number | null)[] = results.map((r: DynamicWeightRow) => r.price);
+    const hurstArr           = results.map((r: DynamicWeightRow) => r.hurst ?? null);
+    const peArr             = results.map((r: DynamicWeightRow) => r.pe ?? null);
+    const hurstSegments     = results.map((r: DynamicWeightRow) => r.hurstSegment ?? null);
+    const peSegments        = results.map((r: DynamicWeightRow) => r.peSegment ?? null);
+    const amaSlopePct       = results.map((r: DynamicWeightRow) => r.amaSlopePct ?? null);
+    const kalmanVelocityPctRaw = results.map((r: DynamicWeightRow) => r.velocityRawPct ?? r.velocityPct ?? null);
+    const kalmanDisplacementPct = results.map((r: DynamicWeightRow) => r.displacementRawPct ?? r.displacementPct ?? null);
     const kalmanVelocityPct = buildKalmanVelocitySeries(
-        results.map((r: any) => ({ velocityPct: r.velocityRawPct ?? r.velocityPct ?? null, displacementPct: r.displacementRawPct ?? r.displacementPct ?? null })),
+        results.map((r: DynamicWeightRow) => ({ velocityPct: r.velocityRawPct ?? r.velocityPct ?? null, displacementPct: r.displacementRawPct ?? r.displacementPct ?? null })),
         {
             kalmanSmoothPct: defaultKalmanSmoothPct,
             kalmanDispScaleMult: defaultKalmanDispScaleMult,
@@ -140,10 +201,10 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             kalmanSmoothSpanPct: defaultKalmanSmoothSpanPct,
         }
     );
-    const kalmanIsReady      = results.map((r: any) => r.isReady ?? false);
-    const signals            = results.map((r: any) => r.signal);
+    const kalmanIsReady: (boolean | null)[] = results.map((r: DynamicWeightRow) => r.isReady ?? false);
+    const signals            = results.map((r: DynamicWeightRow) => r.signal);
     const amaLabel           = data.amaKey || 'AMA3';
-    const ama3Prices         = results.map((r: any) => r.ama3Price ?? null);
+    const ama3Prices         = results.map((r: DynamicWeightRow) => r.ama3Price ?? null);
     const defaultAmaKey = MARKET_ADAPTER.DEFAULT_AMA_KEY as keyof typeof MARKET_ADAPTER.AMAS;
     const amaErPeriod        = data.amaConfig?.erPeriod ?? MARKET_ADAPTER.AMAS[defaultAmaKey].erPeriod;
     const amaSlowPeriod      = data.amaConfig?.slowPeriod ?? MARKET_ADAPTER.AMAS[defaultAmaKey].slowPeriod;
@@ -157,7 +218,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         let seedCount = 0;
         for (let i = 0; i <= amaSeedWindowEnd; i++) {
             if (Number.isFinite(prices[i])) {
-                seedSum += prices[i];
+                seedSum += prices[i] as number;
                 seedCount++;
             }
         }
@@ -189,10 +250,10 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
 
     const realBarCount = results.length;
 
-    function buildPercentiles(arr: any[], startIndex = 0) {
+    function buildPercentiles(arr: Array<number | null>, startIndex = 0) {
         const safeStartIndex = Math.max(0, Math.min(realBarCount, Math.ceil(startIndex)));
         const sorted: number[] = [];
-        for (let i = safeStartIndex; i < realBarCount; i++) { if (arr[i] != null) sorted.push(Math.abs(arr[i])); }
+        for (let i = safeStartIndex; i < realBarCount; i++) { const v = arr[i]; if (v != null) sorted.push(Math.abs(v)); }
         sorted.sort((a, b) => a - b);
         // Empty pool → Infinity: the live percentile lookup treats an empty
         // history as "no clipping" (percentileFromSorted returns Infinity);

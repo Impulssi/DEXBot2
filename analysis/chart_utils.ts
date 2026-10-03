@@ -54,24 +54,24 @@ function escapeHtml(str: string) {
         '"': '&quot;',
         "'": '&#039;',
     };
-    return String(str).replace(/[&<>"']/g, (m: any) => map[m]);
+    return String(str).replace(/[&<>"']/g, (m: string) => map[m]);
 }
 
-function serializeJsonForScript(value: any) {
+function serializeJsonForScript(value: unknown) {
     return JSON.stringify(value).replace(/</g, '\\u003c');
 }
 
-function toEpochSeconds(ts: any, fallbackIdx: any) {
-    const ms = new Date(ts).getTime();
+function toEpochSeconds(ts: unknown, fallbackIdx: number) {
+    const ms = new Date(ts as string | number | Date).getTime();
     if (Number.isFinite(ms)) return Math.floor(ms / 1000);
     return fallbackIdx * 3600;
 }
 
-function toFileUrl(filePath: any): string {
+function toFileUrl(filePath: string): string {
     return `file://${path.resolve(String(filePath))}`;
 }
 
-function writeChartFile(filePath: any, html: any) {
+function writeChartFile(filePath: string, html: string) {
     const chartDir = path.dirname(filePath);
     if (!fs.existsSync(chartDir)) ensureDir(chartDir);
     // Atomic write (tmp + rename, matching the production storage adapter

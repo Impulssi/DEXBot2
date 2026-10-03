@@ -41,7 +41,7 @@ const AMA_PROFILES_FILE = PATHS.PROFILES.MARKET_PROFILES_JSON;
 const DEFAULT_COMPARISON_COLORS = ['#26a69a', '#fb8c00', '#5c9ee6', '#ef5350'];
 const DEFAULT_COMPARISON_DASHES = ['dot', 'solid', 'dash', 'dashdot'];
 const DEFAULT_COMPARISON_STRATEGIES = Object.keys(MARKET_ADAPTER.AMAS).map((key: string, index: number) => {
-    const ama: Record<string, any> = (MARKET_ADAPTER.AMAS as Record<string, any>)[key];
+    const ama = (MARKET_ADAPTER.AMAS as Record<string, AmaConfig>)[key];
     return {
         name: ama.name || key,
         erPeriod: ama.erPeriod,
@@ -102,7 +102,7 @@ interface CliArgOptions {
 
 interface MarketChartOptions {
     dataFile?: string;
-    logger?: { log: (...args: any[]) => void };
+    logger?: { log: (...args: unknown[]) => void };
     profilesFile?: string;
     outFile?: string;
     noOpen?: boolean;
@@ -110,7 +110,7 @@ interface MarketChartOptions {
 
 interface ComparisonChartOptions {
     dataFile?: string;
-    logger?: { log: (...args: any[]) => void };
+    logger?: { log: (...args: unknown[]) => void };
     defaultStrategies?: AmaConfig[];
     profilesFile?: string | null;
     outFile?: string;
@@ -119,7 +119,7 @@ interface ComparisonChartOptions {
 
 interface BundleChartOptions {
     dataFile?: string;
-    logger?: { log: (...args: any[]) => void };
+    logger?: { log: (...args: unknown[]) => void };
     profilesFile?: string;
     defaultStrategies?: AmaConfig[];
     comparisonProfilesFile?: string | null;

@@ -244,21 +244,29 @@ function resolveAutoResultsPath(dataPath: string): string {
     return path.join(PATHS.ANALYSIS.RESULTS_DIR, `optimization_results_${base}.json`);
 }
 
-function loadAmaStrategies(resultsPath: string) {
-    const json = readJSON(resultsPath);
-    const amas = (json.meta?.amas ?? {}) as any;
+interface AmaStrategy {
+    id: string;
+    name: string;
+    er: number;
+    fast: number;
+    slow: number;
+}
+
+function loadAmaStrategies(resultsPath: string): AmaStrategy[] {
+    const json = readJSON(resultsPath) as { meta?: { amas?: Record<string, { er?: unknown; fast?: unknown; slow?: unknown }> } };
+    const amas = json.meta?.amas ?? {};
     const labels = { AMA1: 'AMA1', AMA2: 'AMA2', AMA3: 'AMA3', AMA4: 'AMA4' as string };
 
-    const out: any[] = [];
+    const out: AmaStrategy[] = [];
     for (const [key, val] of Object.entries(amas)) {
-        const a = val as any;
-        if (!a || !Number.isFinite(a.er) || !Number.isFinite(a.fast) || !Number.isFinite(a.slow)) continue;
+        const a = val as { er?: unknown; fast?: unknown; slow?: unknown };
+        if (!a || !Number.isFinite(Number(a.er)) || !Number.isFinite(Number(a.fast)) || !Number.isFinite(Number(a.slow))) continue;
         out.push({
             id: key,
             name: labels[key as keyof typeof labels] ?? key,
-            er: a.er,
-            fast: a.fast,
-            slow: a.slow,
+            er: Number(a.er),
+            fast: Number(a.fast),
+            slow: Number(a.slow),
         });
     }
 
@@ -415,7 +423,50 @@ function buildProductionGrid(center: number, spreadPct: number, incrementPctFrac
  *   #10 pool-price fills (no book depth/slippage);
  *   #11 no consolidation/dust-cancel/COW/collision mechanics.
  */
-function simulateForParams(candles: any, amaValues: any, params: any) {
+interface SimCandle {
+    open?: number;
+    high: number;
+    low: number;
+    close: number;
+    time?: number;
+    [key: string]: unknown;
+}
+
+interface SimOrder {
+    side: 'buy' | 'sell';
+    price: number;
+    railIdx: number;
+    linkedBuyPrice: number | null;
+    linkedEntryBar: number;
+    cooldownUntil: number;
+}
+
+interface SimParams {
+    spreadPct: number;
+    incrementPct: number;
+    maxMinRatio: number;
+    activeOrders: number;
+    feeRoundtripPct: number;
+    repositionThresholdPct: number;
+    asymmetricBounds: boolean;
+    risk: { duration: number; peakOpen: number; imbalance: number; cancel: number };
+    btsCreateFee: number;
+    btsCancelFee: number;
+    makerCreateFactor: number;
+    txFeePrice: number;
+    btsFeeCapital: number;
+    warmupBars: number;
+    [key: string]: unknown;
+}
+
+type SimResult = ReturnType<typeof simulateForParams>;
+
+interface SimRun {
+    strategy: AmaStrategy;
+    best: SimResult | null;
+}
+
+function simulateForParams(candles: SimCandle[], amaValues: number[], params: SimParams) {
     const { spreadPct, incrementPct, maxMinRatio, activeOrders, feeRoundtripPct,
             repositionThresholdPct, asymmetricBounds, risk,
             btsCreateFee, btsCancelFee, makerCreateFactor, txFeePrice, btsFeeCapital } = params;
@@ -432,10 +483,12 @@ function simulateForParams(candles: any, amaValues: any, params: any) {
     // reset path matches live whenever asymmetricBounds enables trigger B.
     //   slopePersistBars persistence gate on trigger B
     //   bandTilt         apply applyAsymmetricBounds to the built band
-    const slopeLookbackBars = Number.isFinite(params.slopeLookbackBars) && params.slopeLookbackBars >= 2
-        ? Math.round(params.slopeLookbackBars) : SLOPE_LOOKBACK_BARS;
-    const slopePersistBars = Number.isFinite(params.slopePersistBars) && params.slopePersistBars >= 1
-        ? Math.round(params.slopePersistBars)
+    const slopeLookbackRaw = Number(params.slopeLookbackBars);
+    const slopeLookbackBars = Number.isFinite(slopeLookbackRaw) && slopeLookbackRaw >= 2
+        ? Math.round(slopeLookbackRaw) : SLOPE_LOOKBACK_BARS;
+    const slopePersistRaw = Number(params.slopePersistBars);
+    const slopePersistBars = Number.isFinite(slopePersistRaw) && slopePersistRaw >= 1
+        ? Math.round(slopePersistRaw)
         : (MARKET_ADAPTER.AMA_SLOPE_PERSIST_ENABLED === true && Number(MARKET_ADAPTER.AMA_SLOPE_PERSIST_BARS) >= 1
             ? Math.round(Number(MARKET_ADAPTER.AMA_SLOPE_PERSIST_BARS)) : 1);
     const bandTilt = params.bandTilt === true;
@@ -461,7 +514,7 @@ function simulateForParams(candles: any, amaValues: any, params: any) {
     // Open orders keyed by running id: { side, price, linkedBuyPrice,
     // linkedEntryBar, cooldownUntil }. linkedBuyPrice != null marks an armed
     // refill sell created by a specific filled buy (one-increment rotation).
-    const orders = new Map<number, any>();
+    const orders = new Map<number, SimOrder>();
     let nextOrderId = 0;
     // Bought-and-held base across the whole run (weighted-average entry
     // pool). Never negative — sells without inventory stay pending.
@@ -594,8 +647,8 @@ function simulateForParams(candles: any, amaValues: any, params: any) {
         imbalanceSamples++;
 
         // ── Fill detection against FIXED chain prices ───────────────────
-        const filledBuys: { id: number; order: any }[] = [];
-        const filledSells: { id: number; order: any }[] = [];
+        const filledBuys: { id: number; order: SimOrder }[] = [];
+        const filledSells: { id: number; order: SimOrder }[] = [];
         for (const [id, o] of orders) {
             if (i < o.cooldownUntil) continue;
             if (o.side === 'buy' && lo <= o.price) filledBuys.push({ id, order: o });
@@ -759,7 +812,7 @@ function run() {
     }
     const loaded = loadLpData(cfg.dataPath!);
     const candles = loaded.candles;
-    const closes = candles.map((c: any) => c.close);
+    const closes = candles.map((c) => c.close);
     const strategies = loadAmaStrategies(cfg.resultsPath!);
 
     if (!Number.isFinite(cfg.repositionPct) || cfg.repositionPct <= 0) {
@@ -786,13 +839,13 @@ function run() {
     console.log(`  Risk W:       duration=${cfg.riskWDuration}, peakOpen=${cfg.riskWPeakOpen}, imbalance=${cfg.riskWImbalance}, cancel=${cfg.riskWCancel}`);
     console.log(`  Combos/AMA:   ${totalCombos}\n`);
 
-    const byAma: any[] = [];
+    const byAma: SimRun[] = [];
 
     for (const s of strategies) {
         const amaValues = calculateAMA(closes, { erPeriod: s.er, fastPeriod: s.fast, slowPeriod: s.slow });
         // Production-aligned warmup: ER window + convergence (getAmaWarmupBars).
         const warmupBars = getAmaWarmupBars(s.er, s.slow, 0, s.fast);
-        let best: any = null;
+        let best: SimResult | null = null;
 
         for (const spreadPct of cfg.spreadValues) {
             for (const incrementPct of cfg.incrementValues) {

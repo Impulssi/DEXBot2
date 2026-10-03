@@ -6,17 +6,46 @@
  * analysis/math_utils.ts). Keeps every consumer on one accessor path.
  */
 
-function getCandleClose(candle: any) {
-    if (!candle) return null;
-    return Array.isArray(candle) ? candle[4] : candle.close;
+interface RawCandle {
+    timestamp?: unknown;
+    ts?: unknown;
+    time?: unknown;
+    open?: unknown;
+    high?: unknown;
+    low?: unknown;
+    close?: unknown;
+    volume?: unknown;
+    volumeA?: unknown;
+    [key: string]: unknown;
 }
 
-function getCandleTimestamp(candle: any) {
-    if (!candle) return null;
-    return Array.isArray(candle) ? candle[0] : candle.timestamp;
+interface AssetRef {
+    id?: string | null;
+    precision?: unknown;
 }
 
-function normalizeCandle(candle: any) {
+interface NormalizedCandle {
+    time: number;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+}
+
+function getCandleClose(candle: unknown): number | null {
+    if (!candle) return null;
+    if (Array.isArray(candle)) return candle[4] as number;
+    return (candle as RawCandle).close as number;
+}
+
+function getCandleTimestamp(candle: unknown): number | null {
+    if (!candle) return null;
+    if (Array.isArray(candle)) return candle[0] as number;
+    return (candle as RawCandle).timestamp as number;
+}
+
+function normalizeCandle(candle: unknown): NormalizedCandle | null {
     if (!candle) return null;
     if (Array.isArray(candle)) {
         const ts = Number(candle[0]);
@@ -29,26 +58,28 @@ function normalizeCandle(candle: any) {
         return { time: Math.floor(ts / 1000), open, high, low, close, volume: Number.isFinite(volume) ? volume : 0 };
     }
 
-    const ts = Number(candle.timestamp ?? candle.ts ?? candle.time);
-    const open = Number(candle.open);
-    const high = Number(candle.high);
-    const low = Number(candle.low);
-    const close = Number(candle.close);
-    const volume = Number(candle.volume ?? candle.volumeA ?? 0);
+    const c = candle as RawCandle;
+    const ts = Number(c.timestamp ?? c.ts ?? c.time);
+    const open = Number(c.open);
+    const high = Number(c.high);
+    const low = Number(c.low);
+    const close = Number(c.close);
+    const volume = Number(c.volume ?? c.volumeA ?? 0);
     if (![ts, open, high, low, close].every(Number.isFinite)) return null;
     return { time: Math.floor(ts / 1000), open, high, low, close, volume: Number.isFinite(volume) ? volume : 0 };
 }
 
-function rawToHuman(rawAmount: any, precision: any) {
+function rawToHuman(rawAmount: unknown, precision: unknown) {
     if (precision === undefined || precision === null || !Number.isFinite(Number(precision))) {
         throw new Error(`Invalid precision for rawToHuman: ${precision}`);
     }
     return Number(rawAmount || 0) / Math.pow(10, Number(precision));
 }
 
-function tradeToBPerA(trade: any, assetA: any, assetB: any) {
-    const sell = trade.sell || {};
-    const recv = trade.received || {};
+function tradeToBPerA(trade: unknown, assetA: AssetRef, assetB: AssetRef) {
+    const t = trade as { sell?: { asset_id?: string; amount?: unknown }; received?: { asset_id?: string; amount?: unknown } };
+    const sell = t.sell || {};
+    const recv = t.received || {};
     const sellId = sell.asset_id;
     const recvId = recv.asset_id;
 
@@ -68,24 +99,27 @@ function tradeToBPerA(trade: any, assetA: any, assetB: any) {
     return null;
 }
 
-function tradesToCandles(trades: any, assetA: any, assetB: any, intervalSeconds = 3600) {
+function tradesToCandles(trades: unknown[], assetA: AssetRef, assetB: AssetRef, intervalSeconds: number = 3600) {
     const bucketMs = intervalSeconds * 1000;
-    const sorted = trades.slice().sort((a: any, b: any) => {
-        const tsDelta = a.tsMs - b.tsMs;
+    const sorted = trades.slice().sort((a, b) => {
+        const ta = a as { tsMs?: number; sequence?: unknown };
+        const tb = b as { tsMs?: number; sequence?: unknown };
+        const tsDelta = (ta.tsMs as number) - (tb.tsMs as number);
         if (tsDelta !== 0) return tsDelta;
-        const aSeq = Number(a.sequence);
-        const bSeq = Number(b.sequence);
+        const aSeq = Number(ta.sequence);
+        const bSeq = Number(tb.sequence);
         if (Number.isFinite(aSeq) && Number.isFinite(bSeq)) return aSeq - bSeq;
         return 0;
     });
-    const map = new Map();
+    const map = new Map<number, { open: number; high: number; low: number; close: number; volumeA: number }>();
 
     for (const t of sorted) {
-        if (!Number.isFinite(t.tsMs)) continue;
+        const trade = t as { tsMs?: number };
+        if (!Number.isFinite(trade.tsMs)) continue;
         const converted = tradeToBPerA(t, assetA, assetB);
         if (!converted) continue;
 
-        const key = Math.floor(t.tsMs / bucketMs) * bucketMs;
+        const key = Math.floor((trade.tsMs as number) / bucketMs) * bucketMs;
         const p = converted.price;
         const vA = converted.volumeA;
 
@@ -105,14 +139,14 @@ function tradesToCandles(trades: any, assetA: any, assetB: any, intervalSeconds 
         .map(([ts, c]) => [ts, c.open, c.high, c.low, c.close, c.volumeA]);
 }
 
-function detectMissingCandleTimestamps(candles: any, intervalSeconds = 3600) {
+function detectMissingCandleTimestamps(candles: unknown, intervalSeconds: number = 3600) {
     const bucketMs = Number(intervalSeconds) * 1000;
     if (!Number.isFinite(bucketMs) || bucketMs <= 0) {
         return { gapCount: 0, missingTimestamps: [] };
     }
 
     const sorted = (Array.isArray(candles) ? candles : [])
-        .filter((c) => Array.isArray(c) && Number.isFinite(c[0]))
+        .filter((c): c is number[] => Array.isArray(c) && Number.isFinite(c[0]))
         .slice()
         .sort((a, b) => a[0] - b[0]);
 
@@ -120,7 +154,7 @@ function detectMissingCandleTimestamps(candles: any, intervalSeconds = 3600) {
         return { gapCount: 0, missingTimestamps: [] };
     }
 
-    const missingTimestamps: any[] = [];
+    const missingTimestamps: number[] = [];
 
     for (let i = 1; i < sorted.length; i++) {
         const prevTs = sorted[i - 1][0];
@@ -157,20 +191,20 @@ function detectMissingCandleTimestamps(candles: any, intervalSeconds = 3600) {
  * @param {number} [options.baselinePrice] - optional price to use for leading gaps before the first candle
  * @returns {Array} Filled candle array with no gaps
  */
-function fillCandleGaps(candles: any, intervalSeconds: any, startTs: any = null, endTs: any = null, options: any = {}) {
+function fillCandleGaps(candles: unknown, intervalSeconds: unknown, startTs: number | null = null, endTs: number | null = null, options: { baselinePrice?: number | null } = {}): number[][] {
     const bucketMs = Number(intervalSeconds) * 1000;
     if (!candles || !Array.isArray(candles)) return [];
-    if (!Number.isFinite(bucketMs) || bucketMs <= 0) return candles;
+    if (!Number.isFinite(bucketMs) || bucketMs <= 0) return candles as number[][];
 
     const sorted = candles
-        .filter((c) => Array.isArray(c) && Number.isFinite(c[0]))
+        .filter((c): c is number[] => Array.isArray(c) && Number.isFinite(c[0]))
         .slice()
         .sort((a, b) => a[0] - b[0]);
 
     if (sorted.length === 0) {
         // If we have no data, we can't really fill unless we have a baseline price.
         if (options.baselinePrice != null && startTs != null && endTs != null) {
-            const filled: any[] = [];
+            const filled: number[][] = [];
             let currentTs = Math.floor(Number(startTs) / bucketMs) * bucketMs;
             const finalTs = Math.floor(Number(endTs) / bucketMs) * bucketMs;
             const p = options.baselinePrice;
@@ -183,7 +217,7 @@ function fillCandleGaps(candles: any, intervalSeconds: any, startTs: any = null,
         return [];
     }
 
-    const filled: any[] = [];
+    const filled: number[][] = [];
 
     // Determine absolute timeline range
     const firstKnownTs = sorted[0][0];
@@ -238,11 +272,11 @@ function fillCandleGaps(candles: any, intervalSeconds: any, startTs: any = null,
  *          the run length, and the tail close price so the caller can
  *          decide whether to slice.
  */
-function detectStaleTail(candles: any, threshold: any) {
+function detectStaleTail(candles: unknown, threshold: number) {
     if (!Number.isFinite(threshold) || threshold <= 0) throw new Error('detectStaleTail: threshold must be a positive number');
     if (!candles || !Array.isArray(candles) || candles.length === 0) return null;
     const sorted = candles
-        .filter((c) => Array.isArray(c) && Number.isFinite(c[0]))
+        .filter((c): c is number[] => Array.isArray(c) && Number.isFinite(c[0]))
         .slice()
         .sort((a, b) => a[0] - b[0]);
 
@@ -274,7 +308,7 @@ function detectStaleTail(candles: any, threshold: any) {
  * @param {number} threshold - min consecutive identical closes to prune
  * @returns {Array} candles with stale tail removed
  */
-function pruneStaleTail(candles: any, threshold: any) {
+function pruneStaleTail(candles: unknown, threshold: number) {
     const detected = detectStaleTail(candles, threshold);
     if (!detected) return candles;
     const { sorted, runLength } = detected;
@@ -282,20 +316,20 @@ function pruneStaleTail(candles: any, threshold: any) {
     return keepCount > 0 ? sorted.slice(0, keepCount) : [];
 }
 
-function mergeCandles(a: any, b: any, { onCollision }: any = {}) {
-    const map = new Map();
-    for (const c of [...(a || []), ...(b || [])]) {
+function mergeCandles(a: unknown, b: unknown, { onCollision }: { onCollision?: (existing: unknown, incoming: unknown) => unknown } = {}) {
+    const map = new Map<unknown, number[]>();
+    for (const c of [...((a as unknown[]) || []), ...((b as unknown[]) || [])]) {
         if (!Array.isArray(c)) continue;
         const ts = c[0];
         if (!map.has(ts)) {
             map.set(ts, c);
         } else if (typeof onCollision === 'function') {
-            map.set(ts, onCollision(map.get(ts), c));
+            map.set(ts, onCollision(map.get(ts), c) as number[]);
         } else {
             map.set(ts, c);
         }
     }
-    return [...map.values()].sort((x, y) => x[0] - y[0]);
+    return [...map.values()].sort((x, y) => (x[0] as number) - (y[0] as number));
 }
 
 export { getCandleClose, getCandleTimestamp, normalizeCandle, tradesToCandles, detectMissingCandleTimestamps, fillCandleGaps, detectStaleTail, pruneStaleTail, mergeCandles }

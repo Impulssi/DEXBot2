@@ -55,7 +55,7 @@ const SOURCE_CLI = 'cli';
 
 const SIM_SERVICE = new MarketAdapterService({});
 
-function firstPositive(values: any[], fallback: any) {
+function firstPositive(values: unknown[], fallback: number): number {
     for (const v of values) {
         const n = Number(v);
         if (Number.isFinite(n) && n > 0) return n;
@@ -71,12 +71,12 @@ function firstPositive(values: any[], fallback: any) {
  * `MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT`). Display only — the effective
  * numbers always come from the real resolution functions.
  */
-function describeThresholdSource(layers: any[], cliOverride: any) {
+function describeThresholdSource(layers: Array<{ name: string; value?: unknown; keys?: string[][] }>, cliOverride: unknown): string {
     if (cliOverride != null) return SOURCE_CLI;
-    const hasValue = (obj: any, path: string[]) => {
-        let node = obj;
+    const hasValue = (obj: unknown, path: string[]) => {
+        let node: unknown = obj;
         for (const key of path) {
-            node = node?.[key];
+            node = (node as Record<string, unknown> | null | undefined)?.[key];
             if (node == null) return false;
         }
         return Number.isFinite(Number(node)) && Number(node) > 0;
@@ -96,7 +96,12 @@ function describeThresholdSource(layers: any[], cliOverride: any) {
  * @param {Object|null}  input.ama         Resolved AMA config (er/fast/slow) the chart runs with.
  * @param {Object}      [input.overrides]  CLI overrides {priceDeltaThresholdPercent, slopeDeltaThresholdPercent, enabled}.
  */
-function resolveGridResetSimConfig({ botKey, bot, ama, overrides }: any = {}) {
+function resolveGridResetSimConfig({ botKey, bot, ama, overrides }: {
+    botKey?: string | null;
+    bot?: Record<string, unknown> | null;
+    ama?: { erPeriod?: number; fastPeriod?: number; slowPeriod?: number } | null;
+    overrides?: Record<string, unknown>;
+} = {}) {
     const opts = overrides && typeof overrides === 'object' ? overrides : {};
     const notes: string[] = [];
 
@@ -108,8 +113,11 @@ function resolveGridResetSimConfig({ botKey, bot, ama, overrides }: any = {}) {
     const botCfg = bot ? resolveBotCfg(bot, baseCfg) : baseCfg;
 
     const settings = loadMarketAdapterSettings();
-    const pair = bot ? findPairForBot(bot, settings?.pairs) : null;
-    const botOverride = pair?.botOverrides?.[bot?.name] || null;
+    const pair = bot ? findPairForBot(bot, Array.isArray(settings?.pairs) ? settings.pairs : []) : null;
+    const pairObj = pair as Record<string, unknown> | null;
+    const botOverride = pairObj?.botOverrides
+        ? ((pairObj.botOverrides as Record<string, unknown>)[String(bot?.name)] || null)
+        : null;
     const layers = [
         { name: SOURCE_ADAPTER_BOT, value: botOverride, keys: [['deltaThresholdPercent']] },
         { name: SOURCE_ADAPTER_PAIR, value: pair?.marketAdapterSettings, keys: [['deltaThresholdPercent']] },
@@ -156,8 +164,8 @@ function resolveGridResetSimConfig({ botKey, bot, ama, overrides }: any = {}) {
     // explicit weightDistribution (shouldComputeDynamicWeightSignal), so a
     // whitelisted bot without weights never reaches the slope trigger.
     const hasExplicitBaseWeights = !!bot
-        && Number.isFinite((bot as any).weightDistribution?.sell)
-        && Number.isFinite((bot as any).weightDistribution?.buy);
+        && Number.isFinite((bot as { weightDistribution?: { sell?: unknown; buy?: unknown } }).weightDistribution?.sell as number)
+        && Number.isFinite((bot as { weightDistribution?: { sell?: unknown; buy?: unknown } }).weightDistribution?.buy as number);
     const asymWhitelisted = botKey ? isBotAsymmetricBoundsWhitelisted(botKey) : false;
     const dynamicWeightEnabled = botKey ? isBotDynamicWeightWhitelisted(botKey) : false;
     const slopeEnabled = isAmaBot && hasExplicitBaseWeights && asymWhitelisted
@@ -191,7 +199,7 @@ function resolveGridResetSimConfig({ botKey, bot, ama, overrides }: any = {}) {
             lookbackBars,
             firstPositive([ama?.fastPeriod], MARKET_ADAPTER.AMAS.AMA3.fastPeriod),
         );
-    } catch (_err: any) {
+    } catch (_err) {
         // getAmaWarmupBars validates strictly; a research-only AMA tweak must
         // never break chart generation — fall back to the ER warmup floor.
         warmupBars = Math.ceil(erPeriod) + lookbackBars;
@@ -201,13 +209,13 @@ function resolveGridResetSimConfig({ botKey, bot, ama, overrides }: any = {}) {
     // "Nx" bounds resolve around the center and therefore never bind it. A
     // mixed config (one absolute, one "Nx") still clamps on the absolute side,
     // so resolve each side independently.
-    const resolveClampBound = (raw: any, fallback: any, mode: 'min' | 'max'): number | null => {
+    const resolveClampBound = (raw: unknown, fallback: unknown, mode: 'min' | 'max'): number | null => {
         const relative = parseRelativeMultiplier(raw);
         if (relative != null && relative > 1) return null;
         try {
-            const bound: any = resolveConfiguredPriceBound(raw, fallback, 1, mode);
-            return Number.isFinite(bound) && bound > 0 ? Number(bound) : null;
-        } catch (_err: any) {
+            const bound = resolveConfiguredPriceBound(raw as string | number | null | undefined, fallback as string | number | null | undefined, 1, mode) as number | null | undefined;
+            return bound != null && Number.isFinite(bound) && bound > 0 ? Number(bound) : null;
+        } catch (_err) {
             return null;
         }
     };
@@ -227,7 +235,7 @@ function resolveGridResetSimConfig({ botKey, bot, ama, overrides }: any = {}) {
         slopePersistBars: resolveSlopePersistBars(),
         maxSlopePct: firstPositive([botCfg?.amaSlope?.maxSlopePct], MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT),
         neutralZonePct: Number.isFinite(Number(botCfg?.amaSlope?.neutralZonePct))
-            ? Number(botCfg.amaSlope.neutralZonePct)
+            ? Number(botCfg?.amaSlope?.neutralZonePct)
             : MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_NEUTRAL_ZONE_PCT,
         maxSlopeOffset: firstPositive(
             [botCfg?.maxSlopeOffset],
@@ -237,14 +245,14 @@ function resolveGridResetSimConfig({ botKey, bot, ama, overrides }: any = {}) {
             ? Number(botCfg.clipPercentile)
             : MARKET_ADAPTER.DYNAMIC_WEIGHT_CLIP_PERCENTILE,
         maxAsymmetryFactor: firstPositive(
-            [bot?.asymmetricBounds?.maxAsymmetryFactor, botCfg?.asymmetricBounds?.maxAsymmetryFactor],
+            [(bot?.asymmetricBounds as { maxAsymmetryFactor?: unknown } | undefined)?.maxAsymmetryFactor, (botCfg?.asymmetricBounds as { maxAsymmetryFactor?: unknown } | undefined)?.maxAsymmetryFactor],
             MARKET_ADAPTER.ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR,
         ),
         minScaleSlots: firstPositive(
-            [botCfg?.asymmetricBounds?.minScaleSlots],
+            [(botCfg?.asymmetricBounds as { minScaleSlots?: unknown } | undefined)?.minScaleSlots],
             MARKET_ADAPTER.ASYMMETRIC_BOUNDS_MIN_SCALE_SLOTS,
         ),
-        incrementPercent: Number.isFinite(Number(bot?.incrementPercent)) ? Number(bot.incrementPercent) : null,
+        incrementPercent: Number.isFinite(Number(bot?.incrementPercent)) ? Number(bot?.incrementPercent) : null,
         erPeriod: Math.ceil(erPeriod),
         warmupBars,
         warmupBarsOverride: Number.isFinite(Number(opts.warmupBars)) && Number(opts.warmupBars) >= 0 ? Math.ceil(Number(opts.warmupBars)) : null,
@@ -258,7 +266,7 @@ function resolveGridResetSimConfig({ botKey, bot, ama, overrides }: any = {}) {
  * Flatten the resolved config for the chart payload, dropping anything the page
  * must not see (e.g. Infinity from a disabled threshold).
  */
-function toGridSimPayload(cfg: any) {
+function toGridSimPayload(cfg: Record<string, unknown> | null) {
     if (!cfg) return null;
     return {
         enabled: cfg.enabled === true,

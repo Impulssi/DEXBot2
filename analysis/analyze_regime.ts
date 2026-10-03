@@ -19,12 +19,14 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
+import { getErrorMessage } from '../modules/utils/errors.js';
 import path from 'node:path';
 import { MARKET_ADAPTER }              from '../modules/constants.js';
 import { PATHS }                       from '../modules/paths.js';
 import { HurstAnalyzer }               from './trend_detection/hurst_analyzer.js';
 import { PermutationEntropyAnalyzer }  from './trend_detection/permutation_entropy_analyzer.js';
 import { generateRegimeHTML }          from './trend_detection/regime_chart_generator.js';
+import type { RegimeRow } from './trend_detection/regime_chart_generator.js';
 import { calculateAMA }                from '../market_adapter/core/strategies/ama.js';
 import { writeChartFile }              from './chart_utils.js';
 import { getCandleClose }              from './math_utils.js';
@@ -101,7 +103,7 @@ async function main() {
             window: config.peWindow,
         });
 
-        const allResults: any[] = [];
+        const allResults: RegimeRow[] = [];
         for (let i = 0; i < candles.length; i++) {
             const { marketPrice, timestamp } = source.extractMarketPrice(candles[i]);
             const hurst = hurstAnalyzer.update(marketPrice);
@@ -126,7 +128,7 @@ async function main() {
         const closes    = candles.map(c => getCandleClose(c) ?? 0);
         const ama3Values = calculateAMA(closes, amaConfig);
         for (let i = 0; i < allResults.length; i++) {
-            (allResults[i] as any).ama3Price = ama3Values[i] ?? null;
+            allResults[i].ama3Price = ama3Values[i] ?? null;
         }
 
         // ── Print tail summary ───────────────────────────────────────────────
@@ -150,7 +152,7 @@ async function main() {
         if (!config.quiet) console.log(`[Regime] \u2713 Chart saved to ${config.chartFile}`);
 
     } catch (err: unknown) {
-        console.error(`[Regime] Error: ${(err as any)?.message ?? err}`);
+        console.error(`[Regime] Error: ${getErrorMessage(err)}`);
         process.exit(1);
     }
 }

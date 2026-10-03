@@ -102,7 +102,7 @@ function shardPathFor(basePath: string, shardKey: string): string {
 
 function readShard(shardFile: string, accountId: string): FillsShard | null {
     try {
-        const parsed = readJSON(shardFile);
+        const parsed = readJSON<{ meta?: { accountId?: unknown; fetchedAt?: unknown; queriedRanges?: QueriedRange[] }; fills?: FillRecord[] }>(shardFile);
         if (!parsed || parsed.meta?.accountId !== accountId) return null;
         if (!Array.isArray(parsed.fills)) return null;
         return {
@@ -121,13 +121,13 @@ function readShard(shardFile: string, accountId: string): FillsShard | null {
 /** Sort, merge overlapping/adjacent same-`at` spans, cap the list length. */
 function normalizeQueried(ranges: QueriedRange[]): QueriedRange[] {
     const clean = (ranges || [])
-        .filter((q: any) => q && Number.isFinite(Number(q.gte)) && Number.isFinite(Number(q.lte)) && Number(q.lte) >= Number(q.gte))
-        .map((q: any) => ({
+        .filter((q) => q && Number.isFinite(Number(q.gte)) && Number.isFinite(Number(q.lte)) && Number(q.lte) >= Number(q.gte))
+        .map((q) => ({
             gte: Number(q.gte),
             lte: Number(q.lte),
             at: Number.isFinite(Number(q.at)) ? Number(q.at) : null,
         }))
-        .sort((a: any, b: any) => a.gte - b.gte || a.lte - b.lte);
+        .sort((a, b) => a.gte - b.gte || a.lte - b.lte);
     const merged: QueriedRange[] = [];
     for (const q of clean) {
         const top = merged[merged.length - 1];
@@ -215,7 +215,7 @@ function mergeFills(existing: FillRecord[], incoming: FillRecord[]): FillRecord[
  * fetch when the range is malformed.
  */
 async function fetchFillsCached(
-    config: any,
+    config: Record<string, unknown>,
     accountId: string,
     gteIso: string,
     lteIso: string,

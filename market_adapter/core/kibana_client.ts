@@ -20,11 +20,11 @@ import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { getErrorMessage, isTransientNetworkError, sleepMs } from '../../modules/utils/errors.js';
 
 const _require = createRequire(import.meta.url);
-let _https: any;
-const https = new Proxy({} as any, {
-    get(_, prop) {
-        if (!_https && _require) _https = _require('https');
-        return _https ? _https[prop] : undefined;
+let _https: typeof import('node:https') | undefined;
+const https: typeof import('node:https') = new Proxy({} as typeof import('node:https'), {
+    get(_target, prop) {
+        if (!_https && _require) _https = _require('https') as typeof import('node:https');
+        return _https ? Reflect.get(_https, prop) : undefined;
     }
 });
 
@@ -44,7 +44,16 @@ const DEFAULT_CONFIG = Object.freeze({
   kibanaSearchRetryDelayMs: 1000, // base delay, linear backoff (x attempt)
 });
 
-const PROXY_PATH = (index: any) =>
+interface KibanaRequestConfig {
+  kibanaUrl?: string;
+  apiKey?: string | null;
+  timeout?: number;
+  signal?: AbortSignal;
+  kibanaSearchRetries?: number;
+  kibanaSearchRetryDelayMs?: number;
+}
+
+const PROXY_PATH = (index: string) =>
   `/api/console/proxy?path=${encodeURIComponent(index + '/_search')}&method=POST`;
 
 /**
@@ -56,9 +65,9 @@ const PROXY_PATH = (index: any) =>
  * @param {Function} reject  – Promise reject callback
  * @param {number} [redirectCount=0] – Redirect counter
  */
-function doKibanaRequest(cfg: any, esQuery: any, resolve: any, reject: any, redirectCount = 0) {
+function doKibanaRequest(cfg: KibanaRequestConfig, esQuery: unknown, resolve: (value: unknown) => void, reject: (err: unknown) => void, redirectCount = 0): void {
   const body = JSON.stringify(esQuery);
-  const url  = new URL(cfg.kibanaUrl);
+  const url  = new URL(cfg.kibanaUrl as string);
   const signal = cfg.signal;
 
   if (signal?.aborted) {
@@ -68,12 +77,12 @@ function doKibanaRequest(cfg: any, esQuery: any, resolve: any, reject: any, redi
     return;
   }
 
-  const headers = {
+  const headers: Record<string, string | number> = {
     'Content-Type':   'application/json',
     'kbn-xsrf':       'true',
     'Content-Length': new TextEncoder().encode(body).length,
   };
-  if (cfg.apiKey) (headers as any)['Authorization'] = `ApiKey ${cfg.apiKey}`;
+  if (cfg.apiKey) headers['Authorization'] = `ApiKey ${cfg.apiKey}`;
 
   const req = https.request({
     hostname: url.hostname,
@@ -82,9 +91,10 @@ function doKibanaRequest(cfg: any, esQuery: any, resolve: any, reject: any, redi
     method:   'POST',
     headers,
     timeout:  cfg.timeout,
-  }, (res: any) => {
+  }, (res: import('node:http').IncomingMessage) => {
+    const statusCode = Number(res.statusCode ?? 0);
     // Follow a single redirect (common with auth or load-balancer rewrites)
-    if (redirectCount === 0 && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+    if (redirectCount === 0 && statusCode >= 300 && statusCode < 400 && res.headers.location) {
       // Consume/destroy the 3xx body so the socket is released instead of
       // being held open until timeout.
       res.resume();
@@ -94,36 +104,36 @@ function doKibanaRequest(cfg: any, esQuery: any, resolve: any, reject: any, redi
 
     let raw = '';
     let resSettled = false;
-    const fail = (err: any) => {
+    const fail = (err: unknown) => {
       if (resSettled) return;
       resSettled = true;
       reject(err);
     };
-    res.on('data', (c: any) => { raw += c; });
+    res.on('data', (c: Buffer) => { raw += c; });
     // A response stream that dies mid-transfer (server/proxy connection reset
     // on large payloads) never emits 'end' — without these handlers the
     // surrounding promise stays pending forever and callers hang.
     res.on('aborted', () => {
       fail(new Error('Kibana response aborted (connection reset mid-transfer — reduce kibanaPageSize / restrict _source fields)'));
     });
-    res.on('error', (e: any) => {
+    res.on('error', (e: unknown) => {
       fail(new Error(`Kibana response stream error: ${getErrorMessage(e)}`));
     });
     res.on('end', () => {
       if (resSettled) return;
-      if (res.statusCode === 401 || res.statusCode === 403) {
+      if (statusCode === 401 || statusCode === 403) {
         fail(new Error(
-          `Kibana auth required (HTTP ${res.statusCode}). ` +
+          `Kibana auth required (HTTP ${statusCode}). ` +
           `Set config.apiKey — generate in Kibana → Stack Management → API Keys.`
         ));
         return;
       }
-      if (res.statusCode >= 400) {
-        fail(new Error(`HTTP ${res.statusCode}: ${raw.slice(0, 300)}`));
+      if (statusCode >= 400) {
+        fail(new Error(`HTTP ${statusCode}: ${raw.slice(0, 300)}`));
         return;
       }
       try { resSettled = true; resolve(JSON.parse(raw)); }
-      catch (e: any) { fail(new Error(`JSON parse failed: ${getErrorMessage(e)}\n${raw.slice(0, 200)}`)); }
+      catch (e) { fail(new Error(`JSON parse failed: ${getErrorMessage(e)}\n${raw.slice(0, 200)}`)); }
     });
   });
 
@@ -140,7 +150,7 @@ function doKibanaRequest(cfg: any, esQuery: any, resolve: any, reject: any, redi
 
   // A destroyed request can emit both 'timeout' and 'error' — settle once.
   let settled = false;
-  const settleReject = (err: any) => {
+  const settleReject = (err: unknown) => {
     if (settled) return;
     settled = true;
     reject(err);
@@ -155,23 +165,23 @@ function doKibanaRequest(cfg: any, esQuery: any, resolve: any, reject: any, redi
   req.end();
 }
 
-function kibanaSearchOnce(config: any, esQuery: any) {
-  return new Promise((resolve, reject) => {
+function kibanaSearchOnce(config: KibanaRequestConfig, esQuery: unknown): Promise<unknown> {
+  return new Promise<unknown>((resolve, reject) => {
     doKibanaRequest(config, esQuery, resolve, reject);
   });
 }
 
-async function kibanaSearch(config: any, esQuery: any) {
+async function kibanaSearch(config: KibanaRequestConfig, esQuery: unknown): Promise<unknown> {
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const retriesRaw = Number(cfg.kibanaSearchRetries);
   const attempts = Number.isFinite(retriesRaw) && retriesRaw >= 1 ? Math.floor(retriesRaw) : 1;
   const delayRaw = Number(cfg.kibanaSearchRetryDelayMs);
   const retryDelayMs = Number.isFinite(delayRaw) && delayRaw >= 0 ? delayRaw : 1000;
-  let lastErr: any = null;
+  let lastErr: unknown = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       return await kibanaSearchOnce(cfg, esQuery);
-    } catch (err: any) {
+    } catch (err) {
       lastErr = err;
       if (attempt >= attempts || !isTransientNetworkError(err)) throw err;
       if (retryDelayMs > 0) await sleepMs(retryDelayMs * attempt);

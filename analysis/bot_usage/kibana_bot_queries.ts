@@ -70,13 +70,13 @@ const DEFAULT_CONFIG = {
  * @returns {Object} Elasticsearch query object
  */
 function buildOrderPriceQuery(accountId: string, lookbackHours: number, sellAssetId: string | null = null, maxResults: number = 1000) {
-    const filters = [
+    const filters: Array<Record<string, unknown>> = [
         { term:  { operation_type: OP_LIMIT_ORDER_CREATE } },
         { term:  { 'operation_history.op_object.seller.keyword': accountId } },
         { range: { 'block_data.block_time': { gte: `now-${lookbackHours}h`, lte: 'now' } } },
     ];
     if (sellAssetId) {
-        filters.push({ term: { 'operation_history.op_object.amount_to_sell.asset_id.keyword': sellAssetId } } as any);
+        filters.push({ term: { 'operation_history.op_object.amount_to_sell.asset_id.keyword': sellAssetId } });
     }
     return {
         size: maxResults,

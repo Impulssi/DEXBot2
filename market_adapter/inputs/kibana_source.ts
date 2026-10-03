@@ -44,15 +44,23 @@ const DEFAULT_CONFIG = {
     lookbackHours:   500,    // how far back (~20 days at 1h)
 };
 
+interface KibanaSourceConfig {
+    intervalSeconds?: number;
+    lookbackHours?: number;
+    timeRange?: { gte?: string; lte?: string } | null;
+    kibanaSearch?: (cfg: unknown, query: unknown) => Promise<unknown>;
+    [key: string]: unknown;
+}
+
 /**
  * Build a discovery query: find the asset IDs that have been sold into a pool.
  * Returns a terms aggregation on amount_to_sell.asset_id — should yield exactly 2 buckets.
  * An explicit timeRange makes discovery reproducible for backtests; otherwise
  * it falls back to the relative now-lookback window.
  */
-function buildDiscoveryQuery(poolId: any, lookbackHours: any, timeRange: any = null) {
+function buildDiscoveryQuery(poolId: string, lookbackHours: unknown, timeRange: { gte?: string; lte?: string } | null = null) {
     const rangeValue = timeRange?.gte && timeRange?.lte
-        ? { gte: timeRange.gte, lte: timeRange.lte }
+        ? { gte: String(timeRange.gte), lte: String(timeRange.lte) }
         : { gte: `now-${lookbackHours}h`, lte: 'now' };
     return {
         size: 0,
@@ -89,14 +97,15 @@ function buildDiscoveryQuery(poolId: any, lookbackHours: any, timeRange: any = n
  *                                      but may exceed 2 (e.g. fee asset) or be
  *                                      fewer on thin data.
  */
-async function discoverPoolAssets(poolId: any, config: any = {}) {
+async function discoverPoolAssets(poolId: unknown, config: KibanaSourceConfig = {}): Promise<string[]> {
     const cfg      = { ...DEFAULT_CONFIG, ...config };
     const fullId   = normalizePoolId(poolId);
-    const query    = buildDiscoveryQuery(fullId, cfg.lookbackHours, cfg.timeRange ?? null);
+    const query    = buildDiscoveryQuery(fullId as string, cfg.lookbackHours, cfg.timeRange ?? null);
     const search   = typeof cfg.kibanaSearch === 'function' ? cfg.kibanaSearch : kibanaSearch;
-    const result   = await search(cfg, query) as any;
+    type DiscoveryResult = { aggregations?: { sold_assets?: { buckets?: Array<{ key?: unknown }> } } };
+    const result   = await search(cfg, query) as DiscoveryResult;
     const buckets  = result.aggregations?.sold_assets?.buckets ?? [];
-    return buckets.map((b: any) => b.key);
+    return buckets.map((b) => String(b.key));
 }
 
 const LP_FIELD_MAP = {
@@ -120,7 +129,7 @@ const LP_FIELD_MAP = {
  * @param {Object}        [config]
  * @returns {Promise<Array>}      OHLCV candles
  */
-async function getLpCandlesForPool(poolId: any, assetA: any, assetB: any, config: any = {}) {
+async function getLpCandlesForPool(poolId: unknown, assetA: { id?: string | null; symbol?: string | null }, assetB: { id?: string | null; symbol?: string | null }, config: KibanaSourceConfig = {}) {
     const fullId = normalizePoolId(poolId);
     return fetchKibanaCandles({
         opType: OP_TYPE_LP,
@@ -128,7 +137,7 @@ async function getLpCandlesForPool(poolId: any, assetA: any, assetB: any, config
         assetA,
         assetB,
         config,
-        poolId: fullId as any,
+        poolId: fullId,
     });
 }
 
@@ -141,7 +150,7 @@ async function getLpCandlesForPool(poolId: any, assetA: any, assetB: any, config
  * @param {Object}        [config]
  * @returns {Promise<number[]>}
  */
-async function getLpClosePricesForPool(poolId: any, assetA: any, assetB: any, config: any = {}) {
+async function getLpClosePricesForPool(poolId: unknown, assetA: { id?: string | null; symbol?: string | null }, assetB: { id?: string | null; symbol?: string | null }, config: KibanaSourceConfig = {}) {
     const fullId = normalizePoolId(poolId);
     return fetchKibanaClosePrices({
         opType: OP_TYPE_LP,

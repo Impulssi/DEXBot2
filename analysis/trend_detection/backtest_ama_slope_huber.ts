@@ -183,10 +183,10 @@ function loadCandles(input: string) {
         : [resolved];
 
     const byTime = new Map<number, Candle>();
-    let meta: any = null;
+    let meta: Record<string, unknown> | null = null;
     for (const file of files) {
-        let raw: any;
-        try { raw = readJSON(file); } catch { continue; }
+        let raw: { candles?: unknown; meta?: Record<string, unknown> } | null = null;
+        try { raw = readJSON(file) as { candles?: unknown; meta?: Record<string, unknown> }; } catch { continue; }
         const arr = Array.isArray(raw?.candles) ? raw.candles : (Array.isArray(raw) ? raw : null);
         if (!arr || arr.length === 0) continue;
         if (!meta && raw?.meta) meta = raw.meta;
@@ -381,8 +381,8 @@ function analyzeLookback(
     const rev = reversalLag(slopeSeries, truthArr, revMaxLag, confirmPct);
 
     // ── Reset metrics ───────────────────────────────────────────────────────
-    const resetEvents = sim.events.filter((e: any) => e.reason !== GRID_RESET_BOOTSTRAP);
-    const resetIdx = resetEvents.map((e: any) => e.index as number);
+    const resetEvents = sim.events.filter((e: { reason?: unknown }) => e.reason !== GRID_RESET_BOOTSTRAP);
+    const resetIdx = resetEvents.map((e: { index?: unknown }) => Number(e.index));
     const gaps: number[] = [];
     for (let k = 1; k < resetIdx.length; k++) gaps.push(resetIdx[k] - resetIdx[k - 1]);
     const whipsaws = gaps.filter((g) => g <= cfg.whipsawBars).length;
@@ -398,7 +398,7 @@ function analyzeLookback(
     const forwardWindowBars = Number.isFinite(forwardWindowCfg) && forwardWindowCfg > 0
         ? Math.round(forwardWindowCfg)
         : Math.max(1, lookbackBars);
-    const eventIdx = new Set(sim.events.map((e: any) => e.index as number));
+    const eventIdx = new Set(sim.events.map((e: { index?: unknown }) => Number(e.index)));
     let curAppliedDir = 0;
     let evaluatedBars = 0, tiltActiveBars = 0, wrongWayBars = 0;
     let curWrongStreak = 0;
@@ -486,7 +486,9 @@ function normalize(values: number[]): (v: number) => number {
     return (v: number) => (hi > lo ? (v - lo) / (hi - lo) : 0);
 }
 
-function addCompositeScore(results: any[]) {
+type LookbackResult = ReturnType<typeof analyzeLookback> & { compositeScore?: number };
+
+function addCompositeScore(results: LookbackResult[]) {
     const lagVals = results.map((r) => (r.reversalLagBars ?? r.amaLagBars) as number);
     const resetVals = results.map((r) => r.resetsPerDay as number);
     const wobbleVals = results.map((r) => r.slopeWobblePct as number);
@@ -533,7 +535,7 @@ function run() {
     console.log(' AMA-SLOPE-HUBER LOOKBACK BACKTEST');
     console.log('================================================================================');
     console.log(`  Data:       ${path.resolve(cfg.dataPath)}`);
-    console.log(`              ${files} file(s), ${n} candles, ${((n * (meta?.intervalSeconds ?? 3600)) / 86400).toFixed(0)} days`);
+    console.log(`              ${files} file(s), ${n} candles, ${((n * Number(meta?.intervalSeconds ?? 3600)) / 86400).toFixed(0)} days`);
     console.log(`  AMA:        ${amaDef.name} (er=${amaDef.er}, fast=${amaDef.fast}, slow=${amaDef.slow}), warmup ${warmupBars} bars`);
     console.log(`  Lookbacks:  ${cfg.lookbacks.join(', ')} bars (${cfg.lookbacks.length} windows)`);
     console.log(`  Resets:     drift >= ${cfg.priceThresholdPct}% | slope delta >= ${fmt((cfg.slopeThresholdFactor / 100) * MA.DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT, 4)}%/bar` +
@@ -543,7 +545,7 @@ function run() {
     console.log(`  Confirm:    |slope| >= ${cfg.confirmFraction} x each window's mean |slope| (per-window gate)`);
     console.log('');
 
-    const results: any[] = [];
+    const results: LookbackResult[] = [];
     for (const lb of cfg.lookbacks) {
         const estimator = createHuberEstimator(cfg.scaleMode);
         const r = analyzeLookback(closes, amaValues, lb, amaDef, cfg, amaTruth, priceTruth, truthHalf, estimator);
@@ -616,7 +618,7 @@ function run() {
     }
 
     // ── Sweet spot (heuristic) ──────────────────────────────────────────────
-    const ranked = results.slice().sort((a, b) => b.compositeScore - a.compositeScore);
+    const ranked = results.slice().sort((a, b) => (b.compositeScore ?? 0) - (a.compositeScore ?? 0));
     const winner = ranked[0];
     console.log('\n================================================================================');
     console.log(' HEURISTIC SWEET SPOT');
