@@ -194,7 +194,8 @@ Keep the default settings first, and tune these:
 
 6. **Tune `minPrice` / `maxPrice`** around the market's volatility range. Once
    AMA is active, tighten them around the maximum expected market volatility
-   instead of using an unnecessarily wide range.
+   instead of an unnecessarily wide range. Use `dexbot tv <bot>` to see the
+   grid range and AMA recentering against real candles.
 
 ### Bot Options Reference
 

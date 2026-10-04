@@ -12,9 +12,11 @@ The live signal layer for AMA-priced bots. It reads candles, computes the AMA ce
 - [Symmetric Weight Shift](#symmetric-weight-shift)
 - [Trigger Threshold](#trigger-threshold)
 - [Settings and Overrides](#settings-and-overrides)
+- [Off-Hour Idle Behavior](#off-hour-idle-behavior)
 - [Live Writes and Dry-Run](#live-writes-and-dry-run)
 - [Useful Commands](#useful-commands)
 - [Troubleshooting](#troubleshooting)
+- [Related Tools](#related-tools)
 - [Technical Reference](#technical-reference)
 
 ## Which section do I need?
@@ -408,6 +410,7 @@ node dist/analysis/ama_fitting/calibrate_convergence_er.js --data market_adapter
 
 More tools:
 
+- [`dexbot tv`](../analysis/tradingview/README.md) — one-step candle fetch + chart, with the grid range and AMA recentering overlaid (handy for tuning `minPrice` / `maxPrice`)
 - [Analysis](../analysis/README.md)
 - [Scripts](../scripts/README.md)
 

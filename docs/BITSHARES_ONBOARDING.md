@@ -287,6 +287,8 @@ The only things worth tuning later:
   `{ "sell": 1.0, "buy": 1.0 }` for your first bot.
 - `minPrice` / `maxPrice` — grid bounds. Once AMA is active, tighten them
   around the market's maximum expected volatility instead of a wide range.
+  Use `dexbot tv <bot>` to see the grid range and AMA recentering against
+  real candles.
 
 See the "Recommended Bot Setup" section of the
 [README](../README.md#recommended-bot-setup).
