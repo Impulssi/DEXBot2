@@ -21,7 +21,7 @@ export interface PathApi {
 }
 
 class NodePathApi implements PathApi {
-  private _p: any;
+  private _p: typeof import('node:path');
   constructor() { this._p = require('path'); }
   join(...paths: string[]): string { return this._p.join(...paths); }
   resolve(...paths: string[]): string { return this._p.resolve(...paths); }
@@ -30,7 +30,7 @@ class NodePathApi implements PathApi {
   extname(p: string): string { return this._p.extname(p); }
   relative(from: string, to: string): string { return this._p.relative(from, to); }
   parse(p: string) { return this._p.parse(p); }
-  format(pf: any) { return this._p.format(pf); }
+  format(pf: { root?: string; dir?: string; base?: string; ext?: string; name?: string }) { return this._p.format(pf); }
   normalize(p: string): string { return this._p.normalize(p); }
   isAbsolute(p: string): boolean { return this._p.isAbsolute(p); }
   get sep(): string { return this._p.sep; }
@@ -107,7 +107,7 @@ class BrowserPathApi implements PathApi {
     return { root, dir, base, ext, name };
   }
 
-  format(pf: any): string {
+  format(pf: { root?: string; dir?: string; base?: string; ext?: string; name?: string }): string {
     const base = pf.base || (pf.name || '') + (pf.ext || '');
     if (pf.dir) return this.join(pf.dir, base);
     if (pf.root) return this.join(pf.root, base);

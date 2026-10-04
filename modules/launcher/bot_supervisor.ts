@@ -8,9 +8,11 @@ import { path } from '../path_api.js';
 import net from 'node:net';
 import { getStorage } from '../storage/index.js';
 import { spawn } from 'node:child_process';
+import type { ChildProcess, ChildProcessByStdio } from 'node:child_process';
+import type { Readable } from 'node:stream';
 import { buildScopedChildEnv } from './child_env.js';
 import { PATHS } from '../paths.js';
-import { normalizeBotEntries, resolveRawBotEntries, loadSettingsFile } from '../bot_settings.js';
+import { normalizeBotEntries, resolveRawBotEntries, loadSettingsFile, type BotEntry } from '../bot_settings.js';
 import { UPDATER, BUILD_DIR, LAUNCHER } from '../constants.js';
 import { Config } from '../config.js';
 import { getProcessDiscovery, formatUptime } from '../process_discovery.js';
@@ -21,7 +23,7 @@ import type { Socket } from 'net';
 const storage = getStorage();
 const { ensureDir, readJSON, unlink: safeUnlink } = storage;
 import { buildRuntimeScriptPath, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry.js';
-import { getErrorMessage } from '../utils/errors.js';
+import { getErrorMessage, getErrorCode } from '../utils/errors.js';
 import { usesAmaGridPrice } from '../grid_price_source.js';
 
 const BOT_SCRIPT = buildRuntimeScriptPath(CODE_ROOT, ['bot']);
@@ -40,11 +42,87 @@ const {
 
 const SUPERVISOR_PREFIX = '[supervisor]';
 
-function needsMarketAdapter(bots: any) {
-    return (bots || []).some((bot: any) => usesAmaGridPrice(bot));
+type SupervisedChild = ChildProcessByStdio<null, Readable, Readable>;
+
+interface SupervisedApp {
+    kind: 'bot' | 'service' | 'job';
+    name: string;
+    script: string;
+    args?: string | string[];
+    cwd: string;
+    max_memory_restart?: string;
+    error_file?: string;
+    out_file?: string;
+    max_restarts?: number;
+    min_uptime?: number;
+    restart_delay?: number;
+    autorestart?: boolean;
+    bulk_control?: boolean;
+    cron_schedule?: string;
+    env?: Record<string, string>;
+    [key: string]: unknown;
 }
 
-function isServiceApp(app: any) {
+interface CronSchedule {
+    minute: Set<number> | null;
+    hour: Set<number> | null;
+    dayOfMonth: Set<number> | null;
+    month: Set<number> | null;
+    dayOfWeek: Set<number> | null;
+}
+
+interface BotRuntimeState {
+    name: string;
+    appEntry: SupervisedApp | null;
+    child: SupervisedChild | null;
+    restartCount: number;
+    lastStartTime: number;
+    status: string;
+    pendingRestart: boolean;
+    bulkControl: boolean;
+    cronExpression: string | null;
+    cronSchedule: CronSchedule | null;
+    nextScheduledAt: number;
+    scheduledRunTimer: ReturnType<typeof setTimeout> | null;
+    autorestart?: boolean;
+    maxRestarts: number;
+    minUptimeMs: number;
+    restartDelayMs: number;
+    memoryLimitBytes: number | null;
+    stoppedByUser: boolean;
+    [key: string]: unknown;
+}
+
+interface SupervisorCommand {
+    cmd: string;
+    bot?: string;
+    preserveSockets?: Socket[];
+    [key: string]: unknown;
+}
+
+interface SupervisorOptions {
+    bots?: BotEntry[] | null;
+    buildEnv?: typeof buildScopedChildEnv;
+    spawnFn?: typeof spawn;
+    log?: (...args: unknown[]) => void;
+    logError?: (...args: unknown[]) => void;
+    controlSocket?: boolean;
+    getChildRss?: (child: SupervisedChild) => number;
+    memoryCheckIntervalMs?: number;
+    statusLogIntervalMs?: number;
+    staggerDelayMs?: number;
+    setTimeoutFn?: typeof setTimeout;
+    clearTimeoutFn?: typeof clearTimeout;
+    nowFn?: () => number;
+    stopMarketAdapter?: () => Promise<{ pid: number | null; stopped: boolean }>;
+    updaterActive?: boolean;
+}
+
+function needsMarketAdapter(bots: BotEntry[] | null | undefined): boolean {
+    return (bots || []).some((bot) => usesAmaGridPrice(bot));
+}
+
+function isServiceApp(app: SupervisedApp | null | undefined): boolean {
     const name = String(app?.name || '');
     return name === 'dexbot-update' || name === 'dexbot-adapter';
 }
@@ -55,15 +133,15 @@ function ensureLogDir() {
     }
 }
 
-function loadActiveBots(explicitBots: any) {
+function loadActiveBots(explicitBots: BotEntry[] | null | undefined): BotEntry[] {
     if (explicitBots) return explicitBots;
     const { config } = loadSettingsFile(PATHS.PROFILES.BOTS_JSON);
     const raw = resolveRawBotEntries(config);
-    return normalizeBotEntries(raw).filter((b: any) => b.active !== false);
+    return normalizeBotEntries(raw).filter((b) => b.active !== false);
 }
 
-function buildSupervisedApps(bots: any, updaterActive: any) {
-    const apps = (bots || []).map((bot: any, index: any) => {
+function buildSupervisedApps(bots: BotEntry[] | null | undefined, updaterActive: boolean): SupervisedApp[] {
+    const apps: SupervisedApp[] = (bots || []).map((bot, index) => {
         const botName = bot.name || `bot-${index}`;
         return {
             kind: 'bot',
@@ -112,7 +190,7 @@ function buildSupervisedApps(bots: any, updaterActive: any) {
     return apps;
 }
 
-function parseCronField(field: any, min: any, max: any) {
+function parseCronField(field: unknown, min: number, max: number): Set<number> | null {
     const trimmed = String(field || '').trim();
     if (!trimmed) {
         throw new Error('empty cron field');
@@ -121,7 +199,7 @@ function parseCronField(field: any, min: any, max: any) {
         return null;
     }
 
-    const values = new Set();
+    const values = new Set<number>();
     const parts = trimmed.split(',');
     for (const part of parts) {
         if (!part) {
@@ -166,7 +244,7 @@ function parseCronField(field: any, min: any, max: any) {
     return values;
 }
 
-function parseCronExpression(expression: any) {
+function parseCronExpression(expression: unknown): CronSchedule {
     const parts = String(expression || '').trim().split(/\s+/);
     if (parts.length !== 5) {
         throw new Error(`invalid cron expression: ${expression}`);
@@ -180,11 +258,11 @@ function parseCronExpression(expression: any) {
     };
 }
 
-function cronFieldMatches(field: any, value: any) {
+function cronFieldMatches(field: Set<number> | null, value: number): boolean {
     return field == null || field.has(value);
 }
 
-function cronMatchesDate(schedule: any, date: any) {
+function cronMatchesDate(schedule: CronSchedule | null | undefined, date: Date): boolean {
     if (!schedule) return false;
     const minuteMatch = cronFieldMatches(schedule.minute, date.getMinutes());
     const hourMatch = cronFieldMatches(schedule.hour, date.getHours());
@@ -199,7 +277,7 @@ function cronMatchesDate(schedule: any, date: any) {
     return minuteMatch && hourMatch && monthMatch && dayMatch;
 }
 
-function getNextCronDate(schedule: any, fromDate: any = new Date()) {
+function getNextCronDate(schedule: CronSchedule, fromDate: Date = new Date()): Date {
     const cursor = new Date(fromDate.getTime());
     cursor.setSeconds(0, 0);
     cursor.setMinutes(cursor.getMinutes() + 1);
@@ -213,7 +291,7 @@ function getNextCronDate(schedule: any, fromDate: any = new Date()) {
     throw new Error('unable to resolve next cron run');
 }
 
-function parseMemoryLimitBytes(limit: any) {
+function parseMemoryLimitBytes(limit: unknown): number | null {
     if (!limit) return null;
     const match = String(limit || '').trim().match(/^(\d+(?:\.\d+)?)\s*([kmgt]?)(?:b)?$/i);
     if (!match) return null;
@@ -226,26 +304,26 @@ function parseMemoryLimitBytes(limit: any) {
     return Math.floor(value * factor);
 }
 
-function normalizeAppArgs(args: any) {
+function normalizeAppArgs(args: unknown): string[] {
     if (args == null || args === '') return [];
     if (Array.isArray(args)) return args.map(String);
     return [String(args)];
 }
 
-function forwardSignal(child: any, signal: any) {
+function forwardSignal(child: ChildProcess | null | undefined, signal: NodeJS.Signals): void {
     if (!child || child.killed) return;
     try {
         child.kill(signal);
-    } catch (err: any) {
-        if (err.code !== 'ESRCH') throw err;
+    } catch (err) {
+        if (getErrorCode(err) !== 'ESRCH') throw err;
     }
 }
 
-function isPidAlive(pid: any) {
+function isPidAlive(pid: number): boolean {
     return getProcessDiscovery().isAlive(pid);
 }
 
-async function waitForPidExit(pid: any, timeoutMs: any) {
+async function waitForPidExit(pid: number, timeoutMs: number): Promise<boolean> {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
         if (!isPidAlive(pid)) return true;
@@ -254,30 +332,31 @@ async function waitForPidExit(pid: any, timeoutMs: any) {
     return !isPidAlive(pid);
 }
 
-function readProcArgs(pid: any) {
-    return getProcessDiscovery().readArgs(pid);
+function readProcArgs(pid: number): string[] {
+    return getProcessDiscovery().readArgs(pid) as string[];
 }
 
-function readProcCwd(pid: any) {
-    return getProcessDiscovery().readCwd(pid);
+function readProcCwd(pid: number): string {
+    return getProcessDiscovery().readCwd(pid) as string;
 }
 
-function normalizeProcScriptArg(arg: any, cwd: any) {
-    if (!arg || String(arg).startsWith('-')) return '';
-    if (!/\.(?:[cm]?js|ts)$/i.test(String(arg))) return '';
-    return path.isAbsolute(arg)
-        ? path.normalize(arg)
-        : path.resolve(cwd || PATHS.PROJECT_ROOT, arg);
+function normalizeProcScriptArg(arg: unknown, cwd: string | null | undefined): string {
+    const argStr = arg == null ? '' : String(arg);
+    if (!argStr || argStr.startsWith('-')) return '';
+    if (!/\.(?:[cm]?js|ts)$/i.test(argStr)) return '';
+    return path.isAbsolute(argStr)
+        ? path.normalize(argStr)
+        : path.resolve(cwd || PATHS.PROJECT_ROOT, argStr);
 }
 
-function scriptPathForRoot(root: any, scriptSegments: any, ext: any) {
+function scriptPathForRoot(root: string, scriptSegments: string[], ext: string): string {
     const segments = [...scriptSegments];
     const last = segments.pop();
     segments.push(String(last).replace(/\.(?:[cm]?js|ts)$/i, '') + ext);
     return path.join(root, ...segments);
 }
 
-function candidateRuntimeScriptPaths(scriptSegments: any) {
+function candidateRuntimeScriptPaths(scriptSegments: string[]): Set<string> {
     const candidates = new Set([
         buildRuntimeScriptPath(CODE_ROOT, scriptSegments),
         scriptPathForRoot(PATHS.PROJECT_ROOT, scriptSegments, '.ts'),
@@ -291,10 +370,10 @@ function candidateRuntimeScriptPaths(scriptSegments: any) {
     return candidates;
 }
 
-function pidMatchesScriptCandidates(pid: any, expectedPaths: any) {
+function pidMatchesScriptCandidates(pid: number, expectedPaths: Set<string> | null | undefined): boolean {
     if (!expectedPaths || expectedPaths.size === 0) return false;
     const args = readProcArgs(pid);
-    if (!args.some((arg: any) => path.basename(String(arg)).includes('node'))) {
+    if (!args.some((arg) => path.basename(String(arg)).includes('node'))) {
         return false;
     }
 
@@ -309,7 +388,7 @@ function pidMatchesScriptCandidates(pid: any, expectedPaths: any) {
     return false;
 }
 
-function isNodeProcessWithExactScript(pid: any, scriptSegments: any) {
+function isNodeProcessWithExactScript(pid: number, scriptSegments: string[]): boolean {
     return pidMatchesScriptCandidates(pid, candidateRuntimeScriptPaths(scriptSegments));
 }
 
@@ -318,12 +397,12 @@ function readMarketAdapterLockPid() {
         const info = readJSON(PATHS.MARKET_ADAPTER.LOCK_FILE);
         const pid = Number(info.pid);
         return Number.isInteger(pid) && pid > 0 ? pid : null;
-    } catch (_: any) {
+    } catch (_) {
         return null;
     }
 }
 
-async function stopMarketAdapterFromLock(timeoutMs: any = 5000) {
+async function stopMarketAdapterFromLock(timeoutMs: number = 5000): Promise<{ pid: number | null; stopped: boolean }> {
     const pid = readMarketAdapterLockPid();
     if (!pid || !isNodeProcessWithExactScript(pid, ['market_adapter', 'market_adapter'])) {
         return { pid, stopped: false };
@@ -338,7 +417,7 @@ async function stopMarketAdapterFromLock(timeoutMs: any = 5000) {
     return { pid, stopped };
 }
 
-function getChildRSS(child: any) {
+function getChildRSS(child: SupervisedChild | null | undefined): number {
     if (!child || !child.pid) return -1;
     try {
         if (Config.PLATFORM === 'linux') {
@@ -350,12 +429,12 @@ function getChildRSS(child: any) {
             const rssKB = parseInt(out.trim(), 10);
             if (rssKB > 0) return rssKB * 1024;
         }
-    } catch (_: any) {}
+    } catch (_) {}
     return -1;
 }
 
-function waitForChildSpawn(child: any) {
-    return new Promise((resolve: any, reject: any) => {
+function waitForChildSpawn(child: ChildProcess): Promise<void> {
+    return new Promise((resolve, reject) => {
         let settled = false;
         const handleSpawn = () => {
             if (settled) return;
@@ -363,7 +442,7 @@ function waitForChildSpawn(child: any) {
             cleanup();
             resolve(undefined);
         };
-        const handleError = (error: any) => {
+        const handleError = (error: Error) => {
             if (settled) return;
             settled = true;
             cleanup();
@@ -382,8 +461,8 @@ function createBotSupervisor({
     bots = null,
     buildEnv = buildScopedChildEnv,
     spawnFn = spawn,
-    log = (...args: any) => console.log(SUPERVISOR_PREFIX, ...args),
-    logError = (...args: any) => console.error(SUPERVISOR_PREFIX, ...args),
+    log = (...args: unknown[]) => console.log(SUPERVISOR_PREFIX, ...args),
+    logError = (...args: unknown[]) => console.error(SUPERVISOR_PREFIX, ...args),
     controlSocket = !Config.DEXBOT_DISABLE_SUPERVISOR_SOCKET,
     getChildRss = getChildRSS,
     memoryCheckIntervalMs = MEMORY_CHECK_INTERVAL_MS,
@@ -394,13 +473,13 @@ function createBotSupervisor({
     nowFn = () => Date.now(),
     stopMarketAdapter = stopMarketAdapterFromLock,
     updaterActive = UPDATER.ACTIVE,
-}: any = {}) {
-    const botStates = new Map();
+}: SupervisorOptions = {}) {
+    const botStates = new Map<string, BotRuntimeState>();
     let shuttingDown = false;
     let shutdownResolve: (() => void) | null = null;
-    let memoryCheckTimer: any = null;
-    let statusLogTimer: any = null;
-    let socketServer: any = null;
+    let memoryCheckTimer: ReturnType<typeof setInterval> | null = null;
+    let statusLogTimer: ReturnType<typeof setInterval> | null = null;
+    let socketServer: net.Server | null = null;
     let socketConnections = new Set<Socket>();
     let userStopped = false;
 
@@ -442,7 +521,7 @@ function createBotSupervisor({
         }
     }
 
-    function clearScheduledRun(state: any) {
+    function clearScheduledRun(state: BotRuntimeState | null | undefined): void {
         if (state?.scheduledRunTimer) {
             clearTimeoutFn(state.scheduledRunTimer);
             state.scheduledRunTimer = null;
@@ -452,7 +531,7 @@ function createBotSupervisor({
         }
     }
 
-    function scheduleNextRun(state: any) {
+    function scheduleNextRun(state: BotRuntimeState | null | undefined): void {
         clearScheduledRun(state);
         if (shuttingDown || !state?.cronSchedule) {
             return;
@@ -475,11 +554,11 @@ function createBotSupervisor({
 
                 log(`Starting scheduled job: ${state.name}`);
                 try {
-                    const child = spawnApp(state.appEntry);
+                    const child = state.appEntry ? spawnApp(state.appEntry) : null;
                     if (child) {
                         await waitForChildSpawn(child);
                     }
-                } catch (err: any) {
+                } catch (err) {
                     logError(`Failed to start scheduled job ${state.name}:`, getErrorMessage(err));
                     state.status = 'crashed';
                 } finally {
@@ -489,7 +568,7 @@ function createBotSupervisor({
             if (state.scheduledRunTimer && typeof state.scheduledRunTimer.unref === 'function') {
                 state.scheduledRunTimer.unref();
             }
-        } catch (err: any) {
+        } catch (err) {
             logError(`Invalid cron schedule for ${state.name}: ${getErrorMessage(err)}`);
         }
     }
@@ -506,12 +585,12 @@ function createBotSupervisor({
                 const limitMB = Math.round(memoryLimitBytes / 1024 / 1024);
                 logError(`${name} exceeded memory limit (${rssMB}MB > ${limitMB}MB). Restarting...`);
                 state.pendingRestart = true;
-                try { state.child.kill('SIGTERM'); } catch (_: any) {}
+                try { state.child.kill('SIGTERM'); } catch (_) {}
             }
         }
     }
 
-    function spawnApp(app: any) {
+    function spawnApp(app: SupervisedApp): SupervisedChild | null {
         const appName = app.name;
         const state = botStates.get(appName);
         if (!state) return null;
@@ -541,10 +620,10 @@ function createBotSupervisor({
             stdio: ['inherit', 'pipe', 'pipe'],
         });
 
-        child.stdout.pipe(outStream as any);
-        child.stdout.pipe(runtime.stdout as any);
-        child.stderr.pipe(errStream as any);
-        child.stderr.pipe(runtime.stderr as any);
+        child.stdout.pipe(outStream);
+        child.stdout.pipe(runtime.stdout as unknown as NodeJS.WritableStream);
+        child.stderr.pipe(errStream);
+        child.stderr.pipe(runtime.stderr as unknown as NodeJS.WritableStream);
 
         child.stdout.on('error', () => {});
         child.stderr.on('error', () => {});
@@ -556,9 +635,9 @@ function createBotSupervisor({
         state.stoppedByUser = false;
         state.lastStartTime = nowFn();
 
-        child.once('close', (code: any, signal: any) => {
-            try { outStream.end(); } catch (_: any) {}
-            try { errStream.end(); } catch (_: any) {}
+        child.once('close', (code: number | null, signal: NodeJS.Signals | null) => {
+            try { outStream.end(); } catch (_) {}
+            try { errStream.end(); } catch (_) {}
 
             if (shuttingDown) {
                 state.status = 'stopped';
@@ -620,16 +699,16 @@ function createBotSupervisor({
             }, restartDelay);
         });
 
-        child.on('error', (err: any) => {
+        child.on('error', (err: Error) => {
             logError(`${appName} spawn error:`, getErrorMessage(err));
         });
 
         return child;
     }
 
-    async function waitForStableStartup({ timeoutMs = 750, pollIntervalMs = 50 }: any = {}) {
+    async function waitForStableStartup({ timeoutMs = 750, pollIntervalMs = 50 }: { timeoutMs?: number; pollIntervalMs?: number } = {}): Promise<void> {
         const trackedStates = () =>
-            Array.from(botStates.values()).filter((state: any) => state.appEntry && state.appEntry.kind !== 'job');
+            Array.from(botStates.values()).filter((state) => state.appEntry && state.appEntry.kind !== 'job');
 
         if (timeoutMs <= 0 || trackedStates().length === 0) {
             return;
@@ -638,27 +717,27 @@ function createBotSupervisor({
         const deadline = nowFn() + timeoutMs;
         while (nowFn() < deadline) {
             const states = trackedStates();
-            const failed = states.filter((state: any) => state.status === 'stopped' || state.status === 'crashed');
+            const failed = states.filter((state) => state.status === 'stopped' || state.status === 'crashed');
             if (failed.length > 0) {
-                const details = failed.map((state: any) => `${state.name} (${state.status})`).join(', ');
+                const details = failed.map((state) => `${state.name} (${state.status})`).join(', ');
                 throw new Error(`supervised startup failed: ${details}`);
             }
 
             const remainingMs = Math.max(deadline - nowFn(), 0);
-            await new Promise((resolve: any) => {
+            await new Promise<void>((resolve) => {
                 setTimeoutFn(resolve, Math.min(pollIntervalMs, remainingMs || pollIntervalMs));
             });
         }
 
         const states = trackedStates();
-        const notRunning = states.filter((state: any) => state.status !== 'running');
+        const notRunning = states.filter((state) => state.status !== 'running');
         if (notRunning.length > 0) {
-            const details = notRunning.map((state: any) => `${state.name} (${state.status})`).join(', ');
+            const details = notRunning.map((state) => `${state.name} (${state.status})`).join(', ');
             throw new Error(`supervised startup failed: ${details}`);
         }
     }
 
-    async function handleSocketCommand(cmd: any) {
+    async function handleSocketCommand(cmd: SupervisorCommand) {
         try {
             switch (cmd.cmd) {
                 case 'status': {
@@ -672,7 +751,7 @@ function createBotSupervisor({
                     if (state.status !== 'running') return { error: `bot '${cmd.bot}' is not running (${state.status})` };
                     state.pendingRestart = false;
                     state.stoppedByUser = true;
-                    try { state.child.kill('SIGTERM'); } catch (_: any) {}
+                    try { state.child?.kill('SIGTERM'); } catch (_) {}
                     userStopped = true;
                     log(`stop: ${cmd.bot}`);
                     return { ok: true };
@@ -683,7 +762,7 @@ function createBotSupervisor({
                     if (!state) return { error: `bot '${cmd.bot}' not found` };
                     if (state.status === 'running' && state.child) {
                         state.pendingRestart = true;
-                        try { state.child.kill('SIGTERM'); } catch (_: any) {}
+                        try { state.child.kill('SIGTERM'); } catch (_) {}
                     } else if ((userStopped || state.stoppedByUser) && state.status === 'stopped' && state.appEntry) {
                         spawnApp(state.appEntry);
                     } else {
@@ -710,7 +789,7 @@ function createBotSupervisor({
                         if (!state) return { error: `bot '${cmd.bot}' not found` };
                         if (state.status === 'running' && state.child) {
                             state.pendingRestart = true;
-                            try { state.child.kill('SIGTERM'); } catch (_: any) {}
+                            try { state.child.kill('SIGTERM'); } catch (_) {}
                         } else if ((userStopped || state.stoppedByUser) && state.status === 'stopped' && state.appEntry) {
                             spawnApp(state.appEntry);
                         } else {
@@ -729,15 +808,15 @@ function createBotSupervisor({
                 default:
                     return { error: `unknown command: ${cmd.cmd}` };
             }
-        } catch (err: any) {
+        } catch (err) {
             return { error: getErrorMessage(err) };
         }
     }
 
     function startSocketServer() {
-        return new Promise((resolve: any, reject: any) => {
+        return new Promise<void>((resolve, reject) => {
             let settled = false;
-            const settle = (fn: any, value: any) => {
+            const settle = <T>(fn: (value: T) => void, value: T): void => {
                 if (settled) return;
                 settled = true;
                 fn(value);
@@ -748,37 +827,37 @@ function createBotSupervisor({
                 settle(reject, new Error('Another supervisor instance is already running (socket exists). Stop it first or use a different profile.'));
             });
             testSocket.on('error', () => {
-                startSocketServerInternal().then(() => settle(resolve, undefined)).catch((err: any) => settle(reject, err));
+                startSocketServerInternal().then(() => settle(resolve, undefined)).catch((err) => settle(reject, err));
             });
             testSocket.setTimeout(500, () => {
                 testSocket.destroy();
-                startSocketServerInternal().then(() => settle(resolve, undefined)).catch((err: any) => settle(reject, err));
+                startSocketServerInternal().then(() => settle(resolve, undefined)).catch((err) => settle(reject, err));
             });
         });
     }
 
-    function startSocketServerInternal() {
-        return new Promise((resolve: any, reject: any) => {
+    function startSocketServerInternal(): Promise<void> {
+        return new Promise((resolve, reject) => {
             safeUnlink(SOCKET_PATH)
 
-            socketServer = net.createServer((socket: any) => {
+            socketServer = net.createServer((socket: Socket) => {
             socketConnections.add(socket);
             let buffer = '';
             let commandQueue = Promise.resolve();
             let deleteQueued = false;
 
-            const enqueueSocketResponse = (handler: any) => {
+            const enqueueSocketResponse = (handler: () => Promise<void>) => {
                 commandQueue = commandQueue
                     .then(handler)
-                    .catch((err: any) => {
+                    .catch((err) => {
                         try {
                             socket.write(JSON.stringify({ error: getErrorMessage(err) }) + '\n');
-                        } catch (_: any) {}
+                        } catch (_) {}
                     });
                 return commandQueue;
             };
 
-            socket.on('data', (data: any) => {
+            socket.on('data', (data: Buffer) => {
                 if (deleteQueued) return;
                 buffer += data.toString();
                 const lines = buffer.split('\n');
@@ -789,9 +868,9 @@ function createBotSupervisor({
                     let cmd;
                     try {
                         cmd = JSON.parse(line);
-                    } catch (_: any) {
-                        enqueueSocketResponse(() => new Promise((resolve: any) => {
-                            socket.write(JSON.stringify({ error: 'invalid JSON' }) + '\n', resolve);
+                    } catch (_) {
+                        enqueueSocketResponse(() => new Promise<void>((resolve) => {
+                            socket.write(JSON.stringify({ error: 'invalid JSON' }) + '\n', () => resolve());
                         }));
                         continue;
                     }
@@ -801,8 +880,8 @@ function createBotSupervisor({
                     }
                     enqueueSocketResponse(async () => {
                         const resp = await handleSocketCommand({ ...cmd, preserveSockets: [socket] });
-                        await new Promise((resolve: any) => {
-                            socket.write(JSON.stringify(resp) + '\n', resolve);
+                        await new Promise<void>((resolve) => {
+                            socket.write(JSON.stringify(resp) + '\n', () => resolve());
                         });
                         if (cmd.cmd === 'delete') {
                             socket.end();
@@ -820,18 +899,18 @@ function createBotSupervisor({
             });
             });
 
-            const onError = (err: any) => {
+            const onError = (err: Error) => {
                 logError(`Socket server error: ${getErrorMessage(err)}`);
                 reject(err);
             };
 
-            socketServer.once('error', onError);
-            socketServer.listen(SOCKET_PATH, () => {
-                socketServer.off('error', onError);
-                socketServer.on('error', (err: any) => {
+            socketServer!.once('error', onError);
+            socketServer!.listen(SOCKET_PATH, () => {
+                socketServer!.off('error', onError);
+                socketServer!.on('error', (err: Error) => {
                     logError(`Socket server error: ${getErrorMessage(err)}`);
                 });
-                try { storage.chmod(SOCKET_PATH, 0o600); } catch (_: any) {}
+                try { storage.chmod(SOCKET_PATH, 0o600); } catch (_) {}
                 log(`Control socket: ${SOCKET_PATH}`);
                 resolve(undefined);
             });
@@ -842,17 +921,17 @@ function createBotSupervisor({
         });
     }
 
-    function closeSocketServer({ preserveSockets = [] as Socket[] }: any = {}) {
+    function closeSocketServer({ preserveSockets = [] as Socket[] }: { preserveSockets?: Socket[] } = {}): void {
         const preserved = new Set(preserveSockets);
         if (socketServer) {
-            try { socketServer.close(); } catch (_: any) {}
+            try { socketServer.close(); } catch (_) {}
             socketServer = null;
         }
         for (const sock of socketConnections) {
             if (preserved.has(sock)) continue;
-            try { sock.destroy(); } catch (_: any) {}
+            try { sock.destroy(); } catch (_) {}
         }
-        socketConnections = new Set([...socketConnections].filter((sock: any) => preserved.has(sock)));
+        socketConnections = new Set([...socketConnections].filter((sock) => preserved.has(sock)));
         safeUnlink(SOCKET_PATH)
     }
 
@@ -911,7 +990,7 @@ function createBotSupervisor({
                 if (child) {
                     await waitForChildSpawn(child);
                 }
-            } catch (err: any) {
+            } catch (err) {
                 logError(`Failed to start ${app.name}:`, getErrorMessage(err));
                 const state = botStates.get(app.name);
                 if (state) {
@@ -948,13 +1027,13 @@ function createBotSupervisor({
         }
     }
 
-    function shutdownSignalHandler(signal: any) {
+    function shutdownSignalHandler(signal: NodeJS.Signals): void {
         for (const [, state] of botStates) {
             forwardSignal(state.child, signal);
         }
     }
 
-    async function shutdown({ preserveSockets = [] }: any = {}) {
+    async function shutdown({ preserveSockets = [] }: { preserveSockets?: Socket[] } = {}): Promise<void> {
         shuttingDown = true;
         userStopped = false;
         clearTimers();
@@ -962,7 +1041,7 @@ function createBotSupervisor({
 
         shutdownSignalHandler('SIGTERM');
 
-        return new Promise((resolve: any) => {
+        return new Promise<void>((resolve) => {
             const done = () => {
                 if (forceKillTimer) clearTimeout(forceKillTimer);
                 if (forceResolveTimer) clearTimeout(forceResolveTimer);
@@ -978,7 +1057,7 @@ function createBotSupervisor({
             const forceKillTimer = setTimeout(() => {
                 for (const [, state] of botStates) {
                     if (state.child && state.child.exitCode == null && state.status !== 'stopped') {
-                        try { state.child.kill('SIGKILL'); } catch (_: any) {}
+                        try { state.child.kill('SIGKILL'); } catch (_) {}
                         state.status = 'stopped';
                         state.child = null;
                     }
@@ -994,8 +1073,8 @@ function createBotSupervisor({
         });
     }
 
-    function getStatus() {
-        const result: Record<string, any> = {};
+    function getStatus(): Record<string, { status: string; pid: number | null; restarts: number; uptimeMs: number; nextScheduledAt: number }> {
+        const result: Record<string, { status: string; pid: number | null; restarts: number; uptimeMs: number; nextScheduledAt: number }> = {};
         for (const [name, state] of botStates) {
             result[name] = {
                 status: state.status,
@@ -1015,15 +1094,15 @@ function createBotSupervisor({
             state.pendingRestart = false;
             if (state.status === 'running' && state.child) {
                 state.stoppedByUser = true;
-                try { state.child.kill('SIGTERM'); } catch (_: any) {}
+                try { state.child.kill('SIGTERM'); } catch (_) {}
             }
         }
         log('stop-all');
     }
 
-    async function restartRunning({ logAction = true }: any = {}) {
+    async function restartRunning({ logAction = true }: { logAction?: boolean } = {}): Promise<void> {
         userStopped = false;
-        const runningStates: any[] = [];
+        const runningStates: Array<{ state: BotRuntimeState; child: SupervisedChild; pid: number | null }> = [];
         for (const [, state] of botStates) {
             if (!state.bulkControl) continue;
             if (state.status === 'running' && state.child) {
@@ -1044,7 +1123,7 @@ function createBotSupervisor({
             if (entry.state.child !== entry.child) {
                 continue;
             }
-            try { entry.child.kill('SIGTERM'); } catch (_: any) {}
+            try { entry.child.kill('SIGTERM'); } catch (_) {}
         }
 
         if (adapterStop.stopped) {
@@ -1055,7 +1134,7 @@ function createBotSupervisor({
         }
     }
 
-    async function restartAll({ logAction = 'restart-all' }: any = {}) {
+    async function restartAll({ logAction = 'restart-all' }: { logAction?: string } = {}): Promise<void> {
         await restartRunning({ logAction: false });
         for (const [, state] of botStates) {
             if (!state.bulkControl) continue;

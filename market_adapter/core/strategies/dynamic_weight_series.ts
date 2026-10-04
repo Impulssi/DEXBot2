@@ -22,9 +22,39 @@ import { MARKET_ADAPTER } from '../../../modules/constants.js';
 
 const AMA_SLOPE_HUBER = MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER;
 
-function computeAverageAmaSlopePct(current: any, past: any, lookbackBars: any) {
-    const safeLookbackBars = Number.isFinite(lookbackBars) && lookbackBars > 0
-        ? Math.ceil(lookbackBars)
+interface HuberParams {
+    C: number;
+    ITERATIONS: number;
+    SCALE_FLOOR: number;
+    ZERO_EPSILON: number;
+}
+
+interface DynamicWeightSeriesInputs {
+    amaValues: unknown[] | null | undefined;
+    kalmanVelocityPct?: Array<number | null> | null;
+    kalmanDisplacementPct?: Array<number | null> | null;
+    kalmanIsReady?: Array<boolean | null> | null;
+    regimeMultipliers?: Array<number | null> | null;
+    lookbackBars: number;
+    amaErPeriod: number;
+    amaClipThreshold: number;
+    kalClipThreshold: number;
+    neutralZonePct: number;
+    amaMaxSlopePct: number;
+    kalmanMaxSlopePct: number;
+    offsetClamp: number;
+    dispScaleMinPct: number;
+    alpha: number;
+    dw: number;
+    gain: number;
+    minOutputThreshold: number;
+    signalConfirmBars: number;
+    clampFinalOutput?: boolean;
+}
+
+function computeAverageAmaSlopePct(current: number, past: number, lookbackBars: unknown): number | null {
+    const safeLookbackBars = Number.isFinite(Number(lookbackBars)) && Number(lookbackBars) > 0
+        ? Math.ceil(Number(lookbackBars))
         : 1;
     if (!Number.isFinite(current) || !Number.isFinite(past) || past === 0) {
         return null;
@@ -74,7 +104,7 @@ function computeAverageAmaSlopePct(current: any, past: any, lookbackBars: any) {
  * @param hub       Parameter block; defaults to the centralized constant.
  * @returns %/bar, or null when the window is unusable.
  */
-function computeHuberWindowSlopePct(amaValues: any, index: number, lookbackBars: any, hub: any = AMA_SLOPE_HUBER) {
+function computeHuberWindowSlopePct(amaValues: unknown[] | null | undefined, index: number, lookbackBars: unknown, hub: Partial<HuberParams> = AMA_SLOPE_HUBER): number | null {
     const bars = Number.isFinite(lookbackBars) && Number(lookbackBars) > 0
         ? Math.ceil(Number(lookbackBars))
         : 0;
@@ -93,10 +123,10 @@ function computeHuberWindowSlopePct(amaValues: any, index: number, lookbackBars:
     // Fill any missing field from the canonical constant. Production never passes
     // `hub` (the default is the constant), so this only guards a partial override
     // from silently skipping the IRLS loop or injecting NaN weights.
-    const hubC = Number.isFinite(hub?.C) ? hub.C : AMA_SLOPE_HUBER.C;
-    const hubIterations = Number.isFinite(hub?.ITERATIONS) ? hub.ITERATIONS : AMA_SLOPE_HUBER.ITERATIONS;
-    const hubScaleFloor = Number.isFinite(hub?.SCALE_FLOOR) ? hub.SCALE_FLOOR : AMA_SLOPE_HUBER.SCALE_FLOOR;
-    const hubZeroEpsilon = Number.isFinite(hub?.ZERO_EPSILON) ? hub.ZERO_EPSILON : AMA_SLOPE_HUBER.ZERO_EPSILON;
+    const hubC = Number.isFinite(hub?.C) ? (hub?.C as number) : AMA_SLOPE_HUBER.C;
+    const hubIterations = Number.isFinite(hub?.ITERATIONS) ? (hub?.ITERATIONS as number) : AMA_SLOPE_HUBER.ITERATIONS;
+    const hubScaleFloor = Number.isFinite(hub?.SCALE_FLOOR) ? (hub?.SCALE_FLOOR as number) : AMA_SLOPE_HUBER.SCALE_FLOOR;
+    const hubZeroEpsilon = Number.isFinite(hub?.ZERO_EPSILON) ? (hub?.ZERO_EPSILON as number) : AMA_SLOPE_HUBER.ZERO_EPSILON;
 
     // Weighted least squares of y on the CENTERED index x_i = i - (n-1)/2. The
     // x-centering keeps the normal equations well-conditioned, but the FULL
@@ -143,12 +173,12 @@ function computeHuberWindowSlopePct(amaValues: any, index: number, lookbackBars:
     return Number.isFinite(slope) ? slope : null;
 }
 
-function echoLatchSeries(appliedSeries: any[], preGainSeries: any[], confirmBars: any) {
+function echoLatchSeries(appliedSeries: number[], preGainSeries: number[] | null | undefined, confirmBars: unknown) {
     const n = Array.isArray(appliedSeries) ? appliedSeries.length : 0;
     const echoedAppliedSeries = new Array(n).fill(0);
     const echoedPreGainSeries = new Array(n).fill(0);
 
-    const safeConfirmBars = Math.max(0, Math.min(5, Math.round(confirmBars)));
+    const safeConfirmBars = Math.max(0, Math.min(5, Math.round(Number(confirmBars))));
     if (safeConfirmBars === 0) {
         for (let i = 0; i < n; i++) {
             echoedAppliedSeries[i] = appliedSeries[i];
@@ -161,7 +191,7 @@ function echoLatchSeries(appliedSeries: any[], preGainSeries: any[], confirmBars
     let pendingSign = 0;
     let pendingCount = 0;
     let latchedOff = 0;
-    let latchedGatedOff = 0;
+    let latchedGatedOff: number | undefined = 0;
     for (let i = 0; i < n; i++) {
         const raw = appliedSeries[i];
         const sign = raw > 0 ? 1 : raw < 0 ? -1 : 0;
@@ -192,12 +222,12 @@ function echoLatchSeries(appliedSeries: any[], preGainSeries: any[], confirmBars
     return { echoedAppliedSeries, echoedPreGainSeries };
 }
 
-function roundToN(value: any, factor: any) {
+function roundToN(value: number, factor: number): number {
     if (!Number.isFinite(value)) return NaN;
     return Math.round(value * factor) / factor;
 }
 
-function computeDynamicWeightSeries(inputs: any) {
+function computeDynamicWeightSeries(inputs: DynamicWeightSeriesInputs) {
     const {
         amaValues,
         kalmanVelocityPct,
@@ -315,7 +345,7 @@ function percentileFromSorted(sorted: number[], clipPercentile: number): number 
  * @param clipPercentile Percentile to clip at (e.g. 10 → use 90th pct). 0 disables.
  */
 function computeAmaSlopeClipThreshold(
-    amaValues: any,
+    amaValues: unknown[] | null | undefined,
     erPeriod: number,
     lookbackBars: number,
     clipPercentile: number,

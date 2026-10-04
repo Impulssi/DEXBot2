@@ -4,18 +4,33 @@ import { path } from '../../modules/path_api.js';
 import { writeJsonAtomic } from './atomic_write.js';
 import { acquirePathLockSync, releaseFileLockSync } from './file_lock.js';
 import { getStorage } from '../../modules/storage/index.js';
+import type { UnknownRecord } from '../../modules/types.js';
 const { ensureDir, readJSON } = getStorage();
 
+interface SnapshotMutationResult {
+    write?: boolean;
+    ok?: boolean;
+    snapshot?: unknown;
+    [key: string]: unknown;
+}
 
-function readJsonOrNull(filePath: any) {
+interface UpdateSnapshotOptions {
+    lock?: unknown;
+}
+
+function readJsonOrNull(filePath: string): unknown {
     try {
         return readJSON(filePath);
-    } catch (_: any) {
+    } catch (_) {
         return null;
     }
 }
 
-function updateDynamicGridSnapshotSync(filePath: any, mutator: any, options: any = {}) {
+function updateDynamicGridSnapshotSync(
+    filePath: string,
+    mutator: (previous: unknown) => SnapshotMutationResult | null | undefined,
+    options: UpdateSnapshotOptions = {},
+) {
     if (typeof mutator !== 'function') {
         throw new TypeError('updateDynamicGridSnapshotSync requires a mutator function');
     }
@@ -44,7 +59,7 @@ function updateDynamicGridSnapshotSync(filePath: any, mutator: any, options: any
             };
         }
 
-        writeJsonAtomic(filePath, snapshot);
+        writeJsonAtomic(filePath, snapshot as UnknownRecord);
         return {
             ok: true,
             written: true,

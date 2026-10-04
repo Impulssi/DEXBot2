@@ -6,11 +6,12 @@ import { BufferWriter } from './serializer.js';
 import { OBJECT_TYPE } from './chain_constants.js';
 
 const _require = createRequire(import.meta.url);
-let _Buffer: any;
-const Buffer = new Proxy({} as any, {
+type BufferCtor = typeof import('node:buffer').Buffer;
+let _Buffer: BufferCtor | undefined;
+const Buffer: BufferCtor = new Proxy({} as BufferCtor, {
     get(_, prop) {
-        if (!_Buffer && _require) _Buffer = _require('buffer').Buffer;
-        return _Buffer ? _Buffer[prop] : undefined;
+        if (!_Buffer && _require) _Buffer = _require('buffer').Buffer as BufferCtor;
+        return _Buffer ? (_Buffer as unknown as Record<string | symbol, unknown>)[prop] : undefined;
     }
 });
 
@@ -55,19 +56,30 @@ interface BufReader {
 
 const { RESERVED_SPACES } = CC;
 
-export interface SerType {
-    fromByteBuffer(b: BufReader): any;
-    appendByteBuffer(b: BufWriter, v: any): void;
-    fromObject(v: any): any;
-    toObject(v: any, debug?: any): any;
-    compare?: (a: any, b: any) => number;
-    nosort?: boolean;
-    st_operations?: any[];
-    validate?: (arr: any[]) => any[];
+interface SerDebug {
+    use_default?: boolean;
+    annotate?: boolean;
+    [key: string]: unknown;
 }
 
-const isDigits = (v: any): boolean => /^-?\d+$/.test(String(v));
-const toNumber = (v: any): number => {
+interface FieldDef {
+    name: string;
+    type: SerType;
+}
+
+export interface SerType {
+    fromByteBuffer(b: BufReader): unknown;
+    appendByteBuffer(b: BufWriter, v: unknown): void;
+    fromObject(v: unknown): unknown;
+    toObject(v: unknown, debug?: SerDebug): unknown;
+    compare?: (a: unknown, b: unknown) => number;
+    nosort?: boolean;
+    st_operations?: SerType[];
+    validate?: (arr: unknown[]) => unknown[];
+}
+
+const isDigits = (v: unknown): boolean => /^-?\d+$/.test(String(v));
+const toNumber = (v: unknown): number => {
     if (typeof v === 'number') return v;
     return isDigits(v) ? Number(v) : NaN;
 };
@@ -76,21 +88,23 @@ const int64ToSafeValue = (n: bigint): number | string => (
         ? Number(n)
         : n.toString()
 );
-const $required = (obj: any, name?: string): void => { if (obj == null) throw new Error(`${name || 'value'} required`); };
-const requireRange = (min: number, max: number, v: any, name?: string): void => {
-    if (v < min || v > max) throw new Error(`${name || 'value'} out of range [${min}, ${max}]: ${v}`);
+const $required = (obj: unknown, name?: string): void => { if (obj == null) throw new Error(`${name || 'value'} required`); };
+const requireRange = (min: number, max: number, v: number | string, name?: string): void => {
+    const num = Number(v);
+    if (num < min || num > max) throw new Error(`${name || 'value'} out of range [${min}, ${max}]: ${v}`);
 };
 
-const strCmp = (a: any, b: any): number => a > b ? 1 : a < b ? -1 : 0;
-const firstEl = (el: any): any => Array.isArray(el) ? el[0] : el;
+const strCmp = (a: unknown, b: unknown): number => (a as never) > (b as never) ? 1 : (a as never) < (b as never) ? -1 : 0;
+const firstEl = (el: unknown): unknown => Array.isArray(el) ? el[0] : el;
 
-function sortOperation(array: any[], st_operation?: any): any[] {
+function sortOperation(array: unknown[], st_operation?: SerType): unknown[] {
     if (!st_operation) return array;
     if (st_operation.compare) {
-        return array.sort((a: any, b: any) => st_operation.compare(firstEl(a), firstEl(b)));
+        const cmp = st_operation.compare;
+        return array.sort((a, b) => cmp(firstEl(a), firstEl(b)));
     }
     if (st_operation.nosort) return array;
-    return array.sort((a: any, b: any) => {
+    return array.sort((a, b) => {
         const fa = firstEl(a);
         const fb = firstEl(b);
         if (typeof fa === 'number' && typeof fb === 'number') return fa - fb;
@@ -100,10 +114,10 @@ function sortOperation(array: any[], st_operation?: any): any[] {
 }
 
 const void_type: SerType = {
-    fromByteBuffer(): any { return undefined; },
+    fromByteBuffer(): undefined { return undefined; },
     appendByteBuffer(): void { /* void serializes to zero bytes */ },
-    fromObject(): any { return undefined; },
-    toObject(object: any, debug?: any): any {
+    fromObject(): undefined { return undefined; },
+    toObject(object: unknown, debug?: SerDebug): undefined {
         if (debug && debug.use_default && object === undefined) return undefined;
         return undefined;
     },
@@ -111,57 +125,57 @@ const void_type: SerType = {
 
 const uint8: SerType = {
     fromByteBuffer(b: BufReader): number { return b.readUint8(); },
-    appendByteBuffer(b: BufWriter, v: any): void { requireRange(0, 0xFF, v, 'uint8'); b.writeUint8(v); },
-    fromObject(v: any): any { requireRange(0, 0xFF, v, 'uint8'); return v; },
-    toObject(v: any, debug?: any): any {
+    appendByteBuffer(b: BufWriter, v: number): void { requireRange(0, 0xFF, v, 'uint8'); b.writeUint8(v); },
+    fromObject(v: number): number { requireRange(0, 0xFF, v, 'uint8'); return v; },
+    toObject(v: number, debug?: SerDebug): number {
         if (debug && debug.use_default && v === undefined) return 0;
         requireRange(0, 0xFF, v, 'uint8');
-        return parseInt(v, 10);
+        return parseInt(String(v), 10);
     },
 };
 
 const uint16: SerType = {
     fromByteBuffer(b: BufReader): number { return b.readUint16(); },
-    appendByteBuffer(b: BufWriter, v: any): void { requireRange(0, 0xFFFF, v, 'uint16'); b.writeUint16(v); },
-    fromObject(v: any): any { requireRange(0, 0xFFFF, v, 'uint16'); return v; },
-    toObject(v: any, debug?: any): any {
+    appendByteBuffer(b: BufWriter, v: number): void { requireRange(0, 0xFFFF, v, 'uint16'); b.writeUint16(v); },
+    fromObject(v: number): number { requireRange(0, 0xFFFF, v, 'uint16'); return v; },
+    toObject(v: number, debug?: SerDebug): number {
         if (debug && debug.use_default && v === undefined) return 0;
         requireRange(0, 0xFFFF, v, 'uint16');
-        return parseInt(v, 10);
+        return parseInt(String(v), 10);
     },
 };
 
 const uint32: SerType = {
     fromByteBuffer(b: BufReader): number { return b.readUint32(); },
-    appendByteBuffer(b: BufWriter, v: any): void { requireRange(0, 0xFFFFFFFF, v, 'uint32'); b.writeUint32(v); },
-    fromObject(v: any): any { requireRange(0, 0xFFFFFFFF, v, 'uint32'); return v; },
-    toObject(v: any, debug?: any): any {
+    appendByteBuffer(b: BufWriter, v: number): void { requireRange(0, 0xFFFFFFFF, v, 'uint32'); b.writeUint32(v); },
+    fromObject(v: number): number { requireRange(0, 0xFFFFFFFF, v, 'uint32'); return v; },
+    toObject(v: number, debug?: SerDebug): number {
         if (debug && debug.use_default && v === undefined) return 0;
         requireRange(0, 0xFFFFFFFF, v, 'uint32');
-        return parseInt(v, 10);
+        return parseInt(String(v), 10);
     },
 };
 
 const varint32: SerType = {
     fromByteBuffer(b: BufReader): number { return b.readVarint32(); },
-    appendByteBuffer(b: BufWriter, v: any): void {
+    appendByteBuffer(b: BufWriter, v: number): void {
         requireRange(-2147483648, 2147483647, v, 'varint32');
         b.writeVarint32(v);
     },
-    fromObject(v: any): any {
+    fromObject(v: number): number {
         requireRange(-2147483648, 2147483647, v, 'varint32');
         return v;
     },
-    toObject(v: any, debug?: any): any {
+    toObject(v: number, debug?: SerDebug): number {
         if (debug && debug.use_default && v === undefined) return 0;
         requireRange(-2147483648, 2147483647, v, 'varint32');
-        return parseInt(v, 10);
+        return parseInt(String(v), 10);
     },
 };
 
 const int64: SerType = {
-    fromByteBuffer(b: BufReader): any { return b.readInt64(); },
-    appendByteBuffer(b: BufWriter, v: any): void {
+    fromByteBuffer(b: BufReader): number | string { return b.readInt64(); },
+    appendByteBuffer(b: BufWriter, v: number | bigint | string): void {
         $required(v, 'int64');
         const n = BigInt(String(v));
         if (n < -0x8000000000000000n || n > 0x7FFFFFFFFFFFFFFFn) {
@@ -169,7 +183,7 @@ const int64: SerType = {
         }
         b.writeInt64(n);
     },
-    fromObject(v: any): any {
+    fromObject(v: number | bigint | string): number | string {
         $required(v, 'int64');
         const n = BigInt(String(v));
         if (n < -0x8000000000000000n || n > 0x7FFFFFFFFFFFFFFFn) {
@@ -177,7 +191,7 @@ const int64: SerType = {
         }
         return int64ToSafeValue(n);
     },
-    toObject(v: any, debug?: any): any {
+    toObject(v: number | bigint | string, debug?: SerDebug): string {
         if (debug && debug.use_default && v === undefined) return '0';
         $required(v, 'int64');
         return String(v);
@@ -185,8 +199,8 @@ const int64: SerType = {
 };
 
 const uint64: SerType = {
-    fromByteBuffer(b: BufReader): any { return b.readUint64(); },
-    appendByteBuffer(b: BufWriter, v: any): void {
+    fromByteBuffer(b: BufReader): number | string { return b.readUint64(); },
+    appendByteBuffer(b: BufWriter, v: number | bigint | string): void {
         $required(v, 'uint64');
         const n = BigInt(String(v));
         if (n < 0n || n > 0xFFFFFFFFFFFFFFFFn) {
@@ -196,7 +210,7 @@ const uint64: SerType = {
         buf.writeBigUInt64LE(n, 0);
         b.write(buf);
     },
-    fromObject(v: any): any {
+    fromObject(v: number | bigint | string): number | string {
         $required(v, 'uint64');
         const n = BigInt(String(v));
         if (n < 0n || n > 0xFFFFFFFFFFFFFFFFn) {
@@ -204,7 +218,7 @@ const uint64: SerType = {
         }
         return n <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(n) : n.toString();
     },
-    toObject(v: any, debug?: any): any {
+    toObject(v: number | bigint | string, debug?: SerDebug): string {
         if (debug && debug.use_default && v === undefined) return '0';
         $required(v, 'uint64');
         const n = BigInt(String(v));
@@ -216,19 +230,19 @@ const uint64: SerType = {
 };
 
 const string_type: SerType = {
-    fromByteBuffer(b: BufReader): any {
+    fromByteBuffer(b: BufReader): string {
         const len = b.readVarint32();
         const data = b.read(len);
         return Buffer.from(data).toString('utf8');
     },
-    appendByteBuffer(b: BufWriter, v: any): void {
+    appendByteBuffer(b: BufWriter, v: unknown): void {
         $required(v, 'string');
         const buf = Buffer.from(String(v), 'utf8');
         b.writeVarint32(buf.length);
         b.write(buf);
     },
-    fromObject(v: any): any { $required(v, 'string'); return Buffer.from(String(v), 'utf8'); },
-    toObject(v: any, debug?: any): any {
+    fromObject(v: unknown): Buffer { $required(v, 'string'); return Buffer.from(String(v), 'utf8'); },
+    toObject(v: unknown, debug?: SerDebug): string {
         if (debug && debug.use_default && v === undefined) return '';
         return String(v);
     },
@@ -236,25 +250,25 @@ const string_type: SerType = {
 
 function bytesType(size?: number): SerType {
     return {
-        fromByteBuffer(b: BufReader): any {
+        fromByteBuffer(b: BufReader): Buffer {
             if (size === undefined) {
                 const len = b.readVarint32();
                 return b.read(len);
             }
             return b.read(size);
         },
-        appendByteBuffer(b: BufWriter, v: any): void {
+        appendByteBuffer(b: BufWriter, v: unknown): void {
             $required(v, 'bytes');
-            let buf = Buffer.isBuffer(v) ? v : Buffer.from(String(v), 'hex');
+            const buf = Buffer.isBuffer(v) ? v : Buffer.from(String(v), 'hex');
             if (size === undefined) b.writeVarint32(buf.length);
             b.write(buf);
         },
-        fromObject(v: any): any {
+        fromObject(v: unknown): Buffer {
             $required(v, 'bytes');
             if (Buffer.isBuffer(v)) return v;
             return Buffer.from(String(v), 'hex');
         },
-        toObject(v: any, debug?: any): any {
+        toObject(v: unknown, debug?: SerDebug): string {
             if (debug && debug.use_default && v === undefined) {
                 if (size) return '00'.repeat(size);
                 return '';
@@ -267,53 +281,54 @@ function bytesType(size?: number): SerType {
 }
 
 const bool_type: SerType = {
-    fromByteBuffer(b: BufReader): any { return b.readUint8() === 1; },
-    appendByteBuffer(b: BufWriter, v: any): void { b.writeUint8(v ? 1 : 0); },
-    fromObject(v: any): any { return !!v; },
-    toObject(v: any, debug?: any): any {
+    fromByteBuffer(b: BufReader): boolean { return b.readUint8() === 1; },
+    appendByteBuffer(b: BufWriter, v: unknown): void { b.writeUint8(v ? 1 : 0); },
+    fromObject(v: unknown): boolean { return !!v; },
+    toObject(v: unknown, debug?: SerDebug): boolean {
         if (debug && debug.use_default && v === undefined) return false;
         return !!v;
     },
 };
 
-function arrayType(st_operation: any): SerType {
+function arrayType(st_operation: SerType): SerType {
     return {
-        fromByteBuffer(b: BufReader): any {
+        fromByteBuffer(b: BufReader): unknown[] {
             const size = b.readVarint32();
-            const result: any[] = [];
+            const result: unknown[] = [];
             for (let i = 0; i < size; i++) {
                 result.push(st_operation.fromByteBuffer(b));
             }
             return result;
         },
-        appendByteBuffer(b: BufWriter, v: any): void {
+        appendByteBuffer(b: BufWriter, v: unknown): void {
             $required(v, 'array');
-            b.writeVarint32(v.length);
-            for (const item of v) {
+            const arr = v as unknown[];
+            b.writeVarint32(arr.length);
+            for (const item of arr) {
                 st_operation.appendByteBuffer(b, item);
             }
         },
-        fromObject(v: any): any {
+        fromObject(v: unknown): unknown[] {
             $required(v, 'array');
-            return v.map((item: any) => st_operation.fromObject(item));
+            return (v as unknown[]).map((item) => st_operation.fromObject(item));
         },
-        toObject(v: any, debug?: any): any {
+        toObject(v: unknown, debug?: SerDebug): unknown[] {
             if (debug && debug.use_default && v === undefined) {
                 return [st_operation.toObject(undefined, debug)];
             }
             $required(v, 'array');
-            return v.map((item: any) => st_operation.toObject(item, debug));
+            return (v as unknown[]).map((item) => st_operation.toObject(item, debug));
         },
     };
 }
 
 const time_point_sec: SerType = {
-    fromByteBuffer(b: BufReader): any { return b.readUint32(); },
-    appendByteBuffer(b: BufWriter, v: any): void {
-        if (typeof v !== 'number') v = time_point_sec.fromObject(v);
-        b.writeUint32(v);
+    fromByteBuffer(b: BufReader): number { return b.readUint32(); },
+    appendByteBuffer(b: BufWriter, v: unknown): void {
+        const n = typeof v === 'number' ? v : (time_point_sec.fromObject(v) as number);
+        b.writeUint32(n);
     },
-    fromObject(v: any): any {
+    fromObject(v: unknown): number {
         $required(v, 'time_point_sec');
         if (typeof v === 'number') return v;
         if (v instanceof Date) return Math.floor(v.getTime() / 1000);
@@ -321,21 +336,21 @@ const time_point_sec: SerType = {
         if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}$/.test(v)) v += 'Z';
         return Math.floor(new Date(v).getTime() / 1000);
     },
-    toObject(v: any, debug?: any): any {
+    toObject(v: unknown, debug?: SerDebug): string {
         if (debug && debug.use_default && v === undefined) {
             return new Date(0).toISOString().split('.')[0];
         }
         $required(v, 'time_point_sec');
         if (typeof v === 'string') return v;
         if (v instanceof Date) return v.toISOString().split('.')[0];
-        const int = parseInt(v, 10);
+        const int = parseInt(String(v), 10);
         requireRange(0, 0xFFFFFFFF, int, 'uint32');
         return new Date(int * 1000).toISOString().split('.')[0];
     },
 };
 
-function setType(st_operation: any): SerType & { validate: (arr: any[]) => any[] } {
-    function validate(arr: any[]): any[] {
+function setType(st_operation: SerType): SerType & { validate: (arr: unknown[]) => unknown[] } {
+    function validate(arr: unknown[]): unknown[] {
         const dup: Record<string | number, boolean> = {};
         for (const item of arr) {
             const key = (typeof item === 'number' || typeof item === 'string') ? item : undefined;
@@ -349,111 +364,108 @@ function setType(st_operation: any): SerType & { validate: (arr: any[]) => any[]
 
     return {
         validate,
-        fromByteBuffer(b: BufReader): any {
+        fromByteBuffer(b: BufReader): unknown[] {
             const size = b.readVarint32();
-            const result: any[] = [];
+            const result: unknown[] = [];
             for (let i = 0; i < size; i++) {
                 result.push(st_operation.fromByteBuffer(b));
             }
             return validate(result);
         },
-        appendByteBuffer(b: BufWriter, v: any): void {
-            if (!v) v = [];
-            const sorted = validate(v);
+        appendByteBuffer(b: BufWriter, v: unknown): void {
+            const sorted = validate((v || []) as unknown[]);
             b.writeVarint32(sorted.length);
             for (const item of sorted) {
                 st_operation.appendByteBuffer(b, item);
             }
         },
-        fromObject(v: any): any {
-            if (!v) v = [];
-            return validate(v.map((item: any) => st_operation.fromObject(item)));
+        fromObject(v: unknown): unknown[] {
+            const arr = (v || []) as unknown[];
+            return validate(arr.map((item) => st_operation.fromObject(item)));
         },
-        toObject(v: any, debug?: any): any {
+        toObject(v: unknown, debug?: SerDebug): unknown[] {
             if (debug && debug.use_default && v === undefined) {
                 return [st_operation.toObject(undefined, debug)];
             }
-            if (!v) v = [];
-            return validate(v.map((item: any) => st_operation.toObject(item, debug)));
+            const arr = (v || []) as unknown[];
+            return validate(arr.map((item) => st_operation.toObject(item, debug)));
         },
     };
 }
 
-function idType(reserved_spaces: any, object_type: any): SerType & { compare?: (a: any, b: any) => number } {
+function idType(reserved_spaces: number, object_type: string): SerType & { compare?: (a: unknown, b: unknown) => number } {
     const objectTypeId = (OBJECT_TYPE as Record<string, number>)[object_type] != null ? (OBJECT_TYPE as Record<string, number>)[object_type] : object_type;
     return {
-        fromByteBuffer(b: BufReader): any { return b.readVarint32(); },
-        appendByteBuffer(b: BufWriter, v: any): void {
+        fromByteBuffer(b: BufReader): number { return b.readVarint32(); },
+        appendByteBuffer(b: BufWriter, v: unknown): void {
             $required(v, 'id_type');
-            if (/^\d+\.\d+\.\d+$/.test(String(v))) {
-                v = getInstance(reserved_spaces, object_type, v);
-            }
-            b.writeVarint32(toNumber(v));
+            const id = /^\d+\.\d+\.\d+$/.test(String(v)) ? getInstance(reserved_spaces, object_type, v) : v;
+            b.writeVarint32(toNumber(id));
         },
-        fromObject(v: any): any {
+        fromObject(v: unknown): number {
             $required(v, 'id_type');
             if (isDigits(v)) return toNumber(v);
             return getInstance(reserved_spaces, object_type, v);
         },
-        toObject(v: any, debug?: any): any {
+        toObject(v: unknown, debug?: SerDebug): string {
             if (debug && debug.use_default && v === undefined) {
                 return `${reserved_spaces}.${objectTypeId}.0`;
             }
             $required(v, 'id_type');
-            if (/^\d+\.\d+\.\d+$/.test(String(v))) {
-                v = getInstance(reserved_spaces, object_type, v);
-            }
-            return `${reserved_spaces}.${objectTypeId}.${v}`;
+            const id = /^\d+\.\d+\.\d+$/.test(String(v)) ? getInstance(reserved_spaces, object_type, v) : v;
+            return `${reserved_spaces}.${objectTypeId}.${id}`;
         },
     };
 }
 
-function getInstance(_reserved_spaces: any, _object_type: any, object: any): number {
+function getInstance(_reserved_spaces: number, _object_type: string, object: unknown): number {
     const parts = String(object).split('.');
     if (parts.length !== 3) throw new Error(`Invalid object ID: ${object}`);
     return parseInt(parts[2], 10);
 }
 
-function protocolIdType(name: string): SerType & { compare?: (a: any, b: any) => number } {
+function protocolIdType(name: string): SerType & { compare?: (a: unknown, b: unknown) => number } {
     return idType(RESERVED_SPACES.protocol_ids, name);
 }
 
-const object_id_type: SerType & { compare?: (a: any, b: any) => number } = {
-    compare(a: ObjectId, b: ObjectId): number {
-        if (a.space !== b.space) return a.space - b.space;
-        if (a.type !== b.type) return a.type - b.type;
-        const ai = typeof a.instance === 'bigint' ? a.instance : BigInt(a.instance);
-        const bi = typeof b.instance === 'bigint' ? b.instance : BigInt(b.instance);
+const object_id_type: SerType & { compare?: (a: unknown, b: unknown) => number } = {
+    compare(a: unknown, b: unknown): number {
+        const oa = a as ObjectId;
+        const ob = b as ObjectId;
+        if (oa.space !== ob.space) return oa.space - ob.space;
+        if (oa.type !== ob.type) return oa.type - ob.type;
+        const ai = typeof oa.instance === 'bigint' ? oa.instance : BigInt(oa.instance);
+        const bi = typeof ob.instance === 'bigint' ? ob.instance : BigInt(ob.instance);
         return ai < bi ? -1 : ai > bi ? 1 : 0;
     },
-    fromByteBuffer(b: BufReader): any {
+    fromByteBuffer(b: BufReader): ObjectId {
         const long = b.readUint64();
         return ObjectId.fromLong(long);
     },
-    appendByteBuffer(b: BufWriter, v: any): void {
+    appendByteBuffer(b: BufWriter, v: unknown): void {
         $required(v, 'object_id_type');
         const obj = ObjectId.fromString(String(v));
         obj.appendByteBuffer(b);
     },
-    fromObject(v: any): any {
+    fromObject(v: unknown): ObjectId {
         $required(v, 'object_id_type');
         return ObjectId.fromString(String(v));
     },
-    toObject(v: any, debug?: any): any {
+    toObject(v: unknown, debug?: SerDebug): string {
         if (debug && debug.use_default && v === undefined) return '0.0.0';
         $required(v, 'object_id_type');
-        let obj: any = v;
+        let obj: unknown = v;
         if (obj instanceof ObjectId) return obj.toString();
         try {
             obj = ObjectId.fromString(String(v));
-        } catch (_: any) {
+        } catch (_) {
             if (typeof v === 'number') {
                 obj = ObjectId.fromLong(v);
             } else {
                 throw new Error(`Invalid object_id: ${v}`);
             }
         }
-        return obj.toString();
+        return obj instanceof ObjectId ? obj.toString() : (obj as ObjectId).toString();
     },
 };
 
@@ -462,14 +474,14 @@ class ObjectId {
     type: number;
     instance: bigint;
 
-    constructor(space: any, type: any, instance: any) {
+    constructor(space: number | string, type: number | string, instance: number | bigint | string) {
         this.space = Number(space);
         this.type = Number(type);
         this.instance = BigInt(String(instance));
         if (!isDigits(String(instance))) throw new Error('ObjectId instance must be digits');
     }
 
-    static fromString(value: any): ObjectId {
+    static fromString(value: unknown): ObjectId {
         if (typeof value !== 'string' || value.split('.').length !== 3) {
             throw new Error(`Invalid ObjectId: ${value}`);
         }
@@ -477,7 +489,7 @@ class ObjectId {
         return new ObjectId(space, type, instance);
     }
 
-    static fromLong(long: any): ObjectId {
+    static fromLong(long: number | bigint | string): ObjectId {
         long = BigInt(long);
         const space = Number((long >> 56n) & 0xFFn);
         const type = Number((long >> 48n) & 0xFFn);
@@ -510,13 +522,13 @@ class ObjectId {
     }
 }
 
-function optionalType(st_operation: any): SerType {
+function optionalType(st_operation: SerType): SerType {
     return {
-        fromByteBuffer(b: BufReader): any {
+        fromByteBuffer(b: BufReader): unknown {
             if (b.readUint8() !== 1) return undefined;
             return st_operation.fromByteBuffer(b);
         },
-        appendByteBuffer(b: BufWriter, v: any): void {
+        appendByteBuffer(b: BufWriter, v: unknown): void {
             if (v !== null && v !== undefined) {
                 b.writeUint8(1);
                 st_operation.appendByteBuffer(b, v);
@@ -524,18 +536,18 @@ function optionalType(st_operation: any): SerType {
                 b.writeUint8(0);
             }
         },
-        fromObject(v: any): any {
+        fromObject(v: unknown): unknown {
             if (v === undefined || v === null) return undefined;
             return st_operation.fromObject(v);
         },
-        toObject(v: any, debug?: any): any {
+        toObject(v: unknown, debug?: SerDebug): unknown {
             if (!debug || !debug.use_default) {
                 if (v === undefined || v === null) return undefined;
             }
             const result = st_operation.toObject(v, debug);
             if (debug && debug.annotate) {
-                if (typeof result === 'object') {
-                    result.__optional = 'parent is optional';
+                if (typeof result === 'object' && result !== null) {
+                    (result as Record<string, unknown>).__optional = 'parent is optional';
                 } else {
                     return { __optional: result };
                 }
@@ -545,13 +557,13 @@ function optionalType(st_operation: any): SerType {
     };
 }
 
-function extensionType(fields_def: any[]): SerType {
+function extensionType(fields_def: FieldDef[]): SerType {
     return {
-        fromByteBuffer(b: BufReader): any {
+        fromByteBuffer(b: BufReader): Record<string, unknown> | undefined {
             const count = b.readVarint32();
             if (count === 0) return undefined;
 
-            const o: Record<string, any> = {};
+            const o: Record<string, unknown> = {};
             for (let i = 0; i < count; i++) {
                 const index = b.readVarint32();
                 if (index >= fields_def.length) throw new Error('extension index out of range: ' + index);
@@ -560,15 +572,16 @@ function extensionType(fields_def: any[]): SerType {
             }
             return o;
         },
-        appendByteBuffer(b: BufWriter, v: any): void {
+        appendByteBuffer(b: BufWriter, v: unknown): void {
             const temp = new BufferWriter();
             let count = 0;
 
             if (v) {
-                fields_def.forEach((f: any, i: number) => {
-                    if (v[f.name] !== undefined && v[f.name] !== null) {
+                const rec = v as Record<string, unknown>;
+                fields_def.forEach((f, i) => {
+                    if (rec[f.name] !== undefined && rec[f.name] !== null) {
                         temp.writeVarint32(i);
-                        f.type.appendByteBuffer(temp, v[f.name]);
+                        f.type.appendByteBuffer(temp, rec[f.name]);
                         count++;
                     }
                 });
@@ -577,22 +590,24 @@ function extensionType(fields_def: any[]): SerType {
             b.writeVarint32(count);
             b.append(temp);
         },
-        fromObject(v: any): any {
+        fromObject(v: unknown): Record<string, unknown> | undefined {
             if (v === undefined) return undefined;
-            const result: Record<string, any> = {};
-            fields_def.forEach((f: any) => {
-                if (v[f.name] !== undefined && v[f.name] !== null) {
-                    result[f.name] = f.type.fromObject(v[f.name]);
+            const result: Record<string, unknown> = {};
+            const rec = v as Record<string, unknown>;
+            fields_def.forEach((f) => {
+                if (rec[f.name] !== undefined && rec[f.name] !== null) {
+                    result[f.name] = f.type.fromObject(rec[f.name]);
                 }
             });
             return result;
         },
-        toObject(v: any, debug?: any): any {
+        toObject(v: unknown, debug?: SerDebug): Record<string, unknown> | undefined {
             if (v === undefined) return undefined;
-            const result: Record<string, any> = {};
-            fields_def.forEach((f: any) => {
-                if (v[f.name] !== undefined && v[f.name] !== null) {
-                    result[f.name] = f.type.toObject(v[f.name], debug);
+            const result: Record<string, unknown> = {};
+            const rec = v as Record<string, unknown>;
+            fields_def.forEach((f) => {
+                if (rec[f.name] !== undefined && rec[f.name] !== null) {
+                    result[f.name] = f.type.toObject(rec[f.name], debug);
                 }
             });
             return result;
@@ -600,45 +615,48 @@ function extensionType(fields_def: any[]): SerType {
     };
 }
 
-function staticVariantType(st_operations: any[]): SerType & { st_operations: any[] } {
+function staticVariantType(st_operations: SerType[]): SerType & { st_operations: SerType[] } {
     return {
         nosort: true,
         st_operations,
-        compare(a: any, b: any): number {
+        compare(a: unknown, b: unknown): number {
             return Number(a) - Number(b);
         },
-        fromByteBuffer(b: BufReader): any {
+        fromByteBuffer(b: BufReader): unknown[] {
             const type_id = b.readVarint32();
             const st_operation = this.st_operations[type_id];
             if (!st_operation) throw new Error(`Unknown static_variant type: ${type_id}`);
             return [type_id, st_operation.fromByteBuffer(b)];
         },
-        appendByteBuffer(b: BufWriter, v: any): void {
+        appendByteBuffer(b: BufWriter, v: unknown): void {
             $required(v, 'static_variant');
-            const type_id = v[0];
+            const pair = v as unknown[];
+            const type_id = pair[0] as number;
             const st_operation = this.st_operations[type_id];
             if (!st_operation) throw new Error(`Unknown static_variant type: ${type_id}`);
             b.writeVarint32(type_id);
-            st_operation.appendByteBuffer(b, v[1]);
+            st_operation.appendByteBuffer(b, pair[1]);
         },
-        fromObject(v: any): any {
+        fromObject(v: unknown): unknown[] {
             $required(v, 'static_variant');
-            const type_id = v[0];
+            const pair = v as unknown[];
+            const type_id = pair[0] as number;
             const st_operation = this.st_operations[type_id];
             if (!st_operation) throw new Error(`Unknown static_variant type: ${type_id}`);
-            return [type_id, st_operation.fromObject(v[1])];
+            return [type_id, st_operation.fromObject(pair[1])];
         },
-        toObject(v: any, debug?: any): any {
+        toObject(v: unknown, debug?: SerDebug): unknown[] {
             if (debug && debug.use_default && v === undefined) {
                 const sto = this.st_operations[0];
                 if (!sto) throw new Error('Unknown static_variant type: 0');
                 return [0, sto.toObject(undefined, debug)];
             }
             $required(v, 'static_variant');
-            const type_id = v[0];
+            const pair = v as unknown[];
+            const type_id = pair[0] as number;
             const st_operation = this.st_operations[type_id];
             if (!st_operation) throw new Error(`Unknown static_variant type: ${type_id}`);
-            return [type_id, st_operation.toObject(v[1], debug)];
+            return [type_id, st_operation.toObject(pair[1], debug)];
         },
     };
 }
@@ -647,20 +665,20 @@ const public_key_type: SerType & { _toPublic(): void } = {
     _toPublic(): void {
         throw new Error('public_key type requires ecc module - import from index');
     },
-    fromByteBuffer(b: BufReader): any {
+    fromByteBuffer(b: BufReader): Buffer {
         return b.read(33);
     },
-    appendByteBuffer(b: BufWriter, v: any): void {
+    appendByteBuffer(b: BufWriter, v: unknown): void {
         $required(v, 'public_key');
-        const buf = Buffer.isBuffer(v) ? v : Buffer.from(v, 'hex');
+        const buf = Buffer.isBuffer(v) ? v : Buffer.from(String(v), 'hex');
         b.write(buf);
     },
-    fromObject(v: any): any {
+    fromObject(v: unknown): Buffer {
         $required(v, 'public_key');
         if (Buffer.isBuffer(v)) return v;
-        return Buffer.from(v, 'hex');
+        return Buffer.from(String(v), 'hex');
     },
-    toObject(v: any, debug?: any): any {
+    toObject(v: unknown, debug?: SerDebug): string {
         if (debug && debug.use_default && v === undefined) return '';
         $required(v, 'public_key');
         if (Buffer.isBuffer(v)) return v.toString('hex');

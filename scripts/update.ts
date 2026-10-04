@@ -99,7 +99,7 @@ function runIn(cwd: string, cmd: string) {
     log(`Executing: ${cmd}`);
     try {
         execSync(cmd, { stdio: 'inherit', cwd });
-    } catch (err: any) {
+    } catch (err) {
         console.error(updateError(`[ERROR] Command failed: ${cmd}`));
         throw err;
     }
@@ -120,9 +120,9 @@ function run(cmd: string) {
 
 // ── npm-install helpers ──────────────────────────────────────────────
 
-function readPackageJson(root: string): Record<string, any> | null {
+function readPackageJson(root: string): Record<string, unknown> | null {
     try {
-        return readJSON(path.join(root, 'package.json')) as Record<string, any>;
+        return readJSON(path.join(root, 'package.json')) as Record<string, unknown>;
     } catch (_) {
         return null;
     }
@@ -167,7 +167,7 @@ function getNpmLatestVersion(pkgName: string): string {
         const version = execSync(`npm view ${pkgName} version`, { stdio: 'pipe' }).toString().trim();
         if (!version) throw new Error('npm returned an empty version.');
         return version;
-    } catch (err: any) {
+    } catch (err) {
         throw new Error(`Could not reach the npm registry to check for updates (${getErrorMessage(err)}).`);
     }
 }
@@ -243,7 +243,7 @@ function detectMonolithicRuntime() {
     try {
         const info = readJSON(PATHS.PROFILES.MONOLITHIC_BOT_INFO);
         if (Array.isArray(info.botNames)) {
-            detected.botNames = info.botNames.map((name: any) => String(name));
+            detected.botNames = info.botNames.map((name: unknown) => String(name));
         } else if (info.botName) {
             detected.botNames = [String(info.botName)];
         }
@@ -257,7 +257,7 @@ function detectAnyMonolithicFiles() {
         || fs.existsSync(PATHS.PROFILES.MONOLITHIC_CRED_PID);
 }
 
-function restartMonolithicRuntime(monolithic: any) {
+function restartMonolithicRuntime(monolithic: { wrapperPid?: unknown; botPid?: unknown; botNames: string[] }) {
     const details = [
         `wrapper PID ${monolithic.wrapperPid}`,
         monolithic.botPid ? `bot PID ${monolithic.botPid}` : null,
@@ -273,7 +273,7 @@ function restartMonolithicRuntime(monolithic: any) {
             try { process.kill(adapterPid, 'SIGTERM'); } catch (_) {}
         }
     } catch (_) {}
-    try { process.kill(monolithic.wrapperPid, 'SIGUSR2'); } catch (_) {}
+    try { process.kill(Number(monolithic.wrapperPid), 'SIGUSR2'); } catch (_) {}
 }
 
 /**
@@ -412,10 +412,10 @@ function ejectIncrementalBuildCache() {
     }
 }
 
-async function detectIsolatedSupervisor(): Promise<Record<string, any> | null> {
+async function detectIsolatedSupervisor(): Promise<Record<string, unknown> | null> {
     try {
-        const resp: any = await sendControlCommand({ cmd: 'status' });
-        return resp?.ok ? (resp.status as Record<string, any>) || {} : null;
+        const resp = await sendControlCommand({ cmd: 'status' }) as { ok?: boolean; status?: Record<string, unknown> } | null;
+        return resp?.ok ? resp.status || {} : null;
     } catch (_) {
         return null;
     }
@@ -428,8 +428,8 @@ async function restartActiveIsolatedProcesses() {
     }
 
     const runningNames = Object.entries(status)
-        .filter(([name, info]: any) => name !== 'dexbot-update' && info && info.status === 'running')
-        .map(([name]: any) => name);
+        .filter(([name, info]) => name !== 'dexbot-update' && Boolean(info) && (info as { status?: unknown }).status === 'running')
+        .map(([name]) => name);
 
     if (runningNames.length === 0) {
         log('No active isolated processes are currently running. Skipping supervisor restart.');
@@ -504,7 +504,7 @@ async function regenerateEcosystemConfig() {
             throw new Error(`ecosystem generator exited with code ${result.status}`);
         }
         log('Ecosystem config regenerated successfully.');
-    } catch (err: any) {
+    } catch (err) {
         log(`Warning: Ecosystem config regeneration failed (${getErrorMessage(err)}). Continuing with existing config.`);
     }
 }
@@ -516,7 +516,7 @@ async function regenerateEcosystemConfig() {
  * regenerateEcosystemConfig(): its link against the cached pre-pull
  * modules/paths.js can fail even though dist/ is fresh.
  */
-function pm2NeedsMarketAdapter(runningActiveBots: any[]): boolean {
+function pm2NeedsMarketAdapter(runningActiveBots: Array<{ active?: unknown; name?: string }>): boolean {
     const moduleUrl = resolvePm2ModuleUrl();
     const script =
         `import(${JSON.stringify(moduleUrl)})` +
@@ -561,12 +561,12 @@ async function restartActiveRuntimes({ monolithicWasRunning, hadMonolithicFiles 
                 if (fs.existsSync(BOTS_FILE)) {
                     const raw = fs.readFileSync(BOTS_FILE, 'utf8');
                     const stripped = raw.replace(/\/\*(?:.|[\r\n])*?\*\//g, '').replace(/(^|\s*)\/\/.*$/gm, '');
-                    const config = JSON.parse(stripped);
+                    const config = JSON.parse(stripped) as { bots?: Array<{ active?: unknown; name?: string }> };
 
                     const activeInConfig = (config.bots || [])
-                        .filter((b: any) => b.active !== false)
-                        .map((b: any) => b.name)
-                        .filter((name: string) => !!name);
+                        .filter((b) => b.active !== false)
+                        .map((b) => b.name)
+                        .filter((name): name is string => !!name);
 
                     if (activeInConfig.length > 0) {
                         let runningProcesses: string[] = [];
@@ -577,11 +577,11 @@ async function restartActiveRuntimes({ monolithicWasRunning, hadMonolithicFiles 
                             if (jsonStart !== -1) {
                                 const jsonPart = output.substring(jsonStart);
                                 const parsed = JSON.parse(jsonPart);
-                                runningProcesses = parsed.map((p: any) => p.name);
+                                runningProcesses = (parsed as Array<{ name?: string }>).map((p) => String(p.name ?? '')).filter(Boolean);
                             } else {
                                 log('Warning: PM2 jlist output did not contain JSON array.');
                             }
-                        } catch (e: any) {
+                        } catch (e) {
                             // pm2 is not installed (or not usable). Config-active
                             // bots are not proof of running processes, so don't
                             // fabricate a process list — skip PM2-managed restarts
@@ -593,8 +593,8 @@ async function restartActiveRuntimes({ monolithicWasRunning, hadMonolithicFiles 
 
                         if (pm2Usable) {
                             const botsToRestart = activeInConfig.filter((name: string) => (runningProcesses as string[]).includes(name));
-                            const activeBots = (config.bots || []).filter((b: any) => b.active !== false);
-                            const runningActiveBots = activeBots.filter((b: any) => (runningProcesses as string[]).includes(b.name));
+                            const activeBots = (config.bots || []).filter((b) => b.active !== false);
+                            const runningActiveBots = activeBots.filter((b) => (runningProcesses as string[]).includes(String(b.name)));
                             const marketAdapterRequired = pm2NeedsMarketAdapter(runningActiveBots);
 
                             const serviceAppsToRestart: string[] = marketAdapterRequired ? ['dexbot-adapter'] : [];
@@ -638,7 +638,7 @@ async function restartActiveRuntimes({ monolithicWasRunning, hadMonolithicFiles 
                 }
             }
         }
-    } catch (err: any) {
+    } catch (err) {
         log(`Warning: runtime restart logic failed (${getErrorMessage(err)}). Skipping bulk restart to avoid touching dexbot-cred.`);
     }
 
@@ -876,7 +876,7 @@ try {
     try {
         // Get detached/attached branch name
         currentBranch = execSync('git rev-parse --abbrev-ref HEAD').toString().trim();
-    } catch (e: any) {
+    } catch (e) {
         // Fallback if command fails
         currentBranch = 'unknown';
     }
@@ -906,7 +906,7 @@ try {
     try {
         const currentRemote = execSync('git remote get-url origin', { stdio: 'pipe' }).toString().trim();
         log(`Remote origin already configured (${currentRemote}). Keeping existing remote.`);
-    } catch (e: any) {
+    } catch (e) {
         // Remote doesn't exist, add it from config
         log(`Adding origin remote: ${repoUrl}`);
         run(`git remote add origin ${repoUrl}`);
@@ -977,7 +977,7 @@ try {
     console.log('Incoming Changes:');
     try {
         execSync(`git log --oneline --graph --decorate HEAD..origin/${branch}`, { stdio: 'inherit', cwd: PATHS.PROJECT_ROOT });
-    } catch (e: any) {
+    } catch (e) {
         log('Warning: Could not list changes.');
     }
     console.log('----------------------------------------------------------------\n');
@@ -1119,7 +1119,7 @@ try {
         forceFull: false,
         successMessage: 'DEXBot2 update completed successfully.',
     });
-} catch (err: any) {
+} catch (err) {
     console.error(updateError('=========================================='));
     console.error(updateError('UPDATE FAILED'));
     console.error(updateError(`Error: ${getErrorMessage(err)}`));

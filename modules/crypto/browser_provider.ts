@@ -13,16 +13,31 @@ function fromAB(ab: ArrayBuffer): Uint8Array {
     return new Uint8Array(ab);
 }
 
-function webSubtle(): any {
-    if (typeof globalThis !== 'undefined' && (globalThis as any).crypto?.subtle) {
-        return (globalThis as any).crypto.subtle;
+interface WebSubtleLike {
+    digest(algorithm: string, data: ArrayBuffer): Promise<ArrayBuffer>;
+    importKey(...args: unknown[]): Promise<unknown>;
+    encrypt(...args: unknown[]): Promise<ArrayBuffer>;
+    decrypt(...args: unknown[]): Promise<ArrayBuffer>;
+    deriveBits(...args: unknown[]): Promise<ArrayBuffer>;
+    sign(...args: unknown[]): Promise<ArrayBuffer>;
+}
+
+interface GlobalCryptoLike {
+    crypto?: { subtle?: WebSubtleLike; getRandomValues?: (arr: Uint8Array) => Uint8Array };
+}
+
+function webSubtle(): WebSubtleLike | null {
+    const g = globalThis as GlobalCryptoLike;
+    if (typeof globalThis !== 'undefined' && g.crypto?.subtle) {
+        return g.crypto.subtle;
     }
     return null;
 }
 
 function getRandomValues(arr: Uint8Array): void {
-    if (typeof globalThis !== 'undefined' && (globalThis as any).crypto?.getRandomValues) {
-        (globalThis as any).crypto.getRandomValues(arr);
+    const g = globalThis as GlobalCryptoLike;
+    if (typeof globalThis !== 'undefined' && g.crypto?.getRandomValues) {
+        g.crypto.getRandomValues(arr);
         return;
     }
     throw new Error('crypto.getRandomValues not available');

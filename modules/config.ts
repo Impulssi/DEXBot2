@@ -225,7 +225,7 @@ function setUmask(mode: number): void {
 
 // Make path-related env keys live (ESM cache not invalidated via require.cache in tests)
 const _liveEnvKeys = ['DEXBOT_PROFILE_ROOT','DEXBOT2_ROOT','XDG_CONFIG_HOME','DEXBOT_MARKET_ADAPTER_DATA_DIR','DEXBOT_MARKET_ADAPTER_STATE_DIR','DEXBOT_CLAW_DATA_DIR','DEXBOT_ANALYSIS_DIR','DEXBOT_CRED_RUNTIME_DIR','DEXBOT_KEYS_FILE','DEXBOT_TEST_MARKET_ADAPTER_WHITELIST_FILE'] as const;
-const _configOverrides: Record<string, any> = {};
+const _configOverrides: Record<string, unknown> = {};
 for (const k of _liveEnvKeys) {
     Object.defineProperty(Config, k, {
         get() {
@@ -238,7 +238,7 @@ for (const k of _liveEnvKeys) {
         // Assigning undefined/null clears the override (test teardown).
         // A stale own-key with an undefined value must not shadow a later
         // live env read — that is the isolation leak this guards against.
-        set(v: any) {
+        set(v: unknown) {
             if (v === undefined || v === null) { delete _configOverrides[k]; return; }
             _configOverrides[k] = v;
         },

@@ -22,10 +22,16 @@ const DEFAULT_CHART_FILE = path.join(DEFAULT_CHART_DIR, 'tradingview_chart.html'
 const DEFAULT_AMA = MARKET_ADAPTER.AMAS.AMA3;
 const AMA_KEYWORDS = new Set(['ama', 'ama1', 'ama2', 'ama3', 'ama4']);
 
+interface GridSlotToggle {
+    price?: unknown;
+    state?: unknown;
+    type?: unknown;
+}
+
 function parseArgs() {
     const args = process.argv.slice(2);
     const config: {
-        source: { type: string; config: { filePath: any; botKey?: any } };
+        source: { type: string; config: { filePath?: string; botKey?: string } };
         chartFile: string;
         title: string | null;
         priceScale: string;
@@ -49,7 +55,7 @@ function parseArgs() {
         quiet: boolean;
         listBots: boolean;
     } = {
-        source: { type: 'market_adapter', config: { botKey: '', filePath: undefined as any } },
+        source: { type: 'market_adapter', config: { botKey: '', filePath: undefined } },
         chartFile: DEFAULT_CHART_FILE,
         title: null,
         priceScale: 'log',
@@ -122,7 +128,7 @@ function parseArgs() {
     return config;
 }
 
-function loadJsonMeta(filePath: any) {
+function loadJsonMeta(filePath: string | null | undefined) {
     if (!filePath || !fs.existsSync(filePath)) return { meta: null, candles: null };
     return loadCandleFile(filePath);
 }
@@ -141,7 +147,7 @@ function resolveOrdersFile(botKey: string | null | undefined, explicit: string |
     }
     if (!botKey) return null;
     try {
-        const ordersDir = (PATHS as any).ORDERS_DIR || path.join(path.dirname(PATHS.PROFILES.BOTS_JSON), 'orders');
+        const ordersDir = (PATHS as { ORDERS_DIR?: string }).ORDERS_DIR || path.join(path.dirname(PATHS.PROFILES.BOTS_JSON), 'orders');
         const direct = path.join(ordersDir, `${botKey}.json`);
         if (fs.existsSync(direct)) return direct;
     } catch { /* silent when absent */ }
@@ -164,14 +170,14 @@ function loadOrdersData(filePath: string | null): { buys: number[]; sells: numbe
         let low: number | null = null;
         let high: number | null = null;
         for (const s of grid) {
-            const price = Number((s as any)?.price);
+            const price = Number((s as GridSlotToggle)?.price);
             if (!Number.isFinite(price) || price <= 0) continue;
-            const st = (s as any)?.state;
+            const st = (s as GridSlotToggle)?.state;
             if (st !== 'active' && st !== 'partial' && st !== 'virtual') continue;
-            if ((s as any)?.type === 'buy') {
+            if ((s as GridSlotToggle)?.type === 'buy') {
                 if (low == null || price < low) low = price;
                 if (st !== 'virtual') buys.push(price);
-            } else if ((s as any)?.type === 'sell') {
+            } else if ((s as GridSlotToggle)?.type === 'sell') {
                 if (high == null || price > high) high = price;
                 if (st !== 'virtual') sells.push(price);
             }
@@ -182,13 +188,13 @@ function loadOrdersData(filePath: string | null): { buys: number[]; sells: numbe
     } catch { return { buys: [], sells: [], low: null, high: null }; }
 }
 
-function inferTitle(meta: any, fallback: string) {
+function inferTitle(meta: { pool?: unknown; intervalSeconds?: unknown; assetA?: { symbol?: unknown; id?: unknown }; assetB?: { symbol?: unknown; id?: unknown } } | null | undefined, fallback: string) {
     const pool = meta?.pool ? `Pool ${String(meta.pool).replace(/^1\.19\./, '')}` : null;
     const a = meta?.assetA?.symbol || meta?.assetA?.id || null;
     const b = meta?.assetB?.symbol || meta?.assetB?.id || null;
     const pair = a && b ? `${a}/${b}` : fallback;
     const label = pool || pair;
-    const interval = Number(meta?.intervalSeconds) > 0 ? toIntervalLabel(meta.intervalSeconds) : '1h';
+    const interval = Number(meta?.intervalSeconds) > 0 ? toIntervalLabel(Number(meta?.intervalSeconds)) : '1h';
     return `${label} · ${interval} · TradingView`;
 }
 
@@ -229,15 +235,16 @@ async function main() {
         // Bot grid bounds for the range highlight: mirrors the runtime grid
         // (center = AMA, min "Nx" = center/N, max "Nx" = center*N) with the
         // live asymmetric tilt. Null when no bot key (width% fallback in-page).
+        const asym = botMeta?.asymmetricBounds as { maxAsymmetryFactor?: unknown; minScaleSlots?: unknown } | null | undefined;
         const grid = botMeta?.minPrice != null && botMeta?.maxPrice != null ? {
             minPrice: botMeta.minPrice,
             maxPrice: botMeta.maxPrice,
             incrementPercent: Number(botMeta.incrementPercent) > 0 ? Number(botMeta.incrementPercent) : null,
-            maxAsymmetryFactor: Number.isFinite(Number(botMeta?.asymmetricBounds?.maxAsymmetryFactor))
-                ? Number(botMeta.asymmetricBounds.maxAsymmetryFactor)
+            maxAsymmetryFactor: Number.isFinite(Number(asym?.maxAsymmetryFactor))
+                ? Number(asym?.maxAsymmetryFactor)
                 : null,
-            minScaleSlots: Number.isFinite(Number(botMeta?.asymmetricBounds?.minScaleSlots))
-                ? Number(botMeta.asymmetricBounds.minScaleSlots)
+            minScaleSlots: Number.isFinite(Number(asym?.minScaleSlots))
+                ? Number(asym?.minScaleSlots)
                 : null,
         } : null;
         // Order overlay (canonical profiles/orders/<botKey>.json; silent when absent)
@@ -302,15 +309,15 @@ async function main() {
             // Update marker ("updated from here" line): explicit CLI flags win,
             // otherwise fall back to stamped data-file meta when present.
             updateMarkerTsSec: config.noUpdateMarker ? null : (config.updateMarkerTsSec
-                ?? (Number((jsonMeta as any)?.prevUpdateLastCandleSec) > 0 ? Number((jsonMeta as any).prevUpdateLastCandleSec) : null)),
+                ?? (Number((jsonMeta as { prevUpdateLastCandleSec?: unknown } | null | undefined)?.prevUpdateLastCandleSec) > 0 ? Number((jsonMeta as { prevUpdateLastCandleSec?: unknown }).prevUpdateLastCandleSec) : null)),
             updateMarkerNewBars: config.noUpdateMarker ? null : (config.updateMarkerNewBars
-                ?? (Number((jsonMeta as any)?.prevUpdateNewBars) || null)),
+                ?? (Number((jsonMeta as { prevUpdateNewBars?: unknown } | null | undefined)?.prevUpdateNewBars) || null)),
         }, title);
 
         writeChartFile(config.chartFile, html);
 
         if (!config.quiet) console.log(`\n[TradingView] ✓ Chart saved. Open chart: (${toFileUrl(config.chartFile)})`);
-    } catch (err: any) {
+    } catch (err) {
         console.error(`[TradingView] Error: ${getErrorMessage(err)}`);
         process.exit(1);
     }

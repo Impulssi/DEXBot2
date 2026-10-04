@@ -1,3 +1,5 @@
+import type { ReadStream, WriteStream } from 'node:fs';
+
 export interface FileStat {
   mtimeMs: number;
   isFile(): boolean;
@@ -12,7 +14,7 @@ export interface FileStat {
 
 export interface IStorageAdapter {
   /** Read and parse a JSON file */
-  readJSON<T = any>(path: string): T;
+  readJSON<T = Record<string, unknown>>(path: string): T;
 
   /**
    * Atomically write a JSON file using tmp-file + rename.
@@ -26,7 +28,7 @@ export interface IStorageAdapter {
    *     exclusive-create directly on the target — caller must handle EEXIST.
    *     Use 'wx' when the file should be created only if it does not exist.
    */
-  writeJSON(path: string, data: any, options?: { mode?: number; fsync?: boolean; tmpPrefix?: string; flag?: 'w' | 'wx' }): void;
+  writeJSON(path: string, data: unknown, options?: { mode?: number; fsync?: boolean; tmpPrefix?: string; flag?: 'w' | 'wx' }): void;
 
   /** Check if a path exists */
   exists(path: string): boolean;
@@ -98,8 +100,8 @@ export interface IStorageAdapter {
   appendFileAsync(path: string, data: string, options?: { mode?: number } | string): Promise<void>;
 
   /** Create a readable stream for a file (Node-only; throws in browser adapter) */
-  createReadStream(path: string): any;
+  createReadStream(path: string): ReadStream;
 
   /** Create a writable stream for a file (Node-only; throws in browser adapter) */
-  createWriteStream(path: string): any;
+  createWriteStream(path: string): WriteStream;
 }

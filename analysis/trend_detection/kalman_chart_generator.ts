@@ -8,19 +8,45 @@ import { sharedChartCSS } from '../chart_css.js';
 import { Y_AXIS_SIZE, makeCursorConfig, bindHoverStateFn, wireChartEvents, zoomResetScript, sizeChartsFn } from '../chart_ui.js';
 
 
-function generateHTML(data: any, title = 'Kalman Trajectory Analysis') {
+interface KalmanRow {
+    [key: string]: unknown;
+    timestamp: string | number;
+    price: number;
+    kalmanPrice?: number | null;
+    modalPrice?: number | null;
+    signal?: string | null;
+    velocity?: number | null;
+    velocityFilteredPct?: number | null;
+    velocityPct?: number | null;
+    displacementRawPct?: number | null;
+    displacementPct?: number | null;
+    isReady?: boolean;
+    amaWeightOffset?: number | null;
+    beams?: Array<{ originX: number }>;
+}
+
+interface KalmanBeam { x: unknown; y: number; v: number; endX: unknown; endY: number; }
+
+interface KalmanChartInput {
+    allResults?: KalmanRow[];
+    amaConfig?: { erPeriod?: number; fastPeriod?: number; slowPeriod?: number };
+    clipPct?: number;
+    [key: string]: unknown;
+}
+
+function generateHTML(data: KalmanChartInput, title = 'Kalman Trajectory Analysis') {
     const results = data.allResults || [];
     if (results.length === 0) throw new Error('No analysis results in input');
 
     const interval = results.length > 1 ?
         (new Date(results[1].timestamp).getTime() - new Date(results[0].timestamp).getTime()) / 1000 : 3600;
 
-    const dates          = results.map((r: any, idx: number) => toEpochSeconds(r.timestamp || Date.now(), idx));
-    const prices         = results.map((r: any) => r.price);
-    const tacticalPrices = results.map((r: any) => r.kalmanPrice);
-    const modalPrices    = results.map((r: any) => r.modalPrice);
-    const signals        = results.map((r: any) => r.signal);
-    const trendUp        = results.map((r: any) =>
+    const dates          = results.map((r: KalmanRow, idx: number) => toEpochSeconds(r.timestamp || Date.now(), idx));
+    const prices: (number | null)[] = results.map((r: KalmanRow) => r.price);
+    const tacticalPrices = results.map((r: KalmanRow) => r.kalmanPrice);
+    const modalPrices    = results.map((r: KalmanRow) => r.modalPrice);
+    const signals        = results.map((r: KalmanRow) => r.signal);
+    const trendUp        = results.map((r: KalmanRow) =>
         r.kalmanPrice != null && r.modalPrice != null ? r.kalmanPrice > r.modalPrice : null
     );
 
@@ -32,9 +58,9 @@ function generateHTML(data: any, title = 'Kalman Trajectory Analysis') {
     const defaultAmaKey   = MARKET_ADAPTER.DEFAULT_AMA_KEY as keyof typeof MARKET_ADAPTER.AMAS;
     const amaErPeriod     = data.amaConfig?.erPeriod ?? MARKET_ADAPTER.AMAS[defaultAmaKey].erPeriod;
     const clipPct         = data.clipPct ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_CLIP_PERCENTILE;
-    const velocityPct     = results.map((r: any) => r.velocityFilteredPct ?? r.velocityPct ?? null);
-    const displacementPct = results.map((r: any) => r.displacementRawPct ?? r.displacementPct ?? null);
-    const isReady         = results.map((r: any) => !!r.isReady);
+    const velocityPct     = results.map((r: KalmanRow) => r.velocityFilteredPct ?? r.velocityPct ?? null);
+    const displacementPct = results.map((r: KalmanRow) => r.displacementRawPct ?? r.displacementPct ?? null);
+    const isReady         = results.map((r: KalmanRow) => !!r.isReady);
     const kalClipThreshold = clipPct > 0
         ? computeAbsolutePercentileThreshold(velocityPct, clipPct, Infinity)
         : Infinity;
@@ -60,7 +86,7 @@ function generateHTML(data: any, title = 'Kalman Trajectory Analysis') {
         signalConfirmBars: MARKET_ADAPTER.DYNAMIC_WEIGHT_SIGNAL_CONFIRM_BARS_DEFAULT,
     });
     const kalmanWeights  = dwSeries.kalmanOffsets;
-    const amaWeights     = results.map((r: any) => r.amaWeightOffset ?? null);
+    const amaWeights     = results.map((r: KalmanRow) => r.amaWeightOffset ?? null);
 
     // Future Projection (150 bars)
     const lastDate = dates[dates.length - 1];
@@ -76,15 +102,15 @@ function generateHTML(data: any, title = 'Kalman Trajectory Analysis') {
     }
 
     // Extract dense Beams
-    const allBeams: any[] = [];
-    results.forEach((r: any, idx: number) => {
+    const allBeams: KalmanBeam[] = [];
+    results.forEach((r: KalmanRow, idx: number) => {
         if (idx % 15 === 0 || (r.beams && r.beams.length > 0 && r.beams[r.beams.length-1].originX === idx)) {
             allBeams.push({
                 x: dates[idx],
-                y: r.kalmanPrice,
-                v: r.velocity,
+                y: (r.kalmanPrice ?? 0) as number,
+                v: (r.velocity ?? 0) as number,
                 endX: dates[idx] + (150 * interval),
-                endY: r.kalmanPrice + (r.velocity * 150)
+                endY: ((r.kalmanPrice ?? 0) as number) + ((r.velocity ?? 0) as number) * 150
             });
         }
     });
@@ -394,5 +420,6 @@ function generateHTML(data: any, title = 'Kalman Trajectory Analysis') {
 </html>`;
 }
 
-export { generateHTML }
+export { generateHTML };
+export type { KalmanRow };
 

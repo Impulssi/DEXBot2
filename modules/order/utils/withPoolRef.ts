@@ -1,4 +1,6 @@
+import { getErrorMessage } from '../../utils/errors.js';
 import { lookupAsset, derivePrice as systemDerivePrice, deriveMarketPrice as systemDeriveMarketPrice } from './system.js';
+import type { BitSharesClient, PoolEntry, PoolReserve } from './system.js';
 import { toFiniteNumber, isValidNumber } from '../format.js';
 import * as MathUtils from './math.js';
 import Logger from '../../order/logger.js';
@@ -10,7 +12,7 @@ export interface PoolPriceOverrides {
 }
 
 export function withPoolRef(
-  BitShares: any,
+  BitShares: BitSharesClient,
   poolRef: string | null | undefined
 ): PoolPriceOverrides | null {
   if (!poolRef || typeof poolRef !== 'string' || !poolRef.trim()) return null;
@@ -23,20 +25,25 @@ export function withPoolRef(
   return {
     derivePoolPrice: async (symA: string, symB: string): Promise<number | null> => {
       try {
-        const [pool] = await BitShares.db.get_objects([pinnedId]);
+        const db = BitShares.db;
+        if (!db?.get_objects) {
+          log.warn(`derivePoolPrice: pool db unavailable for ${pinnedId}`);
+          return null;
+        }
+        const [pool] = await db.get_objects([pinnedId]) as [PoolEntry | undefined];
         if (!pool) {
           log.warn(`derivePoolPrice: pool ${pinnedId} not found`);
           return null;
         }
 
-        let amtA: any = null, amtB: any = null;
+        let amtA: number | null = null, amtB: number | null = null;
         let precA: number | null = null, precB: number | null = null;
         let poolLabel = `${pinnedId}`;
 
         if (isValidNumber(pool.balance_a) && isValidNumber(pool.balance_b)) {
           const [poolAssetA, poolAssetB] = await Promise.all([
-            lookupAsset(BitShares, pool.asset_a),
-            lookupAsset(BitShares, pool.asset_b),
+            lookupAsset(BitShares, pool.asset_a ?? ''),
+            lookupAsset(BitShares, pool.asset_b ?? ''),
           ]);
           if (!poolAssetA?.id || !poolAssetB?.id || poolAssetA.precision == null || poolAssetB.precision == null) {
             log.warn(`derivePoolPrice(pinned=${pinnedId}): cannot resolve pool asset precisions`);
@@ -74,13 +81,13 @@ export function withPoolRef(
           if (invert) {
             amtA = toFiniteNumber(pool.balance_b);
             amtB = toFiniteNumber(pool.balance_a);
-            precA = poolAssetB.precision;
-            precB = poolAssetA.precision;
+            precA = poolAssetB.precision ?? null;
+            precB = poolAssetA.precision ?? null;
           } else {
             amtA = toFiniteNumber(pool.balance_a);
             amtB = toFiniteNumber(pool.balance_b);
-            precA = poolAssetA.precision;
-            precB = poolAssetB.precision;
+            precA = poolAssetA.precision ?? null;
+            precB = poolAssetB.precision ?? null;
           }
           poolLabel = `${poolAssetA.symbol || pool.asset_a}/${poolAssetB.symbol || pool.asset_b} (${pinnedId})`;
         } else if (Array.isArray(pool.reserves)) {
@@ -92,13 +99,13 @@ export function withPoolRef(
             log.warn(`derivePoolPrice(pinned=${pinnedId}): cannot resolve ${symA}/${symB}`);
             return null;
           }
-          const resA = pool.reserves.find((r: any) => String(r.asset_id) === String(aMeta.id));
-          const resB = pool.reserves.find((r: any) => String(r.asset_id) === String(bMeta.id));
+          const resA = pool.reserves.find((r: PoolReserve) => String(r.asset_id) === String(aMeta.id));
+          const resB = pool.reserves.find((r: PoolReserve) => String(r.asset_id) === String(bMeta.id));
           if (resA && resB) {
-            amtA = resA.amount;
-            amtB = resB.amount;
-            precA = aMeta.precision;
-            precB = bMeta.precision;
+            amtA = Number(resA.amount);
+            amtB = Number(resB.amount);
+            precA = aMeta.precision ?? null;
+            precB = bMeta.precision ?? null;
           }
         }
 
@@ -115,8 +122,8 @@ export function withPoolRef(
           log.info(`derivePoolPrice: ${symA}/${symB} pool=${poolLabel} [pinned] -> ${price.toFixed(8)}`);
         }
         return price;
-      } catch (err: any) {
-        log.warn(`derivePoolPrice(pinned=${pinnedId}) failed: ${err?.message || err}`);
+      } catch (err) {
+        log.warn(`derivePoolPrice(pinned=${pinnedId}) failed: ${getErrorMessage(err)}`);
         return null;
       }
     },
@@ -134,7 +141,7 @@ export function withPoolRef(
  * @param {string} [fallback='auto'] - Mode when startPrice is not a string.
  * @returns {string} Lowercased mode.
  */
-export function resolveStartPriceMode(startPrice: any, fallback: string = 'auto'): string {
+export function resolveStartPriceMode(startPrice: unknown, fallback: string = 'auto'): string {
   if (typeof startPrice === 'string' && startPrice.trim()) {
     return startPrice.trim().toLowerCase();
   }
@@ -142,7 +149,7 @@ export function resolveStartPriceMode(startPrice: any, fallback: string = 'auto'
 }
 
 export async function derivePriceWithPoolRef(
-  BitShares: any,
+  BitShares: BitSharesClient,
   symA: string,
   symB: string,
   mode: string,

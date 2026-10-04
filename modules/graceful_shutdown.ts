@@ -65,11 +65,11 @@
 
 import Logger from './order/logger.js';
 import { runtime } from './runtime.js';
-import { getErrorMessage } from './utils/errors.js';
+import { getErrorMessage, getErrorField } from './utils/errors.js';
 import { withTimeout } from './order/utils/timeout.js';
 
 const CLEANUP_HANDLER_TIMEOUT_MS = 10000;
-let cleanupHandlers: any[] = [];
+let cleanupHandlers: Array<{ name: string; handler: () => unknown }> = [];
 let shutdownInProgress = false;
 const shutdownLogger = new Logger('Shutdown');
 const exitWipeCallbacks: Array<{ name: string; wipeFn: () => void }> = [];
@@ -84,7 +84,7 @@ const exitWipeCallbacks: Array<{ name: string; wipeFn: () => void }> = [];
  * @param {string} name - Description used in shutdown logs
  * @param {Function} wipeFn - Synchronous function to execute last
  */
-function registerExitWipe(name: any, wipeFn: () => void) {
+function registerExitWipe(name: string, wipeFn: () => void) {
     if (typeof wipeFn !== 'function') {
         throw new Error(`Exit wipe callback for '${name}' must be a function`);
     }
@@ -97,7 +97,7 @@ function registerExitWipe(name: any, wipeFn: () => void) {
  * @param {string} name - Name of the cleanup operation (for logging)
  * @param {Function} handler - Async or sync function to call on shutdown
  */
-function registerCleanup(name: any, handler: any) {
+function registerCleanup(name: string, handler: () => unknown) {
     if (typeof handler !== 'function') {
         throw new Error(`Cleanup handler for '${name}' must be a function`);
     }
@@ -111,7 +111,7 @@ function registerCleanup(name: any, handler: any) {
  * @param {string|Function} nameOrHandler - Cleanup name or handler reference
  * @returns {boolean} True when a handler was found and removed
  */
-function unregisterCleanup(nameOrHandler: any) {
+function unregisterCleanup(nameOrHandler: string | (() => unknown)) {
     const initialLength = cleanupHandlers.length;
     if (typeof nameOrHandler === 'function') {
         for (let i = cleanupHandlers.length - 1; i >= 0; i--) {
@@ -148,13 +148,13 @@ async function executeCleanup() {
             shutdownLogger.info(`Cleaning up: ${name}`);
             const result = handler();
             // Handle both async and sync handlers
-            if (result && typeof result.then === 'function') {
+            if (result && typeof (result as Promise<unknown>).then === 'function') {
                 await withTimeout(
                     Promise.resolve(result).catch(() => {}),
                     CLEANUP_HANDLER_TIMEOUT_MS,
                     {
                         onTimeout: 'resolve',
-                        defaultValue: undefined as any,
+                        defaultValue: undefined,
                         label: `cleanup:${name}`,
                         onTimeoutCallback: () => {
                             shutdownLogger.error(`✗ Cleanup timed out after ${CLEANUP_HANDLER_TIMEOUT_MS}ms: ${name} (handler still running in background)`);
@@ -163,7 +163,7 @@ async function executeCleanup() {
                 );
             }
             shutdownLogger.info(`✓ ${name}`);
-        } catch (err: any) {
+        } catch (err) {
             shutdownLogger.error(`✗ Error cleaning up ${name}: ${getErrorMessage(err) || err}`);
         }
     }
@@ -173,7 +173,7 @@ async function executeCleanup() {
         try {
             wipeFn();
             shutdownLogger.info(`✓ ${name} (exit wipe)`);
-        } catch (err: any) {
+        } catch (err) {
             shutdownLogger.error(`✗ Exit wipe ${name} failed: ${getErrorMessage(err) || err}`);
         }
     }
@@ -189,7 +189,7 @@ async function executeCleanup() {
 function setupGracefulShutdown() {
     const signals = ['SIGTERM', 'SIGINT'];
 
-    signals.forEach((signal: any) => {
+    signals.forEach((signal) => {
         runtime.onSignal(signal, async () => {
             shutdownLogger.info(`Received ${signal}, initiating graceful shutdown...`);
             await executeCleanup();
@@ -207,16 +207,16 @@ function setupGracefulShutdown() {
     });
 
     // Also handle uncaught exceptions
-    runtime.onSignal('uncaughtException', async (err: any) => {
-        shutdownLogger.error(`Uncaught exception: ${err?.stack || err}`);
+    runtime.onSignal('uncaughtException', async (err: unknown) => {
+        shutdownLogger.error(`Uncaught exception: ${(err as { stack?: string })?.stack || err}`);
         await executeCleanup();
         // Drain stderr before exit so traces survive pipe to MONOLITHIC_ERROR_LOG
         runtime.exitAfterStderrDrain(1);
     });
 
     // Handle unhandled rejections
-    runtime.onSignal('unhandledRejection', async (reason: any, promise: any) => {
-        shutdownLogger.error(`Unhandled rejection at: ${promise} reason: ${(reason as any)?.stack || reason}`);
+    runtime.onSignal('unhandledRejection', async (reason: unknown, promise: unknown) => {
+        shutdownLogger.error(`Unhandled rejection at: ${promise} reason: ${getErrorField<string>(reason, 'stack') || reason}`);
         await executeCleanup();
         runtime.exitAfterStderrDrain(1);
     });

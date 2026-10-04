@@ -15,11 +15,11 @@ import { buildRuntimeScriptPath, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './run
 
 const DEFAULT_SCRIPT = buildRuntimeScriptPath(DEFAULT_CODE_ROOT, ['market_adapter', 'market_adapter']);
 
-function loadLockInfo(lockPath: string): any {
+function loadLockInfo(lockPath: string): Record<string, unknown> {
     try {
         const parsed = readJSON(lockPath);
         return parsed && typeof parsed === 'object' ? parsed : {};
-    } catch (_: any) {
+    } catch (_) {
         return {};
     }
 }
@@ -38,7 +38,7 @@ function isLockStale(
         // regardless of file age. A live adapter's lock is never removed
         // solely because its mtime is old.
         return !isAdapterProcess(pid);
-    } catch (_: any) {
+    } catch (_) {
         return false;
     }
 }
@@ -49,12 +49,12 @@ function isLikelyAdapterRunning(lockPath = PATHS.MARKET_ADAPTER.LOCK_FILE) {
         const pid = Number(info.pid);
         if (!Number.isInteger(pid) || pid <= 0) return false;
         return isLikelyMarketAdapterProcess(pid);
-    } catch (_: any) {
+    } catch (_) {
         return false;
     }
 }
 
-function waitForChildExit(child: any): Promise<any> {
+function waitForChildExit(child: ReturnType<typeof spawn> | null): Promise<number | null> {
     return new Promise((resolve, reject) => {
         if (!child) {
             resolve(0);
@@ -62,7 +62,7 @@ function waitForChildExit(child: any): Promise<any> {
         }
 
         child.once('error', reject);
-        child.once('close', (code: any) => resolve(code));
+        child.once('close', (code) => resolve(code));
     });
 }
 
@@ -73,8 +73,8 @@ function createMarketAdapterRuntime({
     spawnFn = spawn,
     buildEnv = buildScopedChildEnv,
 } = {}) {
-    let child: any = null;
-    let childExitPromise: any = null;
+    let child: ReturnType<typeof spawn> | null = null;
+    let childExitPromise: Promise<number | null> | null = null;
     const desiredBots = new Set();
 
     function isOwnedChildRunning() {
@@ -131,7 +131,7 @@ function createMarketAdapterRuntime({
 
         try {
             child.kill('SIGTERM');
-        } catch (_: any) {}
+        } catch (_) {}
 
         await withTimeout(
             childExitPromise || waitForChildExit(child).catch(() => 0),
@@ -142,7 +142,7 @@ function createMarketAdapterRuntime({
         if (child && child.exitCode == null) {
             try {
                 child.kill('SIGKILL');
-            } catch (_: any) {}
+            } catch (_) {}
         }
 
         child = null;
@@ -150,7 +150,7 @@ function createMarketAdapterRuntime({
         return { running: false, stopped: true };
     }
 
-    async function syncBot(botId: string, shouldRun: boolean): Promise<any> {
+    async function syncBot(botId: string, shouldRun: boolean) {
         if (!botId) {
             throw new Error('botId is required');
         }
@@ -172,7 +172,7 @@ function createMarketAdapterRuntime({
         };
     }
 
-    async function releaseBot(botId: string): Promise<any> {
+    async function releaseBot(botId: string) {
         if (botId) {
             desiredBots.delete(botId);
         }
@@ -212,7 +212,7 @@ function createMarketAdapterRuntime({
     };
 }
 
-let sharedRuntime: any = null;
+let sharedRuntime: ReturnType<typeof createMarketAdapterRuntime> | null = null;
 
 function getSharedMarketAdapterRuntime(options = {}) {
     if (!sharedRuntime) {

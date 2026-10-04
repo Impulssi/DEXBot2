@@ -185,7 +185,7 @@ async function launcherReset(botName: string | null, options: Record<string, any
 
   for (const bot of targets) {
     try {
-      const triggerFile = getTriggerFile(options, bot.botKey);
+      const triggerFile = getTriggerFile(options, bot.botKey || '');
       storage.writeFile(triggerFile, new Date().toISOString());
       triggered.push({
         botName: bot.name,

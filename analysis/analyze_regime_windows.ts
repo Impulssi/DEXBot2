@@ -18,6 +18,7 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
+import { getErrorMessage } from '../modules/utils/errors.js';
 import path from 'node:path';
 import { HurstAnalyzer, classifyHurst }  from './trend_detection/hurst_analyzer.js';
 import { PermutationEntropyAnalyzer } from './trend_detection/permutation_entropy_analyzer.js';
@@ -183,14 +184,36 @@ function scoreWindowPair(prices: number[], hurstWindow: number, peWindow: number
     };
 }
 
-function computeComposite(allResults: any[]) {
-    const n = allResults.length;
-    if (n === 0) return allResults;
+interface RegimeRaw {
+    hurstWindow: number;
+    peWindow: number;
+    meanStability: number;
+    entropyDefect: number;
+    structuredFrac: number;
+    lagScore: number;
+    _stabilityRaw: number;
+    _entropyRaw: number;
+    _structuredRaw: number;
+    _lagRaw: number;
+    n: number;
+}
 
-    const stabilityVals   = allResults.map((r: any) => r._stabilityRaw);
-    const entropyVals     = allResults.map((r: any) => r._entropyRaw);
-    const structuredVals  = allResults.map((r: any) => r._structuredRaw);
-    const lagVals         = allResults.map((r: any) => r._lagRaw);
+interface RegimeResult extends RegimeRaw {
+    composite: number;
+    stabilityScore: number;
+    entropyScore: number;
+    structuredScore: number;
+    lagScore: number;
+}
+
+function computeComposite(allResults: RegimeRaw[]): RegimeResult[] {
+    const n = allResults.length;
+    if (n === 0) return [];
+
+    const stabilityVals   = allResults.map((r) => r._stabilityRaw);
+    const entropyVals     = allResults.map((r) => r._entropyRaw);
+    const structuredVals  = allResults.map((r) => r._structuredRaw);
+    const lagVals         = allResults.map((r) => r._lagRaw);
 
     const [rnStability, rnEntropy, rnStructured, rnLag] =
         [stabilityVals, entropyVals, structuredVals, lagVals].map(rankNormalize);
@@ -198,7 +221,7 @@ function computeComposite(allResults: any[]) {
     // Weights: lag=30%, stability=30%, entropy=25%, structured=15%
     const W = { lag: 0.30, stability: 0.30, entropy: 0.25, structured: 0.15 };
 
-    return allResults.map((r: any, i: number) => {
+    return allResults.map((r, i) => {
         const composite =
             W.lag        * rnLag[i] +
             W.stability  * rnStability[i] +
@@ -216,13 +239,13 @@ function computeComposite(allResults: any[]) {
     });
 }
 
-function generateHeatmapHTML(results: any[], hurstVals: number[], peVals: number[]) {
-    const maxComposite = Math.max(...results.map((r: any) => r.composite));
-    const minComposite = Math.min(...results.map((r: any) => r.composite));
+function generateHeatmapHTML(results: RegimeResult[], hurstVals: number[], peVals: number[]): string {
+    const maxComposite = Math.max(...results.map((r) => r.composite));
+    const minComposite = Math.min(...results.map((r) => r.composite));
     const range = maxComposite - minComposite || 1;
 
-    const grid: Record<string, any> = {};
-    results.forEach((r: any) => { grid[`${r.hurstWindow},${r.peWindow}`] = r; });
+    const grid: Record<string, RegimeResult> = {};
+    results.forEach((r) => { grid[`${r.hurstWindow},${r.peWindow}`] = r; });
 
     const defaultH = HURST_CENTER;
     const defaultP = PE_CENTER;
@@ -230,14 +253,14 @@ function generateHeatmapHTML(results: any[], hurstVals: number[], peVals: number
     const epsH = Math.abs(HURST_WINDOWS[HURST_WINDOWS.length - 1] - HURST_WINDOWS[0]) / (N_POINTS - 1) * 0.6;
     const epsP = Math.abs(PE_WINDOWS[PE_WINDOWS.length - 1] - PE_WINDOWS[0]) / (N_POINTS - 1) * 0.6;
 
-    const best = results.reduce((a: any, b: any) => a.composite > b.composite ? a : b);
-    const top10 = results.slice().sort((a: any, b: any) => b.composite - a.composite).slice(0, 10);
+    const best = results.reduce((a, b) => a.composite > b.composite ? a : b);
+    const top10 = results.slice().sort((a, b) => b.composite - a.composite).slice(0, 10);
 
-    const currentResult = results.find((r: any) =>
+    const currentResult = results.find((r) =>
         Math.abs(r.hurstWindow - defaultH) < epsH && Math.abs(r.peWindow - defaultP) < epsP
     );
 
-    function cell(r: any, h: number, p: number) {
+    function cell(r: RegimeResult | undefined, h: number, p: number): string {
         if (!r) return '<td class="empty"></td>';
         const norm = (r.composite - minComposite) / range; // 0 = worst, 1 = best
 
@@ -275,7 +298,7 @@ noise=${(r.entropyDefect*100).toFixed(1)}%">
         `<tr><td class="row-label">${Math.round(p)}</td>${hurstVals.map((h: number) => cell(grid[`${h},${p}`], h, p)).join('')}</tr>`
     ).join('\n');
 
-    const top10Bars = top10.map((r: any, i: number) => {
+    const top10Bars = top10.map((r, i) => {
         const isCenter = Math.abs(r.hurstWindow - defaultH) < epsH && Math.abs(r.peWindow - defaultP) < epsP;
         const isBest = r === best;
         const barNorm = (r.composite - minComposite) / range;
@@ -435,7 +458,7 @@ async function main() {
 
         if (!config.quiet) console.log(`[RegimeWindows] ${prices.length} candles — running grid search...`);
 
-        const rawResults: any[] = [];
+        const rawResults: RegimeRaw[] = [];
         for (const hW of HURST_WINDOWS) {
             for (const pW of PE_WINDOWS) {
                 if (!config.quiet) process.stdout.write(`  H=${hW.toFixed(1)} PE=${pW.toFixed(1)} ... `);
@@ -452,7 +475,7 @@ async function main() {
         const results = computeComposite(rawResults);
 
         if (!config.quiet) {
-            const best = results.reduce((a: any, b: any) => a.composite > b.composite ? a : b);
+            const best = results.reduce((a, b) => a.composite > b.composite ? a : b);
             console.log(`\n[RegimeWindows] Best: H=${Math.round(best.hurstWindow)} PE=${Math.round(best.peWindow)}  score=${best.composite}  (stab=${best.stabilityScore}  entr=${best.entropyScore}  lag=${best.lagScore})`);
         }
 
@@ -462,7 +485,7 @@ async function main() {
         if (!config.quiet) console.log(`[RegimeWindows] ✓ Chart saved to ${config.chartFile}`);
 
     } catch (err: unknown) {
-        console.error(`[RegimeWindows] Error: ${(err as any)?.message ?? err}`);
+        console.error(`[RegimeWindows] Error: ${getErrorMessage(err)}`);
         process.exit(1);
     }
 }

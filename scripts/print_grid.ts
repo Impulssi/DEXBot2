@@ -55,8 +55,9 @@ function printGridSample() {
   const { orders, initialSpreadCount: _initialSpreadCount } = createOrderGrid(config);
 
   // Separate sell and buy orders, extracting just the prices
-  const sell = orders.filter((o: any) => o.type === 'sell').map((o: any) => o.price);
-  const buy = orders.filter((o: any) => o.type === 'buy').map((o: any) => o.price);
+  type GridRowLike = { type?: string; price: number };
+  const sell = (orders as GridRowLike[]).filter((o) => o.type === 'sell').map((o) => o.price);
+  const buy = (orders as GridRowLike[]).filter((o) => o.type === 'buy').map((o) => o.price);
 
   // Display sell levels from highest (top) down toward market price
   // Sell orders are arranged with highest prices first

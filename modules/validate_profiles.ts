@@ -5,7 +5,7 @@ const storage = getStorage();
 const { readJSON } = storage;
 import { PATHS } from './paths.js';
 import { normalizeBotEntry } from './bot_settings.js';
-import { getErrorMessage } from './utils/errors.js';
+import { getErrorMessage, getErrorCode } from './utils/errors.js';
 import { MERGE_STRATEGIES } from './settings_merge.js';
 import { DEFAULT_WHITELIST_FLAGS } from './market_adapter_whitelist.js';
 
@@ -51,68 +51,72 @@ function push(problems: ProblemList, file: string, field: string, message: strin
     problems.push({ file, field, message, severity });
 }
 
-function isPositiveFinite(v: any): boolean {
+type JsonObject = Record<string, unknown>;
+
+function isPositiveFinite(v: unknown): boolean {
     return typeof v === 'number' && Number.isFinite(v) && v > 0;
 }
 
-function loadJsonFile(filePath: string): { data: any; ok: boolean; error?: string } {
+function loadJsonFile(filePath: string): { data: unknown; ok: boolean; error?: string } {
     try {
         const data = readJSON(filePath);
         return { data, ok: true };
-    } catch (err: any) {
-        if (err?.code === 'ENOENT') return { data: null, ok: true };
+    } catch (err) {
+        if (getErrorCode(err) === 'ENOENT') return { data: null, ok: true };
         if (err instanceof SyntaxError) return { data: null, ok: false, error: `${filePath}: invalid JSON (${getErrorMessage(err)})` };
         return { data: null, ok: false, error: `${filePath}: ${getErrorMessage(err)}` };
     }
 }
 
 // --- market_profiles.json ---
-function validateMarketProfiles(data: any, filePath: string, problems: ProblemList) {
+function validateMarketProfiles(data: unknown, filePath: string, problems: ProblemList) {
     if (!data) return;
+    const doc = data as JsonObject;
 
-    if ('version' in data && typeof data.version !== 'number') {
+    if ('version' in doc && typeof doc.version !== 'number') {
         push(problems, filePath, 'version', `Must be a number`);
     }
 
-    const profiles = Array.isArray(data.profiles) ? data.profiles : [];
-    profiles.forEach((p: any, idx: number) => {
+    const profiles = Array.isArray(doc.profiles) ? doc.profiles : [];
+    profiles.forEach((p, idx) => {
         const prefix = `profiles[${idx}]`;
         if (typeof p !== 'object' || p === null) return;
+        const prof = p as JsonObject;
 
-        for (const key of Object.keys(p)) {
+        for (const key of Object.keys(prof)) {
             if (!PROFILE_KNOWN_FIELDS.has(key)) {
                 push(problems, filePath, `${prefix}.${key}`,
                     `Unrecognized field "${key}"`, 'warn');
             }
         }
 
-        if ('assetA' in p && typeof p.assetA !== 'string') {
+        if ('assetA' in prof && typeof prof.assetA !== 'string') {
             push(problems, filePath, `${prefix}.assetA`, `Must be a string`);
         }
-        if ('assetB' in p && typeof p.assetB !== 'string') {
+        if ('assetB' in prof && typeof prof.assetB !== 'string') {
             push(problems, filePath, `${prefix}.assetB`, `Must be a string`);
         }
-        if ('defaultAma' in p && typeof p.defaultAma !== 'string') {
+        if ('defaultAma' in prof && typeof prof.defaultAma !== 'string') {
             push(problems, filePath, `${prefix}.defaultAma`, `Must be a string`);
         }
-        if ('intervalSeconds' in p && !isPositiveFinite(p.intervalSeconds)) {
+        if ('intervalSeconds' in prof && !isPositiveFinite(prof.intervalSeconds)) {
             push(problems, filePath, `${prefix}.intervalSeconds`, `Must be a positive number`);
         }
 
-        if (p.amas && typeof p.amas === 'object') {
-            for (const [amaKey, amaVal] of Object.entries(p.amas)) {
+        if (prof.amas && typeof prof.amas === 'object') {
+            for (const [amaKey, amaVal] of Object.entries(prof.amas as JsonObject)) {
                 const ap = `${prefix}.amas.${amaKey}`;
                 if (typeof amaVal !== 'object' || amaVal === null) {
                     push(problems, filePath, ap, `Must be an object`);
                     continue;
                 }
-                for (const k of Object.keys(amaVal as any)) {
+                const v = amaVal as JsonObject;
+                for (const k of Object.keys(v)) {
                     if (!PROFILE_AMA_KNOWN_FIELDS.has(k)) {
                         push(problems, filePath, `${ap}.${k}`,
                             `Unrecognized field "${k}"`, 'warn');
                     }
                 }
-                const v = amaVal as any;
                 if ('erPeriod' in v && !isPositiveFinite(v.erPeriod)) {
                     push(problems, filePath, `${ap}.erPeriod`, `Must be a positive number`);
                 }
@@ -128,17 +132,18 @@ function validateMarketProfiles(data: any, filePath: string, problems: ProblemLi
 }
 
 // --- market_adapter_whitelist.json ---
-function validateWhitelist(data: any, filePath: string, problems: ProblemList) {
+function validateWhitelist(data: unknown, filePath: string, problems: ProblemList) {
     if (!data) return;
+    const doc = data as JsonObject;
 
-    const raw = data.whitelist;
+    const raw = doc.whitelist;
     if (raw === undefined) {
         push(problems, filePath, 'whitelist', `Missing required key "whitelist"`);
         return;
     }
 
     if (Array.isArray(raw)) {
-        raw.forEach((entry: any, idx: number) => {
+        raw.forEach((entry, idx) => {
             if (entry !== null && entry !== undefined && typeof entry !== 'string') {
                 push(problems, filePath, `whitelist[${idx}]`,
                     `Array entries should be bot key strings, got ${typeof entry}`, 'warn');
@@ -163,9 +168,10 @@ function validateWhitelist(data: any, filePath: string, problems: ProblemList) {
                 }
             }
             for (const flag of WHITELIST_KNOWN_FLAGS) {
-                if (flag in (entry as any) && typeof (entry as any)[flag] !== 'boolean') {
+                const entryObj = entry as Record<string, unknown>;
+                if (flag in entryObj && typeof entryObj[flag] !== 'boolean') {
                     push(problems, filePath, `${prefix}.${flag}`,
-                        `Must be a boolean, got ${typeof (entry as any)[flag]}`);
+                        `Must be a boolean, got ${typeof entryObj[flag]}`);
                 }
             }
         }
@@ -173,44 +179,46 @@ function validateWhitelist(data: any, filePath: string, problems: ProblemList) {
 }
 
 // --- market_adapter_settings.json ---
-function validateMarketAdapterSettings(data: any, filePath: string, problems: ProblemList) {
+function validateMarketAdapterSettings(data: unknown, filePath: string, problems: ProblemList) {
     if (!data) return;
+    const doc = data as JsonObject;
 
-    for (const key of Object.keys(data)) {
+    for (const key of Object.keys(doc)) {
         if (!MA_SETTINGS_KNOWN_FIELDS.has(key)) {
             push(problems, filePath, key,
                 `Unrecognized field "${key}"`, 'warn');
         }
     }
 
-    if ('globals' in data && data.globals !== null) {
-        if (typeof data.globals !== 'object') {
+    if ('globals' in doc && doc.globals !== null) {
+        if (typeof doc.globals !== 'object') {
             push(problems, filePath, 'globals', `Must be an object`);
         }
     }
 
-    if ('pairs' in data && data.pairs !== null) {
-        if (!Array.isArray(data.pairs)) {
+    if ('pairs' in doc && doc.pairs !== null) {
+        if (!Array.isArray(doc.pairs)) {
             push(problems, filePath, 'pairs', `Must be an array`);
         } else {
-            data.pairs.forEach((pair: any, idx: number) => {
+            doc.pairs.forEach((pair, idx) => {
                 const prefix = `pairs[${idx}]`;
                 if (typeof pair !== 'object' || pair === null) return;
-                for (const key of Object.keys(pair)) {
+                const pr = pair as JsonObject;
+                for (const key of Object.keys(pr)) {
                     if (!MA_PAIR_KNOWN_FIELDS.has(key)) {
                         push(problems, filePath, `${prefix}.${key}`,
                             `Unrecognized field "${key}"`, 'warn');
                     }
                 }
-                if ('key' in pair && typeof pair.key !== 'string') {
+                if ('key' in pr && typeof pr.key !== 'string') {
                     push(problems, filePath, `${prefix}.key`, `Must be a string`);
                 }
-                if ('marketAdapterSettings' in pair && pair.marketAdapterSettings !== null
-                    && typeof pair.marketAdapterSettings !== 'object') {
+                if ('marketAdapterSettings' in pr && pr.marketAdapterSettings !== null
+                    && typeof pr.marketAdapterSettings !== 'object') {
                     push(problems, filePath, `${prefix}.marketAdapterSettings`, `Must be an object`);
                 }
-                if ('botOverrides' in pair && pair.botOverrides !== null
-                    && typeof pair.botOverrides !== 'object') {
+                if ('botOverrides' in pr && pr.botOverrides !== null
+                    && typeof pr.botOverrides !== 'object') {
                     push(problems, filePath, `${prefix}.botOverrides`, `Must be an object`);
                 }
             });
@@ -219,26 +227,27 @@ function validateMarketAdapterSettings(data: any, filePath: string, problems: Pr
 }
 
 // --- general.settings.json ---
-function validateGeneralSettings(data: any, filePath: string, problems: ProblemList) {
+function validateGeneralSettings(data: unknown, filePath: string, problems: ProblemList) {
     if (!data) return;
+    const doc = data as JsonObject;
 
-    for (const key of Object.keys(data)) {
+    for (const key of Object.keys(doc)) {
         if (!GENERAL_SETTINGS_KNOWN_FIELDS.has(key) && !key.startsWith('_')) {
             push(problems, filePath, key,
                 `Unrecognized field "${key}" — may be stale/misspelled, has no effect`, 'warn');
         }
     }
 
-    if ('LOG_LEVEL' in data && data.LOG_LEVEL !== undefined) {
+    if ('LOG_LEVEL' in doc && doc.LOG_LEVEL !== undefined) {
         const valid = ['debug', 'info', 'warn', 'error', 'critical'];
-        if (!valid.includes(String(data.LOG_LEVEL).toLowerCase())) {
+        if (!valid.includes(String(doc.LOG_LEVEL).toLowerCase())) {
             push(problems, filePath, 'LOG_LEVEL',
-                `Must be one of: ${valid.join(', ')}, got ${JSON.stringify(data.LOG_LEVEL)}`, 'warn');
+                `Must be one of: ${valid.join(', ')}, got ${JSON.stringify(doc.LOG_LEVEL)}`, 'warn');
         }
     }
 
-    if ('MARKET_ADAPTER' in data && data.MARKET_ADAPTER !== null && data.MARKET_ADAPTER !== undefined) {
-        if (typeof data.MARKET_ADAPTER !== 'object') {
+    if ('MARKET_ADAPTER' in doc && doc.MARKET_ADAPTER !== null && doc.MARKET_ADAPTER !== undefined) {
+        if (typeof doc.MARKET_ADAPTER !== 'object') {
             push(problems, filePath, 'MARKET_ADAPTER', `Must be an object`);
         }
     }
@@ -253,12 +262,13 @@ function validateCrossFileConsistency(problems: ProblemList) {
     const wlFile = PATHS.PROFILES.MARKET_ADAPTER_WHITELIST_JSON();
     const wlResult = loadJsonFile(wlFile);
     if (wlResult.ok && wlResult.data) {
-        const raw = wlResult.data.whitelist;
+        const wlDoc = wlResult.data as JsonObject;
+        const raw = wlDoc.whitelist;
         if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
             for (const [botKey, entry] of Object.entries(raw)) {
                 botKeysInWhitelist.add(botKey);
-                const flags = typeof entry === 'object' && entry !== null ? entry : {};
-                if ((flags as any).ama !== false) {
+                const flags = typeof entry === 'object' && entry !== null ? entry as JsonObject : {};
+                if (flags.ama !== false) {
                     botKeysInWhitelistEnabledAma.add(botKey);
                 }
             }
@@ -276,9 +286,10 @@ function validateCrossFileConsistency(problems: ProblemList) {
     // Load market_profiles
     const mpFile = PATHS.PROFILES.MARKET_PROFILES_JSON;
     const mpResult = loadJsonFile(mpFile);
-    const profiles: any[] = [];
+    const profiles: JsonObject[] = [];
     if (mpResult.ok && mpResult.data) {
-        const raw = Array.isArray(mpResult.data.profiles) ? mpResult.data.profiles : [];
+        const mpDoc = mpResult.data as JsonObject;
+        const raw = Array.isArray(mpDoc.profiles) ? mpDoc.profiles : [];
         profiles.push(...raw);
     }
 
@@ -287,15 +298,17 @@ function validateCrossFileConsistency(problems: ProblemList) {
     const botsResult = loadJsonFile(botsFile);
     const amaBotKeys = new Set<string>();
     if (botsResult.ok && botsResult.data) {
-        const bots = Array.isArray(botsResult.data.bots) ? botsResult.data.bots : [];
-        bots.forEach((bot: any, idx: number) => {
+        const botsDoc = botsResult.data as JsonObject;
+        const bots = Array.isArray(botsDoc.bots) ? botsDoc.bots : [];
+        bots.forEach((bot, idx) => {
             if (!bot) return;
-            const gp = bot.gridPrice;
+            const botObj = bot as JsonObject;
+            const gp = botObj.gridPrice;
             const usesAma = typeof gp === 'string' && /^ama(?:[1-4])?$/i.test(gp.trim());
             if (!usesAma) return;
 
-            const name = bot.name || `unnamed-${idx}`;
-            const botKey = normalizeBotEntry(bot, idx).botKey;
+            const name = botObj.name || `unnamed-${idx}`;
+            const botKey = normalizeBotEntry(botObj, idx).botKey || '';
             amaBotKeys.add(botKey);
 
             // Check whitelist: warn if AMA bot has no whitelist entry
@@ -386,7 +399,7 @@ function printValidationProblems(result: { errors: ProblemList; warnings: Proble
         console.warn('═══════════════════════════════════════════');
         for (const w of result.warnings) {
             console.warn(`  * ${w.file}:${w.field}`);
-            console.warn(`    ${w.message}`);
+            console.warn(`    ${getErrorMessage(w)}`);
         }
         console.warn('');
     }
@@ -397,7 +410,7 @@ function printValidationProblems(result: { errors: ProblemList; warnings: Proble
         console.error('═══════════════════════════════════════════');
         for (const e of result.errors) {
             console.error(`  * ${e.file}:${e.field}`);
-            console.error(`    ${e.message}`);
+            console.error(`    ${getErrorMessage(e)}`);
         }
         console.error('');
         return false;

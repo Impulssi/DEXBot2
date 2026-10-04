@@ -1,6 +1,7 @@
 'use strict';
 
 import { getStorage } from '../../modules/storage/index.js';
+import type { FileStat } from '../../modules/storage/types.js';
 
 /**
  * market_adapter/utils/file_json_cache.ts — write-through JSON read cache
@@ -30,12 +31,12 @@ import { getStorage } from '../../modules/storage/index.js';
 
 // Resolved per call, not at import time, so a later setAdapter() (DI in tests, a
 // different bundle entry point) is honoured instead of silently ignored.
-function statOf(filePath: any): { mtimeMs: number; size: number } | null {
+function statOf(filePath: string): { mtimeMs: number; size: number } | null {
     try {
-        const st: any = getStorage().stat(filePath);
+        const st: FileStat = getStorage().stat(filePath);
         if (!st || !Number.isFinite(st.mtimeMs)) return null;
         return { mtimeMs: st.mtimeMs, size: Number(st.size) || 0 };
-    } catch (_: any) {
+    } catch (_) {
         return null;
     }
 }
@@ -43,7 +44,7 @@ function statOf(filePath: any): { mtimeMs: number; size: number } | null {
 interface CacheEntry {
     mtimeMs: number;
     size: number;
-    value: any;
+    value: unknown;
 }
 
 // Bounded: one entry per candle file the process has written. 32 covers far more
@@ -51,7 +52,7 @@ interface CacheEntry {
 const CACHE_LIMIT = 32;
 const _cache = new Map<string, CacheEntry>();
 
-function _store(filePath: any, entry: CacheEntry): void {
+function _store(filePath: string, entry: CacheEntry): void {
     _cache.delete(filePath);
     _cache.set(filePath, entry);
     while (_cache.size > CACHE_LIMIT) {
@@ -66,7 +67,7 @@ function _store(filePath: any, entry: CacheEntry): void {
  * wrote earlier only while the file is provably unchanged. The entry is
  * consumed on use, so at most one cycle benefits from any single write.
  */
-function readCachedJson(filePath: any, loader: () => any): any {
+function readCachedJson<T>(filePath: string, loader: () => T): T {
     const stamp = statOf(filePath);
     if (!stamp) {
         // Cannot validate -> never serve, and forget anything we had.
@@ -76,7 +77,7 @@ function readCachedJson(filePath: any, loader: () => any): any {
     const hit = _cache.get(filePath);
     if (hit && hit.mtimeMs === stamp.mtimeMs && hit.size === stamp.size) {
         _cache.delete(filePath);
-        return hit.value;
+        return hit.value as T;
     }
     _cache.delete(filePath);
     return loader();
@@ -100,7 +101,7 @@ function readCachedJson(filePath: any, loader: () => any): any {
  * cross-process writer is far better served by the mtime check failing on its
  * own write than by a cache that guesses.
  */
-function noteJsonWritten(filePath: any, value: any): void {
+function noteJsonWritten(filePath: string, value: unknown): void {
     const stamp = statOf(filePath);
     if (!stamp) {
         _cache.delete(filePath);

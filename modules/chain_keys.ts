@@ -119,8 +119,8 @@ import {
     createDecipheriv,
 } from './crypto/sync.js';
 
-let _net: any;
-function getNet(): any {
+let _net: typeof import('node:net') | null | undefined;
+function getNet(): typeof import('node:net') {
     if (_net === undefined) {
         try {
             _net = require('net');
@@ -138,7 +138,7 @@ import {
     getCredentialSocketPath,
     assertPrivatePathSecurity,
 } from './credential_runtime.js';
-import { getErrorMessage } from './utils/errors.js';
+import { getErrorMessage, getErrorCode } from './utils/errors.js';
 import { hasProcess } from './env.js';
 const storage = getStorage();
 const { ensureDir } = storage;
@@ -175,6 +175,24 @@ const VAULT_VERIFIER_LABEL = 'dexbot2:v2:verifier';
 const VAULT_SECRET_KIND = 'dexbot-vault-secret';
 const VAULT_SESSION_SECRET_KIND = 'dexbot-session-secret';
 const VAULT_DAEMON_SIGNING_TOKEN_KIND = 'dexbot-daemon-signing-token';
+
+interface AccountsData {
+    vaultVersion: number;
+    vaultSalt: string;
+    vaultVerifier: string;
+    accounts: Record<string, Record<string, unknown>>;
+}
+
+interface DaemonPathOptions {
+    socketPath?: string;
+    readyFilePath?: string;
+    runtimeDir?: string;
+}
+
+interface DaemonSigningOptions extends DaemonPathOptions {
+    sessionId?: string | null;
+    botHmacSecret?: string | null;
+}
 
 
 // Profiles key file (ignored) only
@@ -217,7 +235,7 @@ function ensureProfilesKeysDirectory() {
     ensureDir(dir);
 }
 
-function toBuffer(value: any, encoding: BufferEncoding = 'hex') {
+function toBuffer(value: unknown, encoding: BufferEncoding = 'hex'): Buffer | null {
     if (Buffer.isBuffer(value)) {
         return Buffer.from(value);
     }
@@ -227,40 +245,38 @@ function toBuffer(value: any, encoding: BufferEncoding = 'hex') {
     return null;
 }
 
-function isVaultSecret(value: any) {
-    return !!(value && typeof value === 'object' && value.kind === VAULT_SECRET_KIND);
+function isVaultSecret(value: unknown) {
+    return !!(value && typeof value === 'object' && (value as { kind?: unknown }).kind === VAULT_SECRET_KIND);
 }
 
-function resolveVaultKey(secret: any) {
+function resolveVaultKey(secret: unknown): Buffer | null {
     if (!secret) return null;
     if (Buffer.isBuffer(secret)) {
         return Buffer.from(secret);
     }
-    if (isVaultSecret(secret) && typeof secret.vaultKeyHex === 'string') {
-        return toBuffer(secret.vaultKeyHex);
+    const rec = secret as { vaultKeyHex?: unknown; vaultKey?: unknown };
+    if ((isVaultSecret(secret) || typeof secret === 'object') && typeof rec.vaultKeyHex === 'string') {
+        return toBuffer(rec.vaultKeyHex);
     }
-    if (typeof secret === 'object' && typeof secret.vaultKeyHex === 'string') {
-        return toBuffer(secret.vaultKeyHex);
-    }
-    if (typeof secret === 'object' && Buffer.isBuffer(secret.vaultKey)) {
-        return Buffer.from(secret.vaultKey);
+    if (typeof secret === 'object' && Buffer.isBuffer(rec.vaultKey)) {
+        return Buffer.from(rec.vaultKey);
     }
     return null;
 }
 
-function createVaultSecret(vaultKey: any, extra: Record<string, any> = {}) {
+function createVaultSecret(vaultKey: unknown, extra: Record<string, unknown> = {}): VaultSecret {
     const keyBuffer = resolveVaultKey(vaultKey);
     if (!keyBuffer) {
         throw new Error('Vault secret requires a derived key');
     }
     return {
         kind: VAULT_SECRET_KIND,
-        version: extra.version || VAULT_VERSION,
+        version: typeof extra.version === 'number' ? extra.version : VAULT_VERSION,
         vaultKeyHex: keyBuffer.toString('hex'),
     };
 }
 
-function createSessionSecret(vaultKey: any, sessionSalt: any = randomBytes(VAULT_SALT_BYTES)) {
+function createSessionSecret(vaultKey: unknown, sessionSalt: unknown = randomBytes(VAULT_SALT_BYTES)) {
     const keyBuffer = resolveVaultKey(vaultKey);
     const saltBuffer = toBuffer(sessionSalt);
     if (!keyBuffer || !saltBuffer) {
@@ -279,7 +295,7 @@ function createSessionSecret(vaultKey: any, sessionSalt: any = randomBytes(VAULT
     };
 }
 
-function createDaemonSigningToken(accountName: string, options: Record<string, any> = {}) {
+function createDaemonSigningToken(accountName: string, options: DaemonSigningOptions = {}) {
     if (!accountName || typeof accountName !== 'string') {
         throw new Error('accountName is required for daemon signing');
     }
@@ -293,16 +309,18 @@ function createDaemonSigningToken(accountName: string, options: Record<string, a
     };
 }
 
-function isDaemonSigningToken(value: any) {
-    return !!(value && typeof value === 'object' && value.kind === VAULT_DAEMON_SIGNING_TOKEN_KIND && typeof value.accountName === 'string');
+function isDaemonSigningToken(value: unknown) {
+    if (!value || typeof value !== 'object') return false;
+    const rec = value as { kind?: unknown; accountName?: unknown };
+    return rec.kind === VAULT_DAEMON_SIGNING_TOKEN_KIND && typeof rec.accountName === 'string';
 }
 
-function deriveVaultKey(password: any, vaultSalt: any) {
+function deriveVaultKey(password: string, vaultSalt: unknown) {
     const saltBuffer = toBuffer(vaultSalt) || randomBytes(VAULT_SALT_BYTES);
     return scryptSync(password, saltBuffer, VAULT_KEY_BYTES, VAULT_SCRYPT_PARAMS);
 }
 
-function deriveRecordKey(vaultKey: any, recordSalt: any) {
+function deriveRecordKey(vaultKey: unknown, recordSalt: unknown) {
     const keyBuffer = resolveVaultKey(vaultKey);
     const saltBuffer = toBuffer(recordSalt);
     if (!keyBuffer || !saltBuffer) {
@@ -311,7 +329,7 @@ function deriveRecordKey(vaultKey: any, recordSalt: any) {
     return Buffer.from(hkdfSync('sha256', keyBuffer, saltBuffer, VAULT_RECORD_INFO, VAULT_KEY_BYTES));
 }
 
-function createVaultVerifier(vaultKey: any) {
+function createVaultVerifier(vaultKey: unknown) {
     const keyBuffer = resolveVaultKey(vaultKey);
     if (!keyBuffer) {
         throw new Error('Vault key is required');
@@ -319,7 +337,7 @@ function createVaultVerifier(vaultKey: any) {
     return createHmac('sha256', keyBuffer).update(VAULT_VERIFIER_LABEL).digest('hex');
 }
 
-function timingSafeEqualHex(leftHex: any, rightHex: any) {
+function timingSafeEqualHex(leftHex: unknown, rightHex: unknown) {
     if (typeof leftHex !== 'string' || typeof rightHex !== 'string' || leftHex.length !== rightHex.length) {
         return false;
     }
@@ -331,20 +349,21 @@ function timingSafeEqualHex(leftHex: any, rightHex: any) {
     return timingSafeEqual(left, right);
 }
 
-function normalizeAccountsData(data: Record<string, any> = {}) {
-    const accountsSource = data.accounts && typeof data.accounts === 'object'
-        ? data.accounts
+function normalizeAccountsData(data: unknown = {}): AccountsData {
+    const source = (data && typeof data === 'object') ? data as Record<string, unknown> : {};
+    const accountsSource = (source.accounts && typeof source.accounts === 'object')
+        ? source.accounts as Record<string, Record<string, unknown>>
         : {};
 
     return {
-        vaultVersion: Number(data.vaultVersion) || 0,
-        vaultSalt: typeof data.vaultSalt === 'string' ? data.vaultSalt : '',
-        vaultVerifier: typeof data.vaultVerifier === 'string' ? data.vaultVerifier : '',
+        vaultVersion: Number(source.vaultVersion) || 0,
+        vaultSalt: typeof source.vaultSalt === 'string' ? source.vaultSalt : '',
+        vaultVerifier: typeof source.vaultVerifier === 'string' ? source.vaultVerifier : '',
         accounts: accountsSource,
     };
 }
 
-function hasModernVault(accountsData: any) {
+function hasModernVault(accountsData: Partial<AccountsData>) {
     return !!(
         accountsData
         && accountsData.vaultVersion === VAULT_VERSION
@@ -355,7 +374,7 @@ function hasModernVault(accountsData: any) {
     );
 }
 
-function deriveModernSecretFromPassword(password: any, accountsData: any) {
+function deriveModernSecretFromPassword(password: string, accountsData: AccountsData) {
     if (!hasModernVault(accountsData)) {
         throw new Error('Vault metadata missing');
     }
@@ -364,7 +383,7 @@ function deriveModernSecretFromPassword(password: any, accountsData: any) {
     return createVaultSecret(vaultKey);
 }
 
-function verifyModernPassword(password: any, accountsData: any) {
+function verifyModernPassword(password: string, accountsData: AccountsData) {
     if (!hasModernVault(accountsData)) {
         return false;
     }
@@ -378,7 +397,7 @@ function verifyModernPassword(password: any, accountsData: any) {
  * @param {Object|Buffer} secret - Derived vault secret
  * @returns {string} Encrypted data as hex string
  */
-function encrypt(text: any, secret: any) {
+function encrypt(text: string, secret: unknown) {
     const vaultKey = resolveVaultKey(secret);
     if (!vaultKey) {
         throw new Error('A derived vault secret is required to encrypt v2 key data');
@@ -401,7 +420,7 @@ function encrypt(text: any, secret: any) {
  * @returns {string} Decrypted plain text
  * @throws {Error} If decryption fails (wrong password or corrupted data)
  */
-function decrypt(encrypted: any, secret: any) {
+function decrypt(encrypted: unknown, secret: unknown) {
     const parts = String(encrypted || '').split(':');
     if (parts.length !== 5 || parts[0] !== 'v2') {
         throw new Error('Unsupported encrypted payload version');
@@ -435,7 +454,7 @@ function decrypt(encrypted: any, secret: any) {
  * @param {string} key - Private key to validate
  * @returns {Object} { valid: boolean, reason?: string }
  */
-function validatePrivateKey(key: any) {
+function validatePrivateKey(key: unknown) {
     if (!key || typeof key !== 'string') return { valid: false, reason: 'Empty key' };
     const k = key.trim();
 
@@ -457,7 +476,7 @@ function validatePrivateKey(key: any) {
                 }
             }
         }
-    } catch (err: any) {
+    } catch (err) {
         // Not a valid base58check WIF; continue to other formats
     }
 
@@ -473,7 +492,7 @@ function validatePrivateKey(key: any) {
             }
             // Graphene PVT_K1_ keys are 32 bytes of key material
             return { valid: false, reason: `PVT_K1_ key decoded to ${payload.length} bytes, expected 32` };
-        } catch (err: any) {
+        } catch (err) {
             return { valid: false, reason: `PVT_K1_ key has invalid base58check encoding: ${getErrorMessage(err)}` };
         }
     }
@@ -494,8 +513,8 @@ function validatePrivateKey(key: any) {
 function loadAccounts() {
     try {
         return normalizeAccountsData(storage.readJSON(PROFILES_KEYS_FILE));
-    } catch (error: any) {
-        if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) {
+    } catch (error) {
+        if (getErrorCode(error) !== 'ENOENT' && !(error instanceof SyntaxError)) {
             console.error('Error loading accounts file, resetting to default:', getErrorMessage(error));
         }
         return normalizeAccountsData();
@@ -507,13 +526,13 @@ function loadAccounts() {
  * Password metadata alone is not sufficient: cancelling key setup can leave
  * a valid-looking vault with no account key to use at runtime.
  */
-function hasKeySetup(accountsData: any = loadAccounts()) {
+function hasKeySetup(accountsData: AccountsData = loadAccounts()) {
     if (!hasModernVault(accountsData)) return false;
 
     // A vault created by cancelling key setup can contain only password
     // metadata (salt/verifier) and no usable account key. Treat that as
     // incomplete onboarding so `dexbot start` returns to the key manager.
-    return Object.entries(accountsData.accounts || {}).some(([accountName, account]: [string, any]) => {
+    return Object.entries(accountsData.accounts || {}).some(([accountName, account]) => {
         if (!accountName.trim() || !account || typeof account.encryptedKey !== 'string') return false;
         const parts = account.encryptedKey.split(':');
         return parts.length === 5
@@ -522,7 +541,7 @@ function hasKeySetup(accountsData: any = loadAccounts()) {
     });
 }
 
-function setupModernVault(accountsData: any, password: any) {
+function setupModernVault(accountsData: AccountsData, password: string) {
     const vaultSalt = randomBytes(VAULT_SALT_BYTES);
     const vaultKey = deriveVaultKey(password, vaultSalt);
     accountsData.vaultVersion = VAULT_VERSION;
@@ -548,12 +567,12 @@ function checkKeysFileSecurity() {
  * Unlock the key vault with a master password.
  * Uses modern scrypt v2 vault format with HMAC verification.
  * @param {string} password - Master password
- * @param {any} [accountsData=loadAccounts()] - Accounts data object
- * @returns {any} Derived vault secret
+ * @param {unknown} [accountsData=loadAccounts()] - Accounts data object
+ * @returns {unknown} Derived vault secret
  * @throws {MasterPasswordError} If password is incorrect
  * @throws {Error} If vault format is unsupported
  */
-function unlockWithPassword(password: any, accountsData: any = loadAccounts()) {
+function unlockWithPassword(password: string, accountsData: AccountsData = loadAccounts()) {
     if (!hasModernVault(accountsData)) {
         if (Object.keys(accountsData.accounts || {}).length > 0) {
             throw new Error(`Unsupported key vault format. Recreate ${PATHS.PROFILES.KEYS_JSON()} with the current key manager.`);
@@ -567,7 +586,7 @@ function unlockWithPassword(password: any, accountsData: any = loadAccounts()) {
     return deriveModernSecretFromPassword(password, accountsData);
 }
 
-function verifyCurrentPassword(password: any, accountsData: any) {
+function verifyCurrentPassword(password: string, accountsData: AccountsData) {
     return hasModernVault(accountsData) && verifyModernPassword(password, accountsData);
 }
 
@@ -602,13 +621,13 @@ class MasterPasswordCancelledError extends Error {
  * @param {Error} err - Error to check
  * @returns {boolean} True if the error indicates authentication could not complete
  */
-function isMasterPasswordFailure(err: any) {
+function isMasterPasswordFailure(err: unknown) {
     return !!(
         err &&
         (err instanceof MasterPasswordError ||
             err instanceof MasterPasswordCancelledError ||
-            err.code === MasterPasswordError.code ||
-            err.code === MasterPasswordCancelledError.code)
+            getErrorCode(err) === MasterPasswordError.code ||
+            getErrorCode(err) === MasterPasswordCancelledError.code)
     );
 }
 
@@ -630,7 +649,7 @@ async function _promptPassword() {
     return await readPassword('Enter master password: ');
 }
 
-type VaultSecret = { kind: string; version: any; vaultKeyHex: string };
+type VaultSecret = { kind: string; version: number; vaultKeyHex: string };
 
 /**
  * Authenticate and return a derived vault secret.
@@ -667,7 +686,7 @@ async function authenticate(): Promise<VaultSecret> {
                 const secret = unlockWithPassword(enteredPassword, accountsData);
                 masterPasswordAttempts = 0;
                 return secret;
-            } catch (error: any) {
+            } catch (error) {
                 if (!(error instanceof MasterPasswordError)) {
                     throw error;
                 }
@@ -675,7 +694,7 @@ async function authenticate(): Promise<VaultSecret> {
 
             console.log('Master password not correct. Please try again.');
         }
-    } catch (err: any) {
+    } catch (err) {
         if (err instanceof MasterPasswordError || err instanceof MasterPasswordCancelledError) {
             masterPasswordAttempts = 0;
         }
@@ -690,7 +709,7 @@ async function authenticate(): Promise<VaultSecret> {
  * @returns {string} Decrypted private key
  * @throws {Error} If account not found
  */
-function getPrivateKey(accountName: any, vaultSecret: any) {
+function getPrivateKey(accountName: string, vaultSecret: unknown) {
     const accountsData = loadAccounts();
     const account = accountsData.accounts[accountName];
     if (!account) {
@@ -710,10 +729,10 @@ function getPrivateKey(accountName: any, vaultSecret: any) {
  * @returns {Promise<string>} Private key WIF string
  * @throws {Error} If no key can be found through direct lookup or authority resolution
  */
-async function resolvePrivateKey(accountName: any, vaultSecret: any, chainClient: any) {
-    const pubKeyCache = new Map();
+async function resolvePrivateKey(accountName: string, vaultSecret: unknown, chainClient: unknown) {
+    const pubKeyCache = new Map<string, string>();
 
-    const tryGetKey = async (name: any) => {
+    const tryGetKey = async (name: string) => {
         try {
             return getPrivateKey(name, vaultSecret);
         } catch (e) {
@@ -730,14 +749,14 @@ async function resolvePrivateKey(accountName: any, vaultSecret: any, chainClient
         }
     };
 
-    return resolveAuthKey(accountName, chainClient, tryGetKey, listNames, 0, pubKeyCache);
+    return resolveAuthKey(accountName, chainClient as Parameters<typeof resolveAuthKey>[1], tryGetKey, listNames, 0, pubKeyCache);
 }
 /**
  * Display stored account names to console.
  * @param {Object} accounts - Accounts object from loadAccounts()
  * @returns {Array<string>} Array of account names
  */
-function listKeyNames(accounts: any) {
+function listKeyNames(accounts: Record<string, unknown>) {
     const names = accounts ? Object.keys(accounts) : [];
     if (names.length === 0) {
         console.log('  (no accounts stored yet)');
@@ -745,10 +764,10 @@ function listKeyNames(accounts: any) {
     }
 
     const indexWidth = Math.max(1, ...names.map((_, index: number) => String(index + 1).length));
-    const accountWidth = Math.max('Account'.length, ...names.map((name: string) => displayWidth(name)));
+    const accountWidth = Math.max('Account'.length, ...names.map((name) => displayWidth(name)));
     const header = `#`.padEnd(indexWidth) + '  ' + padDisplay('Account', accountWidth);
     console.log(`  ${CLI_COLORS.yellowBold}${header}${CLI_COLORS.reset}`);
-    return names.map((name: string, index: number) => {
+    return names.map((name, index) => {
         const rowIndex = String(index + 1);
         console.log(
             `  ${CLI_COLORS.gray}${rowIndex.padEnd(indexWidth)}${CLI_COLORS.reset}  ` +
@@ -764,13 +783,13 @@ function listKeyNames(accounts: any) {
  * @param {string} promptText - The prompt message to display.
  * @returns {Promise<string|null>} The selected account name, or null if cancelled/invalid.
  */
-async function selectKeyName(accounts: any, promptText: any) {
+async function selectKeyName(accounts: Record<string, unknown>, promptText: string) {
     const names = Object.keys(accounts);
     if (!names.length) {
         console.log('No accounts available to select.');
         return null;
     }
-    names.forEach((name: any, index: any) => console.log(`  ${index + 1}. ${name}`));
+    names.forEach((name, index) => console.log(`  ${index + 1}. ${name}`));
     const raw = (await readInput(`${promptText} [1-${names.length}]: `)).trim();
     if (raw === '\x1b') return null;
 
@@ -789,7 +808,7 @@ async function selectKeyName(accounts: any, promptText: any) {
  * @returns {Promise<Object|Buffer|null>} The new vault secret, or the old one if unchanged/failed.
  * @throws {MasterPasswordCancelledError} If the user cancels with Escape
  */
-async function changeMasterPassword(accountsData: any, currentSecret: any) {
+async function changeMasterPassword(accountsData: AccountsData, currentSecret: unknown) {
     if (!hasModernVault(accountsData)) {
         console.log('No master password is set yet.');
         return currentSecret;
@@ -823,9 +842,9 @@ async function changeMasterPassword(accountsData: any, currentSecret: any) {
     const decryptedKeys: Record<string, string> = {};
     try {
         for (const [name, account] of Object.entries(accountsData.accounts)) {
-            decryptedKeys[name] = decrypt((account as any).encryptedKey, oldSecret);
+            decryptedKeys[name] = decrypt(account.encryptedKey, oldSecret);
         }
-    } catch (error: any) {
+    } catch (error) {
         // Clear any partially-decrypted keys before returning
         for (const key of Object.keys(decryptedKeys)) delete decryptedKeys[key];
         console.log('Failed to decrypt stored keys with the current master password:', getErrorMessage(error));
@@ -834,7 +853,7 @@ async function changeMasterPassword(accountsData: any, currentSecret: any) {
 
     const newSecret = setupModernVault(accountsData, newPassword);
     for (const [name, account] of Object.entries(accountsData.accounts)) {
-        (account as any).encryptedKey = encrypt(decryptedKeys[name], newSecret);
+        account.encryptedKey = encrypt(decryptedKeys[name], newSecret);
         delete decryptedKeys[name];
     }
     // V8 strings are immutable and cannot be zeroed; deleting the references
@@ -853,11 +872,11 @@ async function changeMasterPassword(accountsData: any, currentSecret: any) {
  *
  * @param {Object} data - Accounts data to save
  */
-function saveAccounts(data: any) {
+function saveAccounts(data: AccountsData) {
     // Always save sensitive data to the live path (ignored by git)
     ensureProfilesKeysDirectory();
 
-    const serialized = {
+    const serialized: { vaultVersion?: number; vaultSalt?: string; vaultVerifier?: string; accounts: Record<string, Record<string, unknown>> } = {
         vaultVersion: data && Number(data.vaultVersion) ? Number(data.vaultVersion) : 0,
         vaultSalt: data && typeof data.vaultSalt === 'string' ? data.vaultSalt : '',
         vaultVerifier: data && typeof data.vaultVerifier === 'string' ? data.vaultVerifier : '',
@@ -871,7 +890,7 @@ function saveAccounts(data: any) {
         delete serialized.vaultVerifier;
     }
     if (!hasModernVault(serialized)) {
-        delete (serialized as any).vaultVersion;
+        delete (serialized as { vaultVersion?: number }).vaultVersion;
     }
 
     // Atomic write via unified StorageAdapter: tmp file with 0o600 + fsync,
@@ -916,7 +935,7 @@ async function main(): Promise<boolean> {
             vaultReady = true;
             console.log('Authenticated successfully.');
             console.log('');
-        } catch (err: any) {
+        } catch (err) {
             if (err instanceof MasterPasswordCancelledError) {
                 return false;
             }
@@ -1020,13 +1039,13 @@ async function main(): Promise<boolean> {
             try {
                 const decryptedKey = decrypt(accountsData.accounts[accountName].encryptedKey, vaultSecret);
                 console.log(`First 5 characters: ${decryptedKey.substring(0, 5)}`);
-            } catch (error: any) {
+            } catch (error) {
                 console.log('Decryption failed - wrong master password or corrupted data');
             }
         } else if (choice === '6') {
             try {
-                vaultSecret = await changeMasterPassword(accountsData, vaultSecret);
-            } catch (err: any) {
+                vaultSecret = (await changeMasterPassword(accountsData, vaultSecret)) as VaultSecret;
+            } catch (err) {
                 if (err instanceof MasterPasswordCancelledError) {
                     console.log('Cancelled.');
                     continue;
@@ -1049,7 +1068,7 @@ async function main(): Promise<boolean> {
  * @param {Object} [options={}] - Optional socket/ready-file path overrides
  * @returns {boolean} True if daemon socket is responsive
  */
-function isDaemonReady(options: any = {}) {
+function isDaemonReady(options: DaemonPathOptions = {}) {
     try {
         return storage.exists(getCredentialReadyFilePath(options)) && storage.exists(getCredentialSocketPath(options));
     } catch {
@@ -1065,8 +1084,8 @@ function isDaemonReady(options: any = {}) {
  * @param {number} timeout - Probe timeout in milliseconds (default 2000)
  * @returns {Promise<boolean>} True if the daemon accepts connections and replies
  */
-function isDaemonResponsive(options: any = {}, timeout: any = 2000) {
-    return new Promise((resolve: any) => {
+function isDaemonResponsive(options: DaemonPathOptions = {}, timeout: number = 2000) {
+    return new Promise<boolean>((resolve) => {
         if (!isDaemonReady(options)) {
             return resolve(false);
         }
@@ -1097,7 +1116,7 @@ function isDaemonResponsive(options: any = {}, timeout: any = 2000) {
             socket.write('{}\n');
         });
 
-        socket.on('data', (data: any) => {
+        socket.on('data', (data: Buffer) => {
             responseBuffer += data.toString();
             if (!settled && responseBuffer.trim().length > 0) {
                 settled = true;
@@ -1132,7 +1151,7 @@ function isDaemonResponsive(options: any = {}, timeout: any = 2000) {
  * @returns {Promise<void>} Resolves when daemon is ready
  * @throws {Error} If daemon doesn't start within timeout
  */
-async function waitForDaemon(maxWaitMs: any = TIMING.DAEMON_STARTUP_TIMEOUT_MS, options: any = {}) {
+async function waitForDaemon(maxWaitMs: number = TIMING.DAEMON_STARTUP_TIMEOUT_MS, options: DaemonPathOptions = {}) {
     const startTime = Date.now();
     const checkInterval = TIMING.CHECK_INTERVAL_MS; // Check every 100ms
 
@@ -1157,14 +1176,14 @@ async function waitForDaemon(maxWaitMs: any = TIMING.DAEMON_STARTUP_TIMEOUT_MS, 
  * @param {function} extractResult - Callback: (response) => resolved value; throw to reject
  * @returns {Promise<*>} Resolved value from extractResult
  */
-function sendDaemonRequest(requestType: any, accountName: any, timeout: any = TIMING.DAEMON_PING_TIMEOUT_MS, options: any = {}, label: any = 'request', extractResult: ((response: any) => any) | null = null) {
+function sendDaemonRequest(requestType: string, accountName: string | null, timeout: number = TIMING.DAEMON_PING_TIMEOUT_MS, options: DaemonPathOptions = {}, label: string = 'request', extractResult: ((response: Record<string, unknown>) => unknown) | null = null): Promise<unknown> {
     return sendSocketJsonRequest({
         socketPath: getCredentialSocketPath(options),
         timeoutMs: timeout,
-        writePayload: (socket: any) => {
+        writePayload: (socket: { write(data: string): unknown }) => {
             socket.write(JSON.stringify({ type: requestType, accountName }) + '\n');
         },
-        buildError: (kind: any, detail: any) => {
+        buildError: (kind: string, detail: unknown) => {
             switch (kind) {
                 case 'timeout':
                     return new Error(`Daemon ${label} timeout`);
@@ -1176,16 +1195,17 @@ function sendDaemonRequest(requestType: any, accountName: any, timeout: any = TI
                     return new Error(`Daemon ${label} closed connection unexpectedly`);
             }
         },
-        handleResponse: (parsed: any, resolve: any, reject: any) => {
+        handleResponse: (parsed: unknown, resolve: (value: unknown) => void, reject: (err: unknown) => void) => {
+            const p = parsed as Record<string, unknown>;
             try {
                 if (extractResult) {
-                    resolve(extractResult(parsed));
-                } else if (parsed.success) {
-                    resolve(parsed);
+                    resolve(extractResult(p));
+                } else if (p.success) {
+                    resolve(p);
                 } else {
-                    reject(new Error(parsed.error || `Daemon ${label} failed`));
+                    reject(new Error((p.error as string) || `Daemon ${label} failed`));
                 }
-            } catch (handlerErr: any) {
+            } catch (handlerErr) {
                 reject(handlerErr);
             }
         },
@@ -1201,11 +1221,11 @@ function sendDaemonRequest(requestType: any, accountName: any, timeout: any = TI
  * @param {Object} options - Optional socket path overrides
  * @returns {Promise<boolean>} Resolves with true if daemon responds
  */
-function pingDaemon(accountName: any, timeout: any = TIMING.DAEMON_PING_TIMEOUT_MS, options: any = {}) {
-    return sendDaemonRequest('ping', accountName, timeout, options, 'ping', (response: any) => {
+function pingDaemon(accountName: string | null, timeout: number = TIMING.DAEMON_PING_TIMEOUT_MS, options: DaemonPathOptions = {}): Promise<boolean> {
+    return sendDaemonRequest('ping', accountName, timeout, options, 'ping', (response) => {
         if (response.success && response.pong) return true;
-        throw new Error(response.error || 'Daemon ping failed');
-    });
+        throw new Error((response.error as string) || 'Daemon ping failed');
+    }) as Promise<boolean>;
 }
 
 /**
@@ -1215,11 +1235,11 @@ function pingDaemon(accountName: any, timeout: any = TIMING.DAEMON_PING_TIMEOUT_
  * @param {Object} options - Optional socket path overrides
  * @returns {Promise<string|null>} Resolves with sessionId if account is available, rejects otherwise
  */
-function probeAccountInDaemon(accountName: any, timeout: any = TIMING.DAEMON_PING_TIMEOUT_MS, options: any = {}) {
-    return sendDaemonRequest('probe-account', accountName, timeout, options, 'probe', (response: any) => {
-        if (response.success) return response.sessionId || null;
-        throw new Error(response.error || 'Daemon probe failed');
-    });
+function probeAccountInDaemon(accountName: string | null, timeout: number = TIMING.DAEMON_PING_TIMEOUT_MS, options: DaemonPathOptions = {}): Promise<string | null> {
+    return sendDaemonRequest('probe-account', accountName, timeout, options, 'probe', (response) => {
+        if (response.success) return (response.sessionId as string) || null;
+        throw new Error((response.error as string) || 'Daemon probe failed');
+    }) as Promise<string | null>;
 }
 
 export { validatePrivateKey, loadAccounts, hasKeySetup, saveAccounts, checkKeysFileSecurity, encrypt, decrypt, deriveVaultKey, createDaemonSigningToken, createSessionSecret, createVaultSecret, isVaultSecret, isDaemonSigningToken, unlockWithPassword, main, authenticate, getPrivateKey, resolvePrivateKey, isMasterPasswordFailure, MasterPasswordError, isDaemonReady, isDaemonResponsive, waitForDaemon, probeAccountInDaemon, pingDaemon }

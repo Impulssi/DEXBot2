@@ -247,7 +247,7 @@ function formatMetric2(value: number): string {
  * @param {*} value - Value to check
  * @returns {boolean} True if value is defined and finite
  */
-function isValidNumber(value: any): boolean {
+function isValidNumber(value: unknown): boolean {
 	return value !== null && value !== undefined && Number.isFinite(Number(value));
 }
 
@@ -257,9 +257,9 @@ function isValidNumber(value: any): boolean {
  * IMPORTANT: passing `undefined` as defaultValue triggers the TS default of 0.
  * Pass `null` explicitly to get `null` back for non-finite values.
  */
-function toFiniteNumber(value: any, defaultValue?: number): number;
-function toFiniteNumber(value: any, defaultValue: number | null): number | null;
-function toFiniteNumber(value: any, defaultValue: number | null = 0): number | null {
+function toFiniteNumber(value: unknown, defaultValue?: number): number;
+function toFiniteNumber(value: unknown, defaultValue: number | null): number | null;
+function toFiniteNumber(value: unknown, defaultValue: number | null = 0): number | null {
 	const num = Number(value);
 	return Number.isFinite(num) ? num : defaultValue;
 }
@@ -272,13 +272,13 @@ function toFiniteNumber(value: any, defaultValue: number | null = 0): number | n
  * @param {string} [fallback='N/A'] - Fallback value if format fails
  * @returns {string} Formatted value or fallback string
  */
-function safeFormat(value: any, decimals: number, fallback: string = 'N/A'): string {
+function safeFormat(value: unknown, decimals: number, fallback: string = 'N/A'): string {
 	try {
 		if (!isValidNumber(value)) {
 			return fallback;
 		}
 		return Number(value).toFixed(decimals);
-	} catch (e: any) {
+	} catch (e) {
 		return fallback;
 	}
 }

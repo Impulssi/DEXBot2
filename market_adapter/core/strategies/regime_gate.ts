@@ -51,7 +51,7 @@ const PE_CONFIG = MARKET_ADAPTER.PE_CONFIG;
  * Without a `cacheKey` the function is stateless, exactly as before.
  */
 const REGIME_CACHE_LIMIT = 32;
-const _regimeCache = new Map<string, any>();
+const _regimeCache = new Map<string, RegimeCacheEntry>();
 
 interface RegimeCacheEntry {
     paramsKey: string;
@@ -73,7 +73,7 @@ interface RegimeCacheEntry {
  * _locateResume). An analyzer that does not report a usable size fails closed
  * (MAX_SAFE_INTEGER), which disables resuming for that cache entry.
  */
-function _analyzerBufferSize(hurst: any, pe: any): number {
+function _analyzerBufferSize(hurst: { bufferBars?: unknown } | null | undefined, pe: { bufferBars?: unknown } | null | undefined): number {
     const sizes = [Number(hurst?.bufferBars), Number(pe?.bufferBars)]
         .filter((value) => Number.isFinite(value) && value > 0);
     if (sizes.length !== 2) return Number.MAX_SAFE_INTEGER;
@@ -147,7 +147,7 @@ function _locateResume(cached: number[], closes: number[], minShared: number): {
     return found;
 }
 
-function regimeParamsKey(sensitivity: number, regimeTable: any, hurstZoneBand: number, peNodes: any, hurstCfg: any, peCfg: any): string {
+function regimeParamsKey(sensitivity: number, regimeTable: unknown, hurstZoneBand: number, peNodes: unknown, hurstCfg: unknown, peCfg: unknown): string {
     return JSON.stringify([sensitivity, regimeTable, hurstZoneBand, peNodes, hurstCfg, peCfg]);
 }
 
@@ -164,9 +164,9 @@ function _resetRegimeCache(): void {
     _regimeCache.clear();
 }
 
-function resolvePeNodes(peNodes: any = null) {
+function resolvePeNodes(peNodes: unknown = null): number[] {
     if (Array.isArray(peNodes) && peNodes.length === 3 && peNodes.every(Number.isFinite)) {
-        return peNodes;
+        return peNodes as number[];
     }
     return MARKET_ADAPTER.PE_NODES;
 }
@@ -176,15 +176,15 @@ function resolvePeNodes(peNodes: any = null) {
  * interpolation indexes it blindly, and a malformed custom table would
  * otherwise produce NaN multipliers that propagate silently into weights.
  */
-function isValidRegimeTable(table: any): boolean {
+function isValidRegimeTable(table: unknown): boolean {
     return Array.isArray(table)
         && table.length === 3
-        && table.every((row: any) => Array.isArray(row)
+        && table.every((row: unknown) => Array.isArray(row)
             && row.length === 3
-            && row.every((v: any) => Number.isFinite(v)));
+            && row.every((v: unknown) => Number.isFinite(v)));
 }
 
-function classifyPeRegime(pe: any, peNodes: any = null) {
+function classifyPeRegime(pe: number, peNodes: unknown = null): string {
     const [low, , high] = resolvePeNodes(peNodes);
     if (pe < low) return 'STRUCTURED';
     if (pe > high) return 'NOISE';
@@ -219,15 +219,35 @@ function classifyPeRegime(pe: any, peNodes: any = null) {
  *             hurstRegime: string|null, peRegime: string|null, isReady: boolean,
  *             series: number[] }}
  */
-function computeRegimeMultiplier(closes: any, opts: any = {}) {
-    const sensitivity = Number.isFinite(opts.regimeSensitivity) ? opts.regimeSensitivity : 1.0;
+interface RegimeOpts {
+    regimeSensitivity?: number;
+    regimeTable?: unknown;
+    hurstZoneBand?: number;
+    peNodes?: unknown;
+    cacheKey?: string;
+    hurstConfig?: { window?: number; scales?: number[] };
+    peConfig?: Record<string, number>;
+}
+
+export interface RegimeMultiplierResult {
+    multiplier: number;
+    hurst: number | null;
+    pe: number | null;
+    hurstRegime: string | null;
+    peRegime: string | null;
+    isReady: boolean;
+    series: number[];
+}
+
+function computeRegimeMultiplier(closes: unknown, opts: RegimeOpts = {}): RegimeMultiplierResult {
+    const sensitivity = Number.isFinite(opts.regimeSensitivity) ? (opts.regimeSensitivity as number) : 1.0;
     const regimeTable = opts.regimeTable ?? MARKET_ADAPTER.REGIME_TABLE;
     // Fail loudly on a malformed custom table instead of silently producing
     // NaN multipliers downstream.
     if (!isValidRegimeTable(regimeTable)) {
         throw new Error('regimeTable must be a 3x3 matrix of finite numbers');
     }
-    const hurstZoneBand = Number.isFinite(opts.hurstZoneBand) ? opts.hurstZoneBand : MARKET_ADAPTER.HURST_ZONE_BAND;
+    const hurstZoneBand = Number.isFinite(opts.hurstZoneBand) ? (opts.hurstZoneBand as number) : MARKET_ADAPTER.HURST_ZONE_BAND;
     const peNodes = Array.isArray(opts.peNodes) ? opts.peNodes : MARKET_ADAPTER.PE_NODES;
     const hurstCfg = opts.hurstConfig ?? HURST_CONFIG;
     const peCfg    = opts.peConfig    ?? PE_CONFIG;
@@ -239,7 +259,7 @@ function computeRegimeMultiplier(closes: any, opts: any = {}) {
     const applySensitivityAndClamp = (baseMult: number) =>
         Math.min(sensitivity === 1.0 ? baseMult : Math.pow(baseMult, sensitivity), 1.0);
 
-    const notReady = {
+    const notReady: RegimeMultiplierResult = {
         multiplier: 1.0,
         hurst: null,
         pe: null,
@@ -257,9 +277,10 @@ function computeRegimeMultiplier(closes: any, opts: any = {}) {
         ? _locateResume(cached.closes, closes, _analyzerBufferSize(cached.hurst, cached.pe))
         : null;
     const resumable = !!resume;
+    const cachedEntry = cached as RegimeCacheEntry;
 
-    const hurst = resumable ? cached.hurst : new HurstAnalyzer(hurstCfg);
-    const pe    = resumable ? cached.pe    : new PermutationEntropyAnalyzer(peCfg);
+    const hurst = resumable ? cachedEntry.hurst : new HurstAnalyzer(hurstCfg);
+    const pe    = resumable ? cachedEntry.pe    : new PermutationEntropyAnalyzer(peCfg);
     // Index-aligned with `closes`, exactly like the pre-cache implementation.
     // The neutral 1.0 fill also covers bars the loop below does not produce a
     // value for (warmup, or a non-finite price it skips): a resumed run must
@@ -269,13 +290,13 @@ function computeRegimeMultiplier(closes: any, opts: any = {}) {
     const startIndex = resumable ? resume!.shared : 0;
     if (resumable) {
         for (let i = 0; i < startIndex; i++) {
-            const carried = cached.series[i + resume!.k];
+            const carried = cachedEntry.series[i + resume!.k];
             if (carried !== undefined) series[i] = carried;
         }
     }
 
-    let hurstResult: any = null;
-    let peResult: any    = null;
+    let hurstResult: ReturnType<HurstAnalyzer['update']> | null = null;
+    let peResult: ReturnType<PermutationEntropyAnalyzer['update']> | null = null;
 
     for (let i = startIndex; i < closes.length; i++) {
         const price = closes[i];
@@ -289,7 +310,7 @@ function computeRegimeMultiplier(closes: any, opts: any = {}) {
                 const baseMult = bilinearInterpolate(h, ne, regimeTable, { hurstZoneBand, peNodes });
                 series[i] = applySensitivityAndClamp(baseMult);
             }
-        } catch (_: any) {
+        } catch (_) {
             // skip invalid prices (analyzers throw only on non-positive prices)
         }
     }

@@ -16,9 +16,11 @@ import { isBrowser } from '../env.js';
 import { createRequire } from 'node:module';
 const _require = createRequire(import.meta.url);
 
-let _crypto: any;
+type NodeCrypto = typeof import('node:crypto');
+
+let _crypto: NodeCrypto | null;
 try {
-    _crypto = isBrowser() ? null : _require ? _require('crypto') : null;
+    _crypto = isBrowser() ? null : _require ? _require('crypto') as NodeCrypto : null;
 } catch {
     _crypto = null;
 }
@@ -27,12 +29,20 @@ function throwNoCrypto(name: string): never {
     throw new Error(`crypto.${name} is not available in browser; use getCrypto() async API`);
 }
 
-export const createHash = _crypto ? _crypto.createHash.bind(_crypto) : ((..._: any[]) => throwNoCrypto('createHash')) as any;
-export const createHmac = _crypto ? _crypto.createHmac.bind(_crypto) : ((..._: any[]) => throwNoCrypto('createHmac')) as any;
-export const randomBytes = _crypto ? _crypto.randomBytes.bind(_crypto) : ((..._: any[]) => throwNoCrypto('randomBytes')) as any;
-export const timingSafeEqual = _crypto ? _crypto.timingSafeEqual.bind(_crypto) : ((..._: any[]) => throwNoCrypto('timingSafeEqual')) as any;
-export const hkdfSync = _crypto ? _crypto.hkdfSync.bind(_crypto) : ((..._: any[]) => throwNoCrypto('hkdfSync')) as any;
-export const scryptSync = _crypto ? _crypto.scryptSync.bind(_crypto) : ((..._: any[]) => throwNoCrypto('scryptSync')) as any;
-export const createCipheriv = _crypto ? _crypto.createCipheriv.bind(_crypto) : ((..._: any[]) => throwNoCrypto('createCipheriv')) as any;
-export const createDecipheriv = _crypto ? _crypto.createDecipheriv.bind(_crypto) : ((..._: any[]) => throwNoCrypto('createDecipheriv')) as any;
-export const createECDH = _crypto ? _crypto.createECDH.bind(_crypto) : ((..._: any[]) => throwNoCrypto('createECDH')) as any;
+function bind<K extends keyof NodeCrypto>(name: K): NodeCrypto[K] {
+    if (_crypto) {
+        const fn = _crypto[name];
+        return (typeof fn === 'function' ? (fn as (...args: unknown[]) => unknown).bind(_crypto) : fn) as NodeCrypto[K];
+    }
+    return (() => throwNoCrypto(String(name))) as unknown as NodeCrypto[K];
+}
+
+export const createHash = bind('createHash');
+export const createHmac = bind('createHmac');
+export const randomBytes = bind('randomBytes');
+export const timingSafeEqual = bind('timingSafeEqual');
+export const hkdfSync = bind('hkdfSync');
+export const scryptSync = bind('scryptSync');
+export const createCipheriv = bind('createCipheriv');
+export const createDecipheriv = bind('createDecipheriv');
+export const createECDH = bind('createECDH');

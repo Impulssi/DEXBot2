@@ -22,14 +22,14 @@ import {
     getCredentialSocketPath,
 } from '../credential_runtime.js';
 import { buildRuntimeScriptArgs, SCRIPTS_ROOT as DEFAULT_CODE_ROOT } from './runtime_entry.js';
-import { getErrorMessage } from '../utils/errors.js';
+import { getErrorMessage, getErrorCode } from '../utils/errors.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 1000;
 
-function waitForExit(child: any): Promise<any> {
+function waitForExit(child: import('node:child_process').ChildProcess): Promise<number | null> {
     return new Promise((resolve, reject) => {
         child.on('error', reject);
-        child.on('close', (code: any) => resolve(code));
+        child.on('close', (code) => resolve(code));
     });
 }
 
@@ -40,8 +40,8 @@ function createCredentialDaemonController({
     readyFilePath = getCredentialReadyFilePath(),
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
 } = {}) {
-    let daemonProcess: any = null;
-    let daemonExitPromise: any = null;
+    let daemonProcess: import('node:child_process').ChildProcess | null = null;
+    let daemonExitPromise: Promise<number | null> | null = null;
 
     async function isDaemonReady() {
         return chainKeys.isDaemonResponsive({ socketPath, readyFilePath });
@@ -54,7 +54,7 @@ function createCredentialDaemonController({
                 assertPrivatePathSecurity(socketPath, { expectedType: 'socket', requiredMode: 0o600 });
                 storage.unlink(socketPath);
             }
-        } catch (err: any) {
+        } catch (err) {
             throw new Error(`Insecure credential socket path: ${getErrorMessage(err)}`);
         }
         try {
@@ -62,7 +62,7 @@ function createCredentialDaemonController({
                 assertPrivatePathSecurity(readyFilePath, { expectedType: 'file', requiredMode: 0o600 });
                 storage.unlink(readyFilePath);
             }
-        } catch (err: any) {
+        } catch (err) {
             throw new Error(`Insecure credential ready path: ${getErrorMessage(err)}`);
         }
     }
@@ -70,9 +70,9 @@ function createCredentialDaemonController({
     function forwardSignal(signal: string): void {
         if (!daemonProcess || daemonProcess.killed) return;
         try {
-            daemonProcess.kill(signal);
-        } catch (err: any) {
-            if (err.code === 'ESRCH') return;
+            daemonProcess.kill(signal as NodeJS.Signals);
+        } catch (err) {
+            if (getErrorCode(err) === 'ESRCH') return;
             throw err;
         }
     }
@@ -110,7 +110,7 @@ function createCredentialDaemonController({
         const bootstrapPathFile = path.join(path.dirname(socketPath), '.dexbot-cred-bootstrap-path');
         try {
             storage.writeFile(bootstrapPathFile, bootstrap.socketPath, { mode: 0o600 });
-        } catch (err: any) {
+        } catch (err) {
             bootstrap.close();
             throw new Error(
                 `Cannot write bootstrap path file at ${bootstrapPathFile}: ${getErrorMessage(err)}`
@@ -147,7 +147,7 @@ function createCredentialDaemonController({
                     chainKeys.waitForDaemon(undefined, { socketPath, readyFilePath }),
                     bootstrap.waitForTransfer(),
                 ]),
-                daemonExitPromise.then((exitCode: any) => {
+                daemonExitPromise.then((exitCode) => {
                     throw new Error(
                         `credential daemon exited during startup (exit ${exitCode}). ` +
                         `Check the daemon logs for the startup error.`
@@ -155,7 +155,7 @@ function createCredentialDaemonController({
                 }),
             ]);
             return true;
-        } catch (error: any) {
+        } catch (error) {
             bootstrap.close();
             throw error;
         }
@@ -177,7 +177,7 @@ function createCredentialDaemonController({
         await withTimeout(
             daemonExitPromise || waitForExit(daemonProcess),
             LAUNCHER.SUPERVISOR.SHUTDOWN_TIMEOUT_MS,
-            { onTimeout: 'resolve', defaultValue: undefined as any }
+            { onTimeout: 'resolve', defaultValue: undefined }
         );
 
         safeUnlink(socketPath)

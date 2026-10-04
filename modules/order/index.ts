@@ -60,13 +60,20 @@ import * as constants from '../constants.js';
 import * as grid from './grid.js';
 const utils = { ...math, ...order, ...system };
 
-let _logger: any;
-function getLogger(): any {
+let _logger: unknown;
+function getLogger(): unknown {
     if (!_logger) _logger = require('./logger').default;
     return _logger;
 }
 
-const _export: any = {
+type OrderModuleExports = {
+  OrderManager: typeof OrderManager;
+  utils: typeof utils;
+  constants: typeof constants;
+  grid: typeof grid;
+  logger?: unknown;
+};
+const _export: OrderModuleExports = {
   OrderManager,
   utils,
   constants,

@@ -22,12 +22,26 @@ import Logger from './order/logger.js';
 const storage = getStorage();
 const keyStoreLogger = new Logger('key-store');
 
-const liveDaemonTokens = new Set<any>();
+/** A daemon-issued signing token (structural view). */
+interface DaemonSigningTokenLike {
+    socketPath?: string;
+    sessionId?: string | null;
+    botHmacSecret?: string | null;
+    batchId?: string | null;
+}
+
+/** One chain operation to sign/broadcast. */
+interface ChainOrderOperation {
+    op_name: string;
+    op_data: unknown;
+}
+
+const liveDaemonTokens = new Set<{ botHmacSecret?: string | null }>();
 let exitWipeRegistered = false;
 
-function trackDaemonTokenForExitWipe(token: any): void {
+function trackDaemonTokenForExitWipe(token: unknown): void {
     if (!token || typeof token !== 'object') return;
-    liveDaemonTokens.add(token);
+    liveDaemonTokens.add(token as { botHmacSecret?: string | null });
     if (exitWipeRegistered) return;
     exitWipeRegistered = true;
     registerExitWipe('SigningTokenHmacSecretWipe', () => {
@@ -40,17 +54,17 @@ function trackDaemonTokenForExitWipe(token: any): void {
 
 export interface SigningResult {
     success: boolean;
-    raw?: any;
-    operation_results?: any[];
+    raw?: unknown;
+    operation_results?: unknown[];
 }
 
 export interface KeyStore {
-    resolveSigningKey(accountName: string, vaultSecret?: any, chainClient?: any): Promise<any>;
-    isDaemonSigningKey(key: any): boolean;
-    executeOperations(accountName: string, operations: any[], signingKey: any, extraOptions?: Record<string, any>): Promise<SigningResult>;
+    resolveSigningKey(accountName: string, vaultSecret?: unknown, chainClient?: unknown): Promise<unknown>;
+    isDaemonSigningKey(key: unknown): boolean;
+    executeOperations(accountName: string, operations: ChainOrderOperation[], signingKey: unknown, extraOptions?: Record<string, unknown>): Promise<SigningResult>;
 }
 
-function buildDaemonBroadcastOptions(signingKey: any, extraOptions: Record<string, any>, sessionIdOverride?: string): Record<string, any> {
+function buildDaemonBroadcastOptions(signingKey: DaemonSigningTokenLike, extraOptions: Record<string, unknown>, sessionIdOverride?: string): Record<string, unknown> {
     return {
         socketPath: signingKey.socketPath,
         sessionId: sessionIdOverride !== undefined ? sessionIdOverride : (signingKey.sessionId || null),
@@ -63,7 +77,7 @@ function buildDaemonBroadcastOptions(signingKey: any, extraOptions: Record<strin
     };
 }
 
-function normalizeDaemonResult(result: any): SigningResult {
+function normalizeDaemonResult(result: { raw?: unknown; operation_results?: unknown[] }): SigningResult {
     return {
         success: true,
         raw: result.raw || null,
@@ -71,7 +85,7 @@ function normalizeDaemonResult(result: any): SigningResult {
     };
 }
 
-async function broadcastViaChainOrders(accountName: string, operations: any[], signingKey: any): Promise<SigningResult> {
+async function broadcastViaChainOrders(accountName: string, operations: ChainOrderOperation[], signingKey: unknown): Promise<SigningResult> {
     const { createAccountClient, broadcastTxWithClassification } = require('./chain_orders');
     const acc = await createAccountClient(accountName, signingKey);
     await acc.initPromise;
@@ -89,7 +103,7 @@ async function broadcastViaChainOrders(accountName: string, operations: any[], s
 }
 
 export class DaemonKeyStore implements KeyStore {
-    async resolveSigningKey(accountName: string, vaultSecret?: any, chainClient?: any): Promise<any> {
+    async resolveSigningKey(accountName: string, vaultSecret?: unknown, chainClient?: unknown): Promise<unknown> {
         if (vaultSecret) {
             return chainKeys.resolvePrivateKey(accountName, vaultSecret, chainClient);
         }
@@ -115,13 +129,14 @@ export class DaemonKeyStore implements KeyStore {
         return chainKeys.resolvePrivateKey(accountName, unlockSecret, chainClient);
     }
 
-    isDaemonSigningKey(key: any): boolean {
+    isDaemonSigningKey(key: unknown): boolean {
         return chainKeys.isDaemonSigningToken(key);
     }
 
-    async executeOperations(accountName: string, operations: any[], signingKey: any, extraOptions: Record<string, any> = {}): Promise<SigningResult> {
+    async executeOperations(accountName: string, operations: ChainOrderOperation[], signingKey: unknown, extraOptions: Record<string, unknown> = {}): Promise<SigningResult> {
+        const daemonKey = signingKey as DaemonSigningTokenLike;
         if (this.isDaemonSigningKey(signingKey)) {
-            if (!signingKey.botHmacSecret) {
+            if (!daemonKey.botHmacSecret) {
                 keyStoreLogger.error(
                     `Daemon signing token for ${accountName} has no botHmacSecret — the daemon will reject this request ` +
                     `(Strict Mode). This happens when a broadcast is attempted after the bot shut down or the token lost ` +
@@ -129,9 +144,9 @@ export class DaemonKeyStore implements KeyStore {
                 );
             }
             try {
-                const result = await executeOperationsViaCredentialDaemon(accountName, operations, buildDaemonBroadcastOptions(signingKey, extraOptions));
+                const result = await executeOperationsViaCredentialDaemon(accountName, operations, buildDaemonBroadcastOptions(daemonKey, extraOptions));
                 return normalizeDaemonResult(result);
-            } catch (err: any) {
+            } catch (err) {
                 if (err instanceof BroadcastUncertainError) throw err;
                 if (getErrorMessage(err) && (getErrorMessage(err).includes(DAEMON_ERRORS.SESSION_EXPIRED) || getErrorMessage(err).includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED))) {
                     const isSourceAuthError = getErrorMessage(err).includes(DAEMON_ERRORS.SOURCE_AUTH_DENIED);
@@ -148,7 +163,7 @@ export class DaemonKeyStore implements KeyStore {
                     }
 
                     const newSessionId = await chainKeys.probeAccountInDaemon(accountName);
-                    signingKey.sessionId = newSessionId;
+                    daemonKey.sessionId = newSessionId as string | null;
 
                     if (isSourceAuthError) {
                         try {
@@ -157,15 +172,15 @@ export class DaemonKeyStore implements KeyStore {
                                 PATHS.PROFILES.DAEMON_POLICIES_JSON,
                                 { quiet: true }
                             );
-                            if (freshSecret && freshSecret !== signingKey.botHmacSecret) {
-                                signingKey.botHmacSecret = freshSecret;
+                            if (freshSecret && freshSecret !== daemonKey.botHmacSecret) {
+                                daemonKey.botHmacSecret = freshSecret;
                                 keyStoreLogger.warn(`Reloaded botHmacSecret from disk for ${accountName} before retry`);
                             }
                         } catch (_) {}
                         await sleep(500);
                     }
 
-                    const retryResult = await executeOperationsViaCredentialDaemon(accountName, operations, buildDaemonBroadcastOptions(signingKey, extraOptions, signingKey.sessionId));
+                    const retryResult = await executeOperationsViaCredentialDaemon(accountName, operations, buildDaemonBroadcastOptions(daemonKey, extraOptions, daemonKey.sessionId ?? undefined));
                     return normalizeDaemonResult(retryResult);
                 }
                 throw err;

@@ -56,18 +56,19 @@ function resetMarketAdapterWhitelistCache(): void {
     _whitelistCache = null;
 }
 
-function normalizeEntry(entry: any): WhitelistFlags {
+function normalizeEntry(entry: unknown): WhitelistFlags {
     if (entry === true) {
         return { ...ALL_ENABLED_WHITELIST_FLAGS };
     }
     if (!entry || typeof entry !== 'object') {
         return { ...DEFAULT_WHITELIST_FLAGS };
     }
-    const flags: any = { ...DEFAULT_WHITELIST_FLAGS };
-    for (const key of Object.keys(DEFAULT_WHITELIST_FLAGS)) {
-        flags[key] = entry[key] === true;
+    const e = entry as Record<string, unknown>;
+    const flags: WhitelistFlags = { ...DEFAULT_WHITELIST_FLAGS };
+    for (const key of Object.keys(DEFAULT_WHITELIST_FLAGS) as Array<keyof WhitelistFlags>) {
+        flags[key] = e[key] === true;
     }
-    return flags as WhitelistFlags;
+    return flags;
 }
 
 function loadMarketAdapterWhitelist(): Map<string, WhitelistFlags> | false {
@@ -94,7 +95,7 @@ function loadMarketAdapterWhitelist(): Map<string, WhitelistFlags> | false {
 
         _whitelistCache = map;
         return _whitelistCache;
-    } catch (_: any) {
+    } catch (_) {
         console.warn(`[WARN] Failed to parse ${whitelistFile()}: ${getErrorMessage(_)}. All whitelist features disabled.`);
         _whitelistCache = false;
         return _whitelistCache;
@@ -129,19 +130,19 @@ function isBotAsymmetricBoundsWhitelisted(botKey: string): boolean {
  *   file exists but cannot be parsed — callers must abort the write so a
  *   malformed file is never silently replaced by an empty one.
  */
-function readWhitelistDocument(): { doc: any; entries: Record<string, any> } | null {
+function readWhitelistDocument(): { doc: Record<string, unknown>; entries: Record<string, unknown> } | null {
     if (!storage.exists(whitelistFile())) {
         return { doc: {}, entries: {} };
     }
-    let json: any;
+    let json: Record<string, unknown> | null;
     try {
         json = readJSON(whitelistFile());
-    } catch (err: any) {
+    } catch (err) {
         console.warn(`[WARN] Refusing to update malformed ${whitelistFile()}: ${getErrorMessage(err)}. Fix or delete the file first.`);
         return null;
     }
     const raw = json?.whitelist;
-    const entries: Record<string, any> = {};
+    const entries: Record<string, unknown> = {};
     if (Array.isArray(raw)) {
         for (const botKey of raw) {
             if (botKey) entries[String(botKey)] = { ...AMA_ONLY_WHITELIST_FLAGS };
@@ -158,10 +159,10 @@ function readWhitelistDocument(): { doc: any; entries: Record<string, any> } | n
 /**
  * Writes the whitelist document back (sorted keys, same shape the market
  * adapter reads) and invalidates the in-process read cache.
- * @param {any} doc - Top-level document to preserve (extra keys survive).
+ * @param {unknown} doc - Top-level document to preserve (extra keys survive).
  * @param {Record<string, any>} entries - botKey-keyed whitelist entries.
  */
-function writeWhitelistDocument(doc: any, entries: Record<string, any>): void {
+function writeWhitelistDocument(doc: Record<string, unknown>, entries: Record<string, unknown>): void {
     doc.whitelist = Object.fromEntries(
         Object.entries(entries).sort((a, b) => String(a[0]).localeCompare(String(b[0])))
     );

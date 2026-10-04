@@ -47,6 +47,7 @@ const childProcess = require('child_process');
 import { setUmask } from './modules/config.js';
 import fs from 'node:fs';
 import { path } from './modules/path_api.js';
+import type { ChildProcess } from 'node:child_process';
 import { getStorage } from './modules/storage/index.js';
 import { createCredentialDaemonController } from './modules/launcher/credential_daemon.js';
 import { buildScopedChildEnv } from './modules/launcher/child_env.js';
@@ -59,7 +60,7 @@ import { startVersionStatusCheck, flushVersionStatusOrHeader, printVersionStatus
 import { buildRuntimeScriptArgs } from './modules/launcher/runtime_entry.js';
 import { sendControlCommand } from './modules/launcher/supervisor_control.js';
 import { registerCleanup, setupGracefulShutdown } from './modules/graceful_shutdown.js';
-import { normalizeBotEntry, resolveRawBotEntries, loadSettingsFile } from './modules/bot_settings.js';
+import { normalizeBotEntry, resolveRawBotEntries, loadSettingsFile, type BotEntry } from './modules/bot_settings.js';
 import { main as runBotEditor } from './modules/account_bots.js';
 import { setSuppressConnectionLog, disconnectClient } from './modules/bitshares_client.js';
 import { selectStartOnboardingCommand } from './modules/cli_start_onboarding.js';
@@ -69,7 +70,7 @@ import { getWhitelistFlags } from './modules/market_adapter_whitelist.js';
 import { createMarketAdapterWatchdog } from './modules/launcher/market_adapter_watchdog.js';
 import { isLikelyMarketAdapterProcess } from './modules/launcher/market_adapter_runtime.js';
 import { Config } from './modules/config.js';
-import { getErrorMessage } from './modules/utils/errors.js';
+import { getErrorMessage, getErrorCode } from './modules/utils/errors.js';
 import { isSameBotName } from './modules/utils/sanitize_key.js';
 import { withTimeout } from './modules/order/utils/timeout.js';
 setUmask(0o077);
@@ -112,9 +113,31 @@ const SUPERVISOR_ERROR_LOG = path.join(LOGS_DIR, 'supervisor-error.log');
 
 const controller = createCredentialDaemonController({ root: PATHS.PROJECT_ROOT, codeRoot: CODE_ROOT });
 const DEFAULT_STARTUP_GRACE_MS = 750;
-const botProcessRef: { current: any } = { current: null };
+const botProcessRef: { current: ChildProcess | null } = { current: null };
 
-function printLauncherHeader({ botName = null as string | null | undefined, clawOnly = false, creditOnly = false, isolated = false, dryrun = false, headless = false }: any = {}) {
+interface LauncherHeaderOptions {
+    botName?: string | null;
+    clawOnly?: boolean;
+    creditOnly?: boolean;
+    isolated?: boolean;
+    dryrun?: boolean;
+    headless?: boolean;
+}
+
+interface CredentialDaemonOpts {
+    detached?: boolean;
+    stdio?: Array<'ignore' | number>;
+    headless?: boolean;
+    passwordFile?: string | null;
+    [key: string]: unknown;
+}
+
+interface ControlResponse {
+    ok?: boolean;
+    status?: { name: string; status: string };
+}
+
+function printLauncherHeader({ botName = null, clawOnly = false, creditOnly = false, isolated = false, dryrun = false, headless = false }: LauncherHeaderOptions = {}): void {
     console.log('='.repeat(50));
     console.log('DEXBot2 Unlock Launcher');
     if (dryrun) console.log('Mode: dryrun (no transactions)');
@@ -169,9 +192,9 @@ function printLauncherSuccess({ botName = null, clawOnly = false, isolated = fal
  */
 function makeFinishGuard(cleanup: () => void) {
     let settled = false;
-    let timer: any = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
-    const finish = (fn: any, value?: any) => {
+    const finish = <T>(fn: (value: T) => void, ...args: [T] | []): void => {
         if (settled) return;
         settled = true;
         if (timer) {
@@ -179,13 +202,13 @@ function makeFinishGuard(cleanup: () => void) {
             timer = null;
         }
         cleanup();
-        fn(value);
+        fn(args[0] as T);
     };
 
-    return { finish, getTimer: () => timer, setTimer: (t: any) => { timer = t; } };
+    return { finish, getTimer: () => timer, setTimer: (t: ReturnType<typeof setTimeout>) => { timer = t; } };
 }
 
-function waitForStableChildStartup(child: any, { label = 'child process', timeoutMs = DEFAULT_STARTUP_GRACE_MS }: any = {}) {
+function waitForStableChildStartup(child: ChildProcess, { label = 'child process', timeoutMs = DEFAULT_STARTUP_GRACE_MS }: { label?: string; timeoutMs?: number } = {}): Promise<void> {
     if (timeoutMs <= 0) {
         return waitForChildSpawn(child);
     }
@@ -199,8 +222,8 @@ function waitForStableChildStartup(child: any, { label = 'child process', timeou
             setTimer(t);
         };
 
-        const handleError = (error: any) => finish(reject, error);
-        const handleClose = (code: any, signal: any) => {
+        const handleError = (error: unknown) => finish(reject, error);
+        const handleClose = (code: number | null, signal: NodeJS.Signals | null) => {
             finish(reject, new Error(`${label} exited during startup (exit ${code}${signal ? `, signal ${signal}` : ''})`));
         };
 
@@ -221,32 +244,32 @@ function waitForStableChildStartup(child: any, { label = 'child process', timeou
 function resolveBotEntryForName(botName: string) {
     const { config } = loadSettingsFile(BOTS_FILE);
     const raw = resolveRawBotEntries(config);
-    const match = raw.find((b: any) => b && isSameBotName(b.name, botName));
+    const match = raw.find((b) => b && isSameBotName(b.name, botName));
     if (!match) return null;
     const entryCopy = JSON.parse(JSON.stringify(match));
     entryCopy.active = true;
     return normalizeBotEntry(entryCopy);
 }
 
-function getLaunchedBotNames(botName: any) {
+function getLaunchedBotNames(botName: string | null | undefined): string[] {
     return botName
         ? [botName]
-        : listConfiguredBots().filter((b: any) => b.active).map((b: any) => b.name);
+        : listConfiguredBots().filter((b: BotEntry) => b.active).map((b: BotEntry) => b.name);
 }
 
 // ── Isolated supervisor mode ───────────────────────────────────────
 
-function isSupervisorTransientError(err: any): boolean {
+function isSupervisorTransientError(err: unknown): boolean {
     const msg = String(err && getErrorMessage(err) || '');
     return msg.includes('No supervisor socket found') || msg.includes('Connection timed out');
 }
 
-function waitForSupervisorReady({ child = null, timeoutMs = 15000, intervalMs = 250 }: { child?: any; timeoutMs?: number; intervalMs?: number } = {}): Promise<boolean> {
+function waitForSupervisorReady({ child = null, timeoutMs = 15000, intervalMs = 250 }: { child?: ChildProcess | null; timeoutMs?: number; intervalMs?: number } = {}): Promise<boolean> {
     return new Promise<boolean>((resolve, reject) => {
-        const handleClose = (code: any, signal: any) => {
+        const handleClose = (code: number | null, signal: NodeJS.Signals | null) => {
             finish(reject, new Error(`supervisor exited before becoming ready (exit ${code}${signal ? `, signal ${signal}` : ''})`));
         };
-        const handleError = (error: any) => finish(reject, error);
+        const handleError = (error: unknown) => finish(reject, error);
         const cleanup = () => {
             if (child) {
                 child.off('close', handleClose);
@@ -283,7 +306,7 @@ function waitForSupervisorReady({ child = null, timeoutMs = 15000, intervalMs = 
             child.once('error', handleError);
         }
 
-        poll().catch((error: any) => finish(reject, error));
+        poll().catch((error: unknown) => finish(reject, error));
     });
 }
 
@@ -295,14 +318,14 @@ function ensureSupervisorLogDir() {
 
 async function sendIsolatedDeleteIfAvailable(): Promise<boolean> {
     try {
-        const resp: any = await sendControlCommand({ cmd: 'delete' });
+        const resp = await sendControlCommand({ cmd: 'delete' }) as ControlResponse;
         if (resp.ok && resp.status) {
             printControlStatus(resp.status);
         } else if (resp.ok) {
             console.log('OK');
         }
         return !!resp.ok;
-    } catch (err: any) {
+    } catch (err) {
         if (isSupervisorTransientError(err)) {
             return false;
         }
@@ -310,7 +333,7 @@ async function sendIsolatedDeleteIfAvailable(): Promise<boolean> {
     }
 }
 
-async function launchDetachedSupervisor({ botName = null, credentialDaemonPid = null }: any = {}) {
+async function launchDetachedSupervisor({ botName = null, credentialDaemonPid = null }: { botName?: string | null; credentialDaemonPid?: number | null } = {}): Promise<number> {
     try {
         await sendControlCommand({ cmd: 'status' });
         throw new Error(`another isolated supervisor is already running at ${Config.DEXBOT_SUPERVISOR_SOCKET || SOCKET_PATH}`);
@@ -328,7 +351,7 @@ async function launchDetachedSupervisor({ botName = null, credentialDaemonPid = 
         scriptSegments: ['unlock'],
         scriptArgs: ['--isolated', ...(botName ? [botName] : [])],
     });
-    let child: any = null;
+    let child: ChildProcess | null = null;
 
     try {
         child = childProcess.spawn(Config.EXEC_PATH, args, {
@@ -342,13 +365,13 @@ async function launchDetachedSupervisor({ botName = null, credentialDaemonPid = 
             }),
             stdio: ['ignore', stdoutFd, stderrFd],
         });
-        child.unref();
+        child?.unref();
 
         const ready = await waitForSupervisorReady({ child });
         if (!ready) {
             throw new Error(`supervisor did not become ready. Check ${SUPERVISOR_OUT_LOG} and ${SUPERVISOR_ERROR_LOG}`);
         }
-        return child.pid || 0;
+        return child?.pid || 0;
     } catch (err) {
         if (child && child.pid) {
             try { runtime.kill(child.pid, 'SIGTERM'); } catch (_) {}
@@ -360,8 +383,8 @@ async function launchDetachedSupervisor({ botName = null, credentialDaemonPid = 
     }
 }
 
-async function runIsolated({ botName, botEntry = null, stayResident = false, startupGraceMs = DEFAULT_STARTUP_GRACE_MS }: { botName?: string; botEntry?: any; stayResident?: boolean; startupGraceMs?: number } = {}): Promise<number> {
-    let supervisor;
+async function runIsolated({ botName, botEntry = null, stayResident = false, startupGraceMs = DEFAULT_STARTUP_GRACE_MS }: { botName?: string; botEntry?: BotEntry | null; stayResident?: boolean; startupGraceMs?: number } = {}): Promise<number> {
+    let supervisor: ReturnType<typeof createBotSupervisor>;
 
     if (botName) {
         const bot = botEntry || resolveBotEntryForName(botName);
@@ -404,9 +427,9 @@ async function runIsolated({ botName, botEntry = null, stayResident = false, sta
         const pollStartedAt = Date.now();
         const interval = setInterval(async () => {
             try {
-                const status = supervisor.getStatus();
+                const status = supervisor.getStatus() as Record<string, { status: string }>;
                 const running = Object.values(status).some(
-                    (s: any) => s.status === 'running' || s.status === 'restarting' || s.status === 'starting'
+                    (s: { status: string }) => s.status === 'running' || s.status === 'restarting' || s.status === 'starting'
                 );
                 if (!running && !supervisor.hasUserStopped()) {
                     clearInterval(interval);
@@ -477,14 +500,14 @@ async function runStartOnboardingIfNeeded({ allowInteractive = true, nonInteract
     } finally {
         try {
             disconnectClient();
-        } catch (err: any) {
+        } catch (err) {
             console.warn('Failed to disconnect BitShares after bot helper exit:', getErrorMessage(err) || err);
         }
     }
     return true;
 }
 
-async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRACE_MS, exitAfterOnboarding = false, onboard = false }: any = {}) {
+async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRACE_MS, exitAfterOnboarding = false, onboard = false }: { argv?: string[]; startupGraceMs?: number; exitAfterOnboarding?: boolean; onboard?: boolean } = {}): Promise<void> {
     if (typeof chainKeys.checkKeysFileSecurity === 'function') chainKeys.checkKeysFileSecurity();
     if (typeof credentialPolicy.checkPolicyFileSecurity === 'function') credentialPolicy.checkPolicyFileSecurity(PATHS.PROFILES.DAEMON_POLICIES_JSON);
 
@@ -531,7 +554,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
     const versionStatus = (isInternalChild || dryrun) ? Promise.resolve(null) : startVersionStatusCheck();
     let effectiveBotName = botName;
     if (creditOnly && !effectiveBotName) {
-        const creditBots = listConfiguredBots().filter((b: any) => b.creditOnly === true && b.active !== false);
+        const creditBots = listConfiguredBots().filter((b: BotEntry) => b.creditOnly === true && b.active !== false);
         if (creditBots.length === 0) {
             throw new Error('No credit-only bot found. Add "creditOnly": true to a bot entry in bots.json');
         }
@@ -567,9 +590,9 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
 
             await ensureNoForeignCredentialDaemon();
 
-            const daemonOpts: any = { detached: isolated && !forceForegroundIsolated };
-            let daemonOutFd: any = null;
-            let daemonErrFd: any = null;
+            const daemonOpts: CredentialDaemonOpts = { detached: isolated && !forceForegroundIsolated };
+            let daemonOutFd: number | null = null;
+            let daemonErrFd: number | null = null;
 
             if (!clawOnly && !isolated && !forceForeground) {
                 ensureMonolithicLogDir();
@@ -621,7 +644,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
 
             ensureMonolithicLogDir();
             const stdoutFd = storage.open(MONOLITHIC_OUT_LOG, 'a', 0o600);
-            let stderrFd;
+            let stderrFd: number;
             try {
                 stderrFd = storage.open(MONOLITHIC_ERROR_LOG, 'a', 0o600);
             } catch (_e) {
@@ -696,8 +719,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
         const watchdog = createMarketAdapterWatchdog({
             codeRoot: CODE_ROOT,
             root: PATHS.PROJECT_ROOT,
-            logsDir: LOGS_DIR,
-        } as any);
+        });
         const cancelWatchdog = watchdog.schedule(MONOLITHIC_ERROR_LOG);
 
         let restartCount = 0;
@@ -773,10 +795,10 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
                     process.off('SIGTERM', onSigterm);
                 };
 
-                const exitCode = await new Promise<number>((resolve: any, reject: any) => {
+                const exitCode = await new Promise<number>((resolve, reject) => {
                     botProcess.on('error', reject);
-                    botProcess.on('close', (code: any) => resolve(code));
-                }).catch((err: any) => {
+                    botProcess.on('close', (code: number | null) => resolve(code ?? 0));
+                }).catch((err: unknown) => {
                     cleanupBotHandlers();
                     throw err;
                 });
@@ -798,7 +820,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
                         keepRunning = false;
                     } else {
                         console.log(`Bot crashed (exit ${exitCode}), restarting in ${LAUNCHER.MONOLITHIC.restartDelayMs / 1000}s (attempt ${restartCount}/${LAUNCHER.MONOLITHIC.maxRestarts})...`);
-                        await new Promise((r: any) => setTimeout(r, LAUNCHER.MONOLITHIC.restartDelayMs));
+                        await new Promise<void>((r) => setTimeout(r, LAUNCHER.MONOLITHIC.restartDelayMs));
                     }
                 } else {
                     process.exitCode = 0;
@@ -831,7 +853,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
  * missing or stale.
  */
 function resolveCredentialDaemonForStatus(): { pid: number | null; foreign: boolean } {
-    let credPid: any = null;
+    let credPid: number | null = null;
     let credForeign = false;
     try {
         const raw = storage.readFile(MONOLITHIC_CRED_PID_FILE).trim();
@@ -900,7 +922,7 @@ function printMarketAdapterStatusBlock() {
         console.log(`    ${colorStatus('(not running)', STATUS_COLORS.muted)}`);
         return;
     }
-    const amaBots = listConfiguredBots().filter((b: any) => b.active && usesAmaGridPrice(b));
+    const amaBots = listConfiguredBots().filter((b: BotEntry) => b.active && usesAmaGridPrice(b));
     function botKeyFromName(name: string) {
         return String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'bot';
     }
@@ -932,7 +954,7 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
                     if (credResult.signaled) {
                         console.log('Stop signal sent to credential daemon');
                     }
-                    const daemonOpts: any = { detached: true };
+                    const daemonOpts: CredentialDaemonOpts = { detached: true };
                     const unlockedNow = await controller.ensureCredentialDaemon(daemonOpts);
                     if (unlockedNow) {
                         console.log(statusSuccess('✓ Authentication successful'));
@@ -949,8 +971,8 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
                 await stopMarketAdapterFromLock();
                 try {
                     runtime.kill(pid, 'SIGUSR2');
-                } catch (err: any) {
-                    if (err.code !== 'ESRCH') throw err;
+                } catch (err) {
+                    if (getErrorCode(err) !== 'ESRCH') throw err;
                 }
                 printControlActionSummary(actionLabel, summaryBotNames, summaryServiceNames);
                 process.exit(0);
@@ -977,10 +999,10 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
 
                 // Prefer live bots.json (current intent) over the startup snapshot.
                 // Shows what the user configured, even if the wrapper hasn't respawned yet.
-                let displayedBots = listConfiguredBots().filter((b: any) => b.active);
+                let displayedBots = listConfiguredBots().filter((b: BotEntry) => b.active);
                 if (displayedBots.length === 0) {
                     if (Array.isArray(botInfo?.botNames)) {
-                        displayedBots = botInfo.botNames.map((name: any) => ({ name: String(name) }));
+                        displayedBots = botInfo.botNames.map((name: unknown) => ({ name: String(name) }));
                     } else if (botInfo?.botName) {
                         displayedBots = [{ name: String(botInfo.botName) }];
                     }
@@ -1051,8 +1073,8 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
                         console.warn(`dexbot stop: worker process(es) still alive after ${drainDeadlineMs}ms — not waiting longer (state kept; a start may report the running bot).`);
                     }
                 }
-            } catch (err: any) {
-                if (err.code !== 'ESRCH') throw err;
+            } catch (err) {
+                if (getErrorCode(err) !== 'ESRCH') throw err;
                 monolithicExited = true;
             } finally {
                 if (effectiveCmd === 'delete' || monolithicExited) {
@@ -1112,7 +1134,7 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
     }
 
     // Fall through to isolated supervisor socket
-    const controlCmd: any = { cmd: effectiveCmd };
+    const controlCmd: { cmd: string; bot?: string } = { cmd: effectiveCmd };
     if (target) controlCmd.bot = target;
 
     // Restart credential daemon for restart-all (no target) in isolated mode
@@ -1122,7 +1144,7 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
             await stopCredentialDaemonPid(ownerPid);
         }
         cleanupCredentialRuntimeFiles();
-        const daemonOpts: any = { detached: true };
+        const daemonOpts: CredentialDaemonOpts = { detached: true };
         const unlockedNow = await controller.ensureCredentialDaemon(daemonOpts);
         if (unlockedNow) {
             console.log(statusSuccess('✓ Authentication successful'));
@@ -1131,7 +1153,7 @@ async function handleControl({ cmd, target }: { cmd: string; target?: string }) 
     }
 
     try {
-        const resp: any = await sendControlCommand(controlCmd);
+        const resp = await sendControlCommand(controlCmd) as ControlResponse;
         if (resp.ok && resp.status) {
             printControlStatus(resp.status);
         } else {
@@ -1172,7 +1194,7 @@ if (isUnlockStartDirectRun) {
                 await withTimeout(
                     new Promise<void>((resolve) => bot.once('close', resolve)),
                     LAUNCHER.MONOLITHIC.SHUTDOWN_GRACE_MS,
-                    { onTimeout: 'resolve', defaultValue: undefined as any }
+                    { onTimeout: 'resolve', defaultValue: undefined }
                 );
             }
         });

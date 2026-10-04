@@ -19,7 +19,7 @@ import { createReadOnlyClient } from '../../modules/bitshares-native/index.js';
  */
 
 
-let _nativeClient: any = null;
+let _nativeClient: ReturnType<typeof createReadOnlyClient> | null = null;
 
 function _getClient() {
     if (!_nativeClient) {
@@ -31,10 +31,10 @@ function _getClient() {
     return _nativeClient;
 }
 
-async function connectClient(servers: any) {
+async function connectClient(servers: unknown) {
     const c = _getClient();
     const list = Array.isArray(servers) && servers.length > 0
-        ? servers
+        ? servers as string[]
         : NODE_MANAGEMENT.DEFAULT_NODES;
     return c.connect(list);
 }
@@ -51,7 +51,7 @@ function getNodeUrl() {
     return _nativeClient ? _nativeClient.getNodeUrl() : null;
 }
 
-function _call(api: any, method: any, args: any) {
+function _call(api: 'db' | 'history', method: string, args: unknown[]) {
     const c = _getClient();
     if (!c.isConnected()) {
         return Promise.reject(new Error('WebSocket is not open'));
@@ -62,12 +62,12 @@ function _call(api: any, method: any, args: any) {
 const BitShares = {
     db: new Proxy({}, {
         get(_target, method) {
-            return (...args: any[]) => _call('db', method, args);
+            return (...args: unknown[]) => _call('db', String(method), args);
         },
     }),
     history: new Proxy({}, {
         get(_target, method) {
-            return (...args: any[]) => _call('history', method, args);
+            return (...args: unknown[]) => _call('history', String(method), args);
         },
     }),
 };

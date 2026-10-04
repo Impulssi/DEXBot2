@@ -148,13 +148,32 @@ Examples:
   node dist/analysis/trade_profitability.js 1.2.123456 --hours 720 --asset 1.3.113 --csv trades.csv`);
 }
 
+interface TradeProfitabilityOptions {
+    accountId: string;
+    hours: number | null;
+    months: number | null;
+    start: string | null;
+    end: string | null;
+    asset: string | null;
+    pair: string | { base: string; quote: string } | null;
+    refreshAccount: boolean;
+    csv: string | null;
+    json: string | null;
+    matchMode: string;
+    showPnlDetail: boolean;
+    verbose: boolean;
+    feePerOrder: number | null;
+    html: boolean;
+    report: string | null;
+}
+
 function parseArgs(argv: string[] = process.argv.slice(2)) {
     if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {
         printHelp();
         process.exit(0);
     }
 
-    const opts: any = {
+    const opts: TradeProfitabilityOptions = {
         accountId: argv[0],
         hours: null,
         months: null as number | null,
@@ -224,7 +243,7 @@ function parseArgs(argv: string[] = process.argv.slice(2)) {
                     if (name === 'month' || name === 'months') setMonths(rawValue);
                     else if (name === 'hours') setHours(rawValue);
                     else if (name === 'report') { opts.report = requireValue('--report', rawValue); opts.html = true; }
-                    else opts[name] = requireValue(`--${name}`, rawValue);
+                    else (opts as unknown as Record<string, unknown>)[name] = requireValue(`--${name}`, rawValue);
                     break;
                 }
                 throw new Error(`Unknown option: ${arg}`);
@@ -1198,7 +1217,7 @@ function printMetrics(pairs: PairAnalysis[], window?: WindowRange) {
 // ─── CSV Export ──────────────────────────────────────────────────────────────
 
 function exportCsv(pairs: PairAnalysis[], filePath: string) {
-    const esc = (v: any) => { const s = String(v); return /[,"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    const esc = (v: unknown) => { const s = String(v); return /[,"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
     const lines = ['time,orderId,direction,baseAsset,quoteAsset,baseAmount,quoteAmount,price,isMaker,marketFeeReal,marketFeeAsset'];
 
     for (const pair of pairs) {
@@ -1282,9 +1301,10 @@ function normalizeTimeBound(raw: string, isEnd: boolean): string {
 }
 
 /** Auto-named report file: bot/account + pair filter + requested range. */
-function reportFileName(opts: any, accountRef: string, botName: string | null): string {
+function reportFileName(opts: TradeProfitabilityOptions, accountRef: string, botName: string | null): string {
     const slugBase = botName ? sanitizeKey(botName) : sanitizeKey(accountRef);
-    const pairSlug = opts.pair ? `_${sanitizeKey(opts.pair.base)}-${sanitizeKey(opts.pair.quote)}` : '';
+    const pair = opts.pair as { base: string; quote: string } | null;
+    const pairSlug = pair ? `_${sanitizeKey(pair.base)}-${sanitizeKey(pair.quote)}` : '';
     let rangeSlug: string;
     if (opts.months != null) rangeSlug = `_${String(opts.months).replace('.', 'p')}m`;
     else if (opts.start) rangeSlug = `_${String(opts.start).slice(0, 10)}${opts.end ? '_' + String(opts.end).slice(0, 10) : ''}`;
@@ -1310,7 +1330,7 @@ async function run(argv: string[] = process.argv.slice(2)) {
             process.exit(1);
         }
         accountId = resolved.accountId;
-        resolvedBotName = resolved.botMeta?.name ?? null;
+        resolvedBotName = (resolved.botMeta?.name as string) ?? null;
     }
 
     // Build time range
@@ -1345,7 +1365,7 @@ async function run(argv: string[] = process.argv.slice(2)) {
     await resolveAssetPrecisions(fills);
 
     // Classify fills
-    const { trades, pairs } = classifyFills(fills, opts.asset, opts.pair);
+    const { trades, pairs } = classifyFills(fills, opts.asset, opts.pair as { base: string; quote: string } | null | undefined);
 
     if (trades.length === 0) {
         console.log('  No trades could be classified (check pair/asset filter or time range).');
@@ -1381,7 +1401,7 @@ async function run(argv: string[] = process.argv.slice(2)) {
 
     const analyses: PairAnalysis[] = [];
     for (const [key, pairTrades] of pairMap) {
-        const analysis = analyzePair(pairTrades, opts.matchMode);
+        const analysis = analyzePair(pairTrades, opts.matchMode as 'sequential' | 'fifo');
         analyses.push(analysis);
 
         if (opts.verbose) {
@@ -1407,15 +1427,15 @@ async function run(argv: string[] = process.argv.slice(2)) {
             botName: resolvedBotName,
             start: gte,
             end: lte,
-            matchMode: opts.matchMode,
-            pairFilter: opts.pair ? `${opts.pair.base}/${opts.pair.quote}` : null,
+            matchMode: opts.matchMode as 'sequential' | 'fifo',
+            pairFilter: opts.pair ? `${(opts.pair as { base: string; quote: string }).base}/${(opts.pair as { base: string; quote: string }).quote}` : null,
             assetFilter: opts.asset,
             pairs: analyses.map(pair => ({ pair, metrics: computeMetrics(pair, reportWindow) })),
         }, reportPath);
         console.log(`\n📄 PnL report saved. Open report: (${toFileUrl(reportPath)})`);
     } else {
         // Output: summaries → grand total → per-match detail
-        printSummary(analyses, accountId, gte, lte, opts.matchMode);
+        printSummary(analyses, accountId, gte, lte, opts.matchMode as 'sequential' | 'fifo');
 
         if (opts.showPnlDetail) {
             printPnlDetail(analyses);

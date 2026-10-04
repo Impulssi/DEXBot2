@@ -24,7 +24,7 @@ interface SourceResolution {
     amaKey: string;
     // Candle-file meta when the source is backed by a JSON file (pool id,
     // asset ids/symbols, intervalSeconds); null for the centers-file fallback.
-    meta: any;
+    meta: Record<string, unknown> | null;
 }
 
 function listAvailableBots(): void {
@@ -34,7 +34,7 @@ function listAvailableBots(): void {
         return;
     }
     console.log('Available bot keys:');
-    settings.bots.forEach((bot: any, i: number) => {
+    settings.bots.forEach((bot: Record<string, unknown>, i: number) => {
         const key = computeBotKey(bot, i);
         console.log(`  ${key}  (name: ${bot.name})`);
     });

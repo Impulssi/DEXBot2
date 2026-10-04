@@ -13,9 +13,35 @@ import { getMinOrderSize, getAssetFees, getAssetFeesSafe, blockchainToFloat, fin
 import { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, buildOutsideInPairGroups, extractBatchOperationResults, chainOrderMatchesSlotWithTolerance, buildCrossingCheckCandidates, isCrossingCheckCandidate, getSideBudget, calculateBudgetedSizes, getActiveOrdersTotal, convertToSpreadPlaceholder, isOrderGoneErrorMessage, clearDuplicateOrphanDetection, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, reserveEdgeIdSet, compareReserveEdge, parseSlotIndex, reportGridPriceInvariant, liveWindowIdSet } from './utils/order.js';
 import { resolveAccountRef } from './utils/system.js';
 import * as Format from './format.js';
-import { getErrorMessage } from '../utils/errors.js';
+import { getErrorMessage, getErrorCode, getErrorName } from '../utils/errors.js';
+import type { OrderManagerLike, ManagedOrder, ChainOrder, ParsedChainEntry, ParsedChainOrder, ChainOrdersLike, AssetPair, LoggerLike, UnknownRecord, StartupCreatePlan, StartupUpdatePlan, StartupCancelPlan, OrderType } from '../types.js';
 
-function computePlacementPriceCollision(manager: any, gridOrder: any): any {
+interface CrossedOrderLike {
+    id?: string;
+    orderId?: string | null;
+    chainOrderId?: string | null;
+    slotId?: string;
+    type?: string;
+    price?: number;
+    order?: { type?: string; price?: number; [key: string]: unknown } | null;
+    [key: string]: unknown;
+}
+
+interface PreparedStartupUpdate {
+    plan: StartupUpdatePlan;
+    chainOrderId: string;
+    gridOrder: ManagedOrder;
+    parsedChain: ParsedChainOrder | null;
+    updateParams: { newPrice: number; amountToSell: unknown; minToReceive: unknown; orderType: OrderType };
+}
+
+interface StartupSideComparators {
+    sortUpdateComparator: (a: ChainOrder, b: ChainOrder) => number;
+    sortExcessCancelComparator: (a: ParsedChainEntry, b: ParsedChainEntry) => number;
+    sortMatchedCancelComparator: (a: ManagedOrder, b: ManagedOrder) => number;
+}
+
+function computePlacementPriceCollision(manager: OrderManagerLike, gridOrder: ManagedOrder): ManagedOrder | null {
     const precision = gridOrder.type === ORDER_TYPES.SELL ? manager.assets.assetA.precision : manager.assets.assetB.precision;
     for (const o of manager.orders.values()) {
         if (!isOrderPlaced(o) || o.id === gridOrder.id) continue;
@@ -44,17 +70,17 @@ function computePlacementPriceCollision(manager: any, gridOrder: any): any {
  *   an unmatched-chain-order chainOrderId).
  * @returns {Object|null} The first crossed live order, or null.
  */
-function computePlacementCrossing(manager: any, gridOrder: any, excludeChainOrderId: any = null): any {
+function computePlacementCrossing(manager: OrderManagerLike, gridOrder: ManagedOrder, excludeChainOrderId: string | null = null): CrossedOrderLike | null {
     const price = gridOrder?.price;
     const type = gridOrder?.type;
     if (price == null || type == null) return null;
-    const candidates: any[] = buildCrossingCheckCandidates(manager);
+    const candidates: CrossedOrderLike[] = buildCrossingCheckCandidates(manager);
     return findCrossedOrder(
         candidates,
         price,
         type,
         manager.assets,
-        (o: any) => isCrossingCheckCandidate(o, excludeChainOrderId)
+        (o) => isCrossingCheckCandidate(o, excludeChainOrderId)
     );
 }
 
@@ -65,14 +91,14 @@ function computePlacementCrossing(manager: any, gridOrder: any, excludeChainOrde
  * @returns {number} Count of active and partial orders with orderId.
  * @private
  */
-function _countActiveOnGrid(manager: any, type: any): number {
+function _countActiveOnGrid(manager: OrderManagerLike, type: OrderType): number {
     // Slot-N gated: fork-kept shelf/manual orders (non-slot-N ids, e.g.
     // deep-*) sit outside window accounting — same gate as reserve
     // classification and matched-excess candidates (issue #27 follow-up).
     // Without this, a live shelf inflates matchedOnGrid, suppresses
     // neededSlots/creates, and its chain-count surplus cancels real window
     // orders. No-op on grids that only mint slot-N ids.
-    const isGridSlot = (o: any) => o && o.orderId && parseSlotIndex(o?.id) !== null;
+    const isGridSlot = (o: ManagedOrder) => o && o.orderId && parseSlotIndex(o?.id) !== null;
     const active = manager.getOrdersByTypeAndState(type, ORDER_STATES.ACTIVE).filter(isGridSlot);
     const partial = manager.getOrdersByTypeAndState(type, ORDER_STATES.PARTIAL).filter(isGridSlot);
     return active.length + partial.length;
@@ -100,7 +126,7 @@ function _countActiveOnGrid(manager: any, type: any): number {
  * @returns {Map<string, number>} Derived budgeted size keyed by slot id.
  * @private
  */
-function _deriveBudgetedSideSizes(manager: any, type: any): Map<string, number> {
+function _deriveBudgetedSideSizes(manager: OrderManagerLike, type: OrderType): Map<string, number> {
     const derived = new Map<string, number>();
     if (typeof manager?.getChainFundsSnapshot !== 'function') return derived;
     const weightDist = manager.config?.weightDistribution;
@@ -109,7 +135,7 @@ function _deriveBudgetedSideSizes(manager: any, type: any): Map<string, number> 
     let funds;
     try {
         funds = manager.getChainFundsSnapshot();
-    } catch (e: any) {
+    } catch (e) {
         return derived;
     }
     if (!funds) return derived;
@@ -132,14 +158,14 @@ function _deriveBudgetedSideSizes(manager: any, type: any): Map<string, number> 
     // filter was the only guard.
     const resolved = resolveGapBand(manager);
     const boundaryKnown = resolved.boundaryIdx !== null && resolved.sellStartIdx !== null;
-    const inSideRail = (o: any): boolean => isSlotInRail(resolved.boundaryIdx, resolved.gapSlots, type, o);
+    const inSideRail = (o: ManagedOrder): boolean => isSlotInRail(resolved.boundaryIdx, resolved.gapSlots, type, o);
     const typeFilter = boundaryKnown
-        ? (o: any) => o && o.price != null && (o.type === type || o.type === ORDER_TYPES.SPREAD)
-        : (o: any) => o && o.price != null && o.type === type;
-    const allSideSlots = (Array.from(manager.orders.values()) as any[])
+        ? (o: ManagedOrder) => o && o.price != null && (o.type === type || o.type === ORDER_TYPES.SPREAD)
+        : (o: ManagedOrder) => o && o.price != null && o.type === type;
+    const allSideSlots = Array.from(manager.orders.values())
         .filter(typeFilter)
         .filter(inSideRail)
-        .sort((a: any, b: any) => a.price - b.price);
+        .sort((a, b) => a.price - b.price);
     if (allSideSlots.length === 0) return derived;
 
     let sizes;
@@ -152,11 +178,11 @@ function _deriveBudgetedSideSizes(manager: any, type: any): Map<string, number> 
             manager.config.incrementPercent,
             manager.assets
         );
-    } catch (e: any) {
+    } catch (e) {
         return derived;
     }
 
-    allSideSlots.forEach((s: any, i: number) => {
+    allSideSlots.forEach((s, i) => {
         derived.set(s.id, (Number(sizes?.[i]) || 0));
     });
     return derived;
@@ -170,7 +196,7 @@ function _deriveBudgetedSideSizes(manager: any, type: any): Map<string, number> 
  * @returns {Array<Object>} Array of picked virtual slots.
  * @private
  */
-function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[] {
+function _pickVirtualSlotsToActivate(manager: OrderManagerLike, type: OrderType, count: number): ManagedOrder[] {
     if (count <= 0) return [];
 
     // Boundary geometry: slots in the spread band (between boundary and
@@ -182,7 +208,7 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
     // MathUtils.isSlotInRail helper), not just type.
     const resolved = resolveGapBand(manager);
     const boundaryKnown = resolved.boundaryIdx !== null && resolved.sellStartIdx !== null;
-    const inRail = (slot: any): boolean => isSlotInRail(resolved.boundaryIdx, resolved.gapSlots, type, slot);
+    const inRail = (slot: ManagedOrder): boolean => isSlotInRail(resolved.boundaryIdx, resolved.gapSlots, type, slot);
 
     // CRITICAL FIX: Filter by type BEFORE sorting.
     // Only get slots of the requested type (SELL or BUY), not a mix.  Empty
@@ -193,9 +219,9 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
     // When boundary is unknown, geometry cannot classify an empty — only
     // accept concrete BUY/SELL types (safe: don't activate what we can't place).
     const typeFilter = boundaryKnown
-        ? (slot: any) => slot && (slot.type === type || slot.type === ORDER_TYPES.SPREAD)
-        : (slot: any) => slot && slot.type === type;
-    const slotsOfType = (Array.from(manager.orders.values()) as any[])
+        ? (slot: ManagedOrder) => slot && (slot.type === type || slot.type === ORDER_TYPES.SPREAD)
+        : (slot: ManagedOrder) => slot && slot.type === type;
+    const slotsOfType = Array.from(manager.orders.values())
         .filter(typeFilter)
         .filter(inRail)
         // Slot-N gated: fork-kept shelf/manual slots (non-slot-N ids, e.g.
@@ -204,15 +230,15 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
         // A VIRTUAL shelf passes the type + fail-open geometry filters above;
         // without this it would consume window activation budget at an
         // off-market manual price. No-op on grids that only mint slot-N ids.
-        .filter((slot: any) => parseSlotIndex(slot?.id) !== null)
-        .sort((a: any, b: any) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
+        .filter((slot) => parseSlotIndex(slot?.id) !== null)
+        .sort((a, b) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
 
     let effectiveMin = 0;
     try {
         effectiveMin = getMinOrderSize(type, manager.assets);
-    } catch (e: any) { effectiveMin = 0; }
+    } catch (e) { effectiveMin = 0; }
 
-    const valid: any[] = [];
+    const valid: ManagedOrder[] = [];
     // Derived budgeted size per slot, built once (O(n)) so below-min lookups
     // don't recompute full-side sizing for every candidate (avoid O(n²)).
     const derivedSizes = _deriveBudgetedSideSizes(manager, type);
@@ -267,35 +293,35 @@ function _pickVirtualSlotsToActivate(manager: any, type: any, count: any): any[]
  * @returns {Array<Object>} Array of picked edge slots (edge first).
  * @private
  */
-function _pickEdgeReserveSlots(manager: any, orderType: any, count: any, excludeIds: any = null): any[] {
+function _pickEdgeReserveSlots(manager: OrderManagerLike, orderType: OrderType, count: number, excludeIds: Set<string> | null = null): ManagedOrder[] {
     if (count <= 0) return [];
     const type = orderType;
     const edgeDesc = type === ORDER_TYPES.SELL;
     const resolved = resolveGapBand(manager);
     const boundaryKnown = resolved.boundaryIdx !== null && resolved.sellStartIdx !== null;
-    const inRail = (slot: any): boolean => isSlotInRail(resolved.boundaryIdx, resolved.gapSlots, type, slot);
+    const inRail = (slot: ManagedOrder): boolean => isSlotInRail(resolved.boundaryIdx, resolved.gapSlots, type, slot);
     const typeFilter = boundaryKnown
-        ? (slot: any) => slot && (slot.type === type || slot.type === ORDER_TYPES.SPREAD)
-        : (slot: any) => slot && slot.type === type;
+        ? (slot: ManagedOrder) => slot && (slot.type === type || slot.type === ORDER_TYPES.SPREAD)
+        : (slot: ManagedOrder) => slot && slot.type === type;
     // Reserve classification (reserveEdgeIdSet / countLiveReserveOrders) is
     // slot-N gated; keep placement in agreement so a kept virtual non-grid
     // shelf is never activated as a reserve it would then never be counted
     // as (issue #27 follow-up). No-op upstream (grids only mint slot-N).
-    const gridSlot = (slot: any): boolean => parseSlotIndex(slot?.id) !== null;
+    const gridSlot = (slot: ManagedOrder): boolean => parseSlotIndex(slot?.id) !== null;
     // Both edges anchor at the live grid's own edge (ladder/rail extreme):
     // floor — nearest at/above the live floor first; ceiling — nearest
     // at/below the live ceiling first. Stale out-of-grid slots sort last.
     const edgeAnchor = resolveLiveReserveEdgeAnchorPrice(manager, edgeDesc ? 'sell' : 'buy');
-    const edgeFirst = (Array.from(manager.orders.values()) as any[])
+    const edgeFirst = Array.from(manager.orders.values())
         .filter(typeFilter)
         .filter(gridSlot)
         .filter(inRail)
-        .sort((a: any, b: any) => compareReserveEdge(a, b, edgeDesc ? 'ceiling' : 'floor', edgeAnchor));
+        .sort((a, b) => compareReserveEdge(a, b, edgeDesc ? 'ceiling' : 'floor', edgeAnchor));
     let effectiveMin = 0;
     try {
         effectiveMin = getMinOrderSize(type, manager.assets);
-    } catch (e: any) { effectiveMin = 0; }
-    const picked: any[] = [];
+    } catch (e) { effectiveMin = 0; }
+    const picked: ManagedOrder[] = [];
     for (const slot of edgeFirst) {
         if (picked.length >= count) break;
         if (excludeIds && excludeIds.has(slot.id)) continue;
@@ -319,20 +345,20 @@ function _pickEdgeReserveSlots(manager: any, orderType: any, count: any, exclude
 }
 
 
-function _getStartupSideComparators(orderType: any, assets: any): { sortUpdateComparator: (a: any, b: any) => number; sortExcessCancelComparator: (a: any, b: any) => number; sortMatchedCancelComparator: (a: any, b: any) => number } {
+function _getStartupSideComparators(orderType: OrderType, assets: AssetPair): StartupSideComparators {
     const isSell = orderType === ORDER_TYPES.SELL;
 
     const sortUpdateComparator = isSell
-        ? (a: any, b: any) => (parseChainOrder(a, assets)?.price || 0) - (parseChainOrder(b, assets)?.price || 0)
-        : (a: any, b: any) => (parseChainOrder(b, assets)?.price || 0) - (parseChainOrder(a, assets)?.price || 0);
+        ? (a: ChainOrder, b: ChainOrder) => (parseChainOrder(a, assets)?.price || 0) - (parseChainOrder(b, assets)?.price || 0)
+        : (a: ChainOrder, b: ChainOrder) => (parseChainOrder(b, assets)?.price || 0) - (parseChainOrder(a, assets)?.price || 0);
 
     const sortExcessCancelComparator = isSell
-        ? (a: any, b: any) => (b.parsed.price || 0) - (a.parsed.price || 0)
-        : (a: any, b: any) => (a.parsed.price || 0) - (b.parsed.price || 0);
+        ? (a: ParsedChainEntry, b: ParsedChainEntry) => (b.parsed.price || 0) - (a.parsed.price || 0)
+        : (a: ParsedChainEntry, b: ParsedChainEntry) => (a.parsed.price || 0) - (b.parsed.price || 0);
 
     const sortMatchedCancelComparator = isSell
-        ? (a: any, b: any) => (b.price || 0) - (a.price || 0)
-        : (a: any, b: any) => (a.price || 0) - (b.price || 0);
+        ? (a: ManagedOrder, b: ManagedOrder) => (b.price || 0) - (a.price || 0)
+        : (a: ManagedOrder, b: ManagedOrder) => (a.price || 0) - (b.price || 0);
 
     return {
         sortUpdateComparator,
@@ -352,18 +378,18 @@ function _getStartupSideComparators(orderType: any, assets: any): { sortUpdateCo
  * @returns {boolean} true if edge orders are all active
  * @private
  */
-function _isGridEdgeFullyActive(manager: any, orderType: any, updateCount: any): boolean {
+function _isGridEdgeFullyActive(manager: OrderManagerLike, orderType: OrderType, updateCount: number): boolean {
     if (!manager || updateCount <= 0) return false;
 
     // Get all orders of this type
-    const allOrders: any[] = (Array.from(manager.orders.values()) as any[]).filter((o: any) => o.type === orderType);
+    const allOrders: ManagedOrder[] = Array.from(manager.orders.values()).filter((o) => o.type === orderType);
     if (allOrders.length === 0) return false;
 
     // Sort: for BUY (highest to lowest price), for SELL (lowest to highest)
     // This puts market edge first, grid edge (furthest) last
     const sorted = orderType === ORDER_TYPES.BUY
-        ? allOrders.sort((a: any, b: any) => (b.price || 0) - (a.price || 0))  // Buy: high to low price
-        : allOrders.sort((a: any, b: any) => (a.price || 0) - (b.price || 0));  // Sell: low to high price
+        ? allOrders.sort((a, b) => (b.price || 0) - (a.price || 0))  // Buy: high to low price
+        : allOrders.sort((a, b) => (a.price || 0) - (b.price || 0));  // Sell: low to high price
 
     // Get the outermost orders (last N in sorted = furthest from market)
     const outerEdgeCount = Math.min(updateCount, sorted.length);
@@ -372,7 +398,7 @@ function _isGridEdgeFullyActive(manager: any, orderType: any, updateCount: any):
     // Check if ALL edge orders are ACTIVE (placed on blockchain)
     // Empty array check prevents vacuous truth: every([]) returns true
     if (edgeOrders.length === 0) return false;
-    const allEdgeActive = edgeOrders.every((o: any) => isOrderPlaced(o));
+    const allEdgeActive = edgeOrders.every((o) => isOrderPlaced(o));
 
     return allEdgeActive;
 }
@@ -385,11 +411,11 @@ function _isGridEdgeFullyActive(manager: any, orderType: any, updateCount: any):
  * @returns {{order: Object, index: number}|null} Largest order and its index, or null if none found
  * @private
  */
-function _findLargestOrder(unmatchedOrders: any, updateCount: any): { order: any; index: number } | null {
+function _findLargestOrder(unmatchedOrders: ChainOrder[], updateCount: number): { order: ChainOrder; index: number } | null {
     if (!Array.isArray(unmatchedOrders) || unmatchedOrders.length === 0) return null;
 
     const ordersToCheck = unmatchedOrders.slice(0, updateCount);
-    let largestOrder = null;
+    let largestOrder: ChainOrder | null = null;
     let largestIndex = -1;
     let largestSize = 0;
 
@@ -403,7 +429,7 @@ function _findLargestOrder(unmatchedOrders: any, updateCount: any): { order: any
         }
     }
 
-    return largestIndex >= 0 ? { order: largestOrder, index: largestIndex } : null;
+    return largestIndex >= 0 && largestOrder ? { order: largestOrder, index: largestIndex } : null;
 }
 
 /**
@@ -422,7 +448,7 @@ function _findLargestOrder(unmatchedOrders: any, updateCount: any): { order: any
  * @returns {Promise<{gridIndex: number, gridOrder: Object}|null>} Grid slot info or null
  * @private
  */
-async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, unmatchedOrders, updateCount, orderType, dryRun, planOnly = false }: { chainOrders: any; account: any; privateKey: any; manager: any; unmatchedOrders: any; updateCount: any; orderType: any; dryRun: any; planOnly?: boolean; }): Promise<{ index: number; orderType: any; chainOrderObj?: any } | null> {
+async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, unmatchedOrders, updateCount, orderType, dryRun, planOnly = false }: { chainOrders: ChainOrdersLike; account: string; privateKey: string; manager: OrderManagerLike; unmatchedOrders: ChainOrder[]; updateCount: number; orderType: OrderType; dryRun: boolean; planOnly?: boolean; }): Promise<{ index: number; orderType: OrderType; chainOrderObj?: ChainOrder } | null> {
     if (dryRun) return null;
     if (!Array.isArray(unmatchedOrders) || unmatchedOrders.length === 0) return null;
 
@@ -464,7 +490,7 @@ async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, 
         // Mark for removal from unmatched list (handled by caller)
         // Return info needed to create this order fresh later
         return { index: largestIndex, orderType };
-    } catch (err: any) {
+    } catch (err) {
         logger?.log?.(`Warning: Could not cancel largest order ${orderId}: ${getErrorMessage(err)}`, 'warn');
         return null;
     }
@@ -486,7 +512,7 @@ async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, 
  * @param {boolean} params.dryRun - Whether to simulate.
  * @returns {Promise<void>}
  */
-async function _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun, extraOptions = {} }: { chainOrders: any; account: any; privateKey: any; manager: any; gridOrder: any; dryRun: any; extraOptions?: any }): Promise<string | null> {
+async function _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun, extraOptions = {} }: { chainOrders: ChainOrdersLike; account: string; privateKey: string; manager: OrderManagerLike; gridOrder: ManagedOrder; dryRun: boolean; extraOptions?: UnknownRecord }): Promise<string | null> {
     if (dryRun) return null;
 
     // ATOMIC RE-VERIFICATION: Ensure slot is still virtual and hasn't been filled by recovery sync.
@@ -510,7 +536,7 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
             `[_createOrderFromGrid] SKIP (STARTUP-CROSS-GUARD): Create for ${gridOrder.id} at ` +
             `${Format.formatPrice6(createPrice)} crosses live ${crossed.type || crossed.order?.type} ` +
             `${crossed.id || crossed.chainOrderId || crossed.slotId || 'chain'} (${crossed.orderId || crossed.chainOrderId || crossed.slotId}) ` +
-            `@${Format.formatPrice6(crossed.price ?? crossed.order?.price)}`,
+            `@${Format.formatPrice6(crossed.price ?? crossed.order?.price ?? 0)}`,
             'warn'
         );
         return null;
@@ -558,7 +584,8 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
     }
 
     const operationResults = extractBatchOperationResults(result) || [];
-    const chainOrderId = operationResults[0] && operationResults[0][1];
+    const rawChainOrderId = operationResults[0] ? operationResults[0][1] : undefined;
+    const chainOrderId = typeof rawChainOrderId === 'string' ? rawChainOrderId : null;
 
     if (chainOrderId) {
         // Capture chain order ID BEFORE _applySync, so even if _applySync
@@ -575,7 +602,7 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
                 expectedType: gridOrder.type,
                 fee: btsFeeData.createFee
             }, 'createOrder');
-        } catch (syncErr: any) {
+        } catch (syncErr) {
             const logger = manager && manager.logger;
             logger?.log?.(
                 `[_createOrderFromGrid] _applySync failed after successful broadcast for ${capturedId}: ${getErrorMessage(syncErr)}`,
@@ -625,7 +652,7 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
                 await manager._gridLock.acquire(async () => {
                     await manager._applyOrderUpdate(zeroOrder, 'createOrder-extraction-failure', { skipAccounting: true, fee: 0 });
                 });
-            } catch (zeroErr: any) {
+            } catch (zeroErr) {
                 logger?.log?.(`[_createOrderFromGrid] Failed to zero slot ${gridOrder.id}: ${getErrorMessage(zeroErr)}`, 'error');
             }
         }
@@ -650,7 +677,7 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
  * @returns {Promise<boolean>} true when a cancellation was actually submitted
  * @private
  */
-async function _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId, dryRun, chainOrderObj, releaseUntrackedFunds = false, shouldCancel = null }: { chainOrders: any; account: any; privateKey: any; manager: any; chainOrderId: any; dryRun: any; chainOrderObj: any; releaseUntrackedFunds?: boolean; shouldCancel?: (() => boolean) | null; }): Promise<boolean> {
+async function _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId, dryRun, chainOrderObj, releaseUntrackedFunds = false, shouldCancel = null }: { chainOrders: ChainOrdersLike; account: string; privateKey: string; manager: OrderManagerLike; chainOrderId: string; dryRun: boolean; chainOrderObj: ChainOrder | ManagedOrder | null; releaseUntrackedFunds?: boolean; shouldCancel?: (() => boolean) | null; }): Promise<boolean> {
     if (dryRun) return false;
     if (typeof shouldCancel === 'function' && !shouldCancel()) return false;
 
@@ -661,11 +688,11 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
     // cancel and still release the capital — otherwise the funds are stranded and
     // the chainTotal = chainFree + chainCommitted invariant is violated. Non-release
     // cancels (matched slots) keep the previous throw-and-log behavior.
-    let cancelResult: any = null;
+    let cancelResult: { verifiedAfterFailure?: boolean; [key: string]: unknown } | null | undefined = null;
     let orderGone = false;
     try {
         cancelResult = await chainOrders.cancelOrder(account, privateKey, chainOrderId);
-    } catch (cancelErr: any) {
+    } catch (cancelErr) {
         const errMsg = getErrorMessage(cancelErr) || '';
         if (releaseUntrackedFunds && isOrderGoneErrorMessage(errMsg)) {
             orderGone = true;
@@ -704,10 +731,11 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
     // Unmatched chain orders are not represented as ACTIVE/PARTIAL grid slots, so
     // synchronizeWithChain('cancelOrder') cannot release their commitment.
     if (releaseUntrackedFunds && manager.accountant && chainOrderObj) {
-        const parsed = parseChainOrder(chainOrderObj, manager.assets);
+        const parsed = parseChainOrder(chainOrderObj as ChainOrder, manager.assets);
         if (parsed && parsed.size != null && parsed.size > 0) {
+            const size = parsed.size;
             await manager._fundLock.acquire(async () => {
-                await manager.accountant.addToChainFree(parsed.type, parsed.size, 'startup-cancel-unmatched');
+                await manager.accountant.addToChainFree(parsed.type, size, 'startup-cancel-unmatched');
             });
         }
     }
@@ -723,25 +751,25 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
  * cleanup virtualize ACTIVE/PARTIAL slots that are actually live on chain,
  * after which the next cycle re-creates them and duplicates the orders.
  * Returns the fresh orders when the sync ran, null when skipped/failed.
- * @returns {Promise<any[] | null>}
+ * @returns {Promise<ChainOrder[] | null>}
  * @private
  */
 async function _recoverSyncFromChain({ chainOrders, manager, account, logger, source, triggerMessage, skipMessage }: {
-    chainOrders: any;
-    manager: any;
-    account: any;
-    logger: any;
-    source: any;
+    chainOrders: ChainOrdersLike;
+    manager: OrderManagerLike;
+    account: string;
+    logger: LoggerLike;
+    source: string;
     triggerMessage?: string;
     skipMessage?: string;
-}): Promise<any[] | null> {
+}): Promise<ChainOrder[] | null> {
     try {
         if (triggerMessage) logger?.log?.(triggerMessage, 'warn');
         const freshChainOrders = await readOpenOrdersGuarded(
             chainOrders,
             resolveAccountRef(manager, account),
             {
-                log: (message: string, level: any) => logger?.log?.(message, level),
+                log: (message: string, level?: string) => logger?.log?.(message, level),
                 label: 'RECOVERY',
                 deferEmpty: true,
                 timeoutMs: TIMING.CONNECTION_TIMEOUT_MS,
@@ -754,13 +782,13 @@ async function _recoverSyncFromChain({ chainOrders, manager, account, logger, so
             source,
         });
         return freshChainOrders;
-    } catch (syncErr: any) {
+    } catch (syncErr) {
         logger?.log?.(`Recovery sync failed: ${getErrorMessage(syncErr)}`, 'error');
         return null;
     }
 }
 
-async function _recoverStartupSyncFailure({ chainOrders, manager, account, logger, triggerMessage, source }: { chainOrders: any; manager: any; account: any; logger: any; triggerMessage: any; source: any; }): Promise<any> {
+async function _recoverStartupSyncFailure({ chainOrders, manager, account, logger, triggerMessage, source }: { chainOrders: ChainOrdersLike; manager: OrderManagerLike; account: string; logger: LoggerLike; triggerMessage: string; source: string; }): Promise<ChainOrder[] | null> {
     return _recoverSyncFromChain({
         chainOrders,
         manager,
@@ -774,15 +802,15 @@ async function _recoverStartupSyncFailure({ chainOrders, manager, account, logge
     });
 }
 
-function _refreshStartupUpdatePlans(updatePlans: any, chainOpenOrders: any): any[] {
+function _refreshStartupUpdatePlans(updatePlans: StartupUpdatePlan[], chainOpenOrders: ChainOrder[]): StartupUpdatePlan[] {
     if (!Array.isArray(updatePlans) || updatePlans.length === 0) return [];
     const chainById = new Map(
         (Array.isArray(chainOpenOrders) ? chainOpenOrders : [])
-            .filter((o: any) => o && o.id)
-            .map((o: any) => [o.id, o])
+            .filter((o) => o && o.id)
+            .map((o) => [o.id, o])
     );
 
-    const refreshed: any[] = [];
+    const refreshed: StartupUpdatePlan[] = [];
     for (const plan of updatePlans) {
         if (!plan?.chainOrderId || !plan?.gridOrder?.id) continue;
         const freshChainOrder = chainById.get(plan.chainOrderId);
@@ -795,7 +823,7 @@ function _refreshStartupUpdatePlans(updatePlans: any, chainOpenOrders: any): any
     return refreshed;
 }
 
-function _prepareStartupUpdatePlan(plan: any, manager: any, logger: any): any {
+function _prepareStartupUpdatePlan(plan: StartupUpdatePlan, manager: OrderManagerLike, logger: LoggerLike): PreparedStartupUpdate | null {
     const chainOrderId = plan?.chainOrderId;
     const gridOrder = plan?.gridOrder;
     if (!chainOrderId || !gridOrder?.id) return null;
@@ -833,7 +861,7 @@ function _prepareStartupUpdatePlan(plan: any, manager: any, logger: any): any {
             `[STARTUP-CROSS-GUARD] Skipping relocation update ${chainOrderId} -> ${gridOrder.id}: ` +
             `new ${gridOrder.type} @${Format.formatPrice6(gridOrder.price)} crosses live ` +
             `${crossed.type} ${crossed.id || crossed.chainOrderId || 'chain'} ` +
-            `(${crossed.orderId || crossed.chainOrderId}) @${Format.formatPrice6(crossed.price)}; ` +
+            `(${crossed.orderId || crossed.chainOrderId}) @${Format.formatPrice6(crossed.price ?? 0)}; ` +
             `re-align on the next reconcile cycle.`,
             'warn'
         );
@@ -854,11 +882,12 @@ function _prepareStartupUpdatePlan(plan: any, manager: any, logger: any): any {
     };
 }
 
-async function _finalizeStartupUpdate({ manager, preparedUpdate }: { manager: any; preparedUpdate: any }): Promise<void> {
+async function _finalizeStartupUpdate({ manager, preparedUpdate }: { manager: OrderManagerLike; preparedUpdate: PreparedStartupUpdate }): Promise<void> {
     const { plan, parsedChain } = preparedUpdate;
-    if (parsedChain && parsedChain.size > 0 && manager.accountant) {
+    if (parsedChain?.size != null && parsedChain.size > 0 && manager.accountant) {
+        const parsedSize = parsedChain.size;
         await manager._fundLock.acquire(async () => {
-            await manager.accountant.addToChainFree(plan.gridOrder.type, parsedChain.size, 'startup-align');
+            await manager.accountant.addToChainFree(plan.gridOrder.type, parsedSize, 'startup-align');
         });
     }
 
@@ -892,12 +921,12 @@ async function _executeStartupUpdateBatch({
     manager,
     dryRun,
 }: {
-    updatePlans: any;
-    chainOrders: any;
-    account: any;
-    privateKey: any;
-    manager: any;
-    dryRun: any;
+    updatePlans: StartupUpdatePlan[];
+    chainOrders: ChainOrdersLike;
+    account: string;
+    privateKey: string;
+    manager: OrderManagerLike;
+    dryRun: boolean;
 }): Promise<{ executed: boolean; prepared: number; skipped: boolean }> {
     if (!Array.isArray(updatePlans) || updatePlans.length === 0 || dryRun) {
         return { executed: false, prepared: 0, skipped: true };
@@ -908,7 +937,7 @@ async function _executeStartupUpdateBatch({
     }
 
     const logger = manager?.logger;
-    const prepared: any[] = [];
+    const prepared: Array<PreparedStartupUpdate & { op?: unknown }> = [];
 
     for (const plan of updatePlans) {
         const preparedPlan = _prepareStartupUpdatePlan(plan, manager, logger);
@@ -937,7 +966,7 @@ async function _executeStartupUpdateBatch({
     }
 
     logger?.log?.(`Startup: Broadcasting update batch (${prepared.length} op${prepared.length > 1 ? 's' : ''})`, 'info');
-    await chainOrders.executeBatch(account, privateKey, prepared.map((p: any) => p.op));
+    await chainOrders.executeBatch(account, privateKey, prepared.map((p) => p.op));
 
     let finalizeFailed = false;
     for (const entry of prepared) {
@@ -947,7 +976,7 @@ async function _executeStartupUpdateBatch({
         }
         try {
             await _finalizeStartupUpdate({ manager, preparedUpdate: entry });
-        } catch (finalizeErr: any) {
+        } catch (finalizeErr) {
             logger?.log?.(`Startup: Finalize failed for ${entry.plan.gridOrder.id}: ${getErrorMessage(finalizeErr)}`, 'error');
             finalizeFailed = true;
         }
@@ -969,13 +998,13 @@ async function _executeStartupSingleUpdate({
     manager,
     dryRun,
 }: {
-    plan: any;
-    preparedPlan?: any;
-    chainOrders: any;
-    account: any;
-    privateKey: any;
-    manager: any;
-    dryRun: any;
+    plan: StartupUpdatePlan;
+    preparedPlan?: PreparedStartupUpdate;
+    chainOrders: ChainOrdersLike;
+    account: string;
+    privateKey: string;
+    manager: OrderManagerLike;
+    dryRun: boolean;
 }): Promise<{ executed: boolean; skipped: boolean }> {
     if (dryRun) return { executed: false, skipped: true };
     if (typeof chainOrders?.updateOrder !== 'function') {
@@ -1022,12 +1051,12 @@ async function _executeStartupSequentialUpdateFallback({
     manager,
     dryRun,
 }: {
-    updatePlans: any;
-    chainOrders: any;
-    account: any;
-    privateKey: any;
-    manager: any;
-    dryRun: any;
+    updatePlans: StartupUpdatePlan[];
+    chainOrders: ChainOrdersLike;
+    account: string;
+    privateKey: string;
+    manager: OrderManagerLike;
+    dryRun: boolean;
 }): Promise<{ executed: number; skipped: number; failed: number }> {
     if (!Array.isArray(updatePlans) || updatePlans.length === 0 || dryRun) {
         return { executed: 0, skipped: 0, failed: 0 };
@@ -1042,8 +1071,8 @@ async function _executeStartupSequentialUpdateFallback({
     // A rejected plan is DISCARDED here and never reaches the loop below, so
     // preparation happens exactly once for it. The prepared plan is kept only
     // to save the loop a redundant re-preparation of plans that pass.
-    const preparedPlans = new Map<any, any>();
-    const plans = updatePlans.filter((plan: any) => {
+    const preparedPlans = new Map<StartupUpdatePlan, PreparedStartupUpdate>();
+    const plans = updatePlans.filter((plan) => {
         const prepared = _prepareStartupUpdatePlan(plan, manager, logger);
         if (prepared === null) return false;
         preparedPlans.set(plan, prepared);
@@ -1078,7 +1107,7 @@ async function _executeStartupSequentialUpdateFallback({
 
             if (result.executed) executed++;
             else skipped++;
-        } catch (err: any) {
+        } catch (err) {
             failed++;
             logger?.log?.(`Startup: Sequential update failed for ${plan.chainOrderId} -> ${plan.gridOrderId || plan.gridOrder?.id}: ${getErrorMessage(err)}`, 'error');
 
@@ -1091,7 +1120,7 @@ async function _executeStartupSequentialUpdateFallback({
                 source: 'startupReconcileSequentialUpdateFailure',
                 });
 
-            queue = _refreshStartupUpdatePlans(queue, refreshedChainOrders);
+            queue = _refreshStartupUpdatePlans(queue, refreshedChainOrders ?? []);
         }
     }
 
@@ -1118,10 +1147,10 @@ async function _adoptPossiblyLandedCreate({
     account,
     gridOrder,
 }: {
-    chainOrders: any;
-    manager: any;
-    account: any;
-    gridOrder: any;
+    chainOrders: ChainOrdersLike;
+    manager: OrderManagerLike;
+    account: string;
+    gridOrder: ManagedOrder;
 }): Promise<string | null | 'unknown'> {
     try {
         // Truncated reads omit the newest limit orders (by_account index
@@ -1144,11 +1173,11 @@ async function _adoptPossiblyLandedCreate({
         const assets = manager?.assets;
         if (!assets?.assetA || !assets?.assetB) return 'unknown';
 
-        let matched: any = null;
+        let matched: ChainOrder | null = null;
         for (const o of freshChainOrders) {
             const parsed = parseChainOrder(o, assets);
             if (!parsed || parsed.type !== gridOrder.type) continue;
-            if (parsed.orderId && Array.from(manager.orders.values()).some((g: any) => g.orderId === parsed.orderId)) continue;
+            if (parsed.orderId && Array.from(manager.orders.values()).some((g) => g.orderId === parsed.orderId)) continue;
             // Uncertain-adopt: the just-broadcast create may have landed with
             // rounding-drifted price, so match within tolerance (clamped to
             // ~2 quanta) — the strict matcher would miss it, leave the slot
@@ -1181,7 +1210,7 @@ async function _adoptPossiblyLandedCreate({
             fee: btsFeeData?.createFee || 0,
         }, 'createOrder');
         return matched.id || null;
-    } catch (adoptErr: any) {
+    } catch (adoptErr) {
         manager?.logger?.log?.(
             `Startup: Uncertain-create adoption check failed for ${gridOrder?.id}: ${getErrorMessage(adoptErr)}`,
             'warn'
@@ -1198,9 +1227,9 @@ async function _adoptPossiblyLandedCreate({
  * loadGrid sanitizer drops sizes only for flagged slots (see grid.ts and
  * docs/ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md §3 lineage).
  */
-async function _markSlotsCreateUncertain(manager: any, slotIds: any[], logger?: any): Promise<void> {
+async function _markSlotsCreateUncertain(manager: OrderManagerLike, slotIds: string[], logger?: LoggerLike): Promise<void> {
     if (!manager?.orders || typeof manager.applyGridUpdateBatch !== 'function') return;
-    const updates: any[] = [];
+    const updates: ManagedOrder[] = [];
     for (const id of slotIds || []) {
         if (!id) continue;
         const slot = manager.orders.get(id);
@@ -1210,7 +1239,7 @@ async function _markSlotsCreateUncertain(manager: any, slotIds: any[], logger?: 
     if (updates.length === 0) return;
     try {
         await manager.applyGridUpdateBatch(updates, 'startup-create-uncertain-marker');
-    } catch (err: any) {
+    } catch (err) {
         logger?.log?.(`Startup: Failed to mark create-uncertain slots: ${getErrorMessage(err)}`, 'warn');
     }
 }
@@ -1225,14 +1254,14 @@ async function _createStartupOrderWithHandling({
     dryRun,
     recovery,
 }: {
-    chainOrders: any;
-    account: any;
-    privateKey: any;
-    manager: any;
-    gridOrder: any;
-    orderLabel: any;
-    dryRun: any;
-    recovery: any;
+    chainOrders: ChainOrdersLike;
+    account: string;
+    privateKey: string;
+    manager: OrderManagerLike;
+    gridOrder: ManagedOrder;
+    orderLabel?: string;
+    dryRun: boolean;
+    recovery: StartupCreatePlan['recovery'];
 }): Promise<string | null> {
     const maxAttempts = 2;
     let failedWithUncertain = false;
@@ -1242,8 +1271,8 @@ async function _createStartupOrderWithHandling({
             const chainOrderId = await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun });
             if (chainOrderId) return chainOrderId;
             return null;
-        } catch (err: any) {
-            const isUncertain = err?.code === 'BROADCAST_UNCERTAIN' || err?.name === 'BroadcastUncertainError';
+        } catch (err) {
+            const isUncertain = getErrorCode(err) === 'BROADCAST_UNCERTAIN' || getErrorName(err) === 'BroadcastUncertainError';
             manager?.logger?.log?.(
                 `Startup: Failed to create ${orderLabel} (attempt ${attempt}/${maxAttempts}${isUncertain ? ', uncertain broadcast' : ''}): ${getErrorMessage(err)}`,
                 'error'
@@ -1304,11 +1333,11 @@ async function _createStartupOrderWithHandling({
 
 // _extractBatchOperationResults — thin wrapper over shared utility,
 // returns empty array (not null) for callers that iterate directly.
-function _extractBatchOperationResults(result: any): any[] {
+function _extractBatchOperationResults(result: unknown): unknown[][] {
     return extractBatchOperationResults(result) || [];
 }
 
-function _resolveGroupRecovery(group: any, fallbackMessage: any, fallbackSource: any): { triggerMessage: any; source: any } {
+function _resolveGroupRecovery(group: StartupCreatePlan[], fallbackMessage: string, fallbackSource: string): { triggerMessage: string; source: string } {
     for (const plan of group || []) {
         if (plan?.recovery?.triggerMessage && plan?.recovery?.source) {
             return { triggerMessage: plan.recovery.triggerMessage, source: plan.recovery.source };
@@ -1327,14 +1356,14 @@ async function _executeStartupCreateGroupBatch({
     groupIndex,
     totalGroups,
 }: {
-    group: any;
-    chainOrders: any;
-    account: any;
-    privateKey: any;
-    manager: any;
-    dryRun: any;
-    groupIndex: any;
-    totalGroups: any;
+    group: StartupCreatePlan[];
+    chainOrders: ChainOrdersLike;
+    account: string;
+    privateKey: string;
+    manager: OrderManagerLike;
+    dryRun: boolean;
+    groupIndex: number;
+    totalGroups: number;
 }): Promise<string[]> {
     if (!Array.isArray(group) || group.length === 0 || dryRun) return [];
     if (typeof chainOrders?.buildCreateOrderOp !== 'function' || typeof chainOrders?.executeBatch !== 'function') {
@@ -1342,7 +1371,7 @@ async function _executeStartupCreateGroupBatch({
     }
 
     const logger = manager?.logger;
-    const prepared: any[] = [];
+    const prepared: Array<{ plan: StartupCreatePlan; op?: unknown }> = [];
 
     for (const plan of group) {
         const gridOrder = plan?.gridOrder;
@@ -1377,7 +1406,7 @@ async function _executeStartupCreateGroupBatch({
                 `Startup: Skip create ${plan.orderLabel} (STARTUP-CROSS-GUARD) - price ` +
                 `${Format.formatPrice6(createPrice)} crosses live ${crossed.type || crossed.order?.type} ` +
                 `${crossed.id || crossed.chainOrderId || crossed.slotId || 'chain'} (${crossed.orderId || crossed.chainOrderId || crossed.slotId}) ` +
-                `@${Format.formatPrice6(crossed.price ?? crossed.order?.price)}`,
+                `@${Format.formatPrice6(crossed.price ?? crossed.order?.price ?? 0)}`,
                 'warn'
             );
             continue;
@@ -1426,17 +1455,18 @@ async function _executeStartupCreateGroupBatch({
             'info'
         );
 
-        const batchResult = await chainOrders.executeBatch(account, privateKey, prepared.map((p: any) => p.op));
+        const batchResult = await chainOrders.executeBatch(account, privateKey, prepared.map((p) => p.op));
         const opResults = _extractBatchOperationResults(batchResult);
         const btsFeeData = getAssetFees('BTS');
 
         // Phase A: Extract ALL chain order IDs from batch results first, capturing
         // every on-chain ID before any _applySync call. This ensures createdOrderIds
         // is complete even if a subsequent _applySync throws mid-loop.
-        const batchResults: Array<{ chainOrderId: string | null; plan: any }> = [];
+        const batchResults: Array<{ chainOrderId: string | null; plan: StartupCreatePlan }> = [];
         let missingChainOrderId = false;
         for (let i = 0; i < prepared.length; i++) {
-            const chainOrderId = opResults[i] && opResults[i][1];
+            const rawChainOrderId = opResults[i] ? opResults[i][1] : undefined;
+            const chainOrderId = typeof rawChainOrderId === 'string' ? rawChainOrderId : null;
             const plan = prepared[i].plan;
             if (!chainOrderId) {
                 logger?.log?.(`Startup: create result missing chainOrderId for ${plan.orderLabel}`, 'error');
@@ -1467,7 +1497,7 @@ async function _executeStartupCreateGroupBatch({
             // mark them as durable orphan evidence for the next load.
             await _markSlotsCreateUncertain(
                 manager,
-                batchResults.filter((b: any) => !b.chainOrderId).map((b: any) => b.plan?.gridOrder?.id),
+                batchResults.filter((b) => !b.chainOrderId).map((b) => b.plan?.gridOrder?.id),
                 logger
             );
             await _recoverStartupSyncFailure({
@@ -1479,8 +1509,8 @@ async function _executeStartupCreateGroupBatch({
                 source: recovery.source,
                 });
         }
-    } catch (err: any) {
-        const isUncertain = err?.code === 'BROADCAST_UNCERTAIN' || err?.name === 'BroadcastUncertainError';
+    } catch (err) {
+        const isUncertain = getErrorCode(err) === 'BROADCAST_UNCERTAIN' || getErrorName(err) === 'BroadcastUncertainError';
         logger?.log?.(
             `Startup: Failed to create group ${groupIndex + 1}/${totalGroups}${isUncertain ? ' (uncertain broadcast)' : ''}: ${getErrorMessage(err)}`,
             'error'
@@ -1490,7 +1520,7 @@ async function _executeStartupCreateGroupBatch({
             // adopt any landed orders via chain sync instead of blindly
             // re-broadcasting (duplicate order risk).
             logger?.log?.(
-                `Startup: Verifying uncertain create group ${groupIndex + 1}/${totalGroups} on chain; adopting any landed orders`,
+                `Startup: Verifying uncertain create group ${groupIndex + 1}/${totalGroups} on chain; adopting landed orders`,
                 'warn'
             );
             try {
@@ -1509,7 +1539,7 @@ async function _executeStartupCreateGroupBatch({
                     chainOrders,
                     resolveAccountRef(manager, account),
                     {
-                        log: (message: string, level: any) => logger?.log?.(message, level),
+                        log: (message: string, level?: string) => logger?.log?.(message, level),
                         label: 'STARTUP',
                         deferEmpty: true,
                         timeoutMs: TIMING.CONNECTION_TIMEOUT_MS,
@@ -1525,7 +1555,7 @@ async function _executeStartupCreateGroupBatch({
                     // guarded recovery sync adopt anything that actually landed.
                     await _markSlotsCreateUncertain(
                         manager,
-                        prepared.map((p: any) => p?.plan?.gridOrder?.id),
+                        prepared.map((p) => p?.plan?.gridOrder?.id),
                         logger
                     );
                     await _recoverStartupSyncFailure({
@@ -1567,7 +1597,7 @@ async function _executeStartupCreateGroupBatch({
                                 `Startup: Uncertain create for ${plan.orderLabel} confirmed on chain (${slot.orderId}); adopted + accounted`,
                                 'warn'
                             );
-                        } catch (applyErr: any) {
+                        } catch (applyErr) {
                             logger?.log?.(
                                 `Startup: Adoption accounting failed for ${plan.orderLabel}: ${getErrorMessage(applyErr)}`,
                                 'warn'
@@ -1580,19 +1610,19 @@ async function _executeStartupCreateGroupBatch({
                     await _markSlotsCreateUncertain(
                         manager,
                         prepared
-                            .filter((p: any) => !manager.orders.get(p?.plan?.gridOrder?.id)?.orderId)
-                            .map((p: any) => p?.plan?.gridOrder?.id),
+                            .filter((p) => !manager.orders.get(p?.plan?.gridOrder?.id)?.orderId)
+                            .map((p) => p?.plan?.gridOrder?.id),
                         logger
                     );
                 }
-            } catch (verifyErr: any) {
+            } catch (verifyErr) {
                 logger?.log?.(
                     `Startup: Uncertain group verification failed: ${getErrorMessage(verifyErr)}; falling back to recovery sync`,
                     'error'
                 );
                 await _markSlotsCreateUncertain(
                     manager,
-                    prepared.map((p: any) => p?.plan?.gridOrder?.id),
+                    prepared.map((p) => p?.plan?.gridOrder?.id),
                     logger
                 );
                 await _recoverStartupSyncFailure({
@@ -1619,11 +1649,11 @@ async function _executeStartupCreateGroupBatch({
     return createdOrderIds;
 }
 
-function _buildOutsideInCreateGroups(createPlans: any): any[] {
+function _buildOutsideInCreateGroups(createPlans: StartupCreatePlan[]): StartupCreatePlan[][] {
     return buildOutsideInPairGroups(createPlans, {
-        isValid: (p: any) => Boolean(p?.gridOrder),
-        getType: (p: any) => p.orderType,
-        getPrice: (p: any) => p.gridOrder?.price,
+        isValid: (p: StartupCreatePlan) => Boolean(p?.gridOrder),
+        getType: (p: StartupCreatePlan) => p.orderType,
+        getPrice: (p: StartupCreatePlan) => p.gridOrder?.price,
     });
 }
 
@@ -1635,12 +1665,12 @@ async function _executePlannedStartupCreates({
     manager,
     dryRun,
 }: {
-    createPlans: any;
-    chainOrders: any;
-    account: any;
-    privateKey: any;
-    manager: any;
-    dryRun: any;
+    createPlans: StartupCreatePlan[];
+    chainOrders: ChainOrdersLike;
+    account: string;
+    privateKey: string;
+    manager: OrderManagerLike;
+    dryRun: boolean;
 }): Promise<Set<string>> {
     const logger = manager?.logger;
     const groups = _buildOutsideInCreateGroups(createPlans);
@@ -1661,7 +1691,7 @@ async function _executePlannedStartupCreates({
 
     for (let i = 0; i < groups.length; i++) {
         const group = groups[i];
-        const labels = group.map((p: any) => `${p.orderType.toUpperCase()}:${p.gridOrder?.id}`).join(', ');
+        const labels = group.map((p) => `${p.orderType.toUpperCase()}:${p.gridOrder?.id}`).join(', ');
         logger?.log?.(`Startup: Create group ${i + 1}/${groups.length} (${labels})`, 'info');
         const canBatchCreate = typeof chainOrders?.buildCreateOrderOp === 'function' && typeof chainOrders?.executeBatch === 'function';
         if (group.length > 1 && canBatchCreate) {
@@ -1726,20 +1756,20 @@ async function _reconcileStartupSide({
     plannedCancels,
     planOnly = false,
 }: {
-    orderType: any;
-    targetCount: any;
-    chainSideOrders: any;
-    unmatchedSideOrders: any;
-    manager: any;
-    chainOrders: any;
-    account: any;
-    privateKey: any;
-    dryRun: any;
-    plannedCreates: any;
-    plannedUpdates: any;
-    plannedCancels: any[];
+    orderType: OrderType;
+    targetCount: number;
+    chainSideOrders: ChainOrder[];
+    unmatchedSideOrders: ChainOrder[];
+    manager: OrderManagerLike;
+    chainOrders: ChainOrdersLike;
+    account: string;
+    privateKey: string;
+    dryRun: boolean;
+    plannedCreates: StartupCreatePlan[];
+    plannedUpdates: StartupUpdatePlan[];
+    plannedCancels: StartupCancelPlan[];
     planOnly?: boolean;
-}): Promise<{ chainCount: any }> {
+}): Promise<{ chainCount: number }> {
     const logger = manager?.logger;
     const sideUpper = orderType === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
     const balanceKey = orderType === ORDER_TYPES.SELL ? 'sellFree' : 'buyFree';
@@ -1761,10 +1791,10 @@ async function _reconcileStartupSide({
     const reserveSide = orderType === ORDER_TYPES.SELL ? 'sell' : 'buy';
     const reserveCount = resolveReserveCount(manager.config, reserveSide);
     if (reserveCount > 0) {
-        const pickedIds = new Set(desiredSlots.map((s: any) => s?.id).filter(Boolean));
+        const pickedIds = new Set(desiredSlots.map((s) => s?.id).filter(Boolean));
         const freshEdge = _pickEdgeReserveSlots(manager, orderType, reserveCount, pickedIds);
         const reserveAnchor = resolveLiveReserveEdgeAnchorPrice(manager, reserveSide);
-        reserveEdgeIds = reserveEdgeIdSet((Array.from(manager.orders.values()) as any[]), manager.config, orderType, reserveAnchor, liveWindowIdSet(manager, orderType));
+        reserveEdgeIds = reserveEdgeIdSet(Array.from(manager.orders.values()), manager.config, orderType, reserveAnchor, liveWindowIdSet(manager, orderType));
         // Window first, then the ready edge reserves. Only the reserve share
         // still MISSING on-chain is held back for the edge (a live reserve is
         // already part of matchedOnGrid and must not shrink the window plan), so
@@ -1798,16 +1828,17 @@ async function _reconcileStartupSide({
     // offset shift) are intentionally NOT re-created: the lattice moved, a
     // create at the ghost price would mismatch immediately. Those holes are
     // owned by the gap-evacuation/adoption recovery paths instead.
-    const desiredSlotIds = new Set<string>(desiredSlots.map((s: any) => s?.id).filter(Boolean));
+    const desiredSlotIds = new Set<string>(desiredSlots.map((s) => s?.id).filter(Boolean));
     const vacatedRefillPlanned = new Set<string>();
-    const refillCandidates: any[] = [];
+    const refillCandidates: ManagedOrder[] = [];
 
-    const planVacatedRailRefill = (chainOrder: any, parsedChain: any) => {
+    const planVacatedRailRefill = (chainOrder: ChainOrder, parsedChain: ParsedChainOrder | null) => {
         const boundary = manager.boundaryIdx;
         const gapSlots = manager._gapSlots;
         if (!Number.isFinite(Number(boundary)) || !Number.isFinite(Number(gapSlots))) return;
         const chainPrice = parsedChain?.price;
         if (!Number.isFinite(Number(chainPrice))) return;
+        const chainPriceNum = Number(chainPrice);
         const sidePrecision = orderType === ORDER_TYPES.SELL ? manager.assets?.assetA?.precision : manager.assets?.assetB?.precision;
         for (const slotOrder of manager.orders.values()) {
             if (!slotOrder || !slotOrder.id) continue;
@@ -1824,7 +1855,7 @@ async function _reconcileStartupSide({
             if (isOrderPlaced(slotOrder)) continue;
             if (!isSlotInRail(boundary, gapSlots, orderType, slotOrder)) continue;
             if (Number(slotOrder.size) <= 0) continue;
-            if (!priceSlotEqual(slotOrder.price, chainPrice, sidePrecision)) continue;
+            if (!priceSlotEqual(slotOrder.price, chainPriceNum, sidePrecision)) continue;
             vacatedRefillPlanned.add(slotOrder.id);
             refillCandidates.push(slotOrder);
             logger?.log?.(
@@ -1958,11 +1989,11 @@ async function _reconcileStartupSide({
     let chainCount = chainSideOrders.length;
     try {
         const shelfOrderIds = new Set<string>();
-        for (const s of (manager?.orders?.values?.() ?? []) as any) {
+        for (const s of manager.orders.values()) {
             if (s?.orderId && parseSlotIndex(s?.id) === null) shelfOrderIds.add(String(s.orderId));
         }
         if (shelfOrderIds.size > 0 && Array.isArray(chainSideOrders)) {
-            chainCount = chainSideOrders.filter((co: any) => co && !shelfOrderIds.has(String(co?.id))).length;
+            chainCount = chainSideOrders.filter((co) => co && !shelfOrderIds.has(String(co?.id))).length;
         }
     } catch { /* fail-open: keep unfiltered count */ }
     const createCount = Math.max(0, targetCount - chainCount);
@@ -1999,9 +2030,9 @@ async function _reconcileStartupSide({
         cancelCount = Math.max(0, chainCount - targetCount);
     }
     if (cancelCount > 0) {
-        const parsedUnmatched = processedUnmatched
-            .map((co: any) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
-            .filter((x: any) => x.parsed)
+        const parsedUnmatched: ParsedChainEntry[] = processedUnmatched
+            .map((co) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
+            .filter((x): x is ParsedChainEntry => x.parsed !== null)
             .sort(sortExcessCancelComparator);
         // Reserve ladder: edge-priced orphans cancel last (they are adoption
         // candidates at reserve prices, not first-to-cut).
@@ -2014,7 +2045,7 @@ async function _reconcileStartupSide({
                 const slot = manager.orders.get(eid);
                 if (slot && Number.isFinite(Number(slot.price))) edgePrices.push(Number(slot.price));
             }
-            const isEdgePriced = (price: any): boolean => {
+            const isEdgePriced = (price: number | string | undefined): boolean => {
                 const p = Number(price);
                 if (!Number.isFinite(p)) return false;
                 return edgePrices.some((ep: number) => {
@@ -2025,10 +2056,10 @@ async function _reconcileStartupSide({
                     }
                 });
             };
-            const parked = parsedUnmatched.filter((x: any) => isEdgePriced(x.parsed?.price));
+            const parked = parsedUnmatched.filter((x) => isEdgePriced(x.parsed?.price));
             if (parked.length > 0 && parked.length < parsedUnmatched.length) {
-                const parkedIds = new Set(parked.map((x: any) => x.chain?.id));
-                parsedUnmatched.sort((a: any, b: any) => {
+                const parkedIds = new Set(parked.map((x) => x.chain?.id));
+                parsedUnmatched.sort((a, b) => {
                     const pa = parkedIds.has(a.chain?.id) ? 1 : 0;
                     const pb = parkedIds.has(b.chain?.id) ? 1 : 0;
                     return pa - pb;
@@ -2047,12 +2078,12 @@ async function _reconcileStartupSide({
         // next boot (issue #27 follow-up). No-op upstream (grids only mint
         // slot-N).
         const matchedExcess = manager.getOrdersByTypeAndState(orderType, ORDER_STATES.ACTIVE)
-            .filter((o: any) => o && o.orderId)
-            .filter((o: any) => parseSlotIndex(o?.id) !== null)
+            .filter((o) => o && o.orderId)
+            .filter((o) => parseSlotIndex(o?.id) !== null)
             .sort(sortMatchedCancelComparator);
         // Reserve ladder: matched edge slots cancel last (static insurance).
         if (reserveEdgeIds && reserveEdgeIds.size > 0) {
-            matchedExcess.sort((a: any, b: any) => {
+            matchedExcess.sort((a, b) => {
                 const fa = reserveEdgeIds.has(a.id) ? 1 : 0;
                 const fb = reserveEdgeIds.has(b.id) ? 1 : 0;
                 return fa - fb;
@@ -2092,6 +2123,7 @@ async function _reconcileStartupSide({
             // reserve edge last (matchedExcess ordering).
             for (const o of matchedExcess) {
                 if (cancelCount <= 0) break;
+                if (!o.orderId) continue;
                 logger?.log?.(
                     `Startup: ${sideUpper} excess matched ${o.orderId} (grid ${o.id}) queued for cancellation (Phase 2)`,
                     'warn'
@@ -2127,7 +2159,7 @@ async function _reconcileStartupSide({
                     });
                     logger?.log?.(`Startup: Successfully cancelled excess ${sideUpper} order ${x.chain.id}`, 'info');
                     cancelCount--;
-                } catch (err: any) {
+                } catch (err) {
                     logger?.log?.(`Startup: Failed to cancel ${sideUpper} ${x.chain.id}: ${getErrorMessage(err)}`, 'error');
                 }
             }
@@ -2135,12 +2167,13 @@ async function _reconcileStartupSide({
             if (cancelCount > 0) {
                 for (const o of matchedExcess) {
                     if (cancelCount <= 0) break;
+                    if (!o.orderId) continue;
                     logger?.log?.(`Startup: Cancelling excess matched ${sideUpper} ${o.orderId} (grid ${o.id})`, 'warn');
                     try {
-                        await _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId: o.orderId, dryRun, chainOrderObj: o });
+                        await _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId: o.orderId, dryRun, chainOrderObj: null });
                         logger?.log?.(`Startup: Successfully cancelled excess matched ${sideUpper} order ${o.orderId} (grid ${o.id})`, 'info');
                         cancelCount--;
-                    } catch (err: any) {
+                    } catch (err) {
                         logger?.log?.(`Startup: Failed to cancel matched ${sideUpper} ${o.orderId}: ${getErrorMessage(err)}`, 'error');
                     }
                 }

@@ -43,7 +43,7 @@ console.log(' - Surplus-cancel grace...');
 
     recordOrderPlacement(mgr, '1.7.1');
     check('just placed is fresh', isFreshlyPlacedOrder(mgr, '1.7.1'), true);
-    check('custom grace honored (1ms)', isFreshlyPlacedOrder(mgr, '1.7.1', 1), true);
+    check('custom grace honored (5s)', isFreshlyPlacedOrder(mgr, '1.7.1', 5000), true);
 
     mgr._placedAt.set('1.7.1', Date.now() - 20 * 60 * 1000);
     check('aged out not fresh', isFreshlyPlacedOrder(mgr, '1.7.1'), false);

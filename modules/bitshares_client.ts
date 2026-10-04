@@ -49,15 +49,52 @@ import { resolveConnectedNodeAction } from './node_connect_policy.js';
 const { TRANSPORT } = NATIVE_CLIENT;
 const logger = new Logger('bitshares_client');
 
+interface NodeConfig {
+    enabled?: boolean;
+    list?: string[];
+    healthCheck?: { enabled?: boolean };
+    [key: string]: unknown;
+}
+
+interface NativeClientRef {
+    setNodes(nodes: string[]): void;
+    connect(): Promise<unknown>;
+    disconnect(): void;
+    getNodes(): string[];
+    getStatus(): string;
+    getCoreAsset(): unknown;
+    transport?: { getNodeUrl?(): string | undefined };
+    db: Record<string, unknown>;
+    history: Record<string, unknown>;
+    subscribe?(...args: unknown[]): unknown;
+    unsubscribe?(...args: unknown[]): unknown;
+    onReconnect?: () => Promise<void>;
+    reportNodeFailure?(node: string, message?: string, source?: string): void;
+}
+
+interface SubscriptionManagerLike {
+    onReconnect(): Promise<unknown>;
+    subscribe(accountName: string, callback: unknown): Promise<unknown>;
+    unsubscribe(accountName: string, callback?: unknown): Promise<void>;
+    removeNoticeSubscription?(): void;
+}
+
+interface ResolversLike {
+    resolveAsset(ref: string): unknown;
+    resolveAccount(ref: string): Promise<unknown>;
+}
+
+type NativeSigningClient = ReturnType<typeof createSigningClient>['client'];
+
 let connected = false;
 let suppressConnectionLog = false;
-let lastConnectionError: any = null;
+let lastConnectionError: unknown = null;
 let intentionalDisconnect = false;
-let nodeManager: any = null;
-let nodeConfig: any = null;
+let nodeManager: NodeManager | null = null;
+let nodeConfig: NodeConfig | null = null;
 let nodeManagerEnabled = false;
-let startupNodeRefreshPromise: any = null;
-let failoverAssessmentPromise: any = null;
+let startupNodeRefreshPromise: Promise<string[]> | null = null;
+let failoverAssessmentPromise: Promise<boolean> | null = null;
 let reconnectInProgress = false;
 let lastFailoverAssessmentAt = 0;
 const failoverAssessmentCooldownMs = NODE_MANAGEMENT.FAILOVER_ASSESSMENT_COOLDOWN_MS;
@@ -70,20 +107,21 @@ const _reconnectCallbacks = new Set<() => void>();
  * @param {Function} callback - Called with no arguments after subscription re-establishment
  * @returns {Function} Unregister function
  */
-function onReconnect(callback: any) {
+function onReconnect(callback: unknown): () => void {
     if (typeof callback !== 'function') {
         logger.warn(`onReconnect requires a function, got ${typeof callback}`);
         return () => {};
     }
-    _reconnectCallbacks.add(callback);
-    return () => { _reconnectCallbacks.delete(callback); };
+    const reconnectFn: () => void = callback as unknown as () => void;
+    _reconnectCallbacks.add(reconnectFn);
+    return () => { _reconnectCallbacks.delete(reconnectFn); };
 }
 
 async function notifyReconnectCallbacks() {
     if (_reconnectCallbacks.size === 0) return;
     for (const cb of [..._reconnectCallbacks]) {
-        try { await Promise.resolve(cb()); } catch (err: any) {
-            logger.warn(`Reconnect callback error: ${err?.message || err}`);
+        try { await Promise.resolve(cb()); } catch (err) {
+            logger.warn(`Reconnect callback error: ${getErrorMessage(err)}`);
         }
     }
 }
@@ -92,10 +130,10 @@ async function notifyReconnectCallbacks() {
 let _initialized = false;
 
 // Native client references (lazily initialized)
-let _nativeClient: any = null;
-let _subscriptionManager: any = null;
-let _nativeBitSharesProxy: any = null;
-let _resolvers: any = null;
+let _nativeClient: NativeClientRef;
+let _subscriptionManager: SubscriptionManagerLike;
+let _nativeBitSharesProxy: Record<string, unknown>;
+let _resolvers: ResolversLike;
 
 // Monotonic generation counter for native _nativeClient.connect() calls.
 // The native transport's connect() sweep cannot be cancelled, so a timeout
@@ -166,19 +204,19 @@ function ensureInitialized() {
         },
         rpcTimeoutMs: TIMING.CONNECTION_TIMEOUT_MS,
         connectTimeoutMs: TIMING.CONNECTION_TIMEOUT_MS,
-    });
-    _subscriptionManager = createSubscriptionManager(_nativeClient);
+    } as never) as unknown as NativeClientRef;
+    _subscriptionManager = createSubscriptionManager(_nativeClient as never) as unknown as SubscriptionManagerLike;
     _nativeClient.onReconnect = async () => {
         await _subscriptionManager.onReconnect();
         await notifyReconnectCallbacks();
     };
     // Required by modules/bitshares-native/tx/builder.ts (fee-cache failures).
     _nativeClient.reportNodeFailure = reportNodeFailureToManager;
-    _resolvers = createResolvers(_nativeClient);
+    _resolvers = createResolvers(_nativeClient as never) as unknown as ResolversLike;
 
     _nativeBitSharesProxy = {
         get connect() {
-            return (servers: any, _autoreconnect: any) => {
+            return (servers: string | string[], _autoreconnect: unknown) => {
                 if (Array.isArray(servers)) _nativeClient.setNodes(servers);
                 return _nativeClient.connect();
             };
@@ -191,7 +229,7 @@ function ensureInitialized() {
         get connectPromise() { return undefined; },
         set connectPromise(_v) {},
         get subscribe() {
-            return (eventType: any, callback: any, accountName: any) => {
+            return (eventType: string, callback: unknown, accountName: string) => {
                 if (eventType === 'account') {
                     return _subscriptionManager.subscribe(accountName, callback);
                 }
@@ -201,7 +239,7 @@ function ensureInitialized() {
             };
         },
         get unsubscribe() {
-            return (eventType: any, callback: any, accountName: any) => {
+            return (eventType: string, callback: unknown, accountName: string) => {
                 if (eventType === 'account') {
                     return _subscriptionManager.unsubscribe(accountName, callback);
                 }
@@ -212,7 +250,7 @@ function ensureInitialized() {
         },
         get assets() {
             return new Proxy({}, {
-                get(_target: any, prop: any) {
+                get(_target: unknown, prop: string | symbol) {
                     if (typeof prop !== 'string') return undefined;
                     return _resolvers.resolveAsset(prop);
                 },
@@ -220,9 +258,9 @@ function ensureInitialized() {
         },
         get accounts() {
             return new Proxy({}, {
-                get(_target: any, prop: any) {
+                get(_target: unknown, prop: string | symbol) {
                     if (typeof prop !== 'string') return undefined;
-                    return _resolvers.resolveAccount(prop).then((acc: any) => acc || null);
+                    return _resolvers.resolveAccount(prop).then((acc: unknown) => acc || null);
                 },
             });
         },
@@ -233,22 +271,26 @@ function ensureInitialized() {
             // (15s) on every call(). An additional wrapper here would only add
             // dead slack past the native rejection and produce misleading
             // error messages. Pass through directly.
-            return new Proxy(_nativeClient.db, {
-                get(target: any, prop: any) {
-                    if (typeof target[prop] === 'function') {
-                        return (...args: any) => target[prop](...args);
+            const source = _nativeClient.db;
+            return new Proxy(source, {
+                get(target, prop) {
+                    const key = String(prop);
+                    if (typeof target[key] === 'function') {
+                        return (...args: unknown[]) => (target[key] as (...a: unknown[]) => unknown)(...args);
                     }
-                    return (...args: any) => target.call(prop, args);
+                    return (...args: unknown[]) => (target.call as (m: string, a: unknown[]) => unknown)(key, args);
                 },
             });
         },
         get history() {
-            return new Proxy(_nativeClient.history, {
-                get(target: any, prop: any) {
-                    if (typeof target[prop] === 'function') {
-                        return (...args: any) => target[prop](...args);
+            const source = _nativeClient.history;
+            return new Proxy(source, {
+                get(target, prop) {
+                    const key = String(prop);
+                    if (typeof target[key] === 'function') {
+                        return (...args: unknown[]) => (target[key] as (...a: unknown[]) => unknown)(...args);
                     }
-                    return (...args: any) => target.call(prop, args);
+                    return (...args: unknown[]) => (target.call as (m: string, a: unknown[]) => unknown)(key, args);
                 },
             });
         },
@@ -256,14 +298,14 @@ function ensureInitialized() {
 
     const settings = readGeneralSettings({
         fallback: null,
-        onError: (err: any) => {
+            onError: (err: unknown) => {
             logger.warn(`Config load failed, continuing with defaults: ${getErrorMessage(err)}`);
         },
     });
 
     const nodeSettings = settings?.NODES;
-    const configuredNodes = Array.isArray(nodeSettings?.list)
-        ? nodeSettings.list.filter((node: any) => typeof node === 'string' && node.trim())
+    const configuredNodes: string[] = Array.isArray(nodeSettings?.list)
+        ? (nodeSettings.list as unknown[]).filter((node): node is string => typeof node === 'string' && Boolean(node.trim()))
         : [];
     nodeManagerEnabled = nodeSettings?.enabled ?? NODE_MANAGEMENT.DEFAULT_ENABLED;
 
@@ -275,9 +317,9 @@ function ensureInitialized() {
             enabled: nodeManagerEnabled,
             list: effectiveNodes,
         };
-        nodeManager = new NodeManager(nodeConfig);
+        nodeManager = new NodeManager(nodeConfig as unknown as ConstructorParameters<typeof NodeManager>[0]);
         if (!suppressConnectionLog) {
-            logger.info(`Loaded config for ${nodeConfig.list.length} nodes`);
+            logger.info(`Loaded config for ${nodeConfig!.list!.length} nodes`);
         }
     } else {
         if (!suppressConnectionLog) {
@@ -286,25 +328,43 @@ function ensureInitialized() {
     }
 }
 
+interface LazyBitShares {
+    db: Record<string, (...args: unknown[]) => Promise<unknown>>;
+    history: Record<string, (...args: unknown[]) => Promise<unknown>>;
+    assets: Record<string, unknown>;
+    accounts: Record<string, unknown>;
+    chain: { coreAsset: unknown };
+    connect(...args: unknown[]): unknown;
+    disconnect(...args: unknown[]): unknown;
+    subscribe(...args: unknown[]): Promise<unknown>;
+    unsubscribe(...args: unknown[]): Promise<unknown>;
+    node: unknown;
+    autoreconnect: boolean;
+    connectPromise: unknown;
+    [key: string]: unknown;
+}
+
 // BitShares proxy that auto-initializes on first property access
-const _lazyBitShares: any = new Proxy({}, {
-    get(_target: any, prop: any) {
+const _lazyBitShares: LazyBitShares = new Proxy({}, {
+    get(_target: object, prop: string | symbol) {
         ensureInitialized();
+        if (typeof prop !== 'string') return undefined;
         return _nativeBitSharesProxy[prop];
     },
-    set(_target: any, prop: any, value: any) {
+    set(_target: unknown, prop: string | symbol, value: unknown): boolean {
         ensureInitialized();
+        if (typeof prop !== 'string') return false;
         _nativeBitSharesProxy[prop] = value;
         return true;
     },
-});
+}) as unknown as LazyBitShares;
 
 /**
  * Suppress or restore connection log output.
  * @param {boolean} suppress - Whether to suppress connection logs
  * @returns {void}
  */
-function setSuppressConnectionLog(suppress: any) {
+function setSuppressConnectionLog(suppress: boolean): void {
     suppressConnectionLog = suppress;
 }
 
@@ -319,11 +379,11 @@ function isSuppressConnectionLog(): boolean {
  * @param {string} [reason='startup'] - Reason for reconnection
  * @returns {Promise<boolean>} True if connection succeeded
  */
-async function restartBitsharesConnection(serverList: any, reason: any = 'startup') {
+async function restartBitsharesConnection(serverList: string | string[] | null | undefined, reason: string = 'startup'): Promise<boolean> {
     ensureInitialized();
     if (reconnectInProgress) return false;
     const servers = Array.isArray(serverList)
-        ? serverList.filter((server: any) => typeof server === 'string' && server.trim())
+        ? serverList.filter((server: unknown) => typeof server === 'string' && server.trim())
         : [];
     if (servers.length === 0) return false;
 
@@ -331,7 +391,7 @@ async function restartBitsharesConnection(serverList: any, reason: any = 'startu
         reconnectInProgress = true;
         connected = false;
 
-        try { _nativeClient.disconnect(); } catch (_: any) {}
+        try { _nativeClient.disconnect(); } catch (_) {}
         _nativeClient.setNodes(servers);
         const myGeneration = ++_connectGeneration;
         const connectPromise = _nativeClient.connect();
@@ -341,7 +401,7 @@ async function restartBitsharesConnection(serverList: any, reason: any = 'startu
                 TRANSPORT.CONNECT_TOTAL_TIMEOUT_MS,
                 { label: 'BitShares connection' }
             );
-        } catch (connectErr: any) {
+        } catch (connectErr) {
             // The native connect() sweep continues in the background even
             // though withTimeout rejected. Tag the sweep with the generation
             // it was started under — its eventual settlement forces a
@@ -362,14 +422,14 @@ async function restartBitsharesConnection(serverList: any, reason: any = 'startu
                         `(attempt generation=${myGeneration}, current=${_connectGeneration}). ` +
                         `Forcing disconnect to keep isConnected() state consistent.`
                     );
-                    try { _nativeClient.disconnect(); } catch (_: any) {}
+                    try { _nativeClient.disconnect(); } catch (_) {}
                 })
                 .catch(() => { /* expected when sweep gives up */ });
             throw connectErr;
         }
         if (_subscriptionManager) {
-            try { await _subscriptionManager.onReconnect(); } catch (err: any) {
-                logger.warn(`Subscription re-establishment after reconnect failed: ${err?.message || err}`);
+            try { await _subscriptionManager.onReconnect(); } catch (err) {
+                logger.warn(`Subscription re-establishment after reconnect failed: ${getErrorMessage(err)}`);
             }
         }
 
@@ -381,9 +441,9 @@ async function restartBitsharesConnection(serverList: any, reason: any = 'startu
             logger.info(`${reason}: reconnect requested across ${servers.length} node(s), landed on ${landedNode || 'unknown'}`);
         }
         return true;
-    } catch (err: any) {
+    } catch (err) {
         lastConnectionError = err;
-        try { _nativeClient.disconnect(); } catch (_: any) {}
+        try { _nativeClient.disconnect(); } catch (_) {}
         if (!suppressConnectionLog) {
             logger.warn(`${reason}: reconnect request failed: ${getErrorMessage(err) || err}`);
         }
@@ -399,7 +459,7 @@ async function restartBitsharesConnection(serverList: any, reason: any = 'startu
  * @returns {Promise<boolean>} True if failover reconnect succeeded
  * @private
  */
-async function assessFailover(reason: any = 'status change') {
+async function assessFailover(reason: string = 'status change'): Promise<boolean> {
     ensureInitialized();
     if (!nodeManager || nodeConfig?.healthCheck?.enabled === false) return false;
     if (reconnectInProgress) return false;
@@ -418,11 +478,11 @@ async function assessFailover(reason: any = 'status change') {
             await nodeManager.checkAllNodes();
             const healthyNodes = nodeManager.getHealthyNodes();
             const availableHealthyNodes = activeNode
-                ? healthyNodes.filter((node: any) => node !== activeNode)
+                ? healthyNodes.filter((node) => node !== activeNode)
                 : healthyNodes;
             const fallbackNodes = getConfiguredOrDefaultNodes();
             const availableFallbackNodes = activeNode
-                ? fallbackNodes.filter((node: any) => node !== activeNode)
+                ? fallbackNodes.filter((node) => node !== activeNode)
                 : fallbackNodes;
             const nextNodes = availableHealthyNodes.length > 0
                 ? availableHealthyNodes
@@ -435,7 +495,7 @@ async function assessFailover(reason: any = 'status change') {
                 return false;
             }
             return restartBitsharesConnection(nextNodes, reason);
-        } catch (err: any) {
+        } catch (err) {
             logger.warn(`Failover assessment error: ${getErrorMessage(err)}`);
             return false;
         }
@@ -464,7 +524,7 @@ function getConfiguredOrDefaultNodes() {
  * @param {string} status - Connection status string ('connected', 'connecting', 'closed')
  * @returns {boolean} Whether the event was handled
  */
-function handleConnectionStatus(status: any) {
+function handleConnectionStatus(status: string): boolean {
     const canHandleFailover = nodeManager && nodeConfig?.healthCheck?.enabled !== false;
 
     if (status === 'connected') {
@@ -488,8 +548,8 @@ function handleConnectionStatus(status: any) {
                 healthCheckEnabled: nodeConfig?.healthCheck?.enabled !== false,
                 reconnectInProgress,
                 activeNode,
-                isBlacklisted: (nodeUrl: string) => nodeManager.isBlacklisted(nodeUrl),
-                getHealthyNodes: () => nodeManager.getHealthyNodes(),
+                isBlacklisted: (nodeUrl: string) => nodeManager!.isBlacklisted(nodeUrl),
+                getHealthyNodes: () => nodeManager!.getHealthyNodes(),
             });
             if (decision.action === 'switch') {
                 logger.warn(`Connected to blacklisted node ${activeNode}; switching to a healthy node`);
@@ -499,7 +559,7 @@ function handleConnectionStatus(status: any) {
                     // since recovered/been reset.
                     if (intentionalDisconnect || !activeNode || !nodeManager?.isBlacklisted(activeNode)) return;
                     restartBitsharesConnection(healthy, decision.reason)
-                        .catch((err: any) => logger.warn(`Blacklisted-node switch failed: ${getErrorMessage(err)}`));
+                        .catch((err: unknown) => logger.warn(`Blacklisted-node switch failed: ${getErrorMessage(err)}`));
                 }, 0);
             } else if (decision.action === 'align') {
                 _nativeClient.setNodes(decision.nodes);
@@ -514,7 +574,7 @@ function handleConnectionStatus(status: any) {
             if (intentionalDisconnect) {
                 return true;
             }
-            assessFailover('Connection closed').catch((err: any) => {
+            assessFailover('Connection closed').catch((err: unknown) => {
                 logger.warn(`Failover assessment failed: ${getErrorMessage(err)}`);
             });
             return true;
@@ -528,7 +588,7 @@ function handleConnectionStatus(status: any) {
  * @param {string} [reason='startup'] - Reason for the refresh
  * @returns {Promise<string[]>} Array of selected node URLs
  */
-async function refreshStartupNodeServers(reason: any = 'startup') {
+async function refreshStartupNodeServers(reason: string = 'startup'): Promise<string[]> {
     ensureInitialized();
     if (!nodeManager || !nodeConfig?.list?.length) {
         return Array.isArray(nodeConfig?.list) ? nodeConfig.list : [];
@@ -553,7 +613,7 @@ async function refreshStartupNodeServers(reason: any = 'startup') {
                 logger.info(`Startup ${reason}: using ${nextNodes.length} node(s)`);
             }
             return nextNodes;
-        } catch (err: any) {
+        } catch (err) {
             if (!suppressConnectionLog) {
                 logger.warn(`Startup ${reason} node refresh failed: ${getErrorMessage(err)}`);
             }
@@ -578,7 +638,7 @@ async function refreshStartupNodeServers(reason: any = 'startup') {
  * @returns {Promise<boolean>} True when connected
  * @throws {Error} If connection times out
  */
-async function waitForConnected(timeoutMs: any = TIMING.CONNECTION_TIMEOUT_MS, options: { retryDelayMs?: number; maxRetryDelayMs?: number; refreshNodesEveryMs?: number } = {}) {
+async function waitForConnected(timeoutMs: number = TIMING.CONNECTION_TIMEOUT_MS, options: { retryDelayMs?: number; maxRetryDelayMs?: number; refreshNodesEveryMs?: number } = {}): Promise<boolean> {
     ensureInitialized();
     const start = Date.now();
     const initialDelayMs = Number.isFinite(options.retryDelayMs)
@@ -616,7 +676,7 @@ async function waitForConnected(timeoutMs: any = TIMING.CONNECTION_TIMEOUT_MS, o
     }
 
     if (!connected) {
-        const suffix = lastConnectionError?.message ? ` Last error: ${lastConnectionError.message}` : '';
+        const suffix = (lastConnectionError as { message?: unknown } | null)?.message ? ` Last error: ${getErrorMessage(lastConnectionError)}` : '';
         throw new Error(`Timed out waiting for BitShares connection after ${timeoutMs}ms.${suffix}`);
     }
     return true;
@@ -628,11 +688,11 @@ async function waitForConnected(timeoutMs: any = TIMING.CONNECTION_TIMEOUT_MS, o
  * @param {string|Object} privateKey - Private key or daemon signing token
  * @returns {Promise<Object>} Account client with initPromise, newTx(), broadcast()
  */
-async function createAccountClient(accountName: any, privateKey: any) {
+async function createAccountClient(accountName: unknown, privateKey: unknown): Promise<NativeSigningClient> {
     ensureInitialized();
     await waitForConnected(TIMING.CONNECTION_TIMEOUT_MS);
 
-    const signingClient = createSigningClient(_nativeClient, accountName, privateKey);
+    const signingClient = createSigningClient(_nativeClient as never, String(accountName), privateKey as string | object);
     return signingClient.client;
 }
 
@@ -658,20 +718,20 @@ async function disconnectClient() {
     intentionalDisconnect = true;
     connected = false;
     try {
-        try { _nativeClient.disconnect(); } catch (_: any) {}
+        try { _nativeClient.disconnect(); } catch (_) {}
         // Stop periodic node health monitoring (see handleConnectionStatus:
         // the monitor starts on 'connected' and its immediate checkAllNodes()
         // sweep plus the transport reconnect it triggers open real WebSocket
         // handshakes to every configured node). disconnectClient is the single
         // teardown path, so stopping here covers both production shutdown
         // and unit tests that initialized the client stack for one read.
-        try { nodeManager?.stop?.(); } catch (_: any) {}
+        try { nodeManager?.stop?.(); } catch (_) {}
         if (_subscriptionManager) {
             try {
                 if (typeof _subscriptionManager.removeNoticeSubscription === 'function') {
                     _subscriptionManager.removeNoticeSubscription();
                 }
-            } catch (_: any) {}
+            } catch (_) {}
         }
     } finally {
         intentionalDisconnect = false;
@@ -683,7 +743,7 @@ async function disconnectClient() {
  * @param {string} [reason='adapter-cycle'] - Reason for reconnection
  * @returns {Promise<boolean>} True if reconnection succeeded
  */
-async function reconnectForCycle(reason: any = 'adapter-cycle') {
+async function reconnectForCycle(reason: string = 'adapter-cycle'): Promise<boolean> {
     ensureInitialized();
     const nodes = nodeManager && nodeConfig?.healthCheck?.enabled !== false
         ? nodeManager.getHealthyNodes()

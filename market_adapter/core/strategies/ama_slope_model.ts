@@ -44,26 +44,40 @@ const DEFAULT_ER_PERIOD = MARKET_ADAPTER.AMAS[_DEFAULT_AMA_KEY].erPeriod;
  * @param {number}   [opts.clipThreshold=Infinity]      Pre-computed clip threshold from slope history (percentile clipping is done by the caller)
  * @returns {{ slopeOffset, rawSlopeOffset, symmetricDelta, slopePct, clippedSlopePct, confidence, trend, isReady }}
  */
-function computeAmaSlopeWeights(amaValues: any, weightVariance: any, opts: any = {}) {
-    const lookbackBars = Number.isFinite(opts.lookbackBars) && opts.lookbackBars >= 0
-        ? Math.ceil(opts.lookbackBars)
+interface AmaSlopeOpts {
+    lookbackBars?: unknown;
+    maxSlopePct?: unknown;
+    neutralZonePct?: unknown;
+    volatilityExponent?: unknown;
+    volatilityScaleX?: unknown;
+    volatilityThreshold?: unknown;
+    erPeriod?: unknown;
+    maxSlopeOffset?: unknown;
+    maxVolatilityOffset?: unknown;
+    clipThreshold?: unknown;
+    [key: string]: unknown;
+}
+
+function computeAmaSlopeWeights(amaValues: unknown, weightVariance: number, opts: AmaSlopeOpts = {}) {
+    const lookbackBars = Number.isFinite(Number(opts.lookbackBars)) && Number(opts.lookbackBars) >= 0
+        ? Math.ceil(Number(opts.lookbackBars))
         : MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS;
-    const maxSlopePct = opts.maxSlopePct ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT;
-    const neutralZonePct = opts.neutralZonePct ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_NEUTRAL_ZONE_PCT;
-    const volatilityExponent = opts.volatilityExponent ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_VOLATILITY_EXPONENT;
-    const volatilityScaleX = opts.volatilityScaleX ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_VOLATILITY_SCALE_X_DEFAULT;
-    const volatilityThreshold = normalizeVolatilityThreshold(opts.volatilityThreshold);
-    const erPeriod = Number.isFinite(opts.erPeriod) && opts.erPeriod > 0
-        ? Math.ceil(opts.erPeriod)
+    const maxSlopePct = Number(opts.maxSlopePct ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT);
+    const neutralZonePct = Number(opts.neutralZonePct ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_NEUTRAL_ZONE_PCT);
+    const volatilityExponent = Number(opts.volatilityExponent ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_VOLATILITY_EXPONENT);
+    const volatilityScaleX = Number(opts.volatilityScaleX ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_VOLATILITY_SCALE_X_DEFAULT);
+    const volatilityThreshold = normalizeVolatilityThreshold(Number(opts.volatilityThreshold));
+    const erPeriod = Number.isFinite(Number(opts.erPeriod)) && Number(opts.erPeriod) > 0
+        ? Math.ceil(Number(opts.erPeriod))
         : DEFAULT_ER_PERIOD;
     // Reject negative caps outright (a negative cap would silently invert the
     // trend-bias sign); fall back to the default like other invalid values.
-    const rawMaxSlopeOffset = opts.maxSlopeOffset ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP;
+    const rawMaxSlopeOffset = Number(opts.maxSlopeOffset ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP);
     const maxSlopeOffset = Number.isFinite(rawMaxSlopeOffset) && rawMaxSlopeOffset >= 0
         ? rawMaxSlopeOffset
         : MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP;
-    const maxVolatilityOffset = normalizeMaxVolatilityOffset(opts.maxVolatilityOffset);
-    const clipThreshold = opts.clipThreshold ?? Infinity;
+    const maxVolatilityOffset = normalizeMaxVolatilityOffset(Number(opts.maxVolatilityOffset));
+    const clipThreshold = Number(opts.clipThreshold ?? Infinity);
     const hasDirectionalOffset = Number.isFinite(maxSlopeOffset) && maxSlopeOffset > 0;
     const safeWeightVariance = Number.isFinite(weightVariance) && weightVariance > 0 ? weightVariance : 0;
     const safeVolatilityExponent = Number.isFinite(volatilityExponent) && volatilityExponent >= 0

@@ -97,10 +97,12 @@ import { PATHS } from './paths.js';
 import { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } from './general_settings.js';
 import { parseJsonWithComments } from './order/utils/system.js';
 import { assertNoDuplicateBotKeys, loadSettingsFile, normalizeBotEntry } from './bot_settings.js';
+import type { BotEntry, BotSettingsFile } from './bot_settings.js';
+import type { UnknownRecord } from './types.js';
 import { getWhitelistFlags, setWhitelistFlags, renameWhitelistEntry, removeWhitelistEntry, whitelistFile } from './market_adapter_whitelist.js';
 import { BOT_LIVE_CONFIG_KEYS } from './runtime_settings.js';
 import { mergeSettings } from './settings_merge.js';
-import { getErrorMessage } from './utils/errors.js';
+import { getErrorMessage, getErrorCode } from './utils/errors.js';
 import { normalizeAssetSymbol } from './utils/asset_symbols.js';
 import { roundToDecimals, parseRelativeMultiplier } from './order/utils/math.js';
 import { CLI_COLORS } from './cli_colors.js';
@@ -133,11 +135,11 @@ const COLORS = {
  * Loads the bots configuration from profiles/bots.json.
  * @returns {Object} An object containing the config and the file path.
  */
-function loadBotsConfig() {
+function loadBotsConfig(): { config: BotSettingsFile & { bots: BotEntry[] }; filePath: string } {
     const { config, filePath } = loadSettingsFile(BOTS_FILE, { silent: true, exitOnError: false });
     if (!config || typeof config !== 'object') return { config: { bots: [] }, filePath };
     if (!Array.isArray(config.bots)) config.bots = [];
-    return { config, filePath };
+    return { config: config as BotSettingsFile & { bots: BotEntry[] }, filePath };
 }
 
 /**
@@ -146,13 +148,14 @@ function loadBotsConfig() {
  * @param {string} filePath - The path to the file.
  * @throws {Error} If saving fails.
  */
-function saveBotsConfig(config: any, filePath: string): void {
+function saveBotsConfig(config: unknown, filePath: string): void {
     try {
         ensureProfilesDirectory(PROFILES_DIR);
-        const entries = Array.isArray(config?.bots) ? config.bots : Array.isArray(config) ? config : [];
+        const c = config as { bots?: unknown } | null;
+        const entries = Array.isArray(c?.bots) ? c.bots : Array.isArray(config) ? config : [];
         if (entries.length >= 2) assertNoDuplicateBotKeys(entries, 'account_bots');
         writeJSON(filePath, config);
-    } catch (err: any) {
+    } catch (err) {
         console.error('Failed to save bots configuration:', getErrorMessage(err));
         throw err;
     }
@@ -172,7 +175,7 @@ function loadGeneralSettings() {
 
     const settings = readGeneralSettings({
         fallback: null,
-        onError: (err: any) => {
+        onError: (err: unknown) => {
             console.error('Failed to load general settings:', getErrorMessage(err));
         }
     });
@@ -202,11 +205,11 @@ function loadGeneralSettings() {
  * Saves general settings to profiles/general.settings.json.
  * @param {Object} settings - The settings object to save.
  */
-function saveGeneralSettings(settings: any): void {
+function saveGeneralSettings(settings: Parameters<typeof writeGeneralSettings>[0]): void {
     try {
         writeGeneralSettings(settings);
         console.log(`\n✓ General settings saved to ${path.basename(SETTINGS_FILE)}`);
-    } catch (err: any) {
+    } catch (err) {
         console.error('Failed to save general settings:', getErrorMessage(err));
     }
 }
@@ -215,12 +218,12 @@ function saveGeneralSettings(settings: any): void {
  * Lists the configured bots to the console.
  * @param {Array<Object>} bots - The list of bot configuration objects.
  */
-function listBots(bots: any[]): void {
+function listBots(bots: BotEntry[]): void {
     if (!bots.length) {
         console.log('  (no bot entries defined yet)');
         return;
     }
-    const rows = bots.map((bot: any, index: number) => ({
+    const rows = bots.map((bot: BotEntry, index: number) => ({
         index: String(index + 1),
         name: bot.name || `<unnamed-${index + 1}>`,
         account: bot.preferredAccount || '?',
@@ -256,7 +259,7 @@ function listBots(bots: any[]): void {
  * @param {string} promptMessage - The message to display.
  * @returns {Promise<number|string|null>} The selected index, '\x1b' if ESC, or null if invalid.
  */
-async function selectBotIndex(bots: any[], promptMessage: string): Promise<any> {
+async function selectBotIndex(bots: BotEntry[], promptMessage: string): Promise<number | '\x1b' | null> {
     if (!bots.length) return null;
     listBots(bots);
     const raw = (await readInput(`${promptMessage} [1-${bots.length}]: `)).trim();
@@ -275,7 +278,7 @@ async function selectBotIndex(bots: any[], promptMessage: string): Promise<any> 
  * @param {string} [defaultValue] - The default value to use if input is empty.
  * @returns {Promise<string>} The user input or default value.
  */
-async function askString(promptText: string, defaultValue?: any): Promise<any> {
+async function askString(promptText: string, defaultValue?: string): Promise<string | undefined> {
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
     const answer = await readInput(`${promptText}${suffix}: `);
     if (answer === '\x1b') return '\x1b';
@@ -289,7 +292,7 @@ async function askString(promptText: string, defaultValue?: any): Promise<any> {
  * @param {string} [defaultValue] - The default value to use if input is empty.
  * @returns {Promise<string>} The user input.
  */
-async function askRequiredString(promptText: string, defaultValue?: any): Promise<any> {
+async function askRequiredString(promptText: string, defaultValue?: string): Promise<string> {
     while (true) {
         const value = await askString(promptText, defaultValue);
         if (value === '\x1b') return '\x1b';
@@ -304,19 +307,19 @@ async function askRequiredString(promptText: string, defaultValue?: any): Promis
  * @param {string} defaultValue - The default value to use if input is empty.
  * @returns {Promise<string>} The user input.
  */
-async function askCronSchedule(_promptText: string, defaultValue: string): Promise<any> {
+async function askCronSchedule(_promptText: string, defaultValue: string): Promise<string> {
     const current = parseCronToDelta(defaultValue);
 
     // Interval Prompt
     const days = await askNumberWithBounds('  Interval (days)', current.days, 1, 31);
-    if (days === '\x1b') return '\x1b';
+    if (days === '\x1b' || typeof days !== 'number') return '\x1b';
 
     // Time Prompt
     let time = current.time;
     while (true) {
         const rawTime = await askString('  Time (HH:mm)', current.time);
         if (rawTime === '\x1b') return '\x1b';
-        if (/^([01]\d|2[0-3]):([0-5]\d)$/.test(rawTime)) {
+        if (rawTime && /^([01]\d|2[0-3]):([0-5]\d)$/.test(rawTime)) {
             time = rawTime;
             break;
         }
@@ -332,12 +335,12 @@ async function askCronSchedule(_promptText: string, defaultValue: string): Promi
  * @param {string} defaultValue - The default value to use if input is empty.
  * @returns {Promise<string>} The user input.
  */
-async function askUpdaterBranch(promptText: string, defaultValue: string): Promise<any> {
+async function askUpdaterBranch(promptText: string, defaultValue: string): Promise<string> {
     const validBranches = ['main', 'dev', 'test', 'auto'];
     while (true) {
         const value = await askString(promptText, defaultValue);
         if (value === '\x1b') return '\x1b';
-        const lowered = value.toLowerCase().trim();
+        const lowered = (value ?? '').toLowerCase().trim();
         if (validBranches.includes(lowered)) return lowered;
         console.log(`Invalid branch. Please choose from: ${validBranches.join(', ')}`);
     }
@@ -349,13 +352,13 @@ async function askUpdaterBranch(promptText: string, defaultValue: string): Promi
  * @param {string} defaultValue - The default value to use if input is empty.
  * @returns {Promise<string>} The user input.
  */
-async function askLogLevel(promptText: string, defaultValue: string): Promise<any> {
+async function askLogLevel(promptText: string, defaultValue: string): Promise<string> {
     const validLevels = ['debug', 'info', 'warn', 'error'];
     while (true) {
         console.log(`Available levels: ${validLevels.join(', ')}`);
         const value = await askString(promptText, defaultValue);
         if (value === '\x1b') return '\x1b';
-        const lowered = value.toLowerCase().trim();
+        const lowered = (value ?? '').toLowerCase().trim();
         if (validLevels.includes(lowered)) return lowered;
         console.log(`Invalid log level. Please choose from: ${validLevels.join(', ')}`);
     }
@@ -367,7 +370,7 @@ async function askLogLevel(promptText: string, defaultValue: string): Promise<an
  * @param {string} [defaultValue] - The default value to use if input is empty.
  * @returns {Promise<string>} The asset symbol in uppercase.
  */
-async function askAsset(promptText: string, defaultValue?: any): Promise<any> {
+async function askAsset(promptText: string, defaultValue?: string): Promise<string> {
     while (true) {
         const displayDefault = defaultValue ? normalizeAssetSymbol(defaultValue) : undefined;
         const suffix = displayDefault !== undefined && displayDefault !== null ? ` [${displayDefault}]` : '';
@@ -392,7 +395,7 @@ async function askAsset(promptText: string, defaultValue?: any): Promise<any> {
  * @param {string} assetA - The symbol of Asset A.
  * @returns {Promise<string>} The asset symbol in uppercase.
  */
-async function askAssetB(promptText: string, defaultValue?: any, assetA?: string): Promise<any> {
+async function askAssetB(promptText: string, defaultValue?: string, assetA?: string): Promise<string> {
     while (true) {
         const displayDefault = defaultValue ? normalizeAssetSymbol(defaultValue) : undefined;
         const suffix = displayDefault !== undefined && displayDefault !== null ? ` [${displayDefault}]` : '';
@@ -424,7 +427,7 @@ async function askAssetB(promptText: string, defaultValue?: any, assetA?: string
  * @param {number} [defaultValue] - The default value to use if input is empty.
  * @returns {Promise<number|string>} The numeric value or '\x1b' if ESC.
  */
-async function askWeightDistribution(promptText: string, defaultValue?: any): Promise<any> {
+async function askWeightDistribution(promptText: string, defaultValue?: number): Promise<number | string | undefined> {
     const MIN_WEIGHT = -1;
     const MAX_WEIGHT = 2;
     console.log(`  ${COLORS.cyan}-1=SuperValley${COLORS.reset} ←→ ${COLORS.blue}0=Valley${COLORS.reset} ←→ ${COLORS.gray}0.5=Neutral${COLORS.reset} ←→ ${COLORS.bold}${COLORS.orange}1=Mountain${COLORS.reset} ←→ ${COLORS.redStrong}2=SuperMountain${COLORS.reset}`);
@@ -450,7 +453,7 @@ async function askWeightDistribution(promptText: string, defaultValue?: any): Pr
  * @param {number} [defaultValue] - The default value to use if input is empty.
  * @returns {Promise<number|string>} The numeric value or '\x1b' if ESC.
  */
-async function askWeightDistributionNoLegend(promptText: string, defaultValue?: any): Promise<any> {
+async function askWeightDistributionNoLegend(promptText: string, defaultValue?: number): Promise<number | string | undefined> {
     const MIN_WEIGHT = -1;
     const MAX_WEIGHT = 2;
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
@@ -476,7 +479,7 @@ async function askWeightDistributionNoLegend(promptText: string, defaultValue?: 
  * @param {*} value - The value to check.
  * @returns {boolean} True if it's a multiplier string.
  */
-function isMultiplierString(value: any): boolean {
+function isMultiplierString(value: unknown): boolean {
     return parseRelativeMultiplier(value) !== null;
 }
 
@@ -506,7 +509,7 @@ function colorMultiplierInput(value: string): string {
  * @param {*} value - The value to check.
  * @returns {boolean} True if it's a percentage string.
  */
-function isPercentageString(value: any): boolean {
+function isPercentageString(value: unknown): boolean {
     return typeof value === 'string' && /^[-+]?[0-9]+(?:\.[0-9]+)?%$/.test(value.trim());
 }
 
@@ -517,7 +520,7 @@ function isPercentageString(value: any): boolean {
  * @param {string} value - The value to color.
  * @returns {string} ANSI-colored value string.
  */
-function colorPercentageInput(value: any): string {
+function colorPercentageInput(value: unknown): string {
     if (isPercentageString(value)) return `${COLORS.green}${value}${COLORS.reset}`;
     return `${COLORS.red}${value}${COLORS.reset}`;
 }
@@ -530,7 +533,7 @@ function colorPercentageInput(value: any): string {
  * @param {*} value - The value to color.
  * @returns {string} ANSI-colored value string.
  */
-function colorPriceRangeValue(value: any): string {
+function colorPriceRangeValue(value: unknown): string {
     return colorRangeValueByQuality(String(value));
 }
 
@@ -540,7 +543,7 @@ function colorPriceRangeValue(value: any): string {
  * @param {*} value - Raw range value (e.g. "2x" or numeric).
  * @returns {string} Tier key.
  */
-function getRangeQuality(value: any): string {
+function getRangeQuality(value: unknown): string {
     const m = parseRelativeMultiplier(value);
     if (m === null) return 'fixed';
     if (m >= RANGE_QUALITY.GREEN_MIN) return 'green';
@@ -580,7 +583,7 @@ function printRangeQualityLegend(): void {
  * @param {*} value - The value to check.
  * @returns {boolean} True if it is a dynamic price source string.
  */
-function isDynamicPriceSource(value: any): boolean {
+function isDynamicPriceSource(value: unknown): boolean {
     if (typeof value !== 'string') return false;
     const lower = value.trim().toLowerCase();
     return lower === 'pool' || lower === 'book' || /^ama(?:[1-4])?$/.test(lower);
@@ -601,7 +604,7 @@ const AMA_GRID_PRICE_PATTERN = /^ama(?:[1-4])?$/;
  * @param {*} value - The start price value to color.
  * @returns {string} ANSI-colored value string.
  */
-function colorStartPriceValue(value: any): string {
+function colorStartPriceValue(value: unknown): string {
     const text = String(value ?? '');
     if (isDynamicPriceSource(text)) return `${COLORS.green}${text}${COLORS.reset}`;
     return `${COLORS.red}${text}${COLORS.reset}`;
@@ -617,7 +620,7 @@ function colorStartPriceValue(value: any): string {
  * @param {*} value - The grid price value to color.
  * @returns {string} ANSI-colored value string.
  */
-function colorGridPriceValue(value: any): string {
+function colorGridPriceValue(value: unknown): string {
     if (isUnsetGridPrice(value)) {
         return `${COLORS.red}startPrice${COLORS.reset}`;
     }
@@ -632,7 +635,7 @@ function colorGridPriceValue(value: any): string {
  * @param {*} value - A startPrice value (or any value to test).
  * @returns {boolean}
  */
-function isPoolStartPrice(value: any): boolean {
+function isPoolStartPrice(value: unknown): boolean {
     return String(value ?? '').trim().toLowerCase() === 'pool';
 }
 
@@ -646,7 +649,7 @@ function isPoolStartPrice(value: any): boolean {
  * @param {*} data - The bot draft.
  * @returns {boolean}
  */
-function startPriceUsesDefaultPool(data: any): boolean {
+function startPriceUsesDefaultPool(data: { startPrice?: unknown } | null | undefined): boolean {
     return isPoolStartPrice(data?.startPrice);
 }
 
@@ -660,7 +663,7 @@ function startPriceUsesDefaultPool(data: any): boolean {
  * @param {*} data - The bot draft.
  * @returns {string} ANSI-colored pinned pool ID, `default` (green), or `none` (grey).
  */
-function formatPoolRefLabel(data: any): string {
+function formatPoolRefLabel(data: { poolRef?: unknown; startPrice?: unknown } | null | undefined): string {
     // A pin only applies to startPrice "pool"; show it as ignored otherwise
     // so the summary never displays a value the editor no longer asks for.
     if (data?.poolRef && !startPriceUsesDefaultPool(data)) return `${COLORS.gray}ignored${COLORS.reset}`;
@@ -680,7 +683,7 @@ function formatPoolRefLabel(data: any): string {
  *                              pass a warn color for flags that are optional.
  * @returns {string} ANSI-colored "true"/"false" string.
  */
-function colorBooleanFlag(value: any, greenWhenTrue: boolean, offColor: string = COLORS.red): string {
+function colorBooleanFlag(value: unknown, greenWhenTrue: boolean, offColor: string = COLORS.red): string {
     const isTrue = !!value;
     const healthy = greenWhenTrue ? isTrue : !isTrue;
     const text = String(isTrue);
@@ -730,7 +733,7 @@ function deltaToCron(days: number, time: string): string {
  * @param {number} maxVal - The maximum allowed value.
  * @returns {Promise<number|string>} The numeric value or '\x1b' if ESC.
  */
-async function askNumberWithBounds(promptText: string, defaultValue?: any, minVal: number = 0, maxVal: number = 100): Promise<any> {
+async function askNumberWithBounds(promptText: string, defaultValue?: number, minVal: number = 0, maxVal: number = 100): Promise<number | string | undefined> {
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
     const raw = (await readInput(`${promptText}${suffix}: `)).trim();
     if (raw === '\x1b') return '\x1b';
@@ -767,12 +770,12 @@ async function askNumberWithBounds(promptText: string, defaultValue?: any, minVa
  * @param {number} minSpreadFactor - The minimum spread factor from GRID_LIMITS.
  * @returns {Promise<number|string>} The spread percentage or '\x1b' if ESC.
  */
-async function askTargetSpreadPercent(promptText: string, defaultValue?: any, incrementPercent: number = 0, minSpreadFactor: number = GRID_LIMITS.MIN_SPREAD_FACTOR): Promise<any> {
+async function askTargetSpreadPercent(promptText: string, defaultValue?: number, incrementPercent: number = 0, minSpreadFactor: number = GRID_LIMITS.MIN_SPREAD_FACTOR): Promise<number | string | undefined> {
     const safeIncrement = Number.isFinite(incrementPercent) ? incrementPercent : 0;
     const safeMinSpreadFactor = Number.isFinite(minSpreadFactor) ? minSpreadFactor : GRID_LIMITS.MIN_SPREAD_FACTOR;
     const minRequired = roundToDecimals(safeIncrement * safeMinSpreadFactor, 2);
     const minRequiredLabel = minRequired.toFixed(2);
-    const effectiveDefault = Number.isFinite(defaultValue) ? Math.max(roundToDecimals(defaultValue, 2), minRequired) : defaultValue;
+    const effectiveDefault = typeof defaultValue === 'number' && Number.isFinite(defaultValue) ? Math.max(roundToDecimals(defaultValue, 2), minRequired) : defaultValue;
     const suffix = effectiveDefault !== undefined && effectiveDefault !== null ? ` [${effectiveDefault.toFixed(2)}]` : '';
     const raw = (await readInput(`${promptText} (>= ${minRequiredLabel})${suffix}: `)).trim();
     if (raw === '\x1b') return '\x1b';
@@ -808,7 +811,7 @@ async function askTargetSpreadPercent(promptText: string, defaultValue?: any, in
  * @param {number} maxVal - The maximum allowed value.
  * @returns {Promise<number|string>} The integer or '\x1b' if ESC.
  */
-async function askIntegerInRange(promptText: string, defaultValue?: any, minVal: number = 0, maxVal: number = 100): Promise<any> {
+async function askIntegerInRange(promptText: string, defaultValue?: number, minVal: number = 0, maxVal: number = 100): Promise<number | string | undefined> {
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
     const raw = (await readInput(`${promptText}${suffix}: `)).trim();
     if (raw === '\x1b') return '\x1b';
@@ -839,7 +842,7 @@ async function askIntegerInRange(promptText: string, defaultValue?: any, minVal:
  * @param {number|string} [defaultValue] - The default value to use if input is empty.
  * @returns {Promise<number|string>} The value or '\x1b' if ESC.
  */
-async function askNumberOrMultiplier(promptText: string, defaultValue?: any): Promise<any> {
+async function askNumberOrMultiplier(promptText: string, defaultValue?: number | string): Promise<number | string | undefined> {
     // Pre-entry legend for Range bounds (mirrors weight mountain legend)
     if (/^(minPrice|maxPrice)/i.test(promptText)) printRangeQualityLegend();
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${colorPriceRangeValue(defaultValue)}]` : '';
@@ -884,7 +887,7 @@ async function askNumberOrMultiplier(promptText: string, defaultValue?: any): Pr
  * @param {number|string} minPrice - The minimum price.
  * @returns {Promise<number|string>} The value or '\x1b' if ESC.
  */
-async function askMaxPrice(promptText: string, defaultValue?: any, minPrice?: any): Promise<any> {
+async function askMaxPrice(promptText: string, defaultValue?: number | string, minPrice?: number | string): Promise<number | string | undefined> {
     printRangeQualityLegend();
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${colorPriceRangeValue(defaultValue)}]` : '';
     const raw = (await readInput(`${promptText}${suffix}: `, { colorize: (input) => colorRangeValueByQuality(input) })).trim();
@@ -921,7 +924,7 @@ async function askMaxPrice(promptText: string, defaultValue?: any, minPrice?: an
     // (previously parseFloat("2x") == 2 wrongly rejected any absolute price <= 2).
     if (!isMultiplierString(minPrice)) {
         const minPriceValue = typeof minPrice === 'string' ? parseFloat(minPrice) : minPrice;
-        if (parsed <= minPriceValue) {
+        if (minPriceValue != null && parsed <= minPriceValue) {
             console.log(`Invalid ${promptText}: ${parsed}. Must be > minPrice (${minPriceValue})`);
             return askMaxPrice(promptText, defaultValue, minPrice);
         }
@@ -949,7 +952,7 @@ function normalizePercentageInput(value: string): string | null {
  * @param {number|string} [defaultValue] - The default value to use if input is empty.
  * @returns {Promise<number|string>} The value or '\x1b' if ESC.
  */
-async function askNumberOrPercentage(promptText: string, defaultValue?: any): Promise<any> {
+async function askNumberOrPercentage(promptText: string, defaultValue?: number | string): Promise<number | string | undefined> {
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${colorPercentageInput(defaultValue)}]` : '';
     const raw = (await readInput(`${promptText}${suffix}: `, { colorize: (input) => colorPercentageInput(input) })).trim();
     if (raw === '\x1b') return '\x1b';
@@ -974,7 +977,7 @@ async function askNumberOrPercentage(promptText: string, defaultValue?: any): Pr
  * @param {boolean} [defaultValue] - Value returned for empty input.
  * @returns {{ ok: boolean, value?: boolean }} ok=false for unrecognized input.
  */
-function parseBooleanInput(raw: any, defaultValue?: boolean): { ok: boolean; value?: boolean } {
+function parseBooleanInput(raw: unknown, defaultValue?: boolean): { ok: boolean; value?: boolean } {
     const value = String(raw ?? '').trim().toLowerCase();
     if (!value) return { ok: true, value: !!defaultValue };
     if (value === 'y' || value === 'yes' || value === 'true' || value === '1' || value === 't') return { ok: true, value: true };
@@ -991,7 +994,7 @@ function parseBooleanInput(raw: any, defaultValue?: boolean): { ok: boolean; val
  * @param {boolean} [defaultValue] - The default value to use if input is empty.
  * @returns {Promise<boolean|string>} The boolean value or '\x1b' if ESC.
  */
-async function askBoolean(promptText: string, defaultValue?: any): Promise<any> {
+async function askBoolean(promptText: string, defaultValue?: boolean): Promise<boolean | string | undefined> {
     const label = defaultValue ? 'Y/n' : 'y/N';
     for (;;) {
         const raw = (await readInput(`${promptText} (${label}): `)).trim().toLowerCase();
@@ -1008,7 +1011,7 @@ async function askBoolean(promptText: string, defaultValue?: any): Promise<any> 
  * @param {number|string} [defaultValue] - The default value to use if input is empty.
  * @returns {Promise<number|string>} The start price or '\x1b' if ESC.
  */
-async function askStartPrice(promptText: string, defaultValue?: any): Promise<any> {
+async function askStartPrice(promptText: string, defaultValue?: number | string): Promise<number | string | undefined> {
     while (true) {
         const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${colorStartPriceValue(defaultValue)}]` : '';
         const raw = (await readInput(`${promptText}${suffix}: `, {
@@ -1052,7 +1055,7 @@ const POOL_REF_CLEAR_INPUTS = new Set(['none', 'clear', 'off', 'no', 'default', 
  * @param {*} value - Raw or normalized user input.
  * @returns {boolean}
  */
-function isPoolRefClearInput(value: any): boolean {
+function isPoolRefClearInput(value: unknown): boolean {
     return POOL_REF_CLEAR_INPUTS.has(String(value ?? '').trim().toLowerCase());
 }
 
@@ -1070,7 +1073,7 @@ function isPoolRefClearInput(value: any): boolean {
  *        so an unpinned value renders as `default` rather than `none`.
  * @returns {Promise<string|null|symbol>} Pool ID, null (cleared), or '\x1b' on ESC.
  */
-async function askPoolRef(promptText: string, currentValue?: string | null | undefined, usesDefaultPool: boolean = false): Promise<any> {
+async function askPoolRef(promptText: string, currentValue?: string | null | undefined, usesDefaultPool: boolean = false): Promise<string | null> {
     while (true) {
         const fallbackLabel = usesDefaultPool ? 'default' : 'none';
         const suffix = currentValue ? ` [${currentValue}]` : ` [${fallbackLabel}]`;
@@ -1104,7 +1107,7 @@ async function askPoolRef(promptText: string, currentValue?: string | null | und
  * @returns {Promise<any>} The normalized grid-price value, the unchanged
  *                         current value on Enter, or '\x1b' if ESC.
  */
-async function askGridPriceMode(promptText: string, defaultValue?: any): Promise<any> {
+async function askGridPriceMode(promptText: string, defaultValue?: string | number | null): Promise<string | number | null> {
     while (true) {
         const coloredDefault = colorGridPriceValue(defaultValue ?? null);
         const raw = await readInput(`${promptText} [${coloredDefault}]: `, {
@@ -1140,11 +1143,32 @@ async function askGridPriceMode(promptText: string, defaultValue?: any): Promise
  * @param {Object} [base={}] - The initial bot data to edit.
  * @returns {Object} A normalized bot draft.
  */
-function normalizeBotDraft(base = {}): any {
+interface BotDraft extends UnknownRecord {
+    accountId?: string;
+    active?: boolean;
+    activeOrders: { sell?: number; buy?: number };
+    assetA?: string;
+    assetB?: string;
+    botFunds: { sell?: number | string; buy?: number | string };
+    dryRun?: boolean;
+    gridPrice?: string | number | null;
+    incrementPercent?: number;
+    maxPrice?: number | string;
+    minPrice?: number | string;
+    name?: string;
+    poolRef?: string | null;
+    preferredAccount?: string;
+    reserveOrders?: { sell?: number; buy?: number };
+    startPrice?: number | string;
+    targetSpreadPercent?: number;
+    weightDistribution: { sell: number; buy: number };
+}
+
+function normalizeBotDraft(base: BotDraft = {} as BotDraft): BotDraft {
     // Seeding rules live in modules/bot_defaults.ts (single defaults source).
     // Return type stays `any`: the editor prompt-flow treats drafts as dynamic
     // bags and its inference depends on it.
-    return seedBotDraft(base);
+    return seedBotDraft(base) as unknown as BotDraft;
 }
 
 /**
@@ -1184,7 +1208,7 @@ function normalizeBotDraft(base = {}): any {
  *   no such account), 'timeout' (nodes unreachable within timeoutMs),
  *   'error' (import/lookup threw).
  */
-async function ensureBotAccountId(data: any, timeoutMs = 15000, quiet = false, force = false): Promise<{ id: string | null; reason: string }> {
+async function ensureBotAccountId(data: Record<string, unknown>, timeoutMs = 15000, quiet = false, force = false): Promise<{ id: string | null; reason: string }> {
     if (!data || typeof data !== 'object') return { id: null, reason: 'invalid' };
     const ref = String(data.preferredAccount ?? '').trim();
     if (!ref) return { id: null, reason: 'invalid' };
@@ -1195,7 +1219,7 @@ async function ensureBotAccountId(data: any, timeoutMs = 15000, quiet = false, f
     if (!force && data.accountId && /^1\.2\.\d+$/.test(String(data.accountId))) {
         return { id: String(data.accountId), reason: 'cached' };
     }
-    let chainClient: any = null;
+    let chainClient: typeof import('./bitshares_client.js') | null = null;
     let prevSuppress = false;
     let prevGlobalLevel: string | null = null;
     let suppressionArmed = false;
@@ -1207,7 +1231,7 @@ async function ensureBotAccountId(data: any, timeoutMs = 15000, quiet = false, f
         chainClient.setSuppressConnectionLog(true);
         setGlobalConsoleLevel('warn');
         const chainOrders = await import('./chain_orders.js');
-        const timeoutErr: any = new Error(`account lookup timed out after ${timeoutMs}ms`);
+        const timeoutErr = new Error(`account lookup timed out after ${timeoutMs}ms`) as Error & { code?: string };
         timeoutErr.code = 'ACCOUNT_LOOKUP_TIMEOUT';
         let id: string | null = null;
         try {
@@ -1215,8 +1239,8 @@ async function ensureBotAccountId(data: any, timeoutMs = 15000, quiet = false, f
                 chainOrders.resolveAccountId(ref),
                 sleep(timeoutMs).then(() => { throw timeoutErr; }),
             ]);
-        } catch (err: any) {
-            const reason = err && err.code === 'ACCOUNT_LOOKUP_TIMEOUT' ? 'timeout' : 'error';
+        } catch (err) {
+            const reason = err && getErrorCode(err) === 'ACCOUNT_LOOKUP_TIMEOUT' ? 'timeout' : 'error';
             if (!quiet) {
                 const hint = reason === 'timeout'
                     ? `nodes unreachable (timed out after ${timeoutMs}ms). Continuing without accountId — it will be stored automatically once a lookup succeeds.`
@@ -1232,7 +1256,7 @@ async function ensureBotAccountId(data: any, timeoutMs = 15000, quiet = false, f
         }
         if (!quiet) console.log(`  ${COLORS.yellow}Account '${ref}' not found on the blockchain. Continuing without accountId — fix the name and it will be stored automatically once a lookup succeeds.${COLORS.reset}`);
         return { id: null, reason: 'not-found' };
-    } catch (err: any) {
+    } catch (err) {
         if (!quiet) console.log(`  ${COLORS.yellow}Could not resolve account '${ref}' to 1.2.x (${getErrorMessage(err)}). Continuing without accountId — it will be stored automatically once a lookup succeeds.${COLORS.reset}`);
         return { id: null, reason: 'error' };
     } finally {
@@ -1262,7 +1286,7 @@ async function ensureBotAccountId(data: any, timeoutMs = 15000, quiet = false, f
  *   (so a failed save never leaves the whitelist out of sync), or null when
  *   cancelled.
  */
-async function promptBotData(base = {}, index = 0, baseIndex = index) {
+async function promptBotData(base: BotDraft = {} as BotDraft, index = 0, baseIndex = index) {
     const data = normalizeBotDraft(base);
 
     // Market-adapter flags (6) Adapter) live in
@@ -1271,11 +1295,11 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
     // commit hook so Cancel (or a failed bots.json save) discards them
     // together with the rest of the draft.
     const baseEntry = base && typeof base === 'object' && Object.keys(base).length > 0 ? base : null;
-    const baseBotKey = baseEntry ? String(normalizeBotEntry(baseEntry, baseIndex).botKey || '') : '';
+    const baseBotKey = baseEntry ? String(normalizeBotEntry(baseEntry as BotEntry, baseIndex).botKey || '') : '';
     let adapterStaged: { ama: boolean; dynamicWeight: boolean; asymmetricBounds: boolean } | null = null;
     const isAmaGridPriceDraft = () => /^ama(?:[1-4])?$/.test(String(data.gridPrice ?? '').trim().toLowerCase());
     const adapterFlags = () => adapterStaged
-        || getWhitelistFlags(baseBotKey || String(normalizeBotEntry(data, index).botKey || ''));
+        || getWhitelistFlags(baseBotKey || String(normalizeBotEntry(data as BotEntry, index).botKey || ''));
 
     let finished = false;
     let cancelled = false;
@@ -1353,9 +1377,9 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
                     data.accountId = draft.accountId;
                 }
                 const active = await askBoolean('Active', data.active);
-                if (active === '\x1b') break;
+                if (typeof active !== 'boolean') break;
                 const dryRun = await askBoolean('Dry run', data.dryRun);
-                if (dryRun === '\x1b') break;
+                if (typeof dryRun !== 'boolean') break;
                 data.name = name;
                 data.preferredAccount = prefAcc;
                 data.active = active;
@@ -1393,13 +1417,15 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
                 if (wBuy === '\x1b') break;
                 const incrP = await askNumberWithBounds('incrementPercent', data.incrementPercent, INCREMENT_BOUNDS.MIN_PERCENT, INCREMENT_BOUNDS.MAX_PERCENT);
                 if (incrP === '\x1b') break;
+                if (typeof incrP !== 'number') break;
                 const defaultSpread = data.targetSpreadPercent || incrP * 4;
 
                 // Use current general settings for the validation limit
                 const currentSettings = loadGeneralSettings();
                 const targetS = await askTargetSpreadPercent('targetSpread %', defaultSpread, incrP, currentSettings.GRID_LIMITS.MIN_SPREAD_FACTOR);
 
-                if (targetS === '\x1b') break;
+                if (typeof targetS !== 'number') break;
+                if (typeof wSell !== 'number' || typeof wBuy !== 'number') break;
                 data.weightDistribution.sell = wSell;
                 data.weightDistribution.buy = wBuy;
                 data.incrementPercent = incrP;
@@ -1408,17 +1434,17 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
                 break;
             case '5':
                 const fSell = await askNumberOrPercentage('botFunds sell amount', data.botFunds.sell);
-                if (fSell === '\x1b') break;
+                if (fSell === undefined || fSell === '\x1b') break;
                 const fBuy = await askNumberOrPercentage('botFunds buy amount', data.botFunds.buy);
-                if (fBuy === '\x1b') break;
+                if (fBuy === undefined || fBuy === '\x1b') break;
                 const oSell = await askIntegerInRange('activeOrders sell count', data.activeOrders.sell, 1, 100);
-                if (oSell === '\x1b') break;
+                if (typeof oSell !== 'number') break;
                 const oBuy = await askIntegerInRange('activeOrders buy count', data.activeOrders.buy, 1, 100);
-                if (oBuy === '\x1b') break;
+                if (typeof oBuy !== 'number') break;
                 const rBuy = await askIntegerInRange('reserveOrders buy floor count (0 disables)', data.reserveOrders?.buy ?? 0, 0, 100);
-                if (rBuy === '\x1b') break;
+                if (typeof rBuy !== 'number') break;
                 const rSell = await askIntegerInRange('reserveOrders sell ceiling count (0 disables)', data.reserveOrders?.sell ?? 0, 0, 100);
-                if (rSell === '\x1b') break;
+                if (typeof rSell !== 'number') break;
                 data.botFunds.sell = fSell;
                 data.botFunds.buy = fBuy;
                 data.activeOrders.sell = oSell;
@@ -1435,10 +1461,13 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
                 }
                 const price = await askBoolean('AMA pricing (Price)', flags.ama);
                 if (price === '\x1b') break;
+                if (typeof price !== 'boolean') break;
                 const weight = await askBoolean('Dynamic weights (Weight)', flags.dynamicWeight);
                 if (weight === '\x1b') break;
+                if (typeof weight !== 'boolean') break;
                 const range = await askBoolean('Range scaling (Range)', flags.asymmetricBounds);
                 if (range === '\x1b') break;
+                if (typeof range !== 'boolean') break;
                 adapterStaged = { ama: price, dynamicWeight: weight, asymmetricBounds: range };
                 if (!price && (weight || range)) {
                     console.log(`${COLORS.yellow}Note: Weight/Range only take effect while Price (AMA) is enabled.${COLORS.reset}`);
@@ -1457,8 +1486,8 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
                     const spreadFactor = Number.isFinite(currentSettings.GRID_LIMITS.MIN_SPREAD_FACTOR)
                         ? currentSettings.GRID_LIMITS.MIN_SPREAD_FACTOR
                         : GRID_LIMITS.MIN_SPREAD_FACTOR;
-                    const minRequiredSpread = roundToDecimals(data.incrementPercent * spreadFactor, 2);
-                    if (data.targetSpreadPercent + Number.EPSILON < minRequiredSpread) {
+                    const minRequiredSpread = roundToDecimals((data.incrementPercent ?? 0) * spreadFactor, 2);
+                    if ((data.targetSpreadPercent ?? 0) + Number.EPSILON < minRequiredSpread) {
                         console.log(`${COLORS.red}Error: targetSpreadPercent (${data.targetSpreadPercent}) must be >= ${spreadFactor}x incrementPercent (${minRequiredSpread.toFixed(2)}).${COLORS.reset}`);
                         break;
                     }
@@ -1559,6 +1588,7 @@ async function promptGeneralSettings() {
                 if (amaDelta === '\x1b') break;
                 const amaSlopeDelta = await askNumberWithBounds('AMA-Slope Δ', settings.MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT, 0.1, 100.0);
                 if (amaSlopeDelta === '\x1b') break;
+                if (typeof gRegen !== 'number' || typeof rms !== 'number' || typeof amaDelta !== 'number' || typeof amaSlopeDelta !== 'number') break;
                 settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE = gRegen;
                 settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE = rms;
                 settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT = amaDelta;
@@ -1567,10 +1597,12 @@ async function promptGeneralSettings() {
             case '2':
                 const dust = await askNumberWithBounds('Partial Dust Threshold %', settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE, 0.1, 50);
                 if (dust === '\x1b') break;
+                if (typeof dust !== 'number') break;
                 settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE = dust;
 
                 const hcInterval = await askIntegerInRange('Health Check Interval (min)', (settings.NODES.healthCheck?.intervalMs || NODE_MANAGEMENT.HEALTH_CHECK_INTERVAL_MS) / 60000, 1, 43200);
                 if (hcInterval === '\x1b') break;
+                if (typeof hcInterval !== 'number') break;
                 if (!settings.NODES.healthCheck) settings.NODES.healthCheck = {};
                 settings.NODES.healthCheck.intervalMs = hcInterval * 60000;
                 break;
@@ -1612,6 +1644,7 @@ async function promptGeneralSettings() {
                             }
                             const removeIdx = await askIntegerInRange('  Enter node number to remove', 1, 1, nodeList.length);
                             if (removeIdx === '\x1b') continue;
+                            if (typeof removeIdx !== 'number') continue;
                             const removed = nodeList.splice(removeIdx - 1, 1)[0];
                             console.log(`  ${COLORS.green}Removed:${COLORS.reset} ${removed}`);
                         } else if (nodeChoice === 'd') {
@@ -1626,7 +1659,7 @@ async function promptGeneralSettings() {
                 const prefNode = await askString('Preferred Node URL (leave empty for automatic selection)', settings.NODES.selection?.preferredNode || '');
                 if (prefNode === '\x1b') break;
                 if (!settings.NODES.selection) settings.NODES.selection = {};
-                settings.NODES.selection.preferredNode = prefNode.trim() || null;
+                settings.NODES.selection.preferredNode = (prefNode ?? '').trim() || null;
                 break;
             case '4':
                 const newLevel = await askLogLevel('Enter log level', settings.LOG_LEVEL);
@@ -1636,6 +1669,7 @@ async function promptGeneralSettings() {
             case '5':
                 const upActive = await askBoolean('Enable Automated Updater', settings.UPDATER.ACTIVE !== false);
                 if (upActive === '\x1b') break;
+                if (typeof upActive !== 'boolean') break;
                 settings.UPDATER.ACTIVE = upActive;
 
                  console.log(`  ${COLORS.gray}Branch:${COLORS.reset} ${COLORS.green}main${COLORS.reset}, ${COLORS.orange}dev${COLORS.reset}, ${COLORS.red}test${COLORS.reset}, or ${COLORS.blue}auto${COLORS.reset} (detected current)`);
@@ -1655,6 +1689,7 @@ async function promptGeneralSettings() {
                 // hint silenced or restored.
                 const noticeOn = await askBoolean('Show "new version available" notice on startup', settings.UPDATER.NOTICE_ENABLED !== false);
                 if (noticeOn === '\x1b') break;
+                if (typeof noticeOn !== 'boolean') break;
                 settings.UPDATER.NOTICE_ENABLED = noticeOn;
                 break;
             case 's':
@@ -1699,13 +1734,13 @@ async function main() {
             case '1': {
                 while (true) {
                     try {
-                        const result = await promptBotData({}, config.bots.length);
+                        const result = await promptBotData({} as BotDraft, config.bots.length);
                         if (!result) break;
                         config.bots.push(result.data);
                         saveBotsConfig(config, filePath);
                         result.commitAdapter?.();
                         console.log(`\nAdded bot '${result.data.name}' to ${path.basename(filePath)}.`);
-                    } catch (err: any) {
+                    } catch (err) {
                         console.log(`\n❌ Invalid input: ${getErrorMessage(err)}\n`);
                         break;
                     }
@@ -1717,7 +1752,7 @@ async function main() {
                     const idx = await selectBotIndex(config.bots, 'modify or leave (Enter/Esc)');
                     if (idx === null || idx === '\x1b') break;
                     try {
-                        const result = await promptBotData(config.bots[idx], idx);
+                        const result = await promptBotData(config.bots[idx] as unknown as BotDraft, idx);
                         if (result) {
                             config.bots[idx] = result.data;
                             saveBotsConfig(config, filePath);
@@ -1727,7 +1762,7 @@ async function main() {
                             console.log(`Live pickup (~1min, no reload needed): ${(BOT_LIVE_CONFIG_KEYS as readonly string[]).join(' / ')}.`);
                             console.log(`Grid geometry needs 'dexbot reset ${entry.name}' (or 'dexbot reload' for everything at once); market/account changes need 'dexbot reload'.\n`);
                         }
-                    } catch (err: any) {
+                    } catch (err) {
                         console.log(`\n❌ Invalid input: ${getErrorMessage(err)}\n`);
                     }
                 }
@@ -1764,14 +1799,14 @@ async function main() {
                     const idx = await selectBotIndex(config.bots, 'copy or leave (Enter/Esc)');
                     if (idx === null || idx === '\x1b') break;
                     try {
-                        const result = await promptBotData(config.bots[idx], idx + 1, idx);
+                        const result = await promptBotData(config.bots[idx] as unknown as BotDraft, idx + 1, idx);
                         if (result) {
                             config.bots.splice(idx + 1, 0, result.data);
                             saveBotsConfig(config, filePath);
                             result.commitAdapter?.();
                             console.log(`Copied bot '${result.data.name}' into ${path.basename(filePath)}.\n`);
                         }
-                    } catch (err: any) {
+                    } catch (err) {
                         console.log(`\n❌ Invalid input: ${getErrorMessage(err)}\n`);
                     }
                 }

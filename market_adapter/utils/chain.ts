@@ -5,24 +5,64 @@ const require = createRequire(import.meta.url);
 
 import { API_LIMITS } from '../../modules/constants.js';
 import { normalizeAssetSymbol } from '../../modules/utils/asset_symbols.js';
+import type { UnknownRecord } from '../../modules/types.js';
+import { isUnknownRecord } from '../../modules/types.js';
 
-let _bitsharesClient: any = null;
+/** A dynamic JSON-RPC proxy: any method returns a promise of an unknown result. */
+interface RpcProxy {
+    [method: string]: (...args: unknown[]) => Promise<unknown>;
+}
 
-function getBitsharesClient() {
+/** The read-only BitShares client shape this module consumes. */
+interface RpcClient {
+    BitShares: {
+        db: RpcProxy;
+        history: RpcProxy;
+        tradeHistory?: (...args: unknown[]) => Promise<unknown>;
+        [method: string]: unknown;
+    };
+}
+
+/** The adapter_client module shape (superset of {@link RpcClient}). */
+interface BitsharesClient extends RpcClient {
+    connectClient: (servers?: string[]) => Promise<unknown>;
+    disconnectClient: () => unknown;
+    [key: string]: unknown;
+}
+
+/** Resolved asset identity used by the pool/context helpers. */
+export interface ResolvedAsset {
+    id: string;
+    precision: number;
+    symbol: string;
+}
+
+interface PoolObject extends UnknownRecord {
+    id?: string;
+}
+
+interface FindPoolOptions {
+    bitsharesClient?: RpcClient;
+    sortBy?: 'totalBalance' | 'assetABalance';
+}
+
+let _bitsharesClient: BitsharesClient | null = null;
+
+function getBitsharesClient(): BitsharesClient {
     // lazy require to avoid circular dependencies at module load time
     if (!_bitsharesClient) {
-        _bitsharesClient = require('./adapter_client');
+        _bitsharesClient = require('./adapter_client') as BitsharesClient;
     }
     return _bitsharesClient;
 }
 
-function setBitsharesClientForTests(client: any) {
+function setBitsharesClientForTests(client: BitsharesClient | null): void {
     _bitsharesClient = client;
 }
 
-async function resolveAsset(symbol: any, bitsharesClient: any = null) {
+async function resolveAsset(symbol: unknown, bitsharesClient: RpcClient | null = null): Promise<ResolvedAsset> {
     if (!symbol || typeof symbol !== 'string') {
-        throw new Error(`Cannot resolve asset: invalid or missing symbol "${symbol}"`);
+        throw new Error(`Cannot resolve asset: invalid or missing symbol "${String(symbol)}"`);
     }
     // BitShares symbols are canonical UPPERCASE; nodes answer lowercase lookups
     // silently, so normalize here and hand the canonical symbol downstream
@@ -30,14 +70,30 @@ async function resolveAsset(symbol: any, bitsharesClient: any = null) {
     const canonical = normalizeAssetSymbol(symbol);
     const client = bitsharesClient || getBitsharesClient();
     const results = await client.BitShares.db.lookup_asset_symbols([canonical]);
-    const asset = results?.[0];
-    if (!asset?.id || typeof asset.precision !== 'number') {
+    const asset = Array.isArray(results) ? results[0] : undefined;
+    if (!isUnknownRecord(asset) || typeof asset.id !== 'string' || typeof asset.precision !== 'number') {
         throw new Error(`Cannot resolve asset "${canonical}": lookup failed`);
     }
     return { id: asset.id, precision: asset.precision, symbol: String(asset.symbol || canonical) };
 }
 
-async function findPoolByAssets(assetAId: any, assetBId: any, options: any = {}) {
+/** Balance of `idAStr` in a pool object (both `asset_a` and `asset_ids[]` shapes). */
+function poolBalanceFor(idAStr: string, p: UnknownRecord): number {
+    const assetIds = Array.isArray(p.asset_ids) ? p.asset_ids : null;
+    const value = String(p.asset_a ?? assetIds?.[0] ?? '') === idAStr
+        ? Number(p.balance_a)
+        : String(p.asset_b ?? assetIds?.[1] ?? '') === idAStr
+            ? Number(p.balance_b)
+            : Number.NEGATIVE_INFINITY;
+    return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
+}
+
+/** Total liquidity of a pool object. */
+function poolTotalBalance(p: UnknownRecord): number {
+    return Number(p.balance_a ?? 0) + Number(p.balance_b ?? 0);
+}
+
+async function findPoolByAssets(assetAId: string, assetBId: string, options: FindPoolOptions = {}): Promise<PoolObject> {
     const client = options.bitsharesClient || getBitsharesClient();
     const { BitShares } = client;
     const sortBy = options.sortBy || 'totalBalance'; // 'totalBalance' or 'assetABalance'
@@ -46,29 +102,16 @@ async function findPoolByAssets(assetAId: any, assetBId: any, options: any = {})
         try {
             const pools = await BitShares.db.get_liquidity_pools_by_both_assets(assetAId, assetBId);
             if (Array.isArray(pools) && pools.length > 0) {
-                const valid = pools.filter(p => p?.id);
+                const valid = pools.filter((p): p is UnknownRecord => isUnknownRecord(p) && Boolean(p.id));
                 if (valid.length) {
                     const idAStr = String(assetAId);
                     if (sortBy === 'assetABalance') {
-                        return valid.sort((a, b) => {
-                            const bal = (p: any) => {
-                                const value = String(p.asset_a ?? p.asset_ids?.[0] ?? '') === idAStr
-                                    ? Number(p.balance_a)
-                                    : String(p.asset_b ?? p.asset_ids?.[1] ?? '') === idAStr
-                                        ? Number(p.balance_b)
-                                        : Number.NEGATIVE_INFINITY;
-                                return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
-                            };
-                            return bal(b) - bal(a);
-                        })[0];
+                        return valid.slice().sort((a, b) => poolBalanceFor(idAStr, b) - poolBalanceFor(idAStr, a))[0] as PoolObject;
                     }
-                    return valid.sort((x, y) => {
-                        const bal = (p: any) => Number(p.balance_a ?? 0) + Number(p.balance_b ?? 0);
-                        return bal(y) - bal(x);
-                    })[0];
+                    return valid.slice().sort((x, y) => poolTotalBalance(y) - poolTotalBalance(x))[0] as PoolObject;
                 }
             }
-        } catch (_: any) {
+        } catch (_) {
             console.warn(`[chain] get_liquidity_pools_by_both_assets failed for ${assetAId}/${assetBId}`);
         }
     }
@@ -87,42 +130,30 @@ async function findPoolByAssets(assetAId: any, assetBId: any, options: any = {})
             if (!Array.isArray(pools) || pools.length === 0) break;
 
             const effective = startId === '1.19.0' ? pools : pools.slice(1);
-            const matches = effective.filter((p) => {
-                const ids = (p.asset_ids ?? [p.asset_a, p.asset_b]).map(String);
+            const matches = effective.filter((p): p is UnknownRecord => {
+                if (!isUnknownRecord(p)) return false;
+                const ids = (Array.isArray(p.asset_ids) ? p.asset_ids : [p.asset_a, p.asset_b]).map(String);
                 return ids.includes(a) && ids.includes(b);
             });
             if (matches.length > 0) {
                 if (sortBy === 'assetABalance') {
                     const idAStr = String(assetAId);
-                    return matches.sort((a: any, b: any) => {
-                        const bal = (p: any) => {
-                            const assetA = String(p.asset_a ?? p.asset_ids?.[0] ?? '');
-                            const assetB = String(p.asset_b ?? p.asset_ids?.[1] ?? '');
-                            const value = assetA === idAStr
-                                ? Number(p.balance_a)
-                                : assetB === idAStr
-                                    ? Number(p.balance_b)
-                                    : Number.NEGATIVE_INFINITY;
-                            return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
-                        };
-                        return bal(b) - bal(a);
-                    })[0];
+                    return matches.slice().sort((x, y) => poolBalanceFor(idAStr, y) - poolBalanceFor(idAStr, x))[0] as PoolObject;
                 }
-                return matches.sort((x: any, y: any) => {
-                    const bal = (p: any) => Number(p.balance_a ?? 0) + Number(p.balance_b ?? 0);
-                    return bal(y) - bal(x);
-                })[0];
+                return matches.slice().sort((x, y) => poolTotalBalance(y) - poolTotalBalance(x))[0] as PoolObject;
             }
 
             if (pools.length < page) break;
-            startId = pools[pools.length - 1].id;
+            const last = pools[pools.length - 1];
+            if (!isUnknownRecord(last) || typeof last.id !== 'string') break;
+            startId = last.id;
         }
     }
 
     throw new Error(`No liquidity pool found for ${assetAId}/${assetBId}`);
 }
 
-function isExactPair(a: any, b: any, targetA: any, targetB: any) {
+function isExactPair(a: unknown, b: unknown, targetA: unknown, targetB: unknown): boolean {
     const na = normalizeAssetSymbol(a);
     const nb = normalizeAssetSymbol(b);
     const nta = normalizeAssetSymbol(targetA);
@@ -130,11 +161,11 @@ function isExactPair(a: any, b: any, targetA: any, targetB: any) {
     return na === nta && nb === ntb;
 }
 
-function isSamePair(a: any, b: any, targetA: any, targetB: any) {
+function isSamePair(a: unknown, b: unknown, targetA: unknown, targetB: unknown): boolean {
     return isExactPair(a, b, targetA, targetB) || isExactPair(a, b, targetB, targetA);
 }
 
-function isExactPairIds(aId: any, bId: any, targetAId: any, targetBId: any) {
+function isExactPairIds(aId: unknown, bId: unknown, targetAId: unknown, targetBId: unknown): boolean {
     const sa = String(aId || '');
     const sb = String(bId || '');
     const sta = String(targetAId || '');
@@ -142,46 +173,54 @@ function isExactPairIds(aId: any, bId: any, targetAId: any, targetBId: any) {
     return sa === sta && sb === stb;
 }
 
-function isSamePairIds(aId: any, bId: any, targetAId: any, targetBId: any) {
+function isSamePairIds(aId: unknown, bId: unknown, targetAId: unknown, targetBId: unknown): boolean {
     return isExactPairIds(aId, bId, targetAId, targetBId) || isExactPairIds(aId, bId, targetBId, targetAId);
 }
 
-function normalizeMarketSource(raw: any) {
+function normalizeMarketSource(raw: unknown): 'pool' | 'book' | null {
     const value = String(raw || '').trim().toLowerCase();
     if (value === 'pool') return 'pool';
     if (value === 'book') return 'book';
     return null;
 }
 
-function hasNumericStartPrice(raw: any) {
+function hasNumericStartPrice(raw: unknown): boolean {
     return typeof raw === 'number' && Number.isFinite(raw) && raw > 0;
 }
 
-function resolveMarketSourceForBot(bot: any) {
-    if (hasNumericStartPrice(bot?.startPrice)) return null;
-    return normalizeMarketSource(bot?.startPrice) || 'pool';
+function resolveMarketSourceForBot(bot: unknown): 'pool' | 'book' | null {
+    if (!isUnknownRecord(bot)) return 'pool';
+    if (hasNumericStartPrice(bot.startPrice)) return null;
+    return normalizeMarketSource(bot.startPrice) || 'pool';
 }
 
-function normalizePoolId(id: any) {
+function normalizePoolId(id: unknown): string | null {
     if (id == null) return null;
     const s = String(id).trim();
     return s.startsWith('1.19.') ? s : `1.19.${s}`;
 }
 
-async function resolveBotContext(bot: any) {
+export interface ResolvedBotContext {
+    assetA: ResolvedAsset;
+    assetB: ResolvedAsset;
+    poolId: string | null;
+    marketSource: 'pool' | 'book' | null;
+}
+
+async function resolveBotContext(bot: UnknownRecord): Promise<ResolvedBotContext> {
     if (!bot.assetAId && !bot.assetA) {
-        throw new Error(`Bot "${bot.botKey}" config is missing assetA symbol or ID`);
+        throw new Error(`Bot "${String(bot.botKey)}" config is missing assetA symbol or ID`);
     }
     if (!bot.assetBId && !bot.assetB) {
-        throw new Error(`Bot "${bot.botKey}" config is missing assetB symbol or ID`);
+        throw new Error(`Bot "${String(bot.botKey)}" config is missing assetB symbol or ID`);
     }
 
-    const assetA = bot.assetAId && Number.isFinite(bot.assetAPrecision)
-        ? { id: bot.assetAId, precision: bot.assetAPrecision, symbol: bot.assetA }
+    const assetA: ResolvedAsset = typeof bot.assetAId === 'string' && typeof bot.assetAPrecision === 'number' && Number.isFinite(bot.assetAPrecision)
+        ? { id: bot.assetAId, precision: bot.assetAPrecision, symbol: String(bot.assetA ?? '') }
         : await resolveAsset(bot.assetA);
 
-    const assetB = bot.assetBId && Number.isFinite(bot.assetBPrecision)
-        ? { id: bot.assetBId, precision: bot.assetBPrecision, symbol: bot.assetB }
+    const assetB: ResolvedAsset = typeof bot.assetBId === 'string' && typeof bot.assetBPrecision === 'number' && Number.isFinite(bot.assetBPrecision)
+        ? { id: bot.assetBId, precision: bot.assetBPrecision, symbol: String(bot.assetB ?? '') }
         : await resolveAsset(bot.assetB);
 
     if (hasNumericStartPrice(bot.startPrice)) {
@@ -206,4 +245,3 @@ async function resolveBotContext(bot: any) {
 }
 
 export { resolveAsset, findPoolByAssets, normalizeAssetSymbol, normalizeMarketSource, normalizePoolId, hasNumericStartPrice, resolveMarketSourceForBot, resolveBotContext, isExactPair, isSamePair, isExactPairIds, isSamePairIds, getBitsharesClient, setBitsharesClientForTests }
-

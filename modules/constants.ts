@@ -2162,7 +2162,7 @@ let NATIVE_CLIENT = {
  * derived last) so all three producers emit byte-compatible documents.
  * Sections are cloned — callers may mutate the result freely.
  */
-function buildDefaultGeneralSettings(): Record<string, any> {
+function buildDefaultGeneralSettings() {
     return {
         LOG_LEVEL,
         GRID_LIMITS: { ...GRID_LIMITS, GRID_COMPARISON: { ...GRID_LIMITS.GRID_COMPARISON } },
@@ -2191,7 +2191,7 @@ function buildDefaultGeneralSettings(): Record<string, any> {
 // Lazy require breaks the circular dependency: constants → general_settings → constants
 const settings = readGeneralSettings({
     fallback: null,
-    onError: (err: any, filePath: string) => {
+    onError: (err: unknown, filePath: string) => {
         console.warn(`[WARN] Failed to load local settings from ${filePath}: ${getErrorMessage(err)}`);
     }
 });

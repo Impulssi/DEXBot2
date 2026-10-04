@@ -128,8 +128,13 @@ function romixBlock(block: Uint8Array, N: number, r: number): void {
   for (let i = 0; i < blockSize; i++) block[i] = X[i];
 }
 
+interface SubtleLike {
+  importKey(...args: unknown[]): Promise<unknown>;
+  deriveBits(...args: unknown[]): Promise<ArrayBuffer>;
+}
+
 async function pbkdf2HmacSha256(password: Uint8Array, salt: Uint8Array, iterations: number, keyLength: number): Promise<Uint8Array> {
-  const subtle = (globalThis as any)?.crypto?.subtle;
+  const subtle = (globalThis as { crypto?: { subtle?: SubtleLike } })?.crypto?.subtle;
   if (!subtle) throw new Error('Web Crypto API not available');
   const key = await subtle.importKey('raw', password, { name: 'PBKDF2' }, false, ['deriveBits']);
   return new Uint8Array(await subtle.deriveBits(

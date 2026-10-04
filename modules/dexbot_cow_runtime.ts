@@ -9,10 +9,10 @@
  */
 
 import * as chainOrdersModule from './chain_orders.js';
-const chainOrders = chainOrdersModule as any;
-const { readOpenOrdersWithMetaSafe } = chainOrdersModule as any;
+const chainOrders = chainOrdersModule;
+const { readOpenOrdersWithMetaSafe } = chainOrdersModule;
 import { BroadcastUncertainError as BroadcastUncertainErrorBinding } from './dexbot_credential_client.js';
-const BroadcastUncertainError = BroadcastUncertainErrorBinding as any;
+const BroadcastUncertainError = BroadcastUncertainErrorBinding;
 import * as orderUtils from './order/utils/order.js';
 import { sleep, setLastFillPivot } from './order/utils/system.js';
 const {
@@ -27,11 +27,11 @@ const {
     chainOrderUnchangedFromCache,
     detectCrossedBookPlan,
     collectKnownOnChainOrderIds,
-} = orderUtils as any;
+} = orderUtils;
 import * as validate from './order/utils/validate.js';
-const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions, stampGapEvacuationRotation } = validate as any;
+const { validateCreateTargetSlots, evaluateCommit, hasExecutableActions, stampGapEvacuationRotation } = validate;
 import * as math from './order/utils/math.js';
-const { validateOrderSize, findCrossedOrder, priceSlotEqual, isEvacuationRotationAllowed, isEvacuationSizeStillValid, getSellStartIdx, getPrecisionByOrderType, isSlotIndexInGapBand, getAssetFeesSafe, blockchainToFloat, floatToBlockchainInt, quantizeFloat } = math as any;
+const { validateOrderSize, findCrossedOrder, priceSlotEqual, isEvacuationRotationAllowed, isEvacuationSizeStillValid, getSellStartIdx, getPrecisionByOrderType, isSlotIndexInGapBand, getAssetFeesSafe, blockchainToFloat, floatToBlockchainInt, quantizeFloat } = math;
 import { parseSlotIndex } from './order/utils/slot.js';
 
 /**
@@ -44,7 +44,7 @@ import { parseSlotIndex } from './order/utils/slot.js';
  * last-fill guard. Non-finite live geometry cannot disprove the stamp and
  * keeps the plan-build authority (fail-open to the stamp, never to the guard).
  */
-export function isEvacuationStampStillValid(liveBoundary: any, liveGapSlots: any, sourceId: any, destId: any, orderType: any): boolean {
+export function isEvacuationStampStillValid(liveBoundary: unknown, liveGapSlots: unknown, sourceId: unknown, destId: unknown, orderType: unknown): boolean {
     const b = Number(liveBoundary);
     const g = Number(liveGapSlots);
     if (orderType !== ORDER_TYPES.BUY && orderType !== ORDER_TYPES.SELL) return false;
@@ -58,13 +58,13 @@ export function isEvacuationStampStillValid(liveBoundary: any, liveGapSlots: any
     const dstInRail = orderType === ORDER_TYPES.SELL ? Number(dstIdx) >= sellStartIdx : Number(dstIdx) <= b;
     return dstInRail;
 }
-function hasSlotPriceCollision(items: any[], targetPrice: number, precision: number, excludeId: string | null, predicate?: (it:any)=>boolean) {
+function hasSlotPriceCollision(items: SlotLike[], targetPrice: number, precision: number, excludeId: string | null, predicate?: (it: SlotLike) => boolean) {
     for (const it of items) {
         if (predicate && !predicate(it)) continue;
         if (excludeId && (it.id === excludeId || it.orderId === excludeId)) continue;
         const p = it.order ? it.order.price : it.price;
         if (p == null) continue;
-        try { if (priceSlotEqual(p, targetPrice, precision)) return it; } catch { if (p === targetPrice) return it; }
+        try { if (priceSlotEqual(Number(p), targetPrice, precision)) return it; } catch { if (p === targetPrice) return it; }
     }
     return null;
 }
@@ -75,13 +75,128 @@ const {
     ORDER_STATES,
     ORDER_TYPES,
     REBALANCE_STATES,
-} = constantsModule as any;
+} = constantsModule;
 import { acquireIfNotHeld } from './order/async_lock.js';
 import * as FormatModule from './order/format.js';
-const Format = FormatModule as any;
+const Format = FormatModule;
 import * as workingGridModule from './order/working_grid.js';
-const { WorkingGrid } = workingGridModule as any;
-import { getErrorMessage, resolveSeamMs, resolveSeamMsOrNull } from './utils/errors.js';
+const { WorkingGrid } = workingGridModule;
+import { getErrorMessage, resolveSeamMs, resolveSeamMsOrNull, getErrorField } from './utils/errors.js';
+import type { BotLike, OrderManagerLike, ManagedOrder, ChainOrder, UnknownRecord, AssetInfo, CowAction } from './types.js';
+
+/** Loose JSON-object view. */
+type JsonObj = UnknownRecord;
+
+/** Final integer tuple for a planned order op. */
+interface FinalInts {
+    sell: number;
+    receive: number;
+    sellAssetId: string;
+    receiveAssetId: string;
+    [key: string]: unknown;
+}
+
+/** A pending-broadcast entry recorded before chain submission. */
+interface PendingEntry {
+    slotId?: unknown;
+    finalInts?: FinalInts;
+    orderType?: unknown;
+    fingerprint?: unknown;
+    order?: ManagedOrder;
+    context?: JsonObj;
+    ctxIndex?: number;
+    opIndex?: number;
+    [key: string]: unknown;
+}
+
+/**
+ * The COW plan result: a projected working grid plus the actions to execute.
+ * Produced by `buildCowResultFromPlan` and threaded through the pre-broadcast
+ * guards and the batch executor.
+ */
+export interface CowResult extends JsonObj {
+    actions: CowAction[];
+    workingBoundary: number;
+    workingGrid: InstanceType<typeof WorkingGrid>;
+    workingIndexes: unknown;
+    origin?: string;
+    refillSlotIds?: string[];
+    fills?: unknown[];
+}
+
+/** Result of the pre-broadcast guard chain. */
+export interface PreBroadcastGuardResult extends JsonObj {
+    proceed: boolean;
+    result?: JsonObj;
+    crossingCandidates?: unknown[];
+    intraBatchCandidates?: unknown[];
+}
+
+/** Result of the last-fill guard probe. */
+interface LastFillGuardResult {
+    blocked: boolean;
+    pivot: number | null;
+    halfInc?: number;
+    threshold?: number | null;
+}
+
+/** Per-batch last-fill guard counters. */
+interface LastFillGuardStats {
+    checked: number;
+    pivotOffGrid?: number;
+    [key: string]: unknown;
+}
+
+/** A CREATE op context with its resolved order + integer tuple. */
+type CreateContext = OpPhase & { finalInts: FinalInts; order: ManagedOrder };
+
+/** A pending broadcast that matched a chain order. */
+interface AdoptedEntry {
+    entry: PendingEntry;
+    match: ChainOrderLike;
+}
+
+/** A chain order enriched with the loose fields COW recovery reads. */
+export interface ChainOrderLike extends ChainOrder {
+    type?: unknown;
+    sellInt?: unknown;
+    receiveInt?: unknown;
+    sell?: unknown;
+    receive?: unknown;
+    orderId?: unknown;
+    slotId?: unknown;
+    chainOrderId?: unknown;
+    price?: unknown;
+    order?: JsonObj;
+}
+
+/** Normalized integer tuple used by pending-broadcast recovery. */
+interface NormalizedChainOrder {
+    side: string;
+    assetA: string;
+    assetB: string;
+    sellInt: number;
+    receiveInt: number;
+}
+
+/** A COW operation context (create/update/cancel/rotation). */
+export interface OpPhase extends JsonObj {
+    kind?: unknown;
+    id?: unknown;
+    order?: ManagedOrder;
+    finalInts?: FinalInts;
+    updateInfo?: JsonObj;
+    rotation?: JsonObj;
+}
+
+/** Slot/order-ish item used by collision and grouping helpers. */
+interface SlotLike {
+    id?: unknown;
+    orderId?: unknown;
+    price?: unknown;
+    order?: { price?: unknown; [key: string]: unknown };
+    [key: string]: unknown;
+}
 
 // Maximum number of times the pre-broadcast staleness guard may re-plan the
 // batch from a fresh master before proceeding anyway. Bounded so a master
@@ -102,8 +217,8 @@ const SINGLE_FLIGHT_MAX_WAIT_MS = 120000;
  * @param {Array} orders
  * @returns {Array<Array>}
  */
-function buildOutsideInPairGroupsForOrders(orders: any) {
-    return buildOutsideInPairGroupsWithAdapter(orders, (o: any) => o);
+function buildOutsideInPairGroupsForOrders(orders: ManagedOrder[]) {
+    return buildOutsideInPairGroupsWithAdapter(orders, (o: unknown) => o as ManagedOrder);
 }
 
 /**
@@ -111,8 +226,8 @@ function buildOutsideInPairGroupsForOrders(orders: any) {
  * @param {Array} createEntries
  * @returns {Array<Array>}
  */
-function buildOutsideInPairGroupsForCreateEntries(createEntries: any) {
-    return buildOutsideInPairGroupsWithAdapter(createEntries, (e: any) => e?.context?.order);
+function buildOutsideInPairGroupsForCreateEntries(createEntries: PendingEntry[]) {
+    return buildOutsideInPairGroupsWithAdapter(createEntries, (e: unknown) => (e as PendingEntry)?.context?.order);
 }
 
 /**
@@ -123,11 +238,11 @@ function buildOutsideInPairGroupsForCreateEntries(createEntries: any) {
  * @param {Function} toOrder - Project an item to its order object
  * @returns {Array<Array>}
  */
-function buildOutsideInPairGroupsWithAdapter(items: any, toOrder: (item: any) => any) {
+function buildOutsideInPairGroupsWithAdapter(items: unknown[], toOrder: (item: unknown) => unknown) {
     return buildOutsideInPairGroups(items, {
-        isValid: (item: any) => Boolean(toOrder(item)),
-        getType: (item: any) => toOrder(item)?.type,
-        getPrice: (item: any) => toOrder(item)?.price,
+        isValid: (item: unknown) => Boolean(toOrder(item)),
+        getType: (item: unknown) => String((toOrder(item) as JsonObj | undefined)?.type ?? ''),
+        getPrice: (item: unknown) => (toOrder(item) as JsonObj | undefined)?.price as string | number,
     });
 }
 
@@ -143,7 +258,7 @@ function buildOutsideInPairGroupsWithAdapter(items: any, toOrder: (item: any) =>
  * @param {string} slotId - The slot identifier
  * @returns {string|null}
  */
-function createOpFingerprintForSlot(bot: any, order: any, finalInts: any, slotId: any): string | null {
+function createOpFingerprintForSlot(bot: BotLike, order: ManagedOrder, finalInts: FinalInts, slotId: string): string | null {
     if (!order || !finalInts || !slotId) return null;
     return buildCreateOpFingerprint({
         side: order.type,
@@ -162,9 +277,9 @@ function createOpFingerprintForSlot(bot: any, order: any, finalInts: any, slotId
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Array}
  */
-function getPendingBroadcasts(bot: any): any[] {
+function getPendingBroadcasts(bot: BotLike): PendingEntry[] {
     return (bot.manager && bot.manager._pendingBroadcasts instanceof Map)
-        ? Array.from(bot.manager._pendingBroadcasts.values()) as any[]
+        ? Array.from(bot.manager._pendingBroadcasts.values()) as PendingEntry[]
         : [];
 }
 
@@ -178,9 +293,9 @@ function getPendingBroadcasts(bot: any): any[] {
  * @param {Object} entry - Pending entry ({ slotId, finalInts, orderType, fingerprint })
  * @returns {Object|null}
  */
-function findChainOrderForPendingEntry(bot: any, chainSnapshot: any, entry: any) {
+function findChainOrderForPendingEntry(bot: BotLike, chainSnapshot: ChainOrder[], entry: PendingEntry) {
     if (!entry?.slotId) return null;
-    return findChainOrderForSlot(bot, chainSnapshot, entry.slotId, {
+    return findChainOrderForSlot(bot, chainSnapshot, String(entry.slotId), {
         sell: entry.finalInts?.sell,
         receive: entry.finalInts?.receive,
         orderType: entry.orderType,
@@ -195,7 +310,7 @@ function findChainOrderForPendingEntry(bot: any, chainSnapshot: any, entry: any)
  * @param {Object} readResult - The result of readOpenOrdersWithMeta
  * @returns {boolean}
  */
-function isAuthoritativeChainRead(readResult: any): boolean {
+function isAuthoritativeChainRead(readResult: { orders?: unknown; truncated?: unknown } | null | undefined): boolean {
     if (!readResult || !Array.isArray(readResult.orders)) return false;
     if (readResult.truncated) return false;
     return readResult.orders.length > 0;
@@ -212,7 +327,7 @@ function isAuthoritativeChainRead(readResult: any): boolean {
  * @param {Object} finalInts - The final integer tuple
  * @returns {Object|null}
  */
-function rawOnChainFromInts(orderId: any, finalInts: any): object | null {
+function rawOnChainFromInts(orderId: unknown, finalInts: FinalInts | null | undefined): Record<string, unknown> | null {
     if (!orderId || !finalInts) return null;
     return {
         id: orderId,
@@ -231,15 +346,16 @@ function rawOnChainFromInts(orderId: any, finalInts: any): object | null {
  * @param {Function} [logFn] - Optional logger function, called with (msg, level) on unrecognized shape
  * @returns {Array}
  */
-function extractOperationResults(result: any, warnContext: any = '', logFn: Function | null = null) {
+function extractOperationResults(result: unknown, warnContext: string = '', logFn: ((message: string, level?: string) => void) | null = null): unknown[] {
     const extracted = extractBatchOperationResults(result);
 
     if (Array.isArray(extracted)) return extracted;
 
     if (result && logFn) {
+        const resultObj = result as JsonObj;
         const resultType = Array.isArray(result) ? 'array' : typeof result;
         const keySummary = (resultType === 'object' && !Array.isArray(result))
-            ? Object.keys(result).slice(0, 8).join(',')
+            ? Object.keys(resultObj).slice(0, 8).join(',')
             : '';
         const contextSuffix = warnContext ? ` (${warnContext})` : '';
         const keysSuffix = keySummary ? `; keys=[${keySummary}]` : '';
@@ -258,14 +374,14 @@ function extractOperationResults(result: any, warnContext: any = '', logFn: Func
  * @param {Array} opContexts
  * @returns {Array<{index:number, ctx:Object}>}
  */
-function findMissingCreateResultContexts(operationResults: any, opContexts: any) {
-    const missing: { index: number; ctx: any; }[] = [];
+function findMissingCreateResultContexts(operationResults: unknown, opContexts: unknown): { index: number; ctx: OpPhase }[] {
+    const missing: { index: number; ctx: OpPhase }[] = [];
     if (!Array.isArray(opContexts)) return missing;
 
     for (let i = 0; i < opContexts.length; i++) {
-        const ctx = opContexts[i];
+        const ctx = opContexts[i] as OpPhase;
         if (ctx?.kind !== 'create') continue;
-        const chainOrderId = operationResults?.[i]?.[1];
+        const chainOrderId = (operationResults as unknown[][])?.[i]?.[1];
         if (!chainOrderId || !/^1\.7\.\d+$/.test(String(chainOrderId))) {
             missing.push({ index: i, ctx });
         }
@@ -279,14 +395,14 @@ function findMissingCreateResultContexts(operationResults: any, opContexts: any)
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Array<{index:number, ctx:Object}>} missingCreateResults
  */
-function markMissingCreateResultsAsStructuralBlocker(bot: any, missingCreateResults: any) {
+function markMissingCreateResultsAsStructuralBlocker(bot: BotLike, missingCreateResults: { index: number; ctx: OpPhase }[]) {
     const blockers = Array.isArray(missingCreateResults)
-        ? missingCreateResults.map((item: any) => {
-            const order = item.ctx?.order || {};
+        ? missingCreateResults.map((item) => {
+            const order = (item.ctx?.order ?? {}) as JsonObj;
             const fingerprint = [
                 `type=${order.type || 'unknown'}`,
-                `price=${Format.formatPrice6(order.price)}`,
-                `size=${Format.formatAmount(order.size)}`
+                `price=${Format.formatPrice6(Number(order.price))}`,
+                `size=${Format.formatAmount(Number(order.size))}`
             ].join(',');
             return {
                 chainOrderId: 'unknown',
@@ -305,12 +421,12 @@ function markMissingCreateResultsAsStructuralBlocker(bot: any, missingCreateResu
         const existing = Array.isArray(bot.manager._lastUnmatchedChainOrders)
             ? bot.manager._lastUnmatchedChainOrders
             : [];
-        const keys = new Set(existing.map((order: any) => `${order.reason || ''}:${order.slotId || ''}:${order.operationIndex ?? ''}`));
+        const keys = new Set(existing.map((order) => `${order.reason || ''}:${order.slotId || ''}:${order.operationIndex ?? ''}`));
         const merged = [...existing];
         for (const blocker of blockers) {
             const key = `${blocker.reason || ''}:${blocker.slotId || ''}:${blocker.operationIndex ?? ''}`;
             if (!keys.has(key)) {
-                merged.push(blocker);
+                merged.push(blocker as unknown as import('./types.js').UnmatchedChainOrder);
                 keys.add(key);
             }
         }
@@ -324,8 +440,8 @@ function markMissingCreateResultsAsStructuralBlocker(bot: any, missingCreateResu
  * @param {Object} order
  * @returns {string}
  */
-function formatUnmatchedChainOrderForLog(order: any) {
-    return formatUnmatchedChainOrder(order);
+function formatUnmatchedChainOrderForLog(order: JsonObj) {
+    return formatUnmatchedChainOrder(order as unknown as ChainOrder);
 }
 
 /**
@@ -339,8 +455,8 @@ function formatUnmatchedChainOrderForLog(order: any) {
  *   entry.batchId is unreliable because _currentBatchId is never populated
  *   in production (always null), so batchId scoping cannot discriminate.
  */
-function recordPendingBroadcast(bot: any, entry: any): string | null {
-    if (!bot.manager || !entry || !entry.order) return null;
+function recordPendingBroadcast(bot: BotLike, entry: PendingEntry & { opIndex?: unknown; ctxIndex?: unknown }): string | null {
+    if (!bot.manager || !entry || !entry.order || !entry.finalInts) return null;
     if (!bot.manager._pendingBroadcasts || !(bot.manager._pendingBroadcasts instanceof Map)) {
         bot.manager._pendingBroadcasts = new Map();
     }
@@ -361,7 +477,7 @@ function recordPendingBroadcast(bot: any, entry: any): string | null {
         orderType: entry.order.type,
         order: entry.order,
         finalInts: entry.finalInts,
-        batchId: bot._currentBatchId || null,
+        batchId: bot._currentBatchId != null ? String(bot._currentBatchId) : null,
         recordedAt: Date.now()
     });
     return fingerprint;
@@ -371,7 +487,7 @@ function recordPendingBroadcast(bot: any, entry: any): string | null {
  * Clear the pending-broadcast cache.
  * @param {Map} pendingBroadcasts
  */
-function clearPendingBroadcasts(pendingBroadcasts: any) {
+function clearPendingBroadcasts(pendingBroadcasts: unknown) {
     if (pendingBroadcasts instanceof Map) {
         pendingBroadcasts.clear();
     }
@@ -384,13 +500,13 @@ function clearPendingBroadcasts(pendingBroadcasts: any) {
  * @param {Object} crossed
  * @returns {string}
  */
-function crossedOrderLabel(crossed: any): string {
+function crossedOrderLabel(crossed: JsonObj): string {
     if (!crossed) return 'unknown';
     const id = crossed.id || crossed.chainOrderId || crossed.slotId || 'unknown';
     const orderId = crossed.orderId || crossed.chainOrderId || 'n/a';
-    const type = crossed.type || crossed.order?.type || 'unknown';
-    const price = crossed.price ?? crossed.order?.price;
-    return `${type} ${id} (${orderId}) @${price != null ? Format.formatPrice6(price) : 'n/a'}`;
+    const type = crossed.type || (crossed.order as JsonObj | undefined)?.type || 'unknown';
+    const price = crossed.price ?? (crossed.order as JsonObj | undefined)?.price;
+    return `${type} ${id} (${orderId}) @${price != null ? Format.formatPrice6(Number(price)) : 'n/a'}`;
 }
 
 /**
@@ -409,10 +525,10 @@ function crossedOrderLabel(crossed: any): string {
  * predicates would blind the guard to them — the shared
  * isCrossingCheckCandidate predicate accepts slot-id-only wrappers.
  * @param {Object} bot
- * @returns {any[]}
+ * @returns {unknown[]}
  */
-function buildCrossingCandidates(bot: any): any[] {
-    return (orderUtils as any).buildCrossingCheckCandidates(bot?.manager);
+function buildCrossingCandidates(bot: BotLike): JsonObj[] {
+    return orderUtils.buildCrossingCheckCandidates(bot?.manager);
 }
 
 /**
@@ -429,12 +545,12 @@ function buildCrossingCandidates(bot: any): any[] {
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Array} actions - The abandoned batch's actions (COW_ACTIONS)
  */
-function clearPendingBroadcastsForSlots(bot: any, actions: any) {
+function clearPendingBroadcastsForSlots(bot: BotLike, actions: JsonObj[]) {
     if (!(bot.manager?._pendingBroadcasts instanceof Map) || !Array.isArray(actions)) return;
     const slotIds = new Set(
         actions
-            .filter((a: any) => a?.type === COW_ACTIONS.CREATE)
-            .map((a: any) => a?.id)
+            .filter((a) => a?.type === COW_ACTIONS.CREATE)
+            .map((a) => a?.id)
             .filter(Boolean)
     );
     if (slotIds.size === 0) return;
@@ -455,7 +571,7 @@ function clearPendingBroadcastsForSlots(bot: any, actions: any) {
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Object} cowResult - Rebalance/COW result carrying _workingGridPushed
  */
-function popPushedWorkingGrid(bot: any, cowResult: any) {
+function popPushedWorkingGrid(bot: BotLike, cowResult: JsonObj) {
     bot.manager?._popWorkingGridRef?.(cowResult);
 }
 
@@ -473,7 +589,7 @@ function popPushedWorkingGrid(bot: any, cowResult: any) {
  * @param {Object} [resyncOptions={}] - Extra resync context (batchId, truncated...)
  * @returns {Object} Ambiguous-read reconciliation result
  */
-async function deferUncertainBroadcastRead(bot: any, detail: string, suffix: string, resyncReason: string, resyncOptions: any = {}) {
+async function deferUncertainBroadcastRead(bot: BotLike, detail: string, suffix: string, resyncReason: string, resyncOptions: JsonObj = {}) {
     bot.manager.logger.log(
         `[COW][UNCERTAIN] ${detail}; keeping pending-broadcast protection ${suffix}`,
         'warn'
@@ -486,9 +602,9 @@ async function deferUncertainBroadcastRead(bot: any, detail: string, suffix: str
     // only escalate to a structural resync once per cooldown window. The next clean
     // read adopts any landed orders without the churn.
     const cooldownMs = (bot.config?.maintenance?.uncertainReadResyncCooldownMs as number) || 30_000;
-    const lastAt = (bot as any)._lastUncertainResyncAt || 0;
+    const lastAt = bot._lastUncertainResyncAt || 0;
     if (Date.now() - lastAt >= cooldownMs && typeof bot.manager.requestStructuralGridResync === 'function') {
-        (bot as any)._lastUncertainResyncAt = Date.now();
+        bot._lastUncertainResyncAt = Date.now();
         await bot.manager.requestStructuralGridResync(resyncReason, resyncOptions);
     } else {
         bot.manager.logger.log(
@@ -508,7 +624,7 @@ async function deferUncertainBroadcastRead(bot: any, detail: string, suffix: str
  * @param {string} slotId
  * @returns {string|null}
  */
-function buildChainOrderFingerprint(bot: any, chainOrder: any, slotId: any) {
+function buildChainOrderFingerprint(bot: BotLike, chainOrder: ChainOrderLike, slotId: string) {
     if (!chainOrder || !slotId) return null;
     const normalized = normalizeChainOrderForPendingMatch(bot, chainOrder);
     if (!normalized) return null;
@@ -529,7 +645,7 @@ function buildChainOrderFingerprint(bot: any, chainOrder: any, slotId: any) {
  * @param {Object} chainOrder
  * @returns {{side: string, assetA: string, assetB: string, sellInt: number, receiveInt: number}|null}
  */
-function normalizeChainOrderForPendingMatch(bot: any, chainOrder: any) {
+function normalizeChainOrderForPendingMatch(bot: BotLike, chainOrder: ChainOrderLike): NormalizedChainOrder | null {
     if (!chainOrder) return null;
     const assetA = bot.manager?.assets?.assetA?.id;
     const assetB = bot.manager?.assets?.assetB?.id;
@@ -574,7 +690,7 @@ function normalizeChainOrderForPendingMatch(bot: any, chainOrder: any) {
  * @param {Object} planned - { sell, receive, orderType } integers from the planned op
  * @returns {Object|null} Matching chain order, or null
  */
-function findChainOrderForSlot(bot: any, chainOrders: any, slotId: any, planned: any) {
+function findChainOrderForSlot(bot: BotLike, chainOrders: ChainOrderLike[], slotId: string, planned: { sell?: unknown; receive?: unknown; orderType?: unknown; side?: unknown; fingerprint?: unknown } | null | undefined) {
     if (!Array.isArray(chainOrders) || !slotId) return null;
     const assetA = bot.manager?.assets?.assetA?.id;
     const assetB = bot.manager?.assets?.assetB?.id;
@@ -595,7 +711,7 @@ function findChainOrderForSlot(bot: any, chainOrders: any, slotId: any, planned:
     const targetReceive = Number(planned.receive);
     const plannedSide = planned.orderType ||
         planned.side ||
-        bot.manager._pendingBroadcasts?.get?.(planned.fingerprint)?.orderType ||
+        bot.manager._pendingBroadcasts?.get?.(String(planned.fingerprint))?.orderType ||
         bot.manager.orders.get(slotId)?.type;
     if (plannedSide !== 'buy' && plannedSide !== 'sell') {
         return null;
@@ -631,7 +747,7 @@ function findChainOrderForSlot(bot: any, chainOrders: any, slotId: any, planned:
  * @param {Object} [options]
  * @returns {Promise<Object>}
  */
-async function reconcileAfterUncertainBroadcast(bot: any, err: any, opContexts: any, options: Record<string, any> = {}) {
+async function reconcileAfterUncertainBroadcast(bot: BotLike, err: unknown, opContexts: OpPhase[], options: JsonObj = {}) {
     return acquireIfNotHeld(bot.manager?._fillProcessingLock, () =>
         reconcileAfterUncertainBroadcastImpl(bot, err, opContexts, options)
     );
@@ -650,9 +766,9 @@ async function reconcileAfterUncertainBroadcast(bot: any, err: any, opContexts: 
  * @param {*} accountRef
  * @param {*} err
  */
-async function matchPendingToChain(bot: any, pending: any[], chainSnapshot: any[], opContexts: any, accountRef: any, err: any): Promise<any> {
-    const adopted: { entry: any; match: any; }[] = [];
-    let discarded: any[] = [];
+async function matchPendingToChain(bot: BotLike, pending: PendingEntry[], chainSnapshot: ChainOrderLike[], opContexts: OpPhase[], accountRef: unknown, err: unknown): Promise<{ adopted: AdoptedEntry[]; discarded: PendingEntry[] } | { deferred: JsonObj }> {
+    const adopted: AdoptedEntry[] = [];
+    let discarded: PendingEntry[] = [];
 
     // 2. For each pending broadcast, look for a chain match.
     for (const entry of pending) {
@@ -667,12 +783,12 @@ async function matchPendingToChain(bot: any, pending: any[], chainSnapshot: any[
     // 2b. Second pass: search for any unmatched chain orders by fingerprint
     // across all known pending slots.
     if (adopted.length < pending.length) {
-        const adoptedSlotIds = new Set(adopted.map((a: any) => a.entry.slotId));
+        const adoptedSlotIds = new Set(adopted.map((a) => a.entry.slotId));
         for (const o of chainSnapshot) {
-            if (adopted.some((a: any) => a.match.id === o.id)) continue;
+            if (adopted.some((a) => a.match.id === o.id)) continue;
             for (const entry of pending) {
                 if (adoptedSlotIds.has(entry.slotId)) continue;
-                const fp = buildChainOrderFingerprint(bot, o, entry.slotId);
+                const fp = buildChainOrderFingerprint(bot, o, String(entry.slotId));
                 if (fp && bot.manager._pendingBroadcasts?.has(fp)) {
                     adopted.push({ entry, match: o });
                     adoptedSlotIds.add(entry.slotId);
@@ -681,20 +797,20 @@ async function matchPendingToChain(bot: any, pending: any[], chainSnapshot: any[
             }
         }
         // Rebuild discarded list to remove newly adopted entries.
-        const newlyAdoptedSlotIds = new Set(adopted.map((a: any) => a.entry.slotId));
-        discarded = pending.filter((e: any) => !newlyAdoptedSlotIds.has(e.slotId));
+        const newlyAdoptedSlotIds = new Set(adopted.map((a) => a.entry.slotId));
+        discarded = pending.filter((e) => !newlyAdoptedSlotIds.has(e.slotId));
     }
 
     // 3a. Re-read chain for discarded CREATE entries to catch broadcasts that
     // landed between the initial read and this point (TOCTOU window).
     if (discarded.length > 0 && typeof chainOrders.readOpenOrders === 'function') {
-        const createDiscarded = discarded.filter((e: any) => {
-            const ctx = opContexts[e.ctxIndex];
+        const createDiscarded = discarded.filter((e) => {
+            const ctx = opContexts[e.ctxIndex ?? -1];
             return ctx && ctx.kind === 'create';
         });
         if (createDiscarded.length > 0) {
             try {
-                const freshRead = await readOpenOrdersWithMetaSafe(chainOrders, accountRef);
+                const freshRead = await readOpenOrdersWithMetaSafe(chainOrders, accountRef as string | null | undefined);
                 // An empty/truncated re-read is as ambiguous as the initial
                 // read: a truncated get_full_accounts window omits the freshest
                 // creates (exactly the discarded ones being re-verified), and an
@@ -712,14 +828,14 @@ async function matchPendingToChain(bot: any, pending: any[], chainSnapshot: any[
                             `${ambiguous ? 'Empty' : 'Truncated'} re-read for ${createDiscarded.length} discarded CREATE(s)`,
                             '(absence is not authoritative on an ambiguous re-read)',
                             'uncertain broadcast — ambiguous re-read for discarded creates',
-                            { batchId: err?.batchId || null, truncated: !ambiguous }
+                            { batchId: (err as JsonObj | undefined)?.batchId || null, truncated: !ambiguous }
                         )
                     };
                 }
-                const freshChain = freshRead.orders;
-                const remainingDiscarded: any[] = [];
+                const freshChain = freshRead.orders as ChainOrderLike[];
+                const remainingDiscarded: PendingEntry[] = [];
                 for (const entry of discarded) {
-                    const ctx = opContexts[entry.ctxIndex];
+                    const ctx = opContexts[entry.ctxIndex ?? -1];
                     if (ctx && ctx.kind === 'create') {
                         const match = findChainOrderForPendingEntry(bot, freshChain, entry);
                         if (match) {
@@ -736,14 +852,14 @@ async function matchPendingToChain(bot: any, pending: any[], chainSnapshot: any[
                     }
                 }
                 discarded = remainingDiscarded;
-            } catch (reReadErr: any) {
+            } catch (reReadErr) {
                 return {
                     deferred: await deferUncertainBroadcastRead(
                         bot,
                         `Fresh chain read for late adoption FAILED (${getErrorMessage(reReadErr)})`,
                         '(absence is not authoritative on a failed re-read)',
                         'uncertain broadcast — failed re-read for discarded creates',
-                        { batchId: err?.batchId || null }
+                        { batchId: (err as JsonObj | undefined)?.batchId || null }
                     )
                 };
             }
@@ -761,11 +877,11 @@ async function matchPendingToChain(bot: any, pending: any[], chainSnapshot: any[
  * @param {Array} opContexts
  * @returns {Promise<number>} adoptedCount
  */
-async function adoptMatchedEntries(bot: any, adopted: any[], opContexts: any): Promise<number> {
+async function adoptMatchedEntries(bot: BotLike, adopted: AdoptedEntry[], opContexts: OpPhase[]): Promise<number> {
     let adoptedCount = 0;
     for (const { entry, match } of adopted) {
         adoptedCount++;
-        const plannedOpCtx = opContexts[entry.ctxIndex];
+        const plannedOpCtx = opContexts[entry.ctxIndex ?? -1];
         if (plannedOpCtx && plannedOpCtx.kind === 'create') {
             const chainOrderId = match.id;
             const expectedType = plannedOpCtx.order?.type || entry.orderType;
@@ -773,23 +889,23 @@ async function adoptMatchedEntries(bot: any, adopted: any[], opContexts: any): P
             try {
                 const btsFeeData = getAssetFeesSafe('BTS');
                 await bot.manager.synchronizeWithChain({
-                    gridOrderId: plannedOpCtx.order?.id || entry.slotId,
+                    gridOrderId: plannedOpCtx.order?.id || String(entry.slotId),
                     chainOrderId,
                     expectedType,
                     fee: btsFeeData?.createFee || 0,
                     order: plannedOpCtx.order ?? entry.order ?? null,
                 }, 'createOrder');
-            } catch (syncErr: any) {
+            } catch (syncErr) {
                 bot.manager.logger.log(
-                    `[COW][UNCERTAIN] Failed to adopt matched order ${chainOrderId} for slot ${entry.slotId}: ${syncErr?.message || syncErr}`,
+                    `[COW][UNCERTAIN] Failed to adopt matched order ${chainOrderId} for slot ${entry.slotId}: ${getErrorMessage(syncErr)}`,
                     'error'
                 );
             }
         }
 
         // Remove from pending broadcasts — matched entries are resolved.
-        if (entry.fingerprint && bot.manager._pendingBroadcasts?.has(entry.fingerprint)) {
-            bot.manager._pendingBroadcasts.delete(entry.fingerprint);
+        if (entry.fingerprint != null && bot.manager._pendingBroadcasts?.has(String(entry.fingerprint))) {
+            bot.manager._pendingBroadcasts.delete(String(entry.fingerprint));
         }
     }
     return adoptedCount;
@@ -804,11 +920,11 @@ async function adoptMatchedEntries(bot: any, adopted: any[], opContexts: any): P
  * @param {Array} opContexts
  * @returns {Promise<number>} discardedCount
  */
-async function restoreDiscardedCreates(bot: any, discarded: any[], opContexts: any): Promise<number> {
+async function restoreDiscardedCreates(bot: BotLike, discarded: PendingEntry[], opContexts: OpPhase[]): Promise<number> {
     let discardedCount = 0;
     for (const entry of discarded) {
         discardedCount++;
-        const plannedOpCtx = opContexts[entry.ctxIndex];
+        const plannedOpCtx = opContexts[entry.ctxIndex ?? -1];
         // A pending-broadcast entry is always a CREATE (recordPendingBroadcast
         // only records creates), so the slot restore below must not depend on
         // opContexts being present: the PENDING_BROADCASTS reject path invokes
@@ -843,7 +959,7 @@ async function restoreDiscardedCreates(bot: any, discarded: any[], opContexts: a
                             // landed order into this slot cleanly.
                             bot.manager.logger.log(
                                 `[COW][UNCERTAIN] Restored creation-uncertain state for slot ${entry.slotId} ` +
-                                `(type=${plannedType}, size: ${entry.order.size}); next sync adoption will reconcile any landed order`,
+                                `(type=${plannedType}, size: ${entry.order.size}); next sync adoption will reconcile landed orders`,
                                 'warn'
                             );
                             const updates = [{
@@ -898,7 +1014,7 @@ async function restoreDiscardedCreates(bot: any, discarded: any[], opContexts: a
                         if (missingType === ORDER_TYPES.BUY || missingType === ORDER_TYPES.SELL) {
                             bot.manager.logger.log(
                                 `[COW][UNCERTAIN] Slot ${entry.order.id} missing from master after discard — materializing creation-uncertain state ` +
-                                `(type=${missingType}, size: ${entry.order.size}); next sync adoption will reconcile any landed order`,
+                                `(type=${missingType}, size: ${entry.order.size}); next sync adoption will reconcile landed orders`,
                                 'warn'
                             );
                             const updates = [{
@@ -916,32 +1032,32 @@ async function restoreDiscardedCreates(bot: any, discarded: any[], opContexts: a
                             }
                         } else {
                             bot.manager.logger.log(
-                                `[COW][UNCERTAIN] Slot ${entry.order.id} missing from master after discard with unrecognized type ${missingType} — cannot reconstruct creation-uncertain state; next sync must adopt any landed order as an orphan`,
+                                `[COW][UNCERTAIN] Slot ${entry.order.id} missing from master after discard with unrecognized type ${missingType} — cannot reconstruct creation-uncertain state; next sync must adopt a landed order as an orphan`,
                                 'error'
                             );
                         }
                     }
                 } else {
                     bot.manager.logger.log(
-                        `[COW][UNCERTAIN] Discarded CREATE for slot ${entry.slotId} has no usable placement descriptor (id=${entry.order?.id ?? 'none'}, size=${entry.order?.size ?? 'none'}, type=${entry.order?.type ?? 'none'}) — nothing restored; next sync must adopt any landed order as an orphan`,
+                        `[COW][UNCERTAIN] Discarded CREATE for slot ${entry.slotId} has no usable placement descriptor (id=${entry.order?.id ?? 'none'}, size=${entry.order?.size ?? 'none'}, type=${entry.order?.type ?? 'none'}) — nothing restored; next sync must adopt a landed order as an orphan`,
                         'error'
                     );
                 }
-            } catch (restoreErr: any) {
+            } catch (restoreErr) {
                 bot.manager.logger.log(
-                    `[COW][UNCERTAIN] Failed to restore slot ${entry.slotId} after discard: ${restoreErr?.message || restoreErr}`,
+                    `[COW][UNCERTAIN] Failed to restore slot ${entry.slotId} after discard: ${getErrorMessage(restoreErr)}`,
                     'error'
                 );
             }
         } else {
             bot.manager.logger.log(
-                `[COW][UNCERTAIN] Discarded pending broadcast for slot ${entry.slotId} is not a recognizable CREATE (no create opContext, no order id/type) — skipping restore; next sync must adopt any landed order as an orphan`,
+                `[COW][UNCERTAIN] Discarded pending broadcast for slot ${entry.slotId} is not a recognizable CREATE (no create opContext, no order id/type) — skipping restore; next sync must adopt a landed order as an orphan`,
                 'error'
             );
         }
         // Remove from pending broadcasts.
-        if (entry.fingerprint && bot.manager._pendingBroadcasts?.has(entry.fingerprint)) {
-            bot.manager._pendingBroadcasts.delete(entry.fingerprint);
+        if (entry.fingerprint != null && bot.manager._pendingBroadcasts?.has(String(entry.fingerprint))) {
+            bot.manager._pendingBroadcasts.delete(String(entry.fingerprint));
         }
     }
 
@@ -952,7 +1068,7 @@ async function restoreDiscardedCreates(bot: any, discarded: any[], opContexts: a
         ? bot.manager._pendingBroadcasts.size
         : 0;
     if (remainingAfterDecide > 0) {
-        const remainingEntries = Array.from(bot.manager._pendingBroadcasts.values()) as any[];
+        const remainingEntries = Array.from(bot.manager._pendingBroadcasts.values()) as PendingEntry[];
         for (const entry of remainingEntries) {
             discardedCount++;
             bot.manager.logger.log(
@@ -976,14 +1092,14 @@ async function restoreDiscardedCreates(bot: any, discarded: any[], opContexts: a
  * @param {number} adoptedCount
  * @param {number} discardedCount
  */
-async function resyncIfUnreconciled(bot: any, err: any, pending: any[], chainSnapshot: any[], adopted: any[], adoptedCount: number, discardedCount: number) {
+async function resyncIfUnreconciled(bot: BotLike, err: unknown, pending: PendingEntry[], chainSnapshot: ChainOrderLike[], adopted: AdoptedEntry[], adoptedCount: number, discardedCount: number) {
     // 7. Request structural resync if any chain orders remain unaccounted for
     // after the reconciliation, ensuring the next cycle re-plans from a clean
     // chain snapshot.
     const alreadyScheduled = bot._structuralGridResyncRunning || bot._structuralGridResyncTimer;
     if (!alreadyScheduled && chainSnapshot.length > 0) {
-        const reconciledOrderIds = new Set(adopted.map((a: any) => a.match?.id).filter(Boolean));
-        const unreconciledCount = chainSnapshot.filter((o: any) => !reconciledOrderIds.has(o.id)).length;
+        const reconciledOrderIds = new Set(adopted.map((a) => a.match?.id).filter(Boolean));
+        const unreconciledCount = chainSnapshot.filter((o) => !reconciledOrderIds.has(o.id)).length;
         if (unreconciledCount > 0) {
             bot.manager.logger.log(
                 `[COW][UNCERTAIN] ${unreconciledCount} chain order(s) remain unreconciled after uncertain broadcast recovery. ` +
@@ -994,7 +1110,7 @@ async function resyncIfUnreconciled(bot: any, err: any, pending: any[], chainSna
                 bot,
                 'unreconciled orders after uncertain broadcast',
                 {
-                    batchId: err?.batchId || null,
+                    batchId: (err as JsonObj | undefined)?.batchId || null,
                     pendingCount: pending.length,
                     adoptedCount,
                     discardedCount,
@@ -1013,16 +1129,16 @@ async function resyncIfUnreconciled(bot: any, err: any, pending: any[], chainSna
  * @param {Object} options
  * @returns {Promise<Object>}
  */
-async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContexts: any, _options: any) {
+async function reconcileAfterUncertainBroadcastImpl(bot: BotLike, err: unknown, opContexts: OpPhase[], _options: JsonObj) {
     const startedAt = Date.now();
-    const pending: any[] = getPendingBroadcasts(bot);
-    const createContextCount = opContexts.filter((c: any) => c && c.kind === 'create').length;
+    const pending: PendingEntry[] = getPendingBroadcasts(bot);
+    const createContextCount = opContexts.filter((c: { kind?: unknown } | null | undefined) => c && c.kind === 'create').length;
     const nonCreateContextCount = opContexts.length - createContextCount;
 
     bot.manager.logger.log(
-        `[COW][UNCERTAIN] batchId=${err?.batchId || 'n/a'} ops=${opContexts.length} ` +
+        `[COW][UNCERTAIN] batchId=${(err as JsonObj | undefined)?.batchId || 'n/a'} ops=${opContexts.length} ` +
         `creates=${createContextCount} nonCreates=${nonCreateContextCount} ` +
-        `staleSinceMs=${err?.timeoutMs || 'n/a'}. Entering reconcile-then-decide.`,
+        `staleSinceMs=${(err as JsonObj | undefined)?.timeoutMs || 'n/a'}. Entering reconcile-then-decide.`,
         'warn'
     );
 
@@ -1034,15 +1150,15 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
         await requestStructuralResync(
             bot,
             'broadcast uncertain — readOpenOrders unavailable',
-            { batchId: err?.batchId || null }
+            { batchId: (err as JsonObj | undefined)?.batchId || null }
         );
         clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
         return { executed: false, hadRotation: false, uncertain: true };
     }
 
     // 1. Read the chain
-    const accountRef = bot.accountId || bot.account?.id || bot.account;
-    let chainSnapshot: any[] = [];
+    const accountRef = bot.accountId || (bot.account as unknown as { id?: string } | null)?.id || bot.account;
+    let chainSnapshot: ChainOrderLike[] = [];
     let chainReadTruncated = false;
     try {
         const chainRead = await chainOrders.readOpenOrdersWithMeta(accountRef);
@@ -1050,14 +1166,14 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
         chainReadTruncated = chainRead.truncated;
     } catch (readErr) {
         bot.manager.logger.log(
-            `[COW][UNCERTAIN] readOpenOrders failed: ${(readErr as any)?.message || readErr}. ` +
+            `[COW][UNCERTAIN] readOpenOrders failed: ${getErrorMessage(readErr)}. ` +
             `Falling back to structural resync.`,
             'error'
         );
         await requestStructuralResync(
             bot,
             'broadcast uncertain — readOpenOrders failed',
-            { batchId: (err as any)?.batchId || null, error: (readErr as any)?.message || String(readErr) }
+            { batchId: (err as JsonObj | undefined)?.batchId || null, error: getErrorMessage(readErr) || String(readErr) }
         );
         clearPendingBroadcasts(bot.manager?._pendingBroadcasts);
         return { executed: false, hadRotation: false, uncertain: true };
@@ -1079,7 +1195,7 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
             `${chainSnapshot.length === 0 ? 'Empty' : 'Truncated'} chain read for ${pending.length} pending broadcast(s)`,
             '(node may be lagging or the result set capped; no discard decisions made)',
             'uncertain broadcast — empty/truncated chain read',
-            { batchId: err?.batchId || null, truncated: chainReadTruncated }
+            { batchId: (err as JsonObj | undefined)?.batchId || null, truncated: chainReadTruncated }
         );
     }
 
@@ -1087,7 +1203,7 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
     // second pass, and a TOCTOU re-read for discarded CREATEs (see
     // matchPendingToChain). A deferred re-read returns its result directly.
     const matched = await matchPendingToChain(bot, pending, chainSnapshot, opContexts, accountRef, err);
-    if (matched.deferred) return matched.deferred;
+    if ('deferred' in matched) return matched.deferred;
     const { adopted, discarded } = matched;
 
     // 3b. Apply decisions
@@ -1108,9 +1224,9 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
         if (typeof bot.manager.persistGrid === 'function') {
             try {
                 await bot.manager.persistGrid();
-            } catch (persistErr: any) {
+            } catch (persistErr) {
                 bot.manager.logger.log(
-                    `[COW][UNCERTAIN] Persist after reconcile failed: ${persistErr?.message || persistErr}`,
+                    `[COW][UNCERTAIN] Persist after reconcile failed: ${getErrorMessage(persistErr)}`,
                     'error'
                 );
             }
@@ -1131,15 +1247,15 @@ async function reconcileAfterUncertainBroadcastImpl(bot: any, err: any, opContex
  * @param {Array} opContexts
  * @returns {boolean}
  */
-function shouldExecuteCreatePairMode(_bot: any, opContexts: any) {
+function shouldExecuteCreatePairMode(_bot: unknown, opContexts: OpPhase[]) {
     if (!Array.isArray(opContexts) || opContexts.length < 2) return false;
-    if (!opContexts.every((ctx: any) => ctx?.kind === 'create' && ctx?.order)) return false;
+    if (!opContexts.every((ctx) => ctx?.kind === 'create' && ctx?.order)) return false;
 
     let hasBuy = false;
     let hasSell = false;
     for (const ctx of opContexts) {
-        if (ctx.order.type === ORDER_TYPES.BUY) hasBuy = true;
-        if (ctx.order.type === ORDER_TYPES.SELL) hasSell = true;
+        if (ctx.order?.type === ORDER_TYPES.BUY) hasBuy = true;
+        if (ctx.order?.type === ORDER_TYPES.SELL) hasSell = true;
         if (hasBuy && hasSell) return true;
     }
     return false;
@@ -1156,7 +1272,7 @@ function shouldExecuteCreatePairMode(_bot: any, opContexts: any) {
  * @param {Object} ctx - Operation context (kind: create/cancel/size-update/rotation)
  * @returns {'absent' | 'landed' | 'unknown'}
  */
-function verifyOpAgainstChain(bot: any, freshChain: any[], ctx: any): 'absent' | 'landed' | 'unknown' {
+function verifyOpAgainstChain(bot: BotLike, freshChain: ChainOrderLike[], ctx: OpPhase): 'absent' | 'landed' | 'unknown' {
     if (ctx.kind === 'create') return verifyCreateAbsent(bot, freshChain, ctx);
     if (ctx.kind === 'cancel') return verifyCancelLanded(freshChain, ctx);
     if (ctx.kind === 'size-update' || ctx.kind === 'rotation') return verifyUpdateUnapplied(freshChain, ctx);
@@ -1170,13 +1286,15 @@ function verifyOpAgainstChain(bot: any, freshChain: any[], ctx: any): 'absent' |
  * fingerprint data cannot match anything, so it is treated as absent
  * (original semantics).
  */
-function verifyCreateAbsent(bot: any, freshChain: any[], ctx: any): 'absent' | 'landed' | 'unknown' {
+function verifyCreateAbsent(bot: BotLike, freshChain: ChainOrderLike[], ctx: OpPhase): 'absent' | 'landed' | 'unknown' {
     if (!ctx.finalInts || !ctx.order) return 'absent';
-    const match = findChainOrderForSlot(bot, freshChain, ctx.order.id, {
-        sell: ctx.finalInts.sell,
-        receive: ctx.finalInts.receive,
-        orderType: ctx.order.type,
-        fingerprint: createOpFingerprintForSlot(bot, ctx.order, ctx.finalInts, ctx.order.id)
+    const finalInts = ctx.finalInts;
+    const order = ctx.order;
+    const match = findChainOrderForSlot(bot, freshChain, order.id, {
+        sell: finalInts.sell,
+        receive: finalInts.receive,
+        orderType: order.type,
+        fingerprint: createOpFingerprintForSlot(bot, order, finalInts, order.id)
     });
     return match ? 'landed' : 'absent';
 }
@@ -1186,10 +1304,10 @@ function verifyCreateAbsent(bot: any, freshChain: any[], ctx: any): 'absent' | '
  * retry safe). Absent from a live snapshot → the cancel landed ('landed').
  * No orderId → unverifiable ('unknown').
  */
-function verifyCancelLanded(freshChain: any[], ctx: any): 'absent' | 'landed' | 'unknown' {
+function verifyCancelLanded(freshChain: ChainOrderLike[], ctx: OpPhase): 'absent' | 'landed' | 'unknown' {
     const chainOrderId = ctx.order?.orderId;
     if (!chainOrderId) return 'unknown';
-    if (!freshChain.some((o: any) => String(o?.id ?? '') === String(chainOrderId))) {
+    if (!freshChain.some((o) => String(o?.id ?? '') === String(chainOrderId))) {
         return 'landed';
     }
     return 'absent';
@@ -1203,19 +1321,21 @@ function verifyCancelLanded(freshChain: any[], ctx: any): 'absent' | 'landed' | 
  * filled after a landed update, or the order missing (filled/cancelled
  * concurrently) → 'unknown' (defer).
  */
-function verifyUpdateUnapplied(freshChain: any[], ctx: any): 'absent' | 'landed' | 'unknown' {
+function verifyUpdateUnapplied(freshChain: ChainOrderLike[], ctx: OpPhase): 'absent' | 'landed' | 'unknown' {
+    const updateInfo = ctx.updateInfo as JsonObj | undefined;
+    const rotation = ctx.rotation as JsonObj | undefined;
     const chainOrderId = ctx.kind === 'size-update'
-        ? ctx.updateInfo?.partialOrder?.orderId
-        : ctx.rotation?.oldOrder?.orderId;
+        ? ((updateInfo?.partialOrder as JsonObj | undefined)?.orderId)
+        : ((rotation?.oldOrder as JsonObj | undefined)?.orderId);
     const cachedRaw = ctx.kind === 'size-update'
-        ? ctx.updateInfo?.partialOrder?.rawOnChain
-        : ctx.rotation?.oldOrder?.rawOnChain;
+        ? ((updateInfo?.partialOrder as JsonObj | undefined)?.rawOnChain)
+        : ((rotation?.oldOrder as JsonObj | undefined)?.rawOnChain);
     if (!chainOrderId) return 'unknown';
     const chainOrder = freshChain.find(
-        (o: any) => String(o?.id ?? '') === String(chainOrderId)
+        (o) => String(o?.id ?? '') === String(chainOrderId)
     );
     if (!chainOrder) return 'unknown';
-    if (!chainOrderUnchangedFromCache(chainOrder, cachedRaw)) return 'unknown';
+    if (!chainOrderUnchangedFromCache(chainOrder, cachedRaw as { sell_price?: { base?: { amount?: unknown }; quote?: { amount?: unknown } }; for_sale?: unknown } | null | undefined)) return 'unknown';
     return 'absent';
 }
 
@@ -1237,14 +1357,14 @@ function verifyUpdateUnapplied(freshChain: any[], ctx: any): 'absent' | 'landed'
  * @param {Array} opContexts
  * @returns {Promise<{result: Object, opContexts: Array}>}
  */
-async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts: any) {
+async function executeWithRetryOnUncertain(bot: BotLike, operations: unknown[], opContexts: OpPhase[]) {
     const MAX_RETRIES = 1;
     for (let attempt = 1; ; attempt++) {
         try {
             return await executeOperationsWithStrategy(bot, operations, opContexts);
-        } catch (err: any) {
+        } catch (err) {
             const isRetriable = err instanceof BroadcastUncertainError
-                && !err.partialOnChainState
+                && !getErrorField<boolean>(err, 'partialOnChainState')
                 && attempt <= MAX_RETRIES;
             if (isRetriable) {
                 // Verify per operation kind against a live snapshot before
@@ -1254,7 +1374,7 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
                 // window) → defer.
                 let absence: 'absent' | 'landed' | 'unknown' = 'unknown';
                 try {
-                    const accountRef = bot.accountId || bot.account?.id || bot.account;
+                    const accountRef = bot.accountId || (bot.account as unknown as { id?: string } | null)?.id || bot.account;
                     const freshRead = await chainOrders.readOpenOrdersWithMeta(accountRef);
                     const freshChain = freshRead.orders;
                     // A truncated read (get_full_accounts caps limit_orders, and
@@ -1272,9 +1392,9 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
                             }
                         }
                     }
-                } catch (verifyErr: any) {
+                } catch (verifyErr) {
                     bot.manager.logger.log(
-                        `[COW] Pre-retry chain verification failed (non-fatal): ${verifyErr?.message || verifyErr}`,
+                        `[COW] Pre-retry chain verification failed (non-fatal): ${getErrorMessage(verifyErr)}`,
                         'warn'
                     );
                 }
@@ -1294,8 +1414,8 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
                     // unresolved batches are preserved (their broadcasts may have
                     // landed, so clearing them could re-create duplicates).
                     const retriedCreateSlots = (opContexts || [])
-                        .filter((ctx: any) => ctx && ctx.kind === 'create')
-                        .map((ctx: any) => ({ type: COW_ACTIONS.CREATE, id: ctx.id }));
+                        .filter((ctx) => ctx && ctx.kind === 'create')
+                        .map((ctx) => ({ type: COW_ACTIONS.CREATE, id: ctx.id }));
                     if (retriedCreateSlots.length > 0) {
                         clearPendingBroadcastsForSlots(bot, retriedCreateSlots);
                     }
@@ -1326,18 +1446,19 @@ async function executeWithRetryOnUncertain(bot: any, operations: any, opContexts
  * @param {Error} err - The partial-state error thrown by the execution path
  * @returns {string} e.g. "1/3 chunks broadcast" or "1/2 groups broadcast"
  */
-function formatPartialBroadcastSummary(err: any) {
+function formatPartialBroadcastSummary(err: unknown) {
     if (!err || typeof err !== 'object') return '?/?';
-    if (err.chunkedBroadcast === true) {
-        const total = Number.isFinite(Number(err.chunksTotal)) ? Number(err.chunksTotal) : null;
-        const failed = Number.isFinite(Number(err.chunksFailed)) ? Number(err.chunksFailed) : 0;
-        const aborted = Number.isFinite(Number(err.chunksAborted)) ? Number(err.chunksAborted) : 0;
+    const info = err as JsonObj;
+    if (info.chunkedBroadcast === true) {
+        const total = Number.isFinite(Number(info.chunksTotal)) ? Number(info.chunksTotal) : null;
+        const failed = Number.isFinite(Number(info.chunksFailed)) ? Number(info.chunksFailed) : 0;
+        const aborted = Number.isFinite(Number(info.chunksAborted)) ? Number(info.chunksAborted) : 0;
         if (total === null) return '?/? chunks broadcast';
         const broadcast = Math.max(0, total - failed - aborted);
         return `${broadcast}/${total} chunks broadcast`;
     }
-    const broadcast = err.groupsBroadcast;
-    const total = err.groupsTotal;
+    const broadcast = info.groupsBroadcast;
+    const total = info.groupsTotal;
     return `${broadcast ?? '?'}/${total ?? '?'} groups broadcast`;
 }
 
@@ -1372,7 +1493,7 @@ function formatPartialBroadcastSummary(err: any) {
  * @param {Array} opContexts
  * @returns {Promise<{result: Object, opContexts: Array}>}
  */
-async function executeChunkedWithRetryOnUncertain(bot: any, operations: any, opContexts: any) {
+async function executeChunkedWithRetryOnUncertain(bot: BotLike, operations: unknown[], opContexts: OpPhase[]) {
     const fromAccessor = typeof bot._getMaxOpsPerBroadcast === 'function'
         ? bot._getMaxOpsPerBroadcast()
         : (typeof bot._getGapSlotBatchSize === 'function' ? bot._getGapSlotBatchSize() : undefined);
@@ -1382,7 +1503,7 @@ async function executeChunkedWithRetryOnUncertain(bot: any, operations: any, opC
         return await executeWithRetryOnUncertain(bot, operations, opContexts);
     }
 
-    const chunks: { operations: any[]; opContexts: any[]; }[] = [];
+    const chunks: { operations: unknown[]; opContexts: OpPhase[] }[] = [];
     for (let i = 0; i < operations.length; i += maxOps) {
         chunks.push({
             operations: operations.slice(i, i + maxOps),
@@ -1395,10 +1516,10 @@ async function executeChunkedWithRetryOnUncertain(bot: any, operations: any, opC
         'info'
     );
 
-    const mergedOperationResults: any[] = [];
-    const mergedRawResults: any[] = [];
-    const mergedContexts: any[] = [];
-    let firstFailure: { index: number; err: any; } | null = null;
+    const mergedOperationResults: unknown[] = [];
+    const mergedRawResults: unknown[] = [];
+    const mergedContexts: OpPhase[] = [];
+    let firstFailure: { index: number; err: JsonObj } | null = null;
     let failedChunkCount = 0;
     let abortedChunkCount = 0;
     // Accumulate partial-state markers from EVERY failed chunk, not just the
@@ -1422,16 +1543,17 @@ async function executeChunkedWithRetryOnUncertain(bot: any, operations: any, opC
             const exec = await executeWithRetryOnUncertain(bot, chunk.operations, chunk.opContexts);
             const chunkResults = extractOperationResults(exec.result, 'chunked-broadcast', bot.manager?.logger?.log?.bind(bot.manager?.logger));
             mergedOperationResults.push(...chunkResults);
-            mergedRawResults.push(exec.result?.raw || null);
+            mergedRawResults.push((exec.result as JsonObj | null | undefined)?.raw || null);
             mergedContexts.push(...exec.opContexts);
-        } catch (err: any) {
-            if (firstFailure === null) firstFailure = { index: idx, err };
+        } catch (err) {
+            if (firstFailure === null) firstFailure = { index: idx, err: err as JsonObj };
             failedChunkCount++;
-            const failedChunkLandedOps = Number.isFinite(Number(err.broadcastedOperationCount))
-                ? Number(err.broadcastedOperationCount)
+            const rawFailedChunkLandedOps = getErrorField<number>(err, 'broadcastedOperationCount');
+            const failedChunkLandedOps = Number.isFinite(Number(rawFailedChunkLandedOps))
+                ? Number(rawFailedChunkLandedOps)
                 : 0;
             landedOpsFromFailures += failedChunkLandedOps;
-            if (err.partialOnChainState === true || failedChunkLandedOps > 0) anyFailurePartial = true;
+            if (getErrorField<boolean>(err, 'partialOnChainState') === true || failedChunkLandedOps > 0) anyFailurePartial = true;
             if (err instanceof BroadcastUncertainError) {
                 // Uncertainty: the tx result is unknown — the chunk may or may
                 // not have landed. Continuing the remaining chunks preserves
@@ -1500,13 +1622,13 @@ async function executeChunkedWithRetryOnUncertain(bot: any, operations: any, opC
  * @param {Array} opContexts
  * @returns {Promise<{result: Object, opContexts: Array}>}
  */
-async function executeOperationsWithStrategy(bot: any, operations: any, opContexts: any) {
+async function executeOperationsWithStrategy(bot: BotLike, operations: unknown[], opContexts: OpPhase[]): Promise<{ result: unknown; opContexts: OpPhase[] }> {
     if (!shouldExecuteCreatePairMode(bot, opContexts)) {
-        const result = await chainOrders.executeBatch(bot.account, bot.privateKey, operations);
+        const result = await chainOrders.executeBatch(bot.account, bot.privateKey, operations as Parameters<typeof chainOrders.executeBatch>[2]);
         return { result, opContexts };
     }
 
-    const createEntries: any[] = [];
+    const createEntries: PendingEntry[] = [];
     for (let i = 0; i < operations.length; i++) {
         createEntries.push({
             operation: operations[i],
@@ -1515,22 +1637,22 @@ async function executeOperationsWithStrategy(bot: any, operations: any, opContex
     }
 
     const groups = buildOutsideInPairGroupsForCreateEntries(createEntries);
-    const mergedOperationResults: any[] = [];
-    const mergedRawResults: any[] = [];
-    const mergedContexts: any[] = [];
+    const mergedOperationResults: unknown[] = [];
+    const mergedRawResults: unknown[] = [];
+    const mergedContexts: OpPhase[] = [];
 
     for (let idx = 0; idx < groups.length; idx++) {
         const group = groups[idx];
-        const groupOps = group.map((e: any) => e.operation);
-        const groupContexts = group.map((e: any) => e.context);
+        const groupOps = group.map((e) => (e as JsonObj).operation);
+        const groupContexts = group.map((e) => (e as JsonObj).context);
         bot.manager.logger.log(
             `[COW] Broadcasting create pair group ${idx + 1}/${groups.length} (${groupOps.length} op${groupOps.length > 1 ? 's' : ''}, outside->center)`,
             'info'
         );
         let groupResult;
         try {
-            groupResult = await chainOrders.executeBatch(bot.account, bot.privateKey, groupOps);
-        } catch (err: any) {
+            groupResult = await chainOrders.executeBatch(bot.account, bot.privateKey, groupOps as Parameters<typeof chainOrders.executeBatch>[2]);
+        } catch (err) {
             const groupsBroadcast = idx;
             const groupsTotal = groups.length;
             const broadcastedOperationCount = mergedContexts.length;
@@ -1538,17 +1660,23 @@ async function executeOperationsWithStrategy(bot: any, operations: any, opContex
                 `[COW] Grouped create execution failed at group ${idx + 1}/${groupsTotal}; ${groupsBroadcast} group(s) already broadcast (${broadcastedOperationCount} op context(s)). Partial on-chain state is possible.`,
                 'error'
             );
-            err.partialOnChainState = groupsBroadcast > 0;
-            err.groupsBroadcast = groupsBroadcast;
-            err.groupsTotal = groupsTotal;
-            err.broadcastedOperationCount = broadcastedOperationCount;
+            const broadcastErrAugment = err as {
+                partialOnChainState?: boolean;
+                groupsBroadcast?: number;
+                groupsTotal?: number;
+                broadcastedOperationCount?: number;
+            };
+            broadcastErrAugment.partialOnChainState = groupsBroadcast > 0;
+            broadcastErrAugment.groupsBroadcast = groupsBroadcast;
+            broadcastErrAugment.groupsTotal = groupsTotal;
+            broadcastErrAugment.broadcastedOperationCount = broadcastedOperationCount;
             throw err;
         }
         const groupOpResults = extractOperationResults(groupResult, '', bot.manager?.logger?.log?.bind(bot.manager?.logger));
 
         mergedOperationResults.push(...groupOpResults);
         mergedRawResults.push(groupResult?.raw || null);
-        mergedContexts.push(...groupContexts);
+        mergedContexts.push(...(groupContexts as OpPhase[]));
     }
 
     return {
@@ -1575,40 +1703,45 @@ async function executeOperationsWithStrategy(bot: any, operations: any, opContex
  * @param {Object} assetB
  * @returns {Object} { isValid: boolean, summary: string }
  */
-function validateOperationFunds(bot: any, operations: any, assetA: any, assetB: any) {
+function validateOperationFunds(bot: BotLike, operations: JsonObj[], assetA: AssetInfo, assetB: AssetInfo): { isValid: boolean; summary: string; violations?: JsonObj[] } {
     if (!operations || operations.length === 0) {
         return { isValid: true, summary: 'No operations to validate' };
     }
 
     let snap = bot.manager?.getChainFundsSnapshot?.();
     if (!snap) {
-        snap = { chainFreeSell: 0, chainFreeBuy: 0 };
+        snap = { chainFreeSell: 0, chainFreeBuy: 0 } as unknown as NonNullable<typeof snap>;
         bot.manager?.logger?.log?.(
             '[COW][VALIDATION] getChainFundsSnapshot unavailable — fund validation skipped (assuming no balance)',
             'warn'
         );
     }
-    const netRequiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
-    const runningRequiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
-    const peakRequiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
+    const assetKeyA = assetA.id ?? '';
+    const assetKeyB = assetB.id ?? '';
+    const netRequiredFunds: Record<string, number> = { [assetKeyA]: 0, [assetKeyB]: 0 };
+    const runningRequiredFunds: Record<string, number> = { [assetKeyA]: 0, [assetKeyB]: 0 };
+    const peakRequiredFunds: Record<string, number> = { [assetKeyA]: 0, [assetKeyB]: 0 };
 
     for (const op of operations) {
-        if (!op?.op_data) continue;
+        const opData = op?.op_data as JsonObj | undefined;
+        if (!opData) continue;
 
-        let sellAssetId = null;
-        let sellAmountInt = 0;
+        let sellAssetId: string | null = null;
+        let sellAmountInt: number | null = null;
 
         if (op.op_name === 'limit_order_create') {
-            sellAssetId = op.op_data.amount_to_sell?.asset_id;
-            sellAmountInt = op.op_data.amount_to_sell?.amount;
+            const ats = opData.amount_to_sell as JsonObj | undefined;
+            sellAssetId = (ats?.asset_id as string | undefined) ?? null;
+            sellAmountInt = ats?.amount != null ? Number(ats.amount) : null;
         } else if (op.op_name === 'limit_order_update') {
-            sellAssetId = op.op_data.new_price?.base?.asset_id;
-            sellAmountInt = op.op_data.new_price?.base?.amount;
+            const base = (opData.new_price as JsonObj | undefined)?.base as JsonObj | undefined;
+            sellAssetId = (base?.asset_id as string | undefined) ?? null;
+            sellAmountInt = base?.amount != null ? Number(base.amount) : null;
         }
 
-        if (sellAssetId && (sellAmountInt !== undefined && sellAmountInt !== null)) {
-            const precision = (sellAssetId === assetA.id) ? assetA.precision : assetB.precision;
-            const assetSymbol = (sellAssetId === assetA.id) ? assetA.symbol : assetB.symbol;
+        if (sellAssetId && sellAmountInt != null) {
+            const precision = (sellAssetId === assetKeyA) ? assetA.precision : assetB.precision;
+            const assetSymbol = (sellAssetId === assetKeyA) ? assetA.symbol : assetB.symbol;
 
             if (Number(sellAmountInt) <= 0) {
                 return {
@@ -1620,8 +1753,9 @@ function validateOperationFunds(bot: any, operations: any, assetA: any, assetB: 
 
             let signedDelta = 0;
             if (op.op_name === 'limit_order_update') {
-                const deltaAssetId = op.op_data.delta_amount_to_sell?.asset_id;
-                const deltaSellInt = op.op_data.delta_amount_to_sell?.amount;
+                const deltaAmount = opData.delta_amount_to_sell as JsonObj | undefined;
+                const deltaAssetId = deltaAmount?.asset_id;
+                const deltaSellInt = deltaAmount?.amount;
                 if (deltaAssetId === sellAssetId && Number.isFinite(Number(deltaSellInt))) {
                     signedDelta = blockchainToFloat(deltaSellInt, precision);
                 }
@@ -1647,21 +1781,21 @@ function validateOperationFunds(bot: any, operations: any, assetA: any, assetB: 
         }
     }
 
-    const availableFunds = {
-        [assetA.id]: quantizeFloat(snap.chainFreeSell || 0, assetA.precision),
-        [assetB.id]: quantizeFloat(snap.chainFreeBuy || 0, assetB.precision)
+    const availableFunds: Record<string, number> = {
+        [assetKeyA]: quantizeFloat(snap.chainFreeSell || 0, assetA.precision),
+        [assetKeyB]: quantizeFloat(snap.chainFreeBuy || 0, assetB.precision)
     };
 
-    const fundViolations: any[] = [];
+    const fundViolations: JsonObj[] = [];
     for (const assetId in peakRequiredFunds) {
         const required = peakRequiredFunds[assetId];
         const netRequired = netRequiredFunds[assetId] || 0;
         const available = availableFunds[assetId] || 0;
 
-        const prec = (assetId === assetA.id) ? assetA.precision : assetB.precision;
+        const prec = (assetId === assetKeyA) ? assetA.precision : assetB.precision;
         if (floatToBlockchainInt(required, prec) > floatToBlockchainInt(available, prec)) {
             fundViolations.push({
-                asset: assetId === assetA.id ? assetA.symbol : assetB.symbol,
+                asset: assetId === assetKeyA ? assetA.symbol : assetB.symbol,
                 required,
                 netRequired,
                 available,
@@ -1673,7 +1807,7 @@ function validateOperationFunds(bot: any, operations: any, assetA: any, assetB: 
     if (fundViolations.length > 0) {
         let summary = `[VALIDATION] Fund validation FAILED:\n`;
         for (const v of fundViolations) {
-            summary += `  ${v.asset}: peakRequired=${Format.formatAmount8(v.required)}, netRequired=${Format.formatAmount8(v.netRequired)}, available=${Format.formatAmount8(v.available)}, deficit=${Format.formatAmount8(v.deficit)}\n`;
+            summary += `  ${v.asset}: peakRequired=${Format.formatAmount8(Number(v.required))}, netRequired=${Format.formatAmount8(Number(v.netRequired))}, available=${Format.formatAmount8(Number(v.available))}, deficit=${Format.formatAmount8(Number(v.deficit))}\n`;
         }
         return { isValid: false, summary: summary.trim(), violations: fundViolations };
     }
@@ -1689,12 +1823,13 @@ function validateOperationFunds(bot: any, operations: any, assetA: any, assetB: 
  * @param {number|null} [fallbackSize=null]
  * @returns {number|null}
  */
-function resolveIdealSizeForValidation(_bot: any, orderLike: any, fallbackSize: any = null) {
+function resolveIdealSizeForValidation(_bot: unknown, orderLike: JsonObj | null | undefined, fallbackSize: number | null = null): number | null {
+    const nested = orderLike?.order as JsonObj | undefined;
     const candidates = [
         orderLike?.idealSize,
-        orderLike?.order?.idealSize,
+        nested?.idealSize,
         orderLike?.size,
-        orderLike?.order?.size,
+        nested?.size,
         fallbackSize
     ];
 
@@ -1715,9 +1850,9 @@ function resolveIdealSizeForValidation(_bot: any, orderLike: any, fallbackSize: 
  * @param {string} type
  * @param {Object|null} [orderLike=null]
  * @param {number|null} [fallbackSize=null]
- * @returns {any}
+ * @returns {unknown}
  */
-function validateOrderSizeForExecution(bot: any, size: any, type: any, orderLike: any = null, fallbackSize: any = null) {
+function validateOrderSizeForExecution(bot: BotLike, size: number, type: string, orderLike: JsonObj | null = null, fallbackSize: number | null = null) {
     return validateOrderSize(
         size,
         type,
@@ -1737,8 +1872,8 @@ function validateOrderSizeForExecution(bot: any, size: any, type: any, orderLike
  */
 type GridPriceInvariantStats = { checked: number; violated: number; unchecked: number };
 
-function checkGridPriceInvariant(slotId: any, price: any, genesis: any): { ok: boolean; reason: string; expected: number | null; idx: number | null; drift: number | null } {
-    return (orderUtils as any).checkGridPriceInvariant(slotId, price, genesis);
+function checkGridPriceInvariant(slotId: unknown, price: unknown, genesis: unknown): { ok: boolean; reason: string; expected: number | null; idx: number | null; drift: number | null } {
+    return orderUtils.checkGridPriceInvariant(slotId as string | null | undefined, price as string | number | null | undefined, genesis as never);
 }
 
 /**
@@ -1755,13 +1890,13 @@ function checkGridPriceInvariant(slotId: any, price: any, genesis: any): { ok: b
  *   genesis ladder / no parseable destination index (caller falls back to the
  *   planned price — an undefined grid, which the load and sync gates refuse).
  */
-function deriveRotationPrice(bot: any, newGridId: any): number {
+function deriveRotationPrice(bot: BotLike, newGridId: unknown): number {
     try {
         const idx = parseSlotIndex(newGridId);
         if (idx === null || idx === undefined || !Number.isFinite(idx)) return NaN;
-        const genesis = (bot?.manager as any)?._genesis;
+        const genesis = (bot?.manager as unknown as JsonObj | undefined)?._genesis as JsonObj | undefined;
         if (!Array.isArray(genesis?.priceLevels) || genesis.priceLevels.length === 0) return NaN;
-        const lvl = Number(math.priceForSlot(idx, genesis));
+        const lvl = Number(math.priceForSlot(idx, genesis as unknown as import('./order/utils/math.js').GridGenesis));
         return (Number.isFinite(lvl) && lvl > 0) ? lvl : NaN;
     } catch {
         return NaN;
@@ -1787,13 +1922,13 @@ function deriveRotationPrice(bot: any, newGridId: any): number {
  *
  * @returns {boolean} true when the caller MAY emit; false when it must skip
  */
-function recordGridPriceInvariantCheck(bot: any, slotId: any, price: any, stats: GridPriceInvariantStats, site: string): boolean {
+function recordGridPriceInvariantCheck(bot: BotLike, slotId: unknown, price: unknown, stats: GridPriceInvariantStats, site: string): boolean {
     try {
         if (slotId == null || slotId === '') {
             stats.unchecked++;
             return true;
         }
-        const inv = checkGridPriceInvariant(slotId, price, (bot?.manager as any)?._genesis);
+        const inv = checkGridPriceInvariant(slotId, price, (bot?.manager as unknown as JsonObj | undefined)?._genesis);
         if (inv.reason !== 'ok' && inv.reason !== 'off-grid-price') {
             stats.unchecked++;
             return true;
@@ -1809,7 +1944,7 @@ function recordGridPriceInvariantCheck(bot: any, slotId: any, price: any, stats:
             return true;
         }
         stats.violated++;
-        (orderUtils as any).reportGridPriceInvariant(bot?.manager, slotId, price, site);
+        orderUtils.reportGridPriceInvariant(bot?.manager, String(slotId), price as string | number, site);
         considerGridPriceInvariantEscalation(bot, slotId, price, inv, site);
         return false;
     } catch {
@@ -1830,10 +1965,10 @@ function recordGridPriceInvariantCheck(bot: any, slotId: any, price: any, stats:
  * Keeping it on the bot also keeps the count from outliving the resync that
  * repairs the slot, and lets tests start from a clean slate.
  *
- * @param {any} bot
+ * @param {unknown} bot
  * @returns {Map<string, number>}
  */
-function getInvariantRejectStreak(bot: any): Map<string, number> {
+function getInvariantRejectStreak(bot: BotLike): Map<string, number> {
     if (!(bot?._gridPriceInvariantRejectStreak instanceof Map)) {
         bot._gridPriceInvariantRejectStreak = new Map<string, number>();
     }
@@ -1857,14 +1992,14 @@ function getInvariantRejectStreak(bot: any): Map<string, number> {
  *
  * @returns {number} the slot's current consecutive-rejection streak
  */
-function considerGridPriceInvariantEscalation(bot: any, slotId: any, price: any, inv: any, site: string): number {
+function considerGridPriceInvariantEscalation(bot: BotLike, slotId: unknown, price: unknown, inv: JsonObj, site: string): number {
     const key = String(slotId);
     const streakMap = getInvariantRejectStreak(bot);
     const streak = (streakMap.get(key) || 0) + 1;
     streakMap.set(key, streak);
 
-    const threshold = Number((constantsModule.TIMING as any)?.GRID_PRICE_INVARIANT_RESYNC_THRESHOLD) > 0
-        ? Number((constantsModule.TIMING as any).GRID_PRICE_INVARIANT_RESYNC_THRESHOLD)
+    const threshold = Number(constantsModule.TIMING?.GRID_PRICE_INVARIANT_RESYNC_THRESHOLD) > 0
+        ? Number(constantsModule.TIMING.GRID_PRICE_INVARIANT_RESYNC_THRESHOLD)
         : 3;
     if (streak < threshold) return streak;
 
@@ -1880,8 +2015,8 @@ function considerGridPriceInvariantEscalation(bot: any, slotId: any, price: any,
     // Dedicated cooldown key (NOT BOUNDARY_HOLD_RESYNC_COOLDOWN_MS: the watchdogs
     // must tune independently). Once per cooldown window is enough -- the streak
     // keeps counting so a later window escalates again if still unhealed.
-    const cooldownMs = Number((constantsModule.TIMING as any)?.GRID_PRICE_INVARIANT_RESYNC_COOLDOWN_MS) > 0
-        ? Number((constantsModule.TIMING as any).GRID_PRICE_INVARIANT_RESYNC_COOLDOWN_MS)
+    const cooldownMs = Number(constantsModule.TIMING?.GRID_PRICE_INVARIANT_RESYNC_COOLDOWN_MS) > 0
+        ? Number(constantsModule.TIMING.GRID_PRICE_INVARIANT_RESYNC_COOLDOWN_MS)
         : 15 * 60 * 1000;
     const now = Date.now();
     const lastAt = Number(bot?._lastGridPriceInvariantResyncAt) || 0;
@@ -1905,13 +2040,13 @@ function considerGridPriceInvariantEscalation(bot: any, slotId: any, price: any,
             site,
             streak,
         });
-        (res as any)?.catch?.((err: any) => {
+        res?.catch?.((err: unknown) => {
             bot.manager?.logger?.log?.(
                 `[GRID-PRICE-INVARIANT] Structural resync request failed: ${getErrorMessage(err)}`,
                 'error'
             );
         });
-    } catch (err: any) {
+    } catch (err) {
         bot.manager?.logger?.log?.(
             `[GRID-PRICE-INVARIANT] Structural resync request failed: ${getErrorMessage(err)}`,
             'error'
@@ -1927,7 +2062,7 @@ function considerGridPriceInvariantEscalation(bot: any, slotId: any, price: any,
  * the aggregate so a batch that silently placed fewer orders than planned is
  * explained without reading every line.
  */
-function logGridPriceInvariantSummary(bot: any, stats: GridPriceInvariantStats, site: string): void {
+function logGridPriceInvariantSummary(bot: BotLike, stats: GridPriceInvariantStats, site: string): void {
     try {
         if (!stats || stats.checked === 0) return;
         bot?.manager?.logger?.log?.(
@@ -1958,7 +2093,7 @@ function logGridPriceInvariantSummary(bot: any, stats: GridPriceInvariantStats, 
  * @param {number|any} incrementPercent - Grid increment percent (e.g. 0.5). If assets object passed, falls back to default.
  * @returns {{blocked: boolean, pivot: number|null, halfInc: number, threshold: number|null}}
  */
-function isLastFillGuardBlocked(price: any, _size: any, type: any, lastPrice: any, lastType: any, incrementPercent: any): { blocked: boolean; pivot: number|null; halfInc?: number; threshold?: number|null } {
+function isLastFillGuardBlocked(price: number, _size: number, type: unknown, lastPrice: number | null, lastType: string | null, incrementPercent: number): { blocked: boolean; pivot: number|null; halfInc?: number; threshold?: number|null } {
     const numPrice = Number(price);
     if (!Number.isFinite(numPrice)) return { blocked: false, pivot: null };
     if (lastPrice == null || !Number.isFinite(Number(lastPrice)) || lastType == null) return { blocked: false, pivot: null };
@@ -1966,7 +2101,7 @@ function isLastFillGuardBlocked(price: any, _size: any, type: any, lastPrice: an
     // Resolve increment: fallback to default 0.5 (also covers legacy assets-object 6th arg)
     let inc = Number(incrementPercent);
     if (!Number.isFinite(inc) || inc <= 0) {
-        inc = Number((constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
+        inc = Number(constantsModule?.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
     }
     if (!Number.isFinite(inc) || inc <= 0) return { blocked: false, pivot: null };
     const halfInc = inc / 2;
@@ -1993,27 +2128,27 @@ function isLastFillGuardBlocked(price: any, _size: any, type: any, lastPrice: an
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {boolean} True when the pivot was refreshed from queued fills
  */
-function refreshLastFillPivotFromQueue(bot: any): boolean {
+function refreshLastFillPivotFromQueue(bot: BotLike): boolean {
     try {
-        const queue = (bot as any)?._incomingFillQueue;
+        const queue = bot?._incomingFillQueue;
         if (!Array.isArray(queue) || queue.length === 0) return false;
-        const mgr = (bot as any)?.manager;
+        const mgr = bot?.manager;
         if (!mgr || !mgr.orders) return false;
         const assets = mgr.assets;
-        const findSlotByOrderId = (orderId: any) => {
+        const findSlotByOrderId = (orderId: unknown) => {
             if (!orderId) return null;
             try {
                 for (const o of mgr.orders.values()) {
-                    if ((o as any)?.orderId === orderId) return o as any;
+                    if (o?.orderId === orderId) return o as unknown as ManagedOrder;
                 }
             } catch { /* ignore iteration errors */ }
             return null;
         };
         let latest: { price: number; type: string } | null = null;
         for (const fill of queue) {
-            const fillOp = (fill as any)?.op?.[1] || fill;
-            const orderId = fillOp?.order_id || (fill as any)?.orderId;
-            let type: any = null;
+            const fillOp = fill?.op?.[1] || fill;
+            const orderId = fillOp?.order_id || fill?.orderId;
+            let type: unknown = null;
             let price: number | null = null;
             // Prefer the grid slot: a limit fill executes at (or better than)
             // its slot price, which is exactly the guard's price convention.
@@ -2028,9 +2163,11 @@ function refreshLastFillPivotFromQueue(bot: any): boolean {
             // SPREAD slots carrying on-chain orders).
             if ((type == null || price == null) && fillOp?.pays && fillOp?.receives && assets?.assetA && assets?.assetB) {
                 try {
-                    const paysId = fillOp.pays.asset_id;
-                    const paysAmt = Number(fillOp.pays.amount);
-                    const recvAmt = Number(fillOp.receives.amount);
+                    const pays = fillOp.pays as { asset_id?: unknown; amount?: unknown };
+                    const receives = fillOp.receives as { amount?: unknown };
+                    const paysId = pays.asset_id;
+                    const paysAmt = Number(pays.amount);
+                    const recvAmt = Number(receives.amount);
                     if (Number.isFinite(paysAmt) && paysAmt > 0 && Number.isFinite(recvAmt) && recvAmt > 0) {
                         const paysFloat = (base: number, precision: number) => base / Math.pow(10, precision);
                         if (paysId === assets.assetA.id) {
@@ -2080,16 +2217,16 @@ function refreshLastFillPivotFromQueue(bot: any): boolean {
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {number} Positive increment percent
  */
-function resolveLastFillGuardIncrement(bot: any): number {
+function resolveLastFillGuardIncrement(bot: { manager?: BotLike["manager"]; config?: BotLike["config"] }): number {
     const raw = Number(
-        (bot as any)?.manager?.config?.incrementPercent
-        ?? (bot as any)?.config?.incrementPercent
-        ?? (constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent
+        bot?.manager?.config?.incrementPercent
+        ?? bot?.config?.incrementPercent
+        ?? constantsModule?.DEFAULT_CONFIG?.incrementPercent
         ?? 0.5
     );
     if (Number.isFinite(raw) && raw > 0) return raw;
-    return Number((constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent) > 0
-        ? Number((constantsModule as any)?.DEFAULT_CONFIG?.incrementPercent)
+    return Number(constantsModule?.DEFAULT_CONFIG?.incrementPercent) > 0
+        ? Number(constantsModule?.DEFAULT_CONFIG?.incrementPercent)
         : 0.5;
 }
 
@@ -2099,36 +2236,35 @@ function resolveLastFillGuardIncrement(bot: any): number {
  * @param {Object|Array} plan
  * @returns {Array}
  */
-function buildActionsFromPlan(_bot: any, plan: any) {
-    const normalizedPlan = Array.isArray(plan)
+function buildActionsFromPlan(_bot: BotLike, plan: JsonObj | JsonObj[]): CowAction[] {
+    const normalizedPlan: JsonObj = Array.isArray(plan)
         ? { ordersToPlace: plan }
         : (plan || {});
 
-    const {
-        ordersToPlace = [],
-        ordersToRotate = [],
-        ordersToUpdate = [],
-        ordersToCancel = []
-    } = normalizedPlan;
+    const ordersToPlace = (normalizedPlan.ordersToPlace ?? []) as CowAction[];
+    const ordersToRotate = (normalizedPlan.ordersToRotate ?? []) as JsonObj[];
+    const ordersToUpdate = (normalizedPlan.ordersToUpdate ?? []) as JsonObj[];
+    const ordersToCancel = (normalizedPlan.ordersToCancel ?? []) as JsonObj[];
 
     // Per-action origin: guard bypasses are scoped per action (not per batch),
     // so a future rotation entry merged into a correction plan cannot silently
     // inherit the spread-correction bypass. Actions built outside this helper
     // carry no origin and default to guarded (safe default).
-    const planOrigin = (normalizedPlan as any)?.origin;
+    const planOrigin = normalizedPlan.origin as string | undefined;
     // B-stamp inputs: the plan-level boundary + gap width frozen AT
     // PLAN-BUILD TIME. The stamp carries this geometry so the execution
     // guard can bypass on it — and re-verifies it against the LIVE
     // committed geometry at execution time (isEvacuationStampStillValid),
     // downgrading stale stamps to the live probe.
+    const mgrView = _bot?.manager as unknown as JsonObj | undefined;
     const frozenBoundaryRaw = Number(
-        (normalizedPlan as any)?.boundaryIdx ?? (_bot as any)?.manager?.boundaryIdx
+        normalizedPlan.boundaryIdx ?? mgrView?.boundaryIdx
     );
     const frozenGapRaw = Number(
-        (normalizedPlan as any)?.gapSlots ?? (_bot as any)?.manager?._gapSlots
+        normalizedPlan.gapSlots ?? mgrView?._gapSlots
     );
     const hasFrozenGeometry = Number.isFinite(frozenBoundaryRaw) && Number.isFinite(frozenGapRaw) && frozenGapRaw >= 0;
-    const withOrigin = (action: any, sourceMaster: any = null) => {
+    const withOrigin = (action: CowAction, sourceMaster: ManagedOrder | null = null): CowAction => {
         if (!planOrigin) return action;
         // Origin only rides UPDATEs (where the guard reads it). Gap-plan
         // CREATEs carry a provably dead origin — the spread-correction
@@ -2146,43 +2282,44 @@ function buildActionsFromPlan(_bot: any, plan: any) {
         // the bypass. Without a source master the proof is impossible, so
         // the action stays unstamped (the live probe at execution can still
         // re-prove it from the master grid).
-        const base: any = { ...action, origin: planOrigin };
+        const base: CowAction = { ...action, origin: planOrigin };
         if (!sourceMaster) return { ...base, origin: undefined };
         // The stampler wants the ORDER type (SELL/BUY), which rides on
         // action.order.type — action.type is the COW action kind ('update').
         const rotOrderType = action?.order?.type ?? action?.type;
         const proved = stampGapEvacuationRotation(
-            base, sourceMaster, action.newPrice, action.newSize, rotOrderType,
-            frozenBoundaryRaw, frozenGapRaw, (_bot as any)?.manager?.assets
+            base, sourceMaster, action.newPrice as number, action.newSize as number, rotOrderType as string,
+            frozenBoundaryRaw, frozenGapRaw, mgrView?.assets as AssetInfo extends never ? never : Parameters<typeof stampGapEvacuationRotation>[7]
         );
         // Proof refused: strip the origin so the action is exactly an
         // unstamped rotation (never an origin claim without a stamp).
-        if (!(proved as any)?.evacBoundary && !(proved as any)?.evacGapSlots) {
+        if (!proved?.evacBoundary && !proved?.evacGapSlots) {
             proved.origin = undefined;
         }
         return proved;
     };
 
-    const actions: any[] = [];
+    const actions: CowAction[] = [];
 
     for (const o of ordersToCancel) {
         if (o?.orderId) {
-            actions.push({ type: COW_ACTIONS.CANCEL, id: o.id, orderId: o.orderId });
+            actions.push({ type: COW_ACTIONS.CANCEL, id: String(o.id), orderId: o.orderId as string | null | undefined });
         }
     }
 
     for (const r of ordersToRotate) {
-        const oldOrder = r?.oldOrder || r;
-        const id = oldOrder?.id || r?.id;
-        const orderId = oldOrder?.orderId || r?.orderId;
-        const newGridId = r?.newGridId || id;
-        const newSize = Number.isFinite(Number(r?.newSize))
-            ? Number(r.newSize)
-            : Number(r?.size || oldOrder?.size || 0);
-        const newPrice = Number.isFinite(Number(r?.newPrice))
-            ? Number(r.newPrice)
-            : Number(r?.price || oldOrder?.price);
-        const orderType = r?.type || oldOrder?.type;
+        const rv = r as JsonObj;
+        const oldOrder = (rv.oldOrder ?? rv) as JsonObj;
+        const id = String(oldOrder.id ?? rv.id ?? '');
+        const orderId = (oldOrder.orderId ?? rv.orderId) as string | null | undefined;
+        const newGridId = String(rv.newGridId ?? id);
+        const newSize = Number.isFinite(Number(rv.newSize))
+            ? Number(rv.newSize)
+            : Number(rv.size || oldOrder.size || 0);
+        const newPrice = Number.isFinite(Number(rv.newPrice))
+            ? Number(rv.newPrice)
+            : Number(rv.price || oldOrder.price);
+        const orderType = (rv.type || oldOrder.type) as ManagedOrder['type'];
 
         if (!id || !orderId || !newGridId || !orderType || !Number.isFinite(newPrice) || !(newSize > 0)) continue;
 
@@ -2198,18 +2335,19 @@ function buildActionsFromPlan(_bot: any, plan: any) {
                 type: orderType,
                 price: newPrice,
                 size: newSize
-            }
-        }, oldOrder));
+            } as unknown as ManagedOrder
+        }, oldOrder as unknown as ManagedOrder));
     }
 
     for (const o of ordersToUpdate) {
-        const partialOrder = o?.partialOrder || o;
-        const id = o?.id || partialOrder?.id;
-        const orderId = o?.orderId || partialOrder?.orderId;
-        const orderType = o?.type || partialOrder?.type;
-        const newSize = Number.isFinite(Number(o?.newSize))
-            ? Number(o.newSize)
-            : Number(partialOrder?.size || 0);
+        const ov = o as JsonObj;
+        const partialOrder = (ov.partialOrder ?? ov) as JsonObj;
+        const id = String(ov.id ?? partialOrder.id ?? '');
+        const orderId = (ov.orderId ?? partialOrder.orderId) as string | null | undefined;
+        const orderType = (ov.type || partialOrder.type) as ManagedOrder['type'];
+        const newSize = Number.isFinite(Number(ov.newSize))
+            ? Number(ov.newSize)
+            : Number(partialOrder.size || 0);
 
         if (!id || !orderId) continue;
 
@@ -2224,13 +2362,13 @@ function buildActionsFromPlan(_bot: any, plan: any) {
                 orderId,
                 type: orderType,
                 size: newSize
-            }
+            } as unknown as ManagedOrder
         }));
     }
 
     for (const o of ordersToPlace) {
         if (!o?.id) continue;
-        actions.push(withOrigin({ type: COW_ACTIONS.CREATE, id: o.id, order: o }));
+        actions.push(withOrigin({ type: COW_ACTIONS.CREATE, id: String(o.id), order: o as unknown as ManagedOrder }));
     }
 
     return actions;
@@ -2242,7 +2380,7 @@ function buildActionsFromPlan(_bot: any, plan: any) {
  * @param {Object|Array} plan
  * @returns {{workingGrid: any, workingIndexes: Object, workingBoundary: number, actions: Array}}
  */
-function buildCowResultFromPlan(bot: any, plan: any) {
+function buildCowResultFromPlan(bot: BotLike, plan: JsonObj): CowResult {
     const workingGrid = new WorkingGrid(bot.manager.orders, {
         baseVersion: Number.isFinite(Number(bot.manager._gridVersion)) ? bot.manager._gridVersion : 0
     });
@@ -2259,11 +2397,11 @@ function buildCowResultFromPlan(bot: any, plan: any) {
     // rail-typed VIRTUAL hole with its booked size preserved (rotation
     // sources keep the remainder the guard/plan must see); only true
     // gap-band slots become side-neutral SPREAD holes.
-    const toWorkingHole = (slot: any) => {
+    const toWorkingHole = (slot: ManagedOrder) => {
         try {
             const idx = parseSlotIndex(slot?.id);
             const b = Number(workingBoundary);
-            const gapSlots = Number((bot as any)?.manager?._gapSlots);
+            const gapSlots = Number(bot?.manager?._gapSlots);
             if (idx !== null && idx !== undefined && Number.isFinite(b) && Number.isFinite(gapSlots) && gapSlots >= 0) {
                 if (Number(idx) <= b) return toRailHolePlaceholder(slot, ORDER_TYPES.BUY);
                 if (Number(idx) >= getSellStartIdx(b, gapSlots)) return toRailHolePlaceholder(slot, ORDER_TYPES.SELL);
@@ -2295,7 +2433,7 @@ function buildCowResultFromPlan(bot: any, plan: any) {
                 }
 
                 const targetId = action.newGridId;
-                const targetCurrent = workingGrid.get(targetId) || { id: targetId };
+                const targetCurrent = workingGrid.get(targetId) || ({ id: targetId } as unknown as ManagedOrder);
                 const rotatedSize = Number.isFinite(Number(action.newSize))
                     ? Number(action.newSize)
                     : Number(targetCurrent.size || 0);
@@ -2334,15 +2472,15 @@ function buildCowResultFromPlan(bot: any, plan: any) {
     // holds the committed boundary when a listed refill is guard-skipped.
     // Absent/non-array => undefined (guarded default at execution, never
     // fail-open). Spread-correction plans never set this (disjoint bypass).
-    const refillSlotIds = Array.isArray((plan as any)?.refillSlotIds)
-        ? (plan as any).refillSlotIds.filter((id: any) => typeof id === 'string' && id.length > 0)
+    const refillSlotIds = Array.isArray(plan?.refillSlotIds)
+        ? plan.refillSlotIds.filter((id: unknown) => typeof id === 'string' && id.length > 0)
         : undefined;
     return {
         workingGrid,
         workingIndexes: workingGrid.getIndexes(),
-        workingBoundary,
+        workingBoundary: workingBoundary as number,
         actions,
-        origin: (plan as any)?.origin,
+        origin: plan.origin as string | undefined,
         ...(refillSlotIds !== undefined ? { refillSlotIds } : {})
     };
 }
@@ -2357,31 +2495,37 @@ function buildCowResultFromPlan(bot: any, plan: any) {
  * Only slot-to-slot rotations (newGridId exists) need pre-application;
  * in-place rotations already have their size/price changes in the working grid.
  */
-function applyRotationTransitionsToWorkingGrid(bot: any, workingGrid: any, executedContexts: any) {
+function applyRotationTransitionsToWorkingGrid(bot: BotLike, workingGrid: InstanceType<typeof WorkingGrid>, executedContexts: OpPhase[]) {
     if (!workingGrid || !executedContexts) return;
 
     for (const ctx of executedContexts) {
         if (ctx.kind !== 'rotation' || !ctx.rotation?.newGridId) continue;
 
-        const { rotation } = ctx;
-        const { oldOrder, newGridId, newPrice, newSize, type } = rotation;
+        const rotation = ctx.rotation as JsonObj | undefined;
+        const oldOrder = rotation?.oldOrder as JsonObj | undefined;
+        const oldOrderId = oldOrder?.id != null ? String(oldOrder.id) : null;
+        const newGridId = String(rotation?.newGridId ?? '');
+        const newPrice = rotation?.newPrice;
+        const newSize = rotation?.newSize;
+        const type = rotation?.type;
+        if (!newGridId) continue;
 
         // Source slot → VIRTUAL (if it's a different slot). Phase 2: the
         // source stays a RAIL-TYPED hole with its booked size preserved —
         // only state/orderId/rawOnChain are cleared, never type or size
         // (no SPREAD retype, no zeroing). In-rail sources must remain
         // visible to candidate-selection and evacuation geometry.
-        if (oldOrder?.id && oldOrder.id !== newGridId) {
-            const sourceSlot = workingGrid.get(oldOrder.id);
+        if (oldOrderId && oldOrderId !== newGridId) {
+            const sourceSlot = workingGrid.get(oldOrderId);
             if (sourceSlot && sourceSlot.orderId) {
-                workingGrid.set(oldOrder.id, {
+                workingGrid.set(oldOrderId, {
                     ...sourceSlot,
                     state: ORDER_STATES.VIRTUAL,
                     orderId: null,
                     rawOnChain: null,
                 });
                 bot.manager.logger.log(
-                    `[COW] Pre-applied rotation: source ${oldOrder.id} → VIRTUAL (order ${sourceSlot.orderId} moved to ${newGridId})`,
+                    `[COW] Pre-applied rotation: source ${oldOrderId} → VIRTUAL (order ${sourceSlot.orderId} moved to ${newGridId})`,
                     'debug'
                 );
             }
@@ -2393,9 +2537,9 @@ function applyRotationTransitionsToWorkingGrid(bot: any, workingGrid: any, execu
             workingGrid.set(newGridId, {
                 ...destSlot,
                 id: newGridId,
-                type,
-                size: newSize,
-                price: newPrice,
+                type: type as ManagedOrder['type'],
+                size: newSize as number,
+                price: newPrice as number,
                 state: ORDER_STATES.ACTIVE,
                 // oldOrder?.orderId is the authoritative source: the rotation
                 // moved this orderId from the source slot.  destSlot.orderId
@@ -2403,10 +2547,10 @@ function applyRotationTransitionsToWorkingGrid(bot: any, workingGrid: any, execu
                 // already held a prior committed ID (e.g. a partial commit
                 // left a stale reference).  The source-of-truth is always the
                 // original order being rotated.
-                orderId: oldOrder?.orderId || destSlot.orderId || null,
+                orderId: (oldOrder?.orderId as string | null | undefined) || destSlot.orderId || null,
             });
             bot.manager.logger.log(
-                `[COW] Pre-applied rotation: dest ${newGridId} → ACTIVE (orderId=${oldOrder?.orderId || destSlot.orderId || 'none'})`,
+                `[COW] Pre-applied rotation: dest ${newGridId} → ACTIVE (orderId=${(oldOrder?.orderId as string | null | undefined) || destSlot.orderId || 'none'})`,
                 'debug'
             );
         }
@@ -2429,31 +2573,33 @@ function applyRotationTransitionsToWorkingGrid(bot: any, workingGrid: any, execu
  *   to skip the production 1.5s pacing without changing the poll semantics
  * @returns {{ allConfirmed: boolean, confirmed: Array, unconfirmed: Array }}
  */
-async function pollChainForConfirmation(bot: any, opContexts: any, options: any = {}): Promise<{
+async function pollChainForConfirmation(bot: BotLike, opContexts: OpPhase[], options: JsonObj = {}): Promise<{
     allConfirmed: boolean;
-    confirmed: any[];
-    unconfirmed: any[];
+    confirmed: CreateContext[];
+    unconfirmed: OpPhase[];
     confirmedChainIds: string[];
 }> {
-    const maxPollRetries = options.maxPollRetries || 4;
+    const maxPollRetries = Number(options.maxPollRetries) || 4;
     // Test seam (see updateOrdersOnChainBatchCOW): bot._testPollIntervalMs
     // overrides the production pacing when set by the tests. An explicit 0 is
     // honored; null/undefined falls through to the production 1.5s default.
     const explicitPollMs = options.pollIntervalMs;
-    const seamMs = (bot as any)?._testPollIntervalMs;
+    const seamMs = bot?._testPollIntervalMs;
     const pollIntervalMs = resolveSeamMs(
         explicitPollMs,
         resolveSeamMs(seamMs, 1500)
     );
 
     // Only CREATE operations can be confirmed by polling (they appear as new orders on chain)
-    const createContexts = opContexts.filter((ctx: any) => ctx && ctx.kind === 'create' && ctx.finalInts && ctx.order);
+    const createContexts = opContexts.filter(
+        (ctx): ctx is CreateContext => !!ctx && ctx.kind === 'create' && !!ctx.finalInts && !!ctx.order
+    );
     if (createContexts.length === 0) {
         return { allConfirmed: false, confirmed: [], unconfirmed: [...opContexts], confirmedChainIds: [] };
     }
 
-    const accountRef = bot.accountId || bot.account?.id || bot.account;
-    let remaining: any[] = [...createContexts];
+    const accountRef = bot.accountId || (bot.account as unknown as { id?: string } | null)?.id || bot.account;
+    let remaining: CreateContext[] = [...createContexts];
     // Chain ids of the poll-matched fresh creates. Retained (not just
     // logged) so the poll-confirmed adoption path can re-read them BY ID —
     // the window fallback cannot prove a lagging node has them yet.
@@ -2483,7 +2629,7 @@ async function pollChainForConfirmation(bot: any, opContexts: any, options: any 
                 continue;
             }
 
-            const stillUnconfirmed: any[] = [];
+            const stillUnconfirmed: CreateContext[] = [];
             for (const ctx of remaining) {
                 const match = findChainOrderForSlot(bot, chainSnapshot, ctx.order.id, {
                     sell: ctx.finalInts.sell,
@@ -2518,7 +2664,7 @@ async function pollChainForConfirmation(bot: any, opContexts: any, options: any 
             if (attempt < maxPollRetries) {
                 await sleep(pollIntervalMs);
             }
-        } catch (pollErr: any) {
+        } catch (pollErr) {
             bot.manager.logger.log(
                 `[COW][POLL] Chain read attempt ${attempt}/${maxPollRetries} failed: ${getErrorMessage(pollErr)}`,
                 'warn'
@@ -2529,7 +2675,7 @@ async function pollChainForConfirmation(bot: any, opContexts: any, options: any 
         }
     }
 
-    const confirmed = createContexts.filter((ctx: any) => !remaining.includes(ctx));
+    const confirmed = createContexts.filter((ctx) => !remaining.includes(ctx));
     bot.manager.logger.log(
         `[COW][POLL] ${confirmed.length}/${createContexts.length} CREATE(s) confirmed after ${maxPollRetries} polls; ` +
         `${remaining.length} unconfirmed. Falling back to reconciliation.`,
@@ -2542,7 +2688,7 @@ async function pollChainForConfirmation(bot: any, opContexts: any, options: any 
  * Normalize a producer-supplied refillSlotIds wire into a Set.
  * Absent/empty/non-array => empty (guarded default, never fail-open).
  */
-function toRefillSlotIdSet(refillSlotIds: any): Set<string> {
+function toRefillSlotIdSet(refillSlotIds: unknown): Set<string> {
     const set = new Set<string>();
     if (Array.isArray(refillSlotIds)) {
         for (const id of refillSlotIds) {
@@ -2564,13 +2710,13 @@ function toRefillSlotIdSet(refillSlotIds: any): Set<string> {
  * as the overrun-hold in validateBoundaryCommit).
  */
 function resolveRefillBoundaryHold(
-    workingBoundary: any,
-    committedBoundary: any,
-    skippedUpdateSlotIds: any,
-    clampedUpdateSlotIds: any,
-    refillSlotIds: any,
-    skippedCreateSlotIds: any = undefined
-): { effectiveBoundary: any; heldRefillSlotIds: string[] } {
+    workingBoundary: unknown,
+    committedBoundary: unknown,
+    skippedUpdateSlotIds: Iterable<string> | null | undefined,
+    clampedUpdateSlotIds: Iterable<string> | null | undefined,
+    refillSlotIds: unknown,
+    skippedCreateSlotIds: Iterable<string> | null | undefined = undefined
+): { effectiveBoundary: unknown; heldRefillSlotIds: string[] } {
     const refills = toRefillSlotIdSet(refillSlotIds);
     const heldRefillSlotIds: string[] = [];
     if (refills.size > 0) {
@@ -2609,20 +2755,20 @@ function resolveRefillBoundaryHold(
  * re-plan from unchanged master re-derives the identical plan and re-hits
  * the identical guard blocks, so it is suppressed rather than re-broadcast;
  * the heal path is a fresh fill-driven plan or the re-center.
- * @param {any} manager - Order manager (mutable tracking fields)
+ * @param {unknown} manager - Order manager (mutable tracking fields)
  * @param {boolean} held - Whether this batch held the boundary
- * @param {any} keptBoundary - Committed boundary that was kept
- * @param {any} plannedBoundary - Boundary the plan wanted
+ * @param {unknown} keptBoundary - Committed boundary that was kept
+ * @param {unknown} plannedBoundary - Boundary the plan wanted
  * @param {string[]} heldSlotIds - Refill slots skipped this batch
  * @returns {number} Consecutive-hold count after this batch (0 when clear)
  */
-function trackBoundaryHold(manager: any, held: boolean, keptBoundary: any, plannedBoundary: any, heldSlotIds: any): number {
+function trackBoundaryHold(manager: OrderManagerLike, held: boolean, keptBoundary: unknown, plannedBoundary: unknown, heldSlotIds: string[]): number {
     if (!manager) return 0;
-    const prev = Number((manager as any)._consecutiveBoundaryHolds) || 0;
+    const prev = Number(manager._consecutiveBoundaryHolds) || 0;
     const consecutive = held ? prev + 1 : 0;
-    (manager as any)._consecutiveBoundaryHolds = consecutive;
+    manager._consecutiveBoundaryHolds = consecutive;
     if (held) {
-        (manager as any)._lastBoundaryHoldInfo = {
+        manager._lastBoundaryHoldInfo = {
             at: Date.now(),
             kept: keptBoundary,
             planned: plannedBoundary,
@@ -2631,25 +2777,25 @@ function trackBoundaryHold(manager: any, held: boolean, keptBoundary: any, plann
         // Signature for the identical-held-plan suppression in
         // performSafeRebalance: a fill-less replan with the same boundary,
         // pivot and fill timestamp can only reproduce this hold.
-        (manager as any)._lastHeldPlanSignature = {
-            boundaryIdx: keptBoundary,
-            pivot: (manager as any)._lastFilledPrice ?? null,
-            fillsAt: (manager as any)._lastFilledAt ?? 0,
+        manager._lastHeldPlanSignature = {
+            boundaryIdx: keptBoundary as number | null | undefined,
+            pivot: manager._lastFilledPrice ?? null,
+            fillsAt: manager._lastFilledAt ?? 0,
             wire: Array.isArray(heldSlotIds) ? [...heldSlotIds] : [],
         };
     } else {
-        (manager as any)._lastHeldPlanSignature = null;
+        manager._lastHeldPlanSignature = null;
     }
     return consecutive;
 }
 /**
  * Restore skipped update slots in the working grid to master state.
  * @param {import('./dexbot_class.js').DEXBot} bot
- * @param {any} workingGrid
+ * @param {unknown} workingGrid
  * @param {Set<string>} skippedSlotIds
  * @param {number} [skippedCount=0]
  */
-function restoreSkippedUpdateSlotsInWorkingGrid(bot: any, workingGrid: any, skippedSlotIds: any, skippedCount: any = 0) {
+function restoreSkippedUpdateSlotsInWorkingGrid(bot: BotLike, workingGrid: InstanceType<typeof WorkingGrid>, skippedSlotIds: Set<string> | null | undefined, skippedCount: number = 0) {
     if (!workingGrid || !skippedSlotIds || skippedSlotIds.size === 0) {
         return;
     }
@@ -2698,7 +2844,7 @@ function restoreSkippedUpdateSlotsInWorkingGrid(bot: any, workingGrid: any, skip
  *   skipped as already-consistent); handled=false when the caller must proceed
  *   with the original plan.
  */
-async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, preBroadcastGuard: any, seamPollIntervalMs?: number): Promise<{ handled: boolean; result?: any }> {
+async function replanStaleBatch(bot: BotLike, cowResult: CowResult, replanDepth: number, preBroadcastGuard: JsonObj, seamPollIntervalMs?: number): Promise<{ handled: boolean; result?: JsonObj }> {
     const canReplan = replanDepth < STALE_PLAN_REPLAN_LIMIT
         && Array.isArray(cowResult.fills) && cowResult.fills.length > 0;
     if (!canReplan) {
@@ -2731,15 +2877,15 @@ async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, p
     const hadPushedGrid = cowResult?._workingGridPushed === true;
     popPushedWorkingGrid(bot, cowResult);
 
-    let replanned: any = null;
+    let replanned: CowResult | null = null;
     try {
         // Restore the boundary-shift budget consumed by the abandoned plan:
         // it was built from the same fills and never shipped, so the re-plan
         // must derive from the FULL batch budget — not the leftover. Without
         // the restore, each stale-plan re-plan spends the budget twice and
         // drifts conservative (boundary under-shift).
-        if ((bot.manager as any)?._boundaryShiftBudgetBase != null) {
-            (bot.manager as any)._boundaryShiftBudget = (bot.manager as any)._boundaryShiftBudgetBase;
+        if (bot.manager?._boundaryShiftBudgetBase != null) {
+            bot.manager._boundaryShiftBudget = bot.manager._boundaryShiftBudgetBase;
         }
         if (typeof bot.manager.performSafeRebalance === 'function') {
             // skipBroadcastWait: this frame is itself inside the executor's
@@ -2747,11 +2893,11 @@ async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, p
             // stall the re-plan for the full _awaitBroadcastIdle timeout.
             replanned = await bot.manager.performSafeRebalance(
                 cowResult.fills,
-                cowResult.excludeIds || new Set(),
+                (cowResult.excludeIds as Set<string> | null | undefined) || new Set(),
                 { skipBroadcastWait: true }
-            );
+            ) as unknown as CowResult;
         }
-    } catch (replanErr: any) {
+    } catch (replanErr) {
         bot.manager.logger.log(
             `[COW] Re-plan failed: ${getErrorMessage(replanErr)}; proceeding with original plan`,
             'warn'
@@ -2803,7 +2949,7 @@ async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, p
         if (typeof bot.manager._pushWorkingGridRef === 'function') {
             bot.manager._pushWorkingGridRef(cowResult.workingGrid, cowResult);
         } else {
-            bot.manager._currentWorkingGridStack?.push?.(cowResult.workingGrid);
+            (bot.manager as unknown as { _currentWorkingGridStack?: unknown[] })._currentWorkingGridStack?.push?.(cowResult.workingGrid);
             bot.manager._resetRebalanceStateToDepth?.();
             cowResult._workingGridPushed = true;
         }
@@ -2837,7 +2983,7 @@ async function replanStaleBatch(bot: any, cowResult: any, replanDepth: number, p
  * @param {string} label - Stage label for the deferral log (e.g. 'entry', 'pre-broadcast')
  * @returns {Promise<boolean>}
  */
-async function waitForCowBroadcastSingleFlight(bot: any, label: string): Promise<boolean> {
+async function waitForCowBroadcastSingleFlight(bot: BotLike, label: string): Promise<boolean> {
     if (bot._shuttingDown) return true;
     if (!bot._cowBroadcastInFlight) return false;
     bot.manager.logger.log(
@@ -2878,7 +3024,7 @@ async function waitForCowBroadcastSingleFlight(bot: any, label: string): Promise
  * @param {Object} action - COW action
  * @returns {number}
  */
-function plannedUpdateSize(action: any) {
+function plannedUpdateSize(action: CowAction): number {
     return Number.isFinite(Number(action.newSize))
         ? Number(action.newSize)
         : Number(action.order?.size || 0);
@@ -2899,7 +3045,7 @@ function plannedUpdateSize(action: any) {
  * @param {Object} action - The COW action being built
  * @returns {number} The (possibly clamped) target size
  */
-function clampPostFillUpdateSize(bot: any, masterOrder: any, newSize: any, action: any) {
+function clampPostFillUpdateSize(bot: BotLike, masterOrder: ManagedOrder, newSize: number, action: CowAction): number {
     const target = Number(newSize);
     if (!masterOrder || masterOrder.state !== ORDER_STATES.PARTIAL) return target;
     const booked = Number(masterOrder.size);
@@ -2931,7 +3077,7 @@ function clampPostFillUpdateSize(bot: any, masterOrder: any, newSize: any, actio
  * @returns {Promise<Object>} { proceed:false, result } on refusal, or
  *   { proceed:true, crossingCandidates, intraBatchCandidates } on pass
  */
-async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
+async function runPreBroadcastGuards(bot: BotLike, cowResult: CowResult): Promise<PreBroadcastGuardResult> {
     const { actions } = cowResult;
     const chainOrderCandidates = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
         ? bot.manager._lastUnmatchedChainOrders
@@ -2975,7 +3121,7 @@ async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
         //     Skip only the violating CREATEs so the rest of the batch
         //     (valid CREATEs, CANCELs, UPDATEs) still proceeds.
         const hasHardOccupiedViolation = createSlotValidation.violations.some(
-            (v: any) => v.reason === 'slot_occupied'
+            (v) => v.reason === 'slot_occupied'
         );
 
         if (hasHardOccupiedViolation) {
@@ -2993,10 +3139,10 @@ async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
         }
 
         const violatingIds = createSlotValidation.violatingTargetIds;
-        const filteredActions = actions.filter((action: any) => {
+        const filteredActions = actions.filter((action) => {
             if (action.type !== COW_ACTIONS.CREATE) return true;
             const targetId = action.id || action.order?.id;
-            return !violatingIds.has(targetId);
+            return !violatingIds.has(String(targetId));
         });
 
         actions.length = 0;
@@ -3010,7 +3156,7 @@ async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
             'warn'
         );
 
-        if (!actions.some((action: any) => action.type === COW_ACTIONS.CREATE)) {
+        if (!actions.some((action) => action.type === COW_ACTIONS.CREATE)) {
             if (actions.length === 0) {
                 // Same exactly-once marker discipline as the other early
                 // returns: a pushed working grid must be popped here or the
@@ -3021,12 +3167,12 @@ async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
         }
     }
 
-    const hasCreateActions = actions.some((action: any) => action.type === COW_ACTIONS.CREATE);
+    const hasCreateActions = actions.some((action) => action.type === COW_ACTIONS.CREATE);
 
     if (hasCreateActions && bot.manager?._recoveryExhaustedAt) {
         const exhaustedAge = Date.now() - bot.manager._recoveryExhaustedAt;
         bot.manager.logger.log?.(
-            `[RECOVERY-EXHAUSTED] Blocking ${actions.filter((a: any) => a.type === COW_ACTIONS.CREATE).length} CREATE(s) ` +
+            `[RECOVERY-EXHAUSTED] Blocking ${actions.filter((a) => a.type === COW_ACTIONS.CREATE).length} CREATE(s) ` +
             `(exhausted ${(exhaustedAge / 1000).toFixed(0)}s ago). ` +
             `Waiting for next fill or sync cycle to reset recovery state.`,
             'warn'
@@ -3050,8 +3196,8 @@ async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
     // the frozen rail): they can never be adopted and collide with nothing,
     // so they must not block CREATES — otherwise one dip-protection hold
     // freezes the whole grid. Only adoptable/cancellable orphans block.
-    const blockingUnmatched = unmatchedChainOrders.filter((u: any) => !orderUtils.isNonBlockingUnmatchedOrder(u));
-    const pendingBroadcasts: any[] = getPendingBroadcasts(bot);
+    const blockingUnmatched = unmatchedChainOrders.filter((u) => !orderUtils.isNonBlockingUnmatchedOrder(u));
+    const pendingBroadcasts: PendingEntry[] = getPendingBroadcasts(bot);
     if (hasCreateActions && (blockingUnmatched.length > 0 || pendingBroadcasts.length > 0)) {
         if (pendingBroadcasts.length > 0) {
             bot.manager.logger.log(
@@ -3062,7 +3208,7 @@ async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
             await requestStructuralResync(
                 bot,
                 'pending broadcasts before COW create',
-                { pendingBroadcasts: pendingBroadcasts.map((p: any) => p.slotId) }
+                { pendingBroadcasts: pendingBroadcasts.map((p) => p.slotId) }
             );
             try {
                 await reconcileAfterUncertainBroadcast(
@@ -3070,18 +3216,18 @@ async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
                     new BroadcastUncertainError(
                         'rejected CREATE batch had pending broadcasts',
                         {
-                            operations: pendingBroadcasts.map((p: any) => p.order),
+                            operations: pendingBroadcasts.map((p) => p.order),
                             accountName: bot.account,
-                            batchId: bot._currentBatchId || null,
+                            batchId: bot._currentBatchId != null ? String(bot._currentBatchId) : null,
                             payload: null,
                             timeoutMs: null
                         }
                     ),
                     []
                 );
-            } catch (recoverErr: any) {
+            } catch (recoverErr) {
                 bot.manager.logger.log(
-                    `[COW] Recovery from pending broadcasts failed: ${recoverErr?.message || recoverErr}`,
+                    `[COW] Recovery from pending broadcasts failed: ${getErrorMessage(recoverErr)}`,
                     'error'
                 );
             }
@@ -3099,7 +3245,7 @@ async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
 
         const unmatchedSample = blockingUnmatched
             .slice(0, 3)
-            .map((o: any) => formatUnmatchedChainOrderForLog(o))
+            .map((o) => formatUnmatchedChainOrderForLog(o))
             .join(' | ');
         bot.manager.logger.log(
             `[COW] ${blockingUnmatched.length} unmatched chain order(s) blocking CREATES ` +
@@ -3151,7 +3297,7 @@ async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
                             syncUnmatchedCount > 0 ? 'warn' : 'debug'
                         );
                         if (syncUnmatchedCount > 0 && syncUnmatchedCount !== unmatchedChainOrders.length) {
-                            bot.manager._lastUnmatchedChainOrders = syncResult.unmatchedChainOrders.map((o: any) => ({ ...o }));
+                            bot.manager._lastUnmatchedChainOrders = syncResult.unmatchedChainOrders.map((o) => ({ ...o }));
                             bot.manager.logger.log(
                                 `[COW] Updated _lastUnmatchedChainOrders from sync result: ` +
                                 `${unmatchedChainOrders.length} → ${syncUnmatchedCount}`,
@@ -3161,9 +3307,9 @@ async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
                     }
                 }
             }
-        } catch (syncErr: any) {
+        } catch (syncErr) {
             bot.manager.logger.log(
-                `[COW] Failed to sync/unmatched orders: ${syncErr?.message || syncErr}`,
+                `[COW] Failed to sync/unmatched orders: ${getErrorMessage(syncErr)}`,
                 'warn'
             );
         }
@@ -3192,7 +3338,7 @@ async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
     // chain orders). Built after the batch-level pending/unmatched guards so
     // it reflects any sync they triggered.
     const crossingCandidates = buildCrossingCandidates(bot);
-    const intraBatchCandidates: any[] = [];
+    const intraBatchCandidates: JsonObj[] = [];
 
     // CROSSED-BOOK GATE: refuse to broadcast any batch whose simulated result
     // prices a BUY at-or-above a SELL (see detectCrossedBookPlan).
@@ -3218,14 +3364,14 @@ async function runPreBroadcastGuards(bot: any, cowResult: any): Promise<any> {
     return { proceed: true, crossingCandidates, intraBatchCandidates };
 }
 
-function restoreTestPollIntervalSeam(bot: any, prev: any) {
+function restoreTestPollIntervalSeam(bot: BotLike, prev: unknown) {
     try {
-        if (prev === undefined) delete (bot as any)._testPollIntervalMs;
-        else (bot as any)._testPollIntervalMs = prev;
+        if (prev === undefined) delete bot._testPollIntervalMs;
+        else bot._testPollIntervalMs = prev as number | undefined;
     } catch { /* seam restore must never break the batch */ }
 }
 
-async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: any = {}) {
+async function updateOrdersOnChainBatchCOW(bot: BotLike, cowResult: CowResult, options: JsonObj = {}): Promise<JsonObj> {
     const replanDepth = Number.isFinite(Number(options?.replanDepth)) ? Number(options.replanDepth) : 0;
     // Test seam: options.pollIntervalMs overrides the production 1.5s pacing
     // in pollChainForConfirmation (missing-create path below) so tests do
@@ -3233,10 +3379,10 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     // this call (see the wrapper's finally) so the inner missing-create
     // branch and any re-plan recursion pick it up without changing the
     // production call signature used by the runtime.
-    const seamPollIntervalMs = resolveSeamMsOrNull((options as any)?.pollIntervalMs);
-    const prevSeamPollIntervalMs = (bot as any)?._testPollIntervalMs;
+    const seamPollIntervalMs = resolveSeamMsOrNull(options?.pollIntervalMs);
+    const prevSeamPollIntervalMs = bot?._testPollIntervalMs;
     if (seamPollIntervalMs != null) {
-        (bot as any)._testPollIntervalMs = seamPollIntervalMs;
+        bot._testPollIntervalMs = seamPollIntervalMs;
     }
     // Expose the resolved interval using the same precedence the missing-create
     // poll path applies (explicit option > bot seam > production 1500ms).
@@ -3244,9 +3390,9 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
     // observable on every batch exit, including the pre-broadcast guard
     // refusals that never reach the poll (a `||`-vs-`??` regression here is
     // otherwise invisible: the only effect is a slower poll).
-    (bot as any)._lastResolvedPollIntervalMs = resolveSeamMs(
+    bot._lastResolvedPollIntervalMs = resolveSeamMs(
         seamPollIntervalMs,
-        resolveSeamMs((bot as any)?._testPollIntervalMs, 1500)
+        resolveSeamMs(bot?._testPollIntervalMs, 1500)
     );
     // The seam override must not survive this call: every exit path (dry run,
     // entry/pre-broadcast single-flight aborts, guard refusals, re-plan
@@ -3274,24 +3420,24 @@ async function updateOrdersOnChainBatchCOW(bot: any, cowResult: any, options: an
 }
 
 async function updateOrdersOnChainBatchCOWBody(
-    bot: any,
-    cowResult: any,
+    bot: BotLike,
+    cowResult: CowResult,
     replanDepth: number,
     seamPollIntervalMs: number | undefined
-) {
+): Promise<JsonObj> {
     bot._currentCycleId = (Number.isFinite(Number(bot._currentCycleId)) ? Number(bot._currentCycleId) : 0) + 1;
     const { workingGrid, workingIndexes, workingBoundary, actions } = cowResult;
     // Boundary-hold value: computed pre-broadcast after the skip-restore and
     // frozen for every downstream commit path (success + uncertain-catch).
     // workingBoundary itself stays untouched (audit trail).
-    let effectiveBoundary: any = workingBoundary;
+    let effectiveBoundary: number = workingBoundary;
     // True when the refill hold pinned the committed boundary over the plan's
     // target. Hoisted out of the broadcast try block: the uncertain-broadcast
     // catch commits too, and a held boundary must keep the owed fill crawls
     // there as well (see _commitWorkingGrid pending-crawl bookkeeping).
     let boundaryHeld = false;
     // Consecutive-hold re-center tuning (see the escalation block below).
-    const boundaryHoldTiming: any = (constantsModule as any)?.TIMING || {};
+    const boundaryHoldTiming: JsonObj = constantsModule?.TIMING || {};
     const holdResyncThreshold = Number(boundaryHoldTiming.BOUNDARY_HOLD_RESYNC_THRESHOLD) > 0
         ? Number(boundaryHoldTiming.BOUNDARY_HOLD_RESYNC_THRESHOLD)
         : 4;
@@ -3300,9 +3446,9 @@ async function updateOrdersOnChainBatchCOWBody(
         : 5 * 60 * 1000;
 
     if (bot.config.dryRun) {
-        const cancelCount = actions.filter((a: any) => a.type === COW_ACTIONS.CANCEL).length;
-        const createCount = actions.filter((a: any) => a.type === COW_ACTIONS.CREATE).length;
-        const updateCount = actions.filter((a: any) => a.type === COW_ACTIONS.UPDATE).length;
+        const cancelCount = actions.filter((a: { type?: unknown }) => a.type === COW_ACTIONS.CANCEL).length;
+        const createCount = actions.filter((a: { type?: unknown }) => a.type === COW_ACTIONS.CREATE).length;
+        const updateCount = actions.filter((a: { type?: unknown }) => a.type === COW_ACTIONS.UPDATE).length;
         if (cancelCount > 0) bot.manager.logger.log(`Dry run: would cancel ${cancelCount} orders`, 'info');
         if (createCount > 0) bot.manager.logger.log(`Dry run: would place ${createCount} new orders`, 'info');
         if (updateCount > 0) bot.manager.logger.log(`Dry run: would update ${updateCount} orders`, 'info');
@@ -3340,23 +3486,24 @@ async function updateOrdersOnChainBatchCOWBody(
                 `[COW] Draining ${pendingCorrectionCount} pending correction(s) before batch`,
                 'info'
             );
-            const drainResult = await (orderUtils as any).correctAllPriceMismatches(
-                bot.manager, bot.account, bot.privateKey, chainOrders
+            const drainResult = await orderUtils.correctAllPriceMismatches(
+                bot.manager, bot.account as string, bot.privateKey as string,
+                chainOrders as unknown as Parameters<typeof orderUtils.correctAllPriceMismatches>[3]
             );
             if (drainResult?.failed > 0) {
                 bot.manager.logger.log(
                     `[COW] ${drainResult.failed} correction(s) failed pre-batch` +
-                    (drainResult.staleDropped > 0 ? `, ${drainResult.staleDropped} stale dropped` : '') +
+                    ((drainResult.staleDropped ?? 0) > 0 ? `, ${drainResult.staleDropped} stale dropped` : '') +
                     `; remaining entries retry on next sync/maintenance tick`,
                     'warn'
                 );
-            } else if (drainResult?.staleDropped > 0) {
+            } else if ((drainResult?.staleDropped ?? 0) > 0) {
                 bot.manager.logger.log(
                     `[COW] Pre-batch drain resolved, ${drainResult.staleDropped} stale correction(s) dropped`,
                     'info'
                 );
             }
-        } catch (drainErr: any) {
+        } catch (drainErr) {
             bot.manager.logger.log(
                 `[COW] Pre-batch correction drain failed: ${getErrorMessage(drainErr)}`,
                 'warn'
@@ -3368,12 +3515,12 @@ async function updateOrdersOnChainBatchCOWBody(
     // block, pending/unmatched guards, crossed-book gate) — see
     // runPreBroadcastGuards. Refusals already popped the working grid.
     const guards = await runPreBroadcastGuards(bot, cowResult);
-    if (!guards.proceed) return guards.result;
-    const { crossingCandidates, intraBatchCandidates } = guards;
+    if (!guards.proceed) return guards.result ?? { executed: false, hadRotation: false };
+    const { crossingCandidates = [], intraBatchCandidates = [] } = guards;
 
     const { assetA, assetB } = bot.manager.assets;
-    const operations: any[] = [];
-    const opContexts: any[] = [];
+    const operations: unknown[] = [];
+    const opContexts: OpPhase[] = [];
     const skippedUpdateSlotIds = new Set();
     let skippedUpdateCount = 0;
     // Guard-skipped CREATE slot ids (hole-refills never placed). Fed to the
@@ -3451,8 +3598,8 @@ async function updateOrdersOnChainBatchCOWBody(
         // freeze time, paired with the gate's own queue readout.
         let freezeQueueDepth: number | null = null;
         try {
-            freezeQueueDepth = Array.isArray((bot as any)?._incomingFillQueue)
-                ? (bot as any)._incomingFillQueue.length
+            freezeQueueDepth = Array.isArray(bot?._incomingFillQueue)
+                ? bot._incomingFillQueue.length
                 : null;
         } catch { freezeQueueDepth = null; }
         try { if (refreshLastFillPivotFromQueue(bot)) lastFillGuardPivotRefreshed = true; } catch { /* best-effort */ }
@@ -3462,17 +3609,17 @@ async function updateOrdersOnChainBatchCOWBody(
         // whose freeze picked up a pre-freeze queued fill look "moved" at the
         // gate — a spurious warn plus a redundant full re-check against the
         // identical pivot.
-        const frozenPivotAtBatchStart = (bot.manager as any)?._lastFilledPrice;
-        const frozenTypeAtBatchStart = (bot.manager as any)?._lastFilledType;
+        const frozenPivotAtBatchStart = bot.manager?._lastFilledPrice;
+        const frozenTypeAtBatchStart = bot.manager?._lastFilledType;
         for (const action of actions) {
             if (action.type === COW_ACTIONS.CANCEL) {
                 try {
-                    const op = await chainOrders.buildCancelOrderOp(bot.account, action.orderId);
+                    const op = await chainOrders.buildCancelOrderOp(bot.account, action.orderId as string);
                     operations.push(op);
                     if (action.orderId) cancelOpIndexByOrderId.set(action.orderId, operations.length - 1);
                     const order = bot.manager.orders.get(action.id) || { id: action.id, orderId: action.orderId };
-                    opContexts.push({ kind: 'cancel', order });
-                } catch (err: any) {
+                    opContexts.push({ kind: 'cancel', order: order as ManagedOrder });
+                } catch (err) {
                     const orderNotFound = /\bnot found\b/i.test(getErrorMessage(err)) || /\bdoes not exist\b/i.test(getErrorMessage(err));
                     if (orderNotFound) {
                         bot.manager.logger.log(
@@ -3485,7 +3632,7 @@ async function updateOrdersOnChainBatchCOWBody(
                 }
             } else if (action.type === COW_ACTIONS.CREATE) {
                 try {
-                    const order = action.order;
+                    const order = action.order as ManagedOrder;
                     const sizeValidation = validateOrderSizeForExecution(
                         bot,
                         order.size,
@@ -3530,12 +3677,12 @@ async function updateOrdersOnChainBatchCOWBody(
                     const createPrice = effectiveOrder.price;
 
                     const precision = order.type === ORDER_TYPES.SELL ? bot.manager.assets.assetA.precision : bot.manager.assets.assetB.precision;
-                    const batchCollision = hasSlotPriceCollision(opContexts as any, createPrice, precision, order.id, (ctx:any)=> ctx.kind==='create' && ctx.order?.price != null);
+                    const batchCollision = hasSlotPriceCollision(opContexts as unknown as SlotLike[], createPrice, precision, order.id, (ctx: SlotLike)=> ctx.kind==='create' && (ctx.order as JsonObj | undefined)?.price != null);
                     if (batchCollision) {
                         bot.manager.logger.log(
                             `[COW] Skipping CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: ` +
                             `same-batch CREATE ${batchCollision.id} already at ` +
-                            `price ${Format.formatPrice6(batchCollision.order.price)}. ` +
+                            `price ${Format.formatPrice6(Number(batchCollision.order?.price ?? batchCollision.price))}. ` +
                             `The next reconcile cycle will resolve the mismatch.`,
                             'warn'
                         );
@@ -3554,14 +3701,14 @@ async function updateOrdersOnChainBatchCOWBody(
                     // with this create mid-broadcast and self-trade (production
                     // incident class).
                     const createCrossed = findCrossedOrder(
-                        crossingCandidates,
+                        crossingCandidates as never,
                         createPrice,
                         order.type,
                         bot.manager.assets,
-                        (o: any) => (orderUtils as any).isCrossingCheckCandidate(o, null, cancelOpIndexByOrderId)
+                        (o: Parameters<typeof orderUtils.isCrossingCheckCandidate>[0]) => orderUtils.isCrossingCheckCandidate(o, null, cancelOpIndexByOrderId)
                     );
                     const intraBatchCrossed = createCrossed ? null : findCrossedOrder(
-                        intraBatchCandidates,
+                        intraBatchCandidates as never,
                         createPrice,
                         order.type,
                         bot.manager.assets
@@ -3583,8 +3730,8 @@ async function updateOrdersOnChainBatchCOWBody(
                     // The batch-level origin is honored only for actions without their own origin stamp
                     // (back-compat for plans that bypass buildActionsFromPlan). Cold (null) => disabled.
                     try {
-                        const actionOrigin = (action as any)?.origin;
-                        const batchOrigin = (cowResult as any)?.origin;
+                        const actionOrigin = action?.origin;
+                        const batchOrigin = cowResult?.origin;
                         const isCorrectionCreate = actionOrigin === 'spread-correction'
                             || (actionOrigin == null && batchOrigin === 'spread-correction');
                         if (!isCorrectionCreate) {
@@ -3594,7 +3741,7 @@ async function updateOrdersOnChainBatchCOWBody(
                                 lastFillGuardStats.skipped++;
                                 const dir = order.type === ORDER_TYPES.BUY ? 'above' : 'below';
                                 bot.manager.logger.log(
-                                    `[LAST-FILL-GUARD] Skipping ${order.type} CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} (halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)}); re-planned after market moves`,
+                                    `[LAST-FILL-GUARD] Skipping ${order.type} CREATE for ${order.id} at ${Format.formatPrice6(createPrice)}: ${dir} last filled ${Format.formatPrice6(Number(check.pivot))} (halfInc ${check.halfInc}% thr ${Format.formatPrice6(Number(check.threshold))}); re-planned after market moves`,
                                     'debug'
                                 );
                                 if (order.id) skippedCreateSlotIds.add(order.id);
@@ -3604,7 +3751,7 @@ async function updateOrdersOnChainBatchCOWBody(
                         } else {
                             lastFillGuardStats.bypassed++;
                         }
-                    } catch (_e: any) { /* guard is best-effort */ }
+                    } catch (_e) { /* guard is best-effort */ }
 
                     const args = buildCreateOrderArgs(effectiveOrder, assetA, assetB);
                     // GRID-PRICE-INVARIANT (blocking): the CREATE price must be
@@ -3619,9 +3766,9 @@ async function updateOrdersOnChainBatchCOWBody(
                     const buildResult = await chainOrders.buildCreateOrderOp(
                         bot.account,
                         args.amountToSell,
-                        args.sellAssetId,
+                        args.sellAssetId as string,
                         args.minToReceive,
-                        args.receiveAssetId,
+                        args.receiveAssetId as string,
                         null
                     );
                     if (!buildResult) {
@@ -3642,7 +3789,7 @@ async function updateOrdersOnChainBatchCOWBody(
                         finalInts: buildResult.finalInts
                     });
                     if (recordedFp) batchPendingFps.add(recordedFp);
-                } catch (err: any) {
+                } catch (err) {
                     bot.manager.logger.log(`Failed to prepare create op for ${action.id}: ${getErrorMessage(err)}`, 'error');
                 }
             } else if (action.type === COW_ACTIONS.UPDATE) {
@@ -3742,11 +3889,11 @@ async function updateOrdersOnChainBatchCOWBody(
                         // old commitment and the next plan re-evaluates once
                         // the crossed order's cancel confirms.
                         const crossedOrder = findCrossedOrder(
-                            [...crossingCandidates, ...intraBatchCandidates],
+                            [...crossingCandidates, ...intraBatchCandidates] as never,
                             newPrice,
                             orderType,
                             bot.manager.assets,
-                            (o: any) => (orderUtils as any).isCrossingCheckCandidate(o, action.orderId, cancelOpIndexByOrderId)
+                            (o: Parameters<typeof orderUtils.isCrossingCheckCandidate>[0]) => orderUtils.isCrossingCheckCandidate(o, action.orderId, cancelOpIndexByOrderId)
                         );
                         if (crossedOrder) {
                             skippedUpdateCount++;
@@ -3784,10 +3931,10 @@ async function updateOrdersOnChainBatchCOWBody(
                         // chunks of a long broadcast would be checked against a stale pivot.
                         try {
                             let bypassedEvacuation = false;
-                            const rotationOrigin = (action as any)?.origin;
+                            const rotationOrigin = action?.origin;
                             if (rotationOrigin === 'gap-evacuation') {
-                                const frozenB = Number((action as any)?.evacBoundary);
-                                const frozenG = Number((action as any)?.evacGapSlots);
+                                const frozenB = Number(action?.evacBoundary);
+                                const frozenG = Number(action?.evacGapSlots);
                                 let stampUsable = Number.isFinite(frozenB) && Number.isFinite(frozenG);
                                 if (stampUsable) {
                                     // Stale-stamp check: the stamp froze PLAN-BUILD
@@ -3797,14 +3944,14 @@ async function updateOrdersOnChainBatchCOWBody(
                                     // the LIVE geometry, re-prove via the unstamped
                                     // live probe below instead of bypassing outright.
                                     const stampValid = isEvacuationStampStillValid(
-                                        bot.manager?.boundaryIdx, (bot.manager as any)?._gapSlots,
+                                        bot.manager?.boundaryIdx, bot.manager?._gapSlots,
                                         action.id, action.newGridId, orderType
                                     );
                                     if (!stampValid) {
                                         stampUsable = false;
                                         bot.manager.logger.log(
                                             `[LAST-FILL-GUARD] Stamped evacuation for ${action.id} -> ${action.newGridId} is stale under live ` +
-                                            `boundary ${(bot.manager as any)?.boundaryIdx}/gap ${(bot.manager as any)?._gapSlots} — re-proving live`,
+                                            `boundary ${bot.manager?.boundaryIdx}/gap ${bot.manager?._gapSlots} — re-proving live`,
                                             'warn'
                                         );
                                     }
@@ -3822,13 +3969,13 @@ async function updateOrdersOnChainBatchCOWBody(
                                     // isEvacuationRotationAllowed also rejects
                                     // growth and then falls through to the
                                     // normal last-fill guard.
-                                    let stampPrecision: any = null;
+                                    let stampPrecision: number | null = null;
                                     try { stampPrecision = getPrecisionByOrderType(bot.manager.assets, orderType); } catch { stampPrecision = null; }
-                                    if (!isEvacuationSizeStillValid(newSize, Number((masterOrder as any)?.size), stampPrecision)) {
+                                    if (!isEvacuationSizeStillValid(newSize, Number(masterOrder?.size), stampPrecision)) {
                                         stampUsable = false;
                                         bot.manager.logger.log(
                                             `[LAST-FILL-GUARD] Stamped evacuation for ${action.id} -> ${action.newGridId} lost its size cover: ` +
-                                            `planned ${Format.formatAmount(newSize)} exceeds booked remaining ${Format.formatAmount(Number((masterOrder as any)?.size))} — re-proving live`,
+                                            `planned ${Format.formatAmount(newSize)} exceeds booked remaining ${Format.formatAmount(Number(masterOrder?.size))} — re-proving live`,
                                             'warn'
                                         );
                                     }
@@ -3844,8 +3991,8 @@ async function updateOrdersOnChainBatchCOWBody(
                                     // Unstamped: prove violation-reducing live. masterOrder was
                                     // captured from the master grid before any rotation
                                     // pre-application — it must NOT be re-read afterwards.
-                                    const oldPrice = Number((masterOrder as any)?.price);
-                                    const oldSize = Number((masterOrder as any)?.size);
+                                    const oldPrice = Number(masterOrder?.price);
+                                    const oldSize = Number(masterOrder?.size);
                                     if (!Number.isFinite(oldPrice) || !(oldPrice > 0) || !Number.isFinite(oldSize) || !(oldSize > 0)) {
                                         lastFillGuardStats.checked++;
                                         lastFillGuardStats.skipped++;
@@ -3859,14 +4006,14 @@ async function updateOrdersOnChainBatchCOWBody(
                                         );
                                         continue;
                                     }
-                                    let sidePrecision: any = null;
+                                    let sidePrecision: number | null = null;
                                     try { sidePrecision = getPrecisionByOrderType(bot.manager.assets, orderType); } catch { sidePrecision = null; }
                                     // Geometry re-proof under the LIVE boundary: if the
                                     // source is no longer in-band (or dest no longer rail),
                                     // this is not an evacuation anymore — fall through to
                                     // the normal guard instead of bypassing via the probe.
                                     // Non-finite live geometry cannot disprove; probe proceeds.
-                                    if (isEvacuationStampStillValid(bot.manager?.boundaryIdx, (bot.manager as any)?._gapSlots, action.id, action.newGridId, orderType)) {
+                                    if (isEvacuationStampStillValid(bot.manager?.boundaryIdx, bot.manager?._gapSlots, action.id, action.newGridId, orderType)) {
                                         const evacCheck = isEvacuationRotationAllowed(oldPrice, oldSize, newPrice, newSize, orderType, sidePrecision);
                                         if (evacCheck.allowed) {
                                             bypassedEvacuation = true;
@@ -3879,7 +4026,7 @@ async function updateOrdersOnChainBatchCOWBody(
                                     } else {
                                         bot.manager.logger.log(
                                             `[LAST-FILL-GUARD] Unstamped evacuation probe for ${action.id} -> ${action.newGridId} rejected: ` +
-                                            `source/dest no longer evacuation geometry under live boundary ${(bot.manager as any)?.boundaryIdx}/gap ${(bot.manager as any)?._gapSlots} — normal guard applies`,
+                                            `source/dest no longer evacuation geometry under live boundary ${bot.manager?.boundaryIdx}/gap ${bot.manager?._gapSlots} — normal guard applies`,
                                             'warn'
                                         );
                                     }
@@ -3898,14 +4045,14 @@ async function updateOrdersOnChainBatchCOWBody(
                                 if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
                                 const dir = orderType === ORDER_TYPES.BUY ? 'above' : 'below';
                                 bot.manager.logger.log(
-                                    `[LAST-FILL-GUARD] Skipping ${orderType} UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} (halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)})`,
+                                    `[LAST-FILL-GUARD] Skipping ${orderType} UPDATE for ${action.id} -> ${action.newGridId} at ${Format.formatPrice6(newPrice)}: ${dir} last filled ${Format.formatPrice6(Number(check.pivot))} (halfInc ${check.halfInc}% thr ${Format.formatPrice6(Number(check.threshold))})`,
                                     'debug'
                                 );
                                 continue;
                             }
                             lastFillGuardStats.passed++;
                             }
-                        } catch (_e: any) { /* best-effort */ }
+                        } catch (_e) { /* best-effort */ }
 
                         const { amountToSell, minToReceive } = buildCreateOrderArgs(
                             { type: orderType, size: newSize, price: newPrice },
@@ -3960,7 +4107,7 @@ async function updateOrdersOnChainBatchCOWBody(
 
                     const masterOrder = bot.manager.orders.get(action.id);
                     const plannedNewSize = plannedUpdateSize(action);
-                    const newSize = clampPostFillUpdateSize(bot, masterOrder, plannedNewSize, action);
+                    const newSize = clampPostFillUpdateSize(bot, masterOrder as ManagedOrder, plannedNewSize, action);
                     if (newSize !== plannedNewSize) {
                         clampedUpdateSlotIds.add(action.id);
                     }
@@ -3969,7 +4116,7 @@ async function updateOrdersOnChainBatchCOWBody(
 
                     const op = await chainOrders.buildUpdateOrderOp(
                         bot.account,
-                        action.orderId,
+                        action.orderId as string,
                         { amountToSell: newSize, orderType },
                         cachedRawOnChain
                     );
@@ -3991,7 +4138,7 @@ async function updateOrdersOnChainBatchCOWBody(
                         type: orderType
                     };
                     opContexts.push({ kind: 'size-update', updateInfo: { partialOrder, newSize }, finalInts: op.finalInts });
-                } catch (err: any) {
+                } catch (err) {
                     const orderNotFound = /\bnot found\b/i.test(getErrorMessage(err)) || /\bdoes not exist\b/i.test(getErrorMessage(err));
                     if (orderNotFound) {
                         try {
@@ -4017,7 +4164,7 @@ async function updateOrdersOnChainBatchCOWBody(
                                     'warn'
                                 );
                             }
-                            const sizeCheck = validateOrderSizeForExecution(bot, fbSize, fbType, fbOrder, fbSize);
+                            const sizeCheck = validateOrderSizeForExecution(bot, fbSize, fbType as string, fbOrder as unknown as JsonObj, fbSize);
                             if (!sizeCheck.isValid) {
                                 bot.manager.logger.log(
                                     `[COW] CREATE fallback for ${action.id} rejected by size validation: ${sizeCheck.reason}`,
@@ -4025,22 +4172,22 @@ async function updateOrdersOnChainBatchCOWBody(
                                 );
                             } else if (fbType && fbSize > 0 && fbPrice > 0) {
                                 const fbPrecision = fbType === ORDER_TYPES.SELL ? bot.manager.assets.assetA.precision : bot.manager.assets.assetB.precision;
-                                const fbCollision = hasSlotPriceCollision([...bot.manager.orders.values()], fbPrice, fbPrecision, targetSlotId, isOrderPlaced);
+                                const fbCollision = hasSlotPriceCollision([...bot.manager.orders.values()], fbPrice, fbPrecision, targetSlotId, isOrderPlaced as (it: SlotLike) => boolean);
                                 if (fbCollision) {
                                     bot.manager.logger.log(
                                         `[COW] Skipping CREATE fallback for ${targetSlotId} at ${Format.formatPrice6(fbPrice)}: ` +
                                         `existing placed order ${fbCollision.id} (${fbCollision.orderId}) ` +
-                                        `already at price ${Format.formatPrice6(fbCollision.price)}.`,
+                                        `already at price ${Format.formatPrice6(Number(fbCollision.price))}.`,
                                         'warn'
                                     );
                                     continue;
                                 }
-                                const fbBatchCollision = hasSlotPriceCollision(opContexts as any, fbPrice, fbPrecision, targetSlotId, (ctx:any)=> ctx.kind==='create');
+                                const fbBatchCollision = hasSlotPriceCollision(opContexts as unknown as SlotLike[], fbPrice, fbPrecision, targetSlotId, (ctx: SlotLike)=> ctx.kind==='create');
                                 if (fbBatchCollision) {
                                     bot.manager.logger.log(
                                         `[COW] Skipping CREATE fallback for ${targetSlotId} at ${Format.formatPrice6(fbPrice)}: ` +
                                         `same-batch CREATE ${fbBatchCollision.id} already at ` +
-                                        `price ${Format.formatPrice6(fbBatchCollision.order.price)}.`,
+                                        `price ${Format.formatPrice6(Number(fbBatchCollision.order?.price ?? fbBatchCollision.price))}.`,
                                         'warn'
                                     );
                                     continue;
@@ -4053,11 +4200,11 @@ async function updateOrdersOnChainBatchCOWBody(
                                 // live order whose cancel is not already
                                 // queued at an earlier op position.
                                 const fbCrossed = findCrossedOrder(
-                                    crossingCandidates,
+                                    crossingCandidates as never,
                                     fbPrice,
                                     fbType,
                                     bot.manager.assets,
-                                    (o: any) => (orderUtils as any).isCrossingCheckCandidate(o, null, cancelOpIndexByOrderId)
+                                    (o: Parameters<typeof orderUtils.isCrossingCheckCandidate>[0]) => orderUtils.isCrossingCheckCandidate(o, null, cancelOpIndexByOrderId)
                                 );
                                 if (fbCrossed) {
                                     bot.manager.logger.log(
@@ -4081,14 +4228,14 @@ async function updateOrdersOnChainBatchCOWBody(
                                         bot.manager.logger.log(
                                             `[LAST-FILL-GUARD] Skipping CREATE fallback for ${targetSlotId} at ` +
                                             `${Format.formatPrice6(fbPrice)}: ${fbDir} last filled ` +
-                                            `${Format.formatPrice6(fbCheck.pivot)} (halfInc ${fbCheck.halfInc}% thr ` +
-                                            `${Format.formatPrice6(fbCheck.threshold)}); re-planned after market moves`,
+                                            `${Format.formatPrice6(Number(fbCheck.pivot))} (halfInc ${fbCheck.halfInc}% thr ` +
+                                            `${Format.formatPrice6(Number(fbCheck.threshold))}); re-planned after market moves`,
                                             'debug'
                                         );
                                         continue;
                                     }
                                     lastFillGuardStats.passed++;
-                                } catch (_fbGuardErr: any) { /* guard is best-effort */ }
+                                } catch (_fbGuardErr) { /* guard is best-effort */ }
                                 const fbArgs = buildCreateOrderArgs(
                                     { type: fbType, size: fbSize, price: fbPrice },
                                     assetA, assetB
@@ -4100,9 +4247,9 @@ async function updateOrdersOnChainBatchCOWBody(
                                 const fbResult = await chainOrders.buildCreateOrderOp(
                                     bot.account,
                                     fbArgs.amountToSell,
-                                    fbArgs.sellAssetId,
+                                    fbArgs.sellAssetId as string,
                                     fbArgs.minToReceive,
-                                    fbArgs.receiveAssetId,
+                                    fbArgs.receiveAssetId as string,
                                     null
                                 );
                                 if (fbResult) {
@@ -4110,14 +4257,14 @@ async function updateOrdersOnChainBatchCOWBody(
                                     opContexts.push({
                                         kind: 'create',
                                         id: targetSlotId,
-                                        order: { id: targetSlotId, type: fbType, price: fbPrice, size: fbSize },
+                                        order: { id: targetSlotId, type: fbType, price: fbPrice, size: fbSize } as unknown as ManagedOrder,
                                         args: { amountToSell: fbArgs.amountToSell, minToReceive: fbArgs.minToReceive },
                                         finalInts: fbResult.finalInts
                                     });
                                     const fbRecordedFp = recordPendingBroadcast(bot, {
                                         opIndex: operations.length - 1,
                                         ctxIndex: opContexts.length - 1,
-                                        order: { id: targetSlotId, type: fbType, price: fbPrice, size: fbSize },
+                                        order: { id: targetSlotId, type: fbType, price: fbPrice, size: fbSize } as unknown as ManagedOrder,
                                         finalInts: fbResult.finalInts
                                     });
                                     if (fbRecordedFp) batchPendingFps.add(fbRecordedFp);
@@ -4128,7 +4275,7 @@ async function updateOrdersOnChainBatchCOWBody(
                                     continue;
                                 }
                             }
-                        } catch (fbErr: any) {
+                        } catch (fbErr) {
                             bot.manager.logger.log(
                                 `[COW] CREATE fallback also failed for ${action.id}: ${getErrorMessage(fbErr)}`,
                                 'warn'
@@ -4156,7 +4303,7 @@ async function updateOrdersOnChainBatchCOWBody(
         // reported separately (gateChecked=... fields).
         const skippedUpdateCountRef = { count: 0 };
         const finalGateStats = { checked: 0, passed: 0, skipped: 0, bypassed: 0, pivotOffGrid: 0 };
-        let finalGate: { dropped: Array<any>; pivotChanged: boolean; refreshed: boolean } | null = null;
+        let finalGate: { dropped: unknown[]; pivotChanged: boolean; refreshed: boolean } | null = null;
         try {
             finalGate = runFinalPivotGate(bot, operations, opContexts, {
                 actions,
@@ -4173,11 +4320,11 @@ async function updateOrdersOnChainBatchCOWBody(
             if (finalGate.refreshed) lastFillGuardPivotRefreshed = true;
             if (finalGate.pivotChanged) {
                 try {
-                    const fmtP = (v: any) => (v == null || !Number.isFinite(Number(v)) ? 'none' : Format.formatPrice6(Number(v)));
+                    const fmtP = (v: unknown) => (v == null || !Number.isFinite(Number(v)) ? 'none' : Format.formatPrice6(Number(v)));
                     bot.manager?.logger?.log?.(
                         `[LAST-FILL-GUARD] Final gate: pivot moved under batch ` +
                         `${fmtP(frozenPivotAtBatchStart)}(${frozenTypeAtBatchStart ?? 'cold'})` +
-                        `->${fmtP((bot.manager as any)?._lastFilledPrice)}(${(bot.manager as any)?._lastFilledType ?? 'cold'}) ` +
+                        `->${fmtP(bot.manager?._lastFilledPrice)}(${bot.manager?._lastFilledType ?? 'cold'}) ` +
                         `(freezeQueue=${freezeQueueDepth ?? '?'}) ` +
                         `dropped=${finalGate.dropped.length}`,
                         'warn'
@@ -4194,17 +4341,17 @@ async function updateOrdersOnChainBatchCOWBody(
             // defence-in-depth for future readers, not a live fix.
             cancelOpIndexByOrderId.clear();
             for (let ci = 0; ci < opContexts.length; ci++) {
-                const cctx: any = opContexts[ci];
-                const cord: any = (cctx as any)?.order;
-                const cOrderId = (cctx as any)?.kind === 'cancel'
-                    ? (cctx as any)?.order?.orderId || (cctx as any)?.orderId
+                const cctx = opContexts[ci] as OpPhase;
+                const cord = cctx?.order;
+                const cOrderId = cctx?.kind === 'cancel'
+                    ? cctx?.order?.orderId || cctx?.orderId
                     : cord?.orderId;
-                if (cOrderId) cancelOpIndexByOrderId.set(cOrderId, ci);
+                if (cOrderId) cancelOpIndexByOrderId.set(String(cOrderId), ci);
             }
             // skippedUpdateCount is threaded via countRef so the restore
             // below covers gate-dropped rotations too.
             if (skippedUpdateCountRef.count > 0) skippedUpdateCount += skippedUpdateCountRef.count;
-        } catch (_gateErr: any) { /* gate is fail-open: keep the built ops */ }
+        } catch (_gateErr) { /* gate is fail-open: keep the built ops */ }
 
         // Batch-level LAST-FILL-GUARD summary: per-action pass lines would spam
         // big batches, so one line per batch records the mode, pivot, resolved
@@ -4228,11 +4375,11 @@ async function updateOrdersOnChainBatchCOWBody(
             const gateGuarded = finalGateStats.checked + finalGateStats.bypassed;
             const totalGuarded = lastFillGuardStats.checked + lastFillGuardStats.bypassed + gateGuarded;
             if (totalGuarded > 0) {
-                const sumPivotRaw = (bot.manager as any)?._lastFilledPrice;
-                const sumType = (bot.manager as any)?._lastFilledType;
+                const sumPivotRaw = bot.manager?._lastFilledPrice;
+                const sumType = bot.manager?._lastFilledType;
                 const sumInc = resolveLastFillGuardIncrement(bot);
                 const cold = sumPivotRaw == null || !Number.isFinite(Number(sumPivotRaw)) || sumType == null;
-                const batchOrigin = (cowResult as any)?.origin;
+                const batchOrigin = cowResult?.origin;
                 const mode = cold
                     ? 'disabled(cold)'
                     : (lastFillGuardStats.bypassed > 0 && lastFillGuardStats.checked === 0)
@@ -4279,7 +4426,7 @@ async function updateOrdersOnChainBatchCOWBody(
         logGridPriceInvariantSummary(bot, gridPriceInvariantStats, 'COW');
 
         if (skippedUpdateCount > 0) {
-            restoreSkippedUpdateSlotsInWorkingGrid(bot, workingGrid, skippedUpdateSlotIds, skippedUpdateCount);
+            restoreSkippedUpdateSlotsInWorkingGrid(bot, workingGrid, skippedUpdateSlotIds as Set<string>, skippedUpdateCount);
         }
 
         if (clampedUpdateSlotIds.size > 0) {
@@ -4287,7 +4434,7 @@ async function updateOrdersOnChainBatchCOWBody(
                 ? Number(bot.manager._gridVersion)
                 : undefined;
             for (const slotId of clampedUpdateSlotIds) {
-                workingGrid.syncFromMaster(bot.manager.orders, slotId, masterVersion);
+                workingGrid.syncFromMaster(bot.manager.orders, String(slotId), masterVersion);
             }
             bot.manager.logger.log(
                 `[COW] Re-synced ${clampedUpdateSlotIds.size} post-fill-clamped slot(s) from master before commit`,
@@ -4300,12 +4447,12 @@ async function updateOrdersOnChainBatchCOWBody(
         const refillHold = resolveRefillBoundaryHold(
             workingBoundary,
             bot.manager.boundaryIdx,
-            skippedUpdateSlotIds,
-            clampedUpdateSlotIds,
-            (cowResult as any)?.refillSlotIds,
-            skippedCreateSlotIds
+            skippedUpdateSlotIds as Iterable<string> | null | undefined,
+            clampedUpdateSlotIds as Iterable<string> | null | undefined,
+            cowResult?.refillSlotIds,
+            skippedCreateSlotIds as Iterable<string> | null | undefined
         );
-        effectiveBoundary = refillHold.effectiveBoundary;
+        effectiveBoundary = refillHold.effectiveBoundary as number;
         boundaryHeld = refillHold.heldRefillSlotIds.length > 0;
         if (refillHold.heldRefillSlotIds.length > 0) {
             bot.manager.logger.log(
@@ -4341,7 +4488,7 @@ async function updateOrdersOnChainBatchCOWBody(
         // live pivot; the cooldown prevents resync storms. requestStructuralGridResync
         // re-defers while this batch is still in flight, so it runs in a clean context.
         if (boundaryHeld && consecutiveHolds >= holdResyncThreshold) {
-            const freshFills = Array.isArray((cowResult as any)?.fills) && (cowResult as any).fills.length > 0;
+            const freshFills = Array.isArray(cowResult?.fills) && cowResult.fills.length > 0;
             const lastResyncAt = Number(bot.manager._lastBoundaryHoldResyncAt) || 0;
             if (freshFills && (Date.now() - lastResyncAt) >= holdResyncCooldownMs) {
                 bot.manager._lastBoundaryHoldResyncAt = Date.now();
@@ -4355,7 +4502,7 @@ async function updateOrdersOnChainBatchCOWBody(
                         'boundary-hold-trailing-market',
                         { reason: 'boundary-hold-trailing-market' }
                     );
-                } catch (err: any) {
+                } catch (err) {
                     bot.manager.logger.log(
                         `[COW] Structural re-center request failed (non-fatal): ${getErrorMessage(err)}`,
                         'warn'
@@ -4375,7 +4522,7 @@ async function updateOrdersOnChainBatchCOWBody(
             return { executed: false, hadRotation: false };
         }
 
-        const validation = validateOperationFunds(bot, operations, assetA, assetB);
+        const validation = validateOperationFunds(bot, operations as JsonObj[], assetA, assetB);
         bot.manager.logger.log(validation.summary, validation.isValid ? 'info' : 'warn');
 
         if (!validation.isValid) {
@@ -4399,7 +4546,7 @@ async function updateOrdersOnChainBatchCOWBody(
             // Bounded re-plan + proceed — policy documented on replanStaleBatch.
             const replan = await replanStaleBatch(bot, cowResult, replanDepth, preBroadcastGuard, seamPollIntervalMs);
             if (replan.handled) {
-                return replan.result;
+                return replan.result ?? { executed: false, hadRotation: false };
             }
             // Fall through: proceed with the current plan (bounded policy).
         }
@@ -4450,7 +4597,7 @@ async function updateOrdersOnChainBatchCOWBody(
                 heldBroadcastSlot = false;
                 const replan = await replanStaleBatch(bot, cowResult, replanDepth, postWaitGuard, seamPollIntervalMs);
                 if (replan.handled) {
-                    return replan.result;
+                    return replan.result ?? { executed: false, hadRotation: false };
                 }
                 // No fill context for a re-plan (or the re-plan limit was
                 // reached). The stale policy proceeds with the original plan, so
@@ -4469,7 +4616,7 @@ async function updateOrdersOnChainBatchCOWBody(
         bot.manager.logger.log(`[COW] Broadcasting batch with ${operations.length} operations...`, 'info');
         bot._lastBroadcastHeartbeatAt = Date.now();
         const execution = await executeChunkedWithRetryOnUncertain(bot, operations, opContexts);
-        const result = execution.result;
+        const result = execution.result as JsonObj;
         const executedContexts = execution.opContexts;
 
         bot.manager.pauseFundRecalc();
@@ -4481,7 +4628,7 @@ async function updateOrdersOnChainBatchCOWBody(
                 const missingCreateResults = findMissingCreateResultContexts(preCommitResults, executedContexts);
                 if (missingCreateResults.length > 0) {
                     const missingSlots = missingCreateResults
-                        .map((item: any) => item.ctx?.order?.id || item.ctx?.id || `op-${item.index}`)
+                        .map((item) => item.ctx?.order?.id || item.ctx?.id || `op-${item.index}`)
                         .join(', ');
                     bot.manager.logger.log(
                         `[COW] ${missingCreateResults.length} CREATE op(s) returned no chainOrderId ` +
@@ -4497,10 +4644,10 @@ async function updateOrdersOnChainBatchCOWBody(
                     // commits — we never discard a whole batch over one missing id.
                     const confirmation = await pollChainForConfirmation(
                         bot,
-                        missingCreateResults.map((m: any) => m.ctx)
+                        missingCreateResults.map((m) => m.ctx)
                     );
-                    const accountRef = bot.accountId || bot.account?.id || bot.account;
-                    let chainSnap: any = null;
+                    const accountRef = bot.accountId || (bot.account as unknown as { id?: string } | null)?.id || bot.account;
+                    let chainSnap: ChainOrderLike[] | null = null;
                     try {
                         const cr = await readOpenOrdersWithMetaSafe(chainOrders, accountRef);
                         if (cr && !cr.truncated) chainSnap = cr.orders;
@@ -4509,18 +4656,18 @@ async function updateOrdersOnChainBatchCOWBody(
                     let adoptedCount = 0;
                     let normalizedCount = 0;
                     for (const item of missingCreateResults) {
-                        const slotId = item.ctx?.order?.id || item.ctx?.id;
+                        const slotId = String(item.ctx?.order?.id ?? item.ctx?.id ?? '');
                         const slot = workingGrid.get(slotId);
                         if (!slot) continue;
                         const isConfirmed = confirmation.confirmed.some(
-                            (c: any) => (c?.order?.id || c?.id) === slotId
+                            (c) => (c?.order?.id || c?.id) === slotId
                         );
                         if (isConfirmed && chainSnap) {
-                            const match = findChainOrderForSlot(bot, chainSnap, slotId, {
-                                sell: item.ctx?.finalInts?.sell,
-                                receive: item.ctx?.finalInts?.receive,
+                            const match = findChainOrderForSlot(bot, chainSnap, String(slotId), {
+                                sell: (item.ctx?.finalInts as FinalInts | undefined)?.sell,
+                                receive: (item.ctx?.finalInts as FinalInts | undefined)?.receive,
                                 orderType: item.ctx?.order?.type,
-                                fingerprint: createOpFingerprintForSlot(bot, item.ctx?.order, item.ctx?.finalInts, slotId)
+                                fingerprint: createOpFingerprintForSlot(bot, item.ctx?.order as ManagedOrder, item.ctx?.finalInts as FinalInts, String(slotId))
                             });
                             if (match?.id) {
                                 workingGrid.set(slotId, { ...slot, orderId: match.id });
@@ -4637,14 +4784,14 @@ async function updateOrdersOnChainBatchCOWBody(
             bot.manager._throwOnIllegalState = false;
             await bot.manager.resumeFundRecalc();
             bot.manager.stopBroadcasting();
-            const createCount = actions.filter((a: any) => a.type === COW_ACTIONS.CREATE).length;
-            const cancelCount = actions.filter((a: any) => a.type === COW_ACTIONS.CANCEL).length;
+            const createCount = actions.filter((a: { type?: unknown }) => a.type === COW_ACTIONS.CREATE).length;
+            const cancelCount = actions.filter((a: { type?: unknown }) => a.type === COW_ACTIONS.CANCEL).length;
             bot.manager.logger.logFundsStatus(bot.manager, `AFTER COW batch (created=${createCount}, cancelled=${cancelCount})`);
         }
 
-    } catch (err: any) {
+    } catch (err) {
         bot.manager.logger.log(`[COW] Batch transaction failed: ${getErrorMessage(err)}`, 'error');
-        if (err?.partialOnChainState) {
+        if (getErrorField<boolean>(err, 'partialOnChainState')) {
             bot.manager.logger.log(
                 `[COW] Non-atomic grouped execution detected (${formatPartialBroadcastSummary(err)}). Local rollback cannot undo confirmed on-chain operations; next sync/reconcile will converge state.`,
                 'warn'
@@ -4658,7 +4805,7 @@ async function updateOrdersOnChainBatchCOWBody(
         // and we can commit the working grid directly, bypassing the expensive
         // reconciliation state machine. This handles the ~90% case where the
         // chain accepted the transaction but the response was lost.
-        if (err instanceof BroadcastUncertainError && err.partialOnChainState !== true) {
+        if (err instanceof BroadcastUncertainError && getErrorField<boolean>(err, 'partialOnChainState') !== true) {
             try {
                 const confirmation = await pollChainForConfirmation(bot, opContexts);
                 if (confirmation.allConfirmed) {
@@ -4734,7 +4881,7 @@ async function updateOrdersOnChainBatchCOWBody(
                         }
                     );
                 }
-            } catch (pollErr: any) {
+            } catch (pollErr) {
                 bot.manager.logger.log(
                     `[COW][UNCERTAIN] Chain polling threw unexpectedly: ${getErrorMessage(pollErr)}. Falling back to reconciliation.`,
                     'error'
@@ -4749,7 +4896,7 @@ async function updateOrdersOnChainBatchCOWBody(
         }
 
         const hardAbortResult = await bot._handleBatchHardAbort(err, 'COW batch processing', operations.length);
-        if (hardAbortResult) return hardAbortResult;
+        if (hardAbortResult) return hardAbortResult as JsonObj;
 
         const staleOrderIds = new Set();
         const patterns = [
@@ -4765,11 +4912,11 @@ async function updateOrdersOnChainBatchCOWBody(
         }
 
         if (/Cannot deduct all or more from order than order contains/.test(getErrorMessage(err))) {
-            return await bot._recoverBatchSizeDrift(err, opContexts);
+            return await bot._recoverBatchSizeDrift(err, opContexts) as JsonObj;
         }
 
         if (staleOrderIds.size > 0) {
-            return await bot._recoverExplicitStaleOrders(staleOrderIds, 'cow-stale-order-cleanup');
+            return await bot._recoverExplicitStaleOrders(staleOrderIds, 'cow-stale-order-cleanup') as JsonObj;
         }
 
         throw err;
@@ -4793,7 +4940,7 @@ async function updateOrdersOnChainBatchCOWBody(
  * @param {string} reason - Human-readable resync reason
  * @param {Object} [details={}] - Details passed to the resync handler
  */
-async function requestStructuralResync(bot: any, reason: string, details: any = {}) {
+async function requestStructuralResync(bot: BotLike, reason: string, details: JsonObj = {}) {
     if (typeof bot.manager?.requestStructuralGridResync !== 'function') {
         bot._warn?.(`[COW] requestStructuralGridResync unavailable; cannot schedule structural resync (reason: ${reason}).`);
         return;
@@ -4835,12 +4982,12 @@ async function requestStructuralResync(bot: any, reason: string, details: any = 
  * freshest orders are dropped — so it MUST NOT drive adoption; we return false
  * and let the caller keep pending-broadcast protection + structural resync.
  *
- * @param {any} bot
- * @param {any} chainOrders - chain_orders module (has readOpenOrdersWithMetaSafe + batchReadOrders)
+ * @param {unknown} bot
+ * @param {unknown} chainOrders - chain_orders module (has readOpenOrdersWithMetaSafe + batchReadOrders)
  * @param {string} logPrefix
  * @param {Object} [opts]
- * @param {any} [opts.placedResults] - broadcast result carrying operation_results
- * @param {any[]} [opts.placedContexts] - opContexts aligned with operation_results
+ * @param {unknown} [opts.placedResults] - broadcast result carrying operation_results
+ * @param {unknown[]} [opts.placedContexts] - opContexts aligned with operation_results
  * @param {string[]} [opts.polledCreateIds] - fresh CREATE chain ids confirmed by
  *   the uncertain-broadcast poll (no broadcast result exists on that path);
  *   routes the poll call sites through the by-id path with its lagging-create
@@ -4857,10 +5004,10 @@ async function requestStructuralResync(bot: any, reason: string, details: any = 
  * post-fill rotation immediately (no re-broadcast), so the next placement lands
  * at the shifted slot, never at x.
  *
- * @param {any} bot
+ * @param {unknown} bot
  * @param {number} workingBoundary - boundary index the refused batch targeted
  */
-async function restoreBoundaryAfterAdoption(bot: any, workingBoundary: any): Promise<void> {
+async function restoreBoundaryAfterAdoption(bot: BotLike, workingBoundary: number): Promise<void> {
     try {
         if (workingBoundary === undefined || workingBoundary === null) return;
         if (typeof bot.manager._restoreBoundary === 'function') {
@@ -4872,16 +5019,16 @@ async function restoreBoundaryAfterAdoption(bot: any, workingBoundary: any): Pro
             `[COW] Restored rotational boundary ${workingBoundary} after refused/uncertain commit + chain adoption (atomic re-plan)`,
             'info'
         );
-    } catch (e: any) {
+    } catch (e) {
         bot.manager.logger.log(`[COW] Post-adoption boundary restore failed: ${getErrorMessage(e)}`, 'warn');
     }
 }
 
-async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: string, opts: any = {}): Promise<boolean> {
+async function adoptPlacedBatchFromChain(bot: BotLike, chainOrders: typeof chainOrdersModule, logPrefix: string, opts: JsonObj = {}): Promise<boolean> {
     const { placedResults = null, placedContexts = null, polledCreateIds = null } = opts || {};
     try {
         const mgr = bot.manager;
-        const accountRef = bot.accountId || bot.account?.id || bot.account;
+        const accountRef = bot.accountId || (bot.account as unknown as { id?: string } | null)?.id || bot.account;
 
         // PREFERRED: re-read the exact placed/existing orders by id. The by-id
         // set needs the broadcast result (freshest CREATE ids), the
@@ -4892,7 +5039,7 @@ async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: 
             || (Array.isArray(placedContexts) && placedContexts.length > 0)
             || (Array.isArray(polledCreateIds) && polledCreateIds.length > 0);
         const { all: knownIds, createIds } = haveIdHints
-            ? collectKnownOnChainOrderIds(mgr, placedResults, placedContexts, polledCreateIds)
+            ? collectKnownOnChainOrderIds(mgr, placedResults, placedContexts as Parameters<typeof collectKnownOnChainOrderIds>[2], polledCreateIds as string[] | null | undefined)
             : { all: [], createIds: [] as string[] };
         if (knownIds.length > 0 && typeof chainOrders.batchReadOrders === 'function') {
             // Retry/backoff (fix #6): a fresh CREATE absent from the first read
@@ -4901,7 +5048,7 @@ async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: 
             // resync path — deferral blocks CREATEs for minutes.
             const maxAttempts = Math.max(1, Number(COW_PERFORMANCE.ADOPTION_READ_MAX_ATTEMPTS) || 3);
             const baseBackoff = Math.max(250, Number(COW_PERFORMANCE.ADOPTION_READ_BACKOFF_MS) || 2000);
-            let chainMap: Map<string, any> | null = null;
+            let chainMap: Map<string, ChainOrderLike> | null = null;
             let laggingCreateIds: string[] = [];
             let lastReadError: string | null = null;
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -4910,7 +5057,7 @@ async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: 
                 lastReadError = null;
                 try {
                     chainMap = await chainOrders.batchReadOrders(knownIds);
-                } catch (byIdErr: any) {
+                } catch (byIdErr) {
                     // A by-id read failure must NOT fall through to the window read
                     // (which would also miss the freshest creates and virtualize them).
                     lastReadError = getErrorMessage(byIdErr);
@@ -4955,11 +5102,11 @@ async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: 
                 return false;
             }
 
-            const fullChain: any[] = [];
+            const fullChain: ChainOrderLike[] = [];
             if (chainMap && typeof chainMap.forEach === 'function') {
-                chainMap.forEach((order: any) => { if (order) fullChain.push(order); });
+                chainMap.forEach((order) => { if (order) fullChain.push(order); });
             } else if (Array.isArray(chainMap)) {
-                for (const o of chainMap) if (o) fullChain.push(o);
+                for (const o of chainMap as unknown as ChainOrderLike[]) if (o) fullChain.push(o);
             }
             // Informational: any other known id (master's pre-existing orders)
             // absent is expected — those were cancelled/filled in this batch.
@@ -4981,7 +5128,7 @@ async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: 
         }
 
         // FALLBACK: window read (ambiguous when truncated).
-        const freshRead = await readOpenOrdersWithMetaSafe(chainOrders, accountRef);
+        const freshRead = await readOpenOrdersWithMetaSafe(chainOrders, accountRef as string | null | undefined);
         if (!isAuthoritativeChainRead(freshRead)) {
             bot.manager.logger.log(
                 `${logPrefix} Chain read ${freshRead?.truncated ? 'TRUNCATED' : 'EMPTY'} after batch broadcast; adoption deferred (pending-broadcast protection kept)`,
@@ -4994,7 +5141,7 @@ async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: 
             await bot.manager.syncFromOpenOrders(freshChain, { skipAccounting: false });
             return true;
         }
-    } catch (syncErr: any) {
+    } catch (syncErr) {
         bot.manager.logger.log(
             `${logPrefix} Chain sync after batch broadcast failed: ${getErrorMessage(syncErr)}`,
             'error'
@@ -5010,10 +5157,10 @@ async function adoptPlacedBatchFromChain(bot: any, chainOrders: any, logPrefix: 
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} logPrefix - Log prefix for persist failure messages
  */
-async function persistGridAndClearPendingBroadcasts(bot: any, logPrefix: string) {
+async function persistGridAndClearPendingBroadcasts(bot: BotLike, logPrefix: string) {
     try {
         await bot.manager.persistGrid();
-    } catch (persistErr: any) {
+    } catch (persistErr) {
         bot.manager.logger.log(
             `${logPrefix} Persist after chain adoption failed: ${getErrorMessage(persistErr)}`,
             'error'
@@ -5049,14 +5196,12 @@ async function persistGridAndClearPendingBroadcasts(bot: any, logPrefix: string)
  *   the poll-confirmed site never did)
  * @returns {Promise<Object>} The commit-refused return object
  */
-async function recoverRefusedCommit(bot: any, chainOrders: any, logPrefix: string, adoptOpts: any, contexts: any, workingBoundary: any, opts: any = {}): Promise<any> {
-    const {
-        extraReturn = {},
-        successReturn = null,
-        failureResyncReason = 'commit refused after broadcast (chain adoption unavailable)',
-        failureLogMessage = 'Commit refused and chain adoption unavailable; keeping pending-broadcast protection pending structural resync',
-        preAdoptLogMessage = null,
-    } = opts;
+async function recoverRefusedCommit(bot: BotLike, chainOrders: typeof chainOrdersModule, logPrefix: string, adoptOpts: JsonObj, contexts: OpPhase[], workingBoundary: number, opts: JsonObj = {}): Promise<JsonObj> {
+    const extraReturn = (opts.extraReturn ?? {}) as JsonObj;
+    const successReturn = opts.successReturn as JsonObj | null | undefined;
+    const failureResyncReason = (opts.failureResyncReason ?? 'commit refused after broadcast (chain adoption unavailable)') as string;
+    const failureLogMessage = (opts.failureLogMessage ?? 'Commit refused and chain adoption unavailable; keeping pending-broadcast protection pending structural resync') as string;
+    const preAdoptLogMessage = opts.preAdoptLogMessage as string | null | undefined;
     if (preAdoptLogMessage) {
         bot.manager.logger.log(`${logPrefix} ${preAdoptLogMessage}`, 'warn');
     }
@@ -5094,17 +5239,17 @@ async function recoverRefusedCommit(bot: any, chainOrders: any, logPrefix: strin
  * startup), so the guard degrades to its previous behaviour rather than
  * silently disabling. Never throws.
  *
- * @param {any} manager
+ * @param {unknown} manager
  * @param {number|null|undefined} rawPrice
  * @returns {{price: number|null, snapped: boolean, idx: number|null, nearestDrift: number|null}}
  */
-function resolveOnGridPivot(manager: any, rawPrice: any): { price: number|null; snapped: boolean; idx: number|null; nearestDrift: number|null } {
+function resolveOnGridPivot(manager: OrderManagerLike, rawPrice: unknown): { price: number|null; snapped: boolean; idx: number|null; nearestDrift: number|null } {
     const price = Number(rawPrice);
     if (!Number.isFinite(price) || price <= 0) return { price: null, snapped: false, idx: null, nearestDrift: null };
     try {
-        const genesis = manager?._genesis;
+        const genesis = manager?._genesis as Parameters<typeof math.slotIndexForPrice>[1] | null | undefined;
         const levels = genesis?.priceLevels;
-        if (!Array.isArray(levels) || levels.length === 0) return { price, snapped: false, idx: null, nearestDrift: null };
+        if (!genesis || !Array.isArray(levels) || levels.length === 0) return { price, snapped: false, idx: null, nearestDrift: null };
         const idx = math.slotIndexForPrice(price, genesis);
         if (!Number.isFinite(idx)) return { price, snapped: false, idx: null, nearestDrift: null };
         // Only accept a genuine ladder level and only a nearest match. A price
@@ -5157,7 +5302,7 @@ function resolveOnGridPivot(manager: any, rawPrice: any): { price: number|null; 
  * @param {boolean} [skipRefresh=false] - Skip the queued-fill pivot refresh
  * @returns {{check: Object, refreshed: boolean}}
  */
-function runLastFillGuardCheck(bot: any, price: number, size: number, type: string, stats: any, skipRefresh: boolean = false): { check: any; refreshed: boolean } {
+function runLastFillGuardCheck(bot: BotLike, price: number, size: number, type: string, stats: LastFillGuardStats, skipRefresh: boolean = false): { check: LastFillGuardResult; refreshed: boolean } {
     let refreshed = false;
     // The batch-start freeze (see broadcast loop head) owns pivot refreshes;
     // per-action refreshes are disabled so every action in a batch is judged
@@ -5165,8 +5310,8 @@ function runLastFillGuardCheck(bot: any, price: number, size: number, type: stri
     if (!skipRefresh) {
         try { refreshed = !!refreshLastFillPivotFromQueue(bot); } catch { /* best-effort */ }
     }
-    const lastPrice = (bot.manager as any)?._lastFilledPrice;
-    const lastType = (bot.manager as any)?._lastFilledType;
+    const lastPrice = bot.manager?._lastFilledPrice;
+    const lastType = bot.manager?._lastFilledType;
     const inc = resolveLastFillGuardIncrement(bot);
     // Validate the pivot onto the ladder before use (see resolveOnGridPivot).
     // Reported once per probe at warn when the raw pivot was NOT a grid level:
@@ -5181,9 +5326,9 @@ function runLastFillGuardCheck(bot: any, price: number, size: number, type: stri
             // Warn once per distinct pivot value per batch: repeated identical
             // pivots are the same condition, and a CHANGED pivot still warns.
             const warnedKey = `lastFillPivotWarned:${bot?._currentCycleId ?? 'na'}`;
-            const alreadyWarned = (bot as any)[warnedKey];
+            const alreadyWarned = (bot as unknown as Record<string, unknown>)[warnedKey];
             if (alreadyWarned !== Number(lastPrice)) {
-                (bot as any)[warnedKey] = Number(lastPrice);
+                (bot as unknown as Record<string, unknown>)[warnedKey] = Number(lastPrice);
                 // Distinguish "close to a level but too far to snap" from "nowhere
                 // near the ladder". The former is a rounding/drift artifact; the
                 // latter means the pivot itself is not a real fill price.
@@ -5273,25 +5418,25 @@ function runLastFillGuardCheck(bot: any, price: number, size: number, type: stri
  *   skippedUpdateCountRef: { count }, freezeQueueDepth, batchPendingFps }
  * @returns {{ dropped: Array, pivotChanged: boolean, refreshed: boolean }}
  */
-function runFinalPivotGate(bot: any, operations: any[], opContexts: any[], opts: any = {}): { dropped: Array<any>; pivotChanged: boolean; refreshed: boolean } {
+function runFinalPivotGate(bot: BotLike, operations: unknown[], opContexts: OpPhase[], opts: JsonObj = {}): { dropped: JsonObj[]; pivotChanged: boolean; refreshed: boolean } {
     const empty = { dropped: [], pivotChanged: false, refreshed: false };
     try {
         if (!Array.isArray(operations) || !Array.isArray(opContexts) || operations.length === 0) return empty;
-        const stats = opts?.lastFillGuardStats;
+        const stats = opts.lastFillGuardStats as LastFillGuardStats | undefined;
         const frozenPivot = Number(opts?.frozenPivot);
-        const frozenType = opts?.frozenType;
+        const frozenType = opts.frozenType as string | null | undefined;
         const frozenCold = !Number.isFinite(frozenPivot) || frozenType == null;
-        const queueDepthBefore = Array.isArray((bot as any)?._incomingFillQueue)
-            ? (bot as any)._incomingFillQueue.length
+        const queueDepthBefore = Array.isArray(bot?._incomingFillQueue)
+            ? bot._incomingFillQueue.length
             : null;
         // Peek-only re-refresh: never drains the queue (same as the freeze).
         let refreshed = false;
         try { refreshed = !!refreshLastFillPivotFromQueue(bot); } catch { refreshed = false; }
-        const queueDepthAfter = Array.isArray((bot as any)?._incomingFillQueue)
-            ? (bot as any)._incomingFillQueue.length
+        const queueDepthAfter = Array.isArray(bot?._incomingFillQueue)
+            ? bot._incomingFillQueue.length
             : null;
-        const livePivot = Number((bot.manager as any)?._lastFilledPrice);
-        const liveType = (bot.manager as any)?._lastFilledType;
+        const livePivot = Number(bot.manager?._lastFilledPrice);
+        const liveType = bot.manager?._lastFilledType;
         const liveCold = !Number.isFinite(livePivot) || liveType == null;
         // No-op fast path: pivot unchanged (or uncomparable) since the freeze.
         // frozenCold + liveCold: guard stayed disabled — nothing to re-check.
@@ -5314,48 +5459,48 @@ function runFinalPivotGate(bot: any, operations: any[], opContexts: any[], opts:
         if (!pivotChanged) return { ...empty, refreshed };
         // Pivot moved (or armed mid-batch): re-check every built op's FINAL
         // price. Same bypass rules as the build loop; unjudgeable => KEEP.
-        const actions = Array.isArray(opts?.actions) ? opts.actions : [];
-        const batchOrigin = (opts?.cowResult as any)?.origin;
-        const actionBySlot = new Map<string, any>();
+        const actions = (Array.isArray(opts.actions) ? opts.actions : []) as CowAction[];
+        const batchOrigin = (opts.cowResult as JsonObj | undefined)?.origin as string | undefined;
+        const actionBySlot = new Map<string, CowAction>();
         for (const a of actions) {
             if (!a) continue;
             // Rotation UPDATEs are keyed by DESTINATION slot (the emitted
             // price is the destination's level); plain CREATEs by slot id.
-            const rotDest = (a as any)?.newGridId;
+            const rotDest = a?.newGridId;
             const key = (a?.type === COW_ACTIONS.UPDATE && rotDest && rotDest !== a?.id) ? rotDest : a?.id;
             if (key && !actionBySlot.has(key)) actionBySlot.set(key, a);
         }
         const dropIdx = new Set<number>();
-        const dropped: Array<any> = [];
+        const dropped: JsonObj[] = [];
         const inc = resolveLastFillGuardIncrement(bot);
-        const onGrid = resolveOnGridPivot(bot.manager, (bot.manager as any)?._lastFilledPrice);
+        const onGrid = resolveOnGridPivot(bot.manager, bot.manager?._lastFilledPrice);
         for (let i = 0; i < opContexts.length; i++) {
-            const ctx: any = opContexts[i];
+            const ctx = opContexts[i];
             if (!ctx || ctx.kind === 'cancel' || ctx.kind === 'size-update') continue;
             let price: number | null = null;
             let type: string | null = null;
             let size: number | null = null;
             let slotId: string | null = null;
-            let action: any = null;
+            let action: CowAction | null = null;
             if (ctx.kind === 'create') {
-                slotId = ctx.id || ctx.order?.id || null;
+                slotId = (ctx.id as string | undefined) || ctx.order?.id || null;
                 price = Number(ctx.order?.price);
                 type = ctx.order?.type || null;
                 size = Number(ctx.order?.size);
                 action = (slotId && actionBySlot.get(slotId)) || null;
                 // Spread-correction CREATE bypass (mirrors the build loop:
                 // per-action origin, batch origin as back-compat fallback).
-                const actionOrigin = (action as any)?.origin;
+                const actionOrigin = action?.origin;
                 if (actionOrigin === 'spread-correction'
                     || (actionOrigin == null && batchOrigin === 'spread-correction')) {
                     if (stats) stats.bypassed = (Number(stats.bypassed) || 0) + 1;
                     continue;
                 }
             } else if (ctx.kind === 'rotation') {
-                const rot = ctx.rotation || {};
-                slotId = rot.newGridId || rot.oldOrder?.id || null;
+                const rot = (ctx.rotation || {}) as JsonObj;
+                slotId = (rot.newGridId as string | undefined) || (rot.oldOrder as JsonObj | undefined)?.id as string | undefined || null;
                 price = Number(rot.newPrice);
-                type = rot.type || null;
+                type = (rot.type as string | undefined) || null;
                 size = Number(rot.newSize);
                 // Rotation UPDATEs are keyed by DESTINATION slot (the
                 // emitted price is the destination's level) — EXCEPT the
@@ -5368,7 +5513,7 @@ function runFinalPivotGate(bot: any, operations: any[], opContexts: any[], opts:
                 // judging the bypass.
                 action = (slotId && actionBySlot.get(slotId)) || null;
                 if (!action) {
-                    const srcId = (rot.oldOrder as any)?.id || null;
+                    const srcId = ((rot.oldOrder as JsonObj | undefined)?.id as string | undefined) || null;
                     if (srcId) action = actionBySlot.get(srcId) || null;
                 }
                 // Gap-evacuation UPDATE bypass mirrors the build loop's
@@ -5395,10 +5540,10 @@ function runFinalPivotGate(bot: any, operations: any[], opContexts: any[], opts:
                 // op is still subject to the commit guard + chain adoption.
                 // The gate must not invent a block it cannot prove —
                 // especially not on an op the build loop already allowed.
-                const rotOrigin = (action as any)?.origin;
+                const rotOrigin = action?.origin;
                 if (rotOrigin === 'gap-evacuation'
-                    && Number.isFinite(Number((action as any)?.evacBoundary))
-                    && Number.isFinite(Number((action as any)?.evacGapSlots))) {
+                    && Number.isFinite(Number(action?.evacBoundary))
+                    && Number.isFinite(Number(action?.evacGapSlots))) {
                     if (stats) stats.bypassed = (Number(stats.bypassed) || 0) + 1;
                     continue;
                 }
@@ -5423,8 +5568,8 @@ function runFinalPivotGate(bot: any, operations: any[], opContexts: any[], opts:
             try {
                 bot.manager?.logger?.log?.(
                     `[LAST-FILL-GUARD] Final gate dropping ${type} ${ctx.kind} for ${slotId ?? 'unknown'} at ` +
-                    `${Format.formatPrice6(price as number)}: ${dir} last filled ${Format.formatPrice6(check.pivot)} ` +
-                    `(halfInc ${check.halfInc}% thr ${Format.formatPrice6(check.threshold)}); re-planned after market moves`,
+                    `${Format.formatPrice6(price as number)}: ${dir} last filled ${check.pivot != null ? Format.formatPrice6(Number(check.pivot)) : 'n/a'} ` +
+                    `(halfInc ${check.halfInc}% thr ${check.threshold != null ? Format.formatPrice6(Number(check.threshold)) : 'n/a'}); re-planned after market moves`,
                     'warn'
                 );
             } catch { /* logging is best-effort */ }
@@ -5438,8 +5583,8 @@ function runFinalPivotGate(bot: any, operations: any[], opContexts: any[], opts:
         // — lockstep keeps the two arrays aligned with each other, but the
         // absolute indexes stored INSIDE pending entries are not rewritten
         // by a compaction, so they must be remapped explicitly.
-        const keptOps: any[] = [];
-        const keptCtxs: any[] = [];
+        const keptOps: unknown[] = [];
+        const keptCtxs: OpPhase[] = [];
         const oldToNew = new Map<number, number>();
         for (let i = 0, ni = 0; i < opContexts.length; i++) {
             if (dropIdx.has(i)) continue;
@@ -5462,27 +5607,27 @@ function runFinalPivotGate(bot: any, operations: any[], opContexts: any[], opts:
         // drop: undefined at best, a DIFFERENT create's context at worst,
         // which would let the uncertain-broadcast reconcile adopt a matched
         // chain order into the wrong slot).
-        const skippedUpdateSlotIds = opts?.skippedUpdateSlotIds;
-        const skippedCreateSlotIds = opts?.skippedCreateSlotIds;
-        const countRef = opts?.skippedUpdateCountRef;
+        const skippedUpdateSlotIds = opts.skippedUpdateSlotIds as Set<string> | null | undefined;
+        const skippedCreateSlotIds = opts.skippedCreateSlotIds as Set<string> | null | undefined;
+        const countRef = opts.skippedUpdateCountRef as { count: number } | null | undefined;
         try {
-            const pending = (bot.manager as any)?._pendingBroadcasts;
+            const pending = bot.manager?._pendingBroadcasts;
             for (const d of dropped) {
                 if (d.kind === 'rotation') {
-                    const act = (d.slotId && actionBySlot.get(d.slotId)) || null;
-                    const srcId = (act as any)?.id || null;
+                    const act = d.slotId ? (actionBySlot.get(String(d.slotId)) ?? null) : null;
+                    const srcId = act?.id || null;
                     if (srcId && skippedUpdateSlotIds instanceof Set) skippedUpdateSlotIds.add(srcId);
-                    if (d.slotId && skippedUpdateSlotIds instanceof Set) skippedUpdateSlotIds.add(d.slotId);
+                    if (d.slotId && skippedUpdateSlotIds instanceof Set) skippedUpdateSlotIds.add(String(d.slotId));
                     if (countRef && typeof countRef === 'object') countRef.count = (Number(countRef.count) || 0) + 1;
                 } else if (d.kind === 'create') {
-                    if (d.slotId && skippedCreateSlotIds instanceof Set) skippedCreateSlotIds.add(d.slotId);
+                    if (d.slotId && skippedCreateSlotIds instanceof Set) skippedCreateSlotIds.add(String(d.slotId));
                     if (pending instanceof Map) {
                         for (const [fp, entry] of pending) {
                             // Match by slot only: the fingerprint embeds
                             // side/amounts/slot (no op indexes), but entry.slotId
                             // is the narrowest predicate that cannot touch a
                             // sibling batch's entry for a different slot.
-                            if ((entry as any)?.slotId && (entry as any).slotId === d.slotId) {
+                            if (entry?.slotId && entry.slotId === d.slotId) {
                                 pending.delete(fp);
                             }
                         }
@@ -5500,7 +5645,7 @@ function runFinalPivotGate(bot: any, operations: any[], opContexts: any[], opts:
             // build-time arrays.
             if (pending instanceof Map && opts?.batchPendingFps instanceof Set) {
                 for (const fp of opts.batchPendingFps) {
-                    const entry: any = pending.get(fp);
+                    const entry = pending.get(fp) as unknown as PendingEntry | undefined;
                     if (!entry) continue; // dropped create: already removed by slot
                     const newCtx = oldToNew.get(Number(entry.ctxIndex));
                     if (newCtx == null) {
@@ -5536,7 +5681,7 @@ function runFinalPivotGate(bot: any, operations: any[], opContexts: any[], opts:
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {Array<Object>} contexts - Executed op contexts (create/rotation/cancel)
  */
-async function applyAdoptionFeeAccounting(bot: any, contexts: any) {
+async function applyAdoptionFeeAccounting(bot: BotLike, contexts: OpPhase[]) {
     if (!bot.manager?.accountant || !Array.isArray(contexts) || contexts.length === 0) return;
     const btsFeeData = getAssetFeesSafe('BTS');
     const btsSide = (typeof bot.manager.accountant._getBtsOrderType === 'function')
@@ -5545,20 +5690,22 @@ async function applyAdoptionFeeAccounting(bot: any, contexts: any) {
 
     for (const ctx of contexts) {
         if (ctx?.kind === 'create') {
-            const slot = ctx.order?.id ? bot.manager.orders.get(ctx.order.id) : null;
+            const order = ctx.order;
+            if (!order) continue;
+            const slot = order.id ? bot.manager.orders.get(order.id) : null;
             if (!slot?.orderId) continue;
             try {
                 await bot.manager.synchronizeWithChain({
-                    gridOrderId: ctx.order.id,
+                    gridOrderId: order.id,
                     chainOrderId: slot.orderId,
                     isPartialPlacement: false,
-                    expectedType: ctx.order.type,
+                    expectedType: order.type,
                     fee: btsFeeData?.createFee || 0,
-                    order: ctx.order ?? null,
+                    order: order,
                 }, 'createOrder');
-            } catch (feeErr: any) {
+            } catch (feeErr) {
                 bot.manager.logger.log(
-                    `[COW] Adoption fee accounting failed for create slot ${ctx.order.id}: ${getErrorMessage(feeErr)}`,
+                    `[COW] Adoption fee accounting failed for create slot ${order.id}: ${getErrorMessage(feeErr)}`,
                     'warn'
                 );
             }
@@ -5570,10 +5717,10 @@ async function applyAdoptionFeeAccounting(bot: any, contexts: any) {
             // the on-chain cost exactly once (mirrors the sync's
             // 'cancel-order-unmatched-fee' pattern; the deferred-fee refund is
             // reconciled by the next sync's fill/cancel processing).
-            if (btsSide && btsFeeData?.cancelFee > 0) {
+            if (btsSide && btsFeeData && (btsFeeData.cancelFee ?? 0) > 0) {
                 try {
-                    await bot.manager.accountant.adjustTotalBalance(btsSide, -btsFeeData.cancelFee, 'cancel-adopt-fee');
-                } catch (feeErr: any) {
+                    await bot.manager.accountant.adjustTotalBalance(btsSide, -(btsFeeData.cancelFee ?? 0), 'cancel-adopt-fee');
+                } catch (feeErr) {
                     bot.manager.logger.log(
                         `[COW] Adoption fee accounting failed for cancel ${ctx.order?.orderId}: ${getErrorMessage(feeErr)}`,
                         'warn'
@@ -5585,12 +5732,12 @@ async function applyAdoptionFeeAccounting(bot: any, contexts: any) {
             // charged on this path; the next sync's size reconciliation applies
             // the chain state without an update fee (fee 0), so charge it once
             // here to prevent optimistic BTS drift.
-            if (btsSide && btsFeeData?.updateFee > 0) {
+            if (btsSide && btsFeeData && (btsFeeData.updateFee ?? 0) > 0) {
                 try {
-                    await bot.manager.accountant.adjustTotalBalance(btsSide, -btsFeeData.updateFee, 'update-adopt-fee');
-                } catch (feeErr: any) {
+                    await bot.manager.accountant.adjustTotalBalance(btsSide, -(btsFeeData.updateFee ?? 0), 'update-adopt-fee');
+                } catch (feeErr) {
                     bot.manager.logger.log(
-                        `[COW] Adoption fee accounting failed for update ${ctx.kind === 'size-update' ? ctx.updateInfo?.partialOrder?.orderId : ctx.rotation?.oldOrder?.orderId}: ${getErrorMessage(feeErr)}`,
+                        `[COW] Adoption fee accounting failed for update ${ctx.kind === 'size-update' ? ((ctx.updateInfo as JsonObj | undefined)?.partialOrder as JsonObj | undefined)?.orderId : (ctx.rotation?.oldOrder as JsonObj | undefined)?.orderId}: ${getErrorMessage(feeErr)}`,
                         'warn'
                     );
                 }
@@ -5610,7 +5757,7 @@ async function applyAdoptionFeeAccounting(bot: any, contexts: any) {
  * @param {string} context - Fee context ('fill-cancel' | 'order-update')
  * @param {number} fee - BTS fee amount
  */
-async function applyOptimisticFeeBalance(bot: any, oldOrder: any, newOrder: any, context: string, fee: number) {
+async function applyOptimisticFeeBalance(bot: BotLike, oldOrder: ManagedOrder, newOrder: ManagedOrder, context: string, fee: number) {
     if (oldOrder && newOrder && bot.manager.accountant) {
         await bot.manager.accountant.updateOptimisticFreeBalance(
             oldOrder,
@@ -5630,7 +5777,7 @@ async function applyOptimisticFeeBalance(bot: any, oldOrder: any, newOrder: any,
  * @param {Array} opContexts
  * @returns {Object} Result with { executed: boolean, hadRotation: boolean }
  */
-async function processBatchResults(bot: any, result: any, opContexts: any) {
+async function processBatchResults(bot: BotLike, result: JsonObj, opContexts: OpPhase[]) {
     const results = extractOperationResults(result, 'processBatchResults', bot.manager?.logger?.log?.bind(bot.manager?.logger));
     // Safe variant: this runs AFTER the working grid committed, so a throw
     // here (fee cache unset) would hard-fail the whole batch post-commit and
@@ -5642,45 +5789,47 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
     let hadRotation = false;
     let updateOperationCount = 0;
 
-    const updatesToApply: any[] = [];
+    const updatesToApply: JsonObj[] = [];
 
     for (let i = 0; i < opContexts.length; i++) {
         const ctx = opContexts[i];
         const res = results[i];
+        const ctxOrder = ctx.order as ManagedOrder;
+        const ctxUpdateInfo = ctx.updateInfo as JsonObj;
 
         if (ctx.kind === 'cancel') {
-            bot.manager.logger.log(`Cancelled surplus order ${ctx.order.id} (${ctx.order.orderId})`, 'info');
-            const oldOrder = ctx.order;
+            bot.manager.logger.log(`Cancelled surplus order ${ctxOrder.id} (${ctxOrder.orderId})`, 'info');
+            const oldOrder = ctxOrder;
             const committedOrder = oldOrder?.id ? bot.manager.orders.get(oldOrder.id) : null;
 
-            await applyOptimisticFeeBalance(bot, oldOrder, committedOrder, 'fill-cancel', btsFeeData?.cancelFee || 0);
+            await applyOptimisticFeeBalance(bot, oldOrder as ManagedOrder, committedOrder as ManagedOrder, 'fill-cancel', btsFeeData?.cancelFee || 0);
         }
         else if (ctx.kind === 'size-update') {
-            const oldOrder = ctx.updateInfo.partialOrder;
-            const ord = bot.manager.orders.get(oldOrder.id);
+            const oldOrder = ctxUpdateInfo.partialOrder as JsonObj;
+            const ord = bot.manager.orders.get(String(oldOrder.id));
 
-            await applyOptimisticFeeBalance(bot, oldOrder, ord, 'order-update', btsFeeData?.updateFee || 0);
+            await applyOptimisticFeeBalance(bot, oldOrder as ManagedOrder, ord as ManagedOrder, 'order-update', btsFeeData?.updateFee || 0);
 
             if (ord) {
-                const updatedSlot = { ...ord, size: ctx.updateInfo.newSize };
+                const updatedSlot = { ...ord, size: Number(ctxUpdateInfo.newSize) };
                 if (ctx.finalInts) {
                     updatedSlot.rawOnChain = rawOnChainFromInts(ord.orderId, ctx.finalInts);
                 }
                 updatesToApply.push({ order: updatedSlot, context: 'post-update-metadata' });
             }
-            bot.manager.logger.log(`Size update complete: ${ctx.updateInfo.partialOrder.orderId}`, 'info');
+            bot.manager.logger.log(`Size update complete: ${(ctxUpdateInfo.partialOrder as JsonObj).orderId}`, 'info');
             updateOperationCount++;
         }
         else if (ctx.kind === 'create') {
-            const chainOrderId = res && res[1];
+            const chainOrderId = res && (res as unknown[])[1];
             if (chainOrderId) {
                 await bot.manager.synchronizeWithChain({
-                    gridOrderId: ctx.order.id, chainOrderId, expectedType: ctx.order.type, fee: btsFeeData?.createFee || 0,
-                    order: ctx.order ?? null,
+                    gridOrderId: ctxOrder.id, chainOrderId, expectedType: ctxOrder.type, fee: btsFeeData?.createFee || 0,
+                    order: ctxOrder ?? null,
                 }, 'createOrder');
 
                 if (ctx.finalInts) {
-                    const syncedOrder = bot.manager.orders.get(ctx.order.id);
+                    const syncedOrder = bot.manager.orders.get(ctxOrder.id);
                     if (syncedOrder) {
                         updatesToApply.push({
                             order: {
@@ -5695,20 +5844,20 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
                 // (type/price/size) so both are greppable by the same keys —
                 // this is what ties a fill back to the slot that placed it.
                 bot.manager.logger.log(
-                    `Placed ${ctx.order.type} order ${ctx.order.id} ` +
-                    `@${Format.formatPrice6(ctx.order.price)} x${Format.formatAmount(ctx.order.size)} ` +
+                    `Placed ${ctxOrder.type} order ${ctxOrder.id} ` +
+                    `@${Format.formatPrice6(ctxOrder.price)} x${Format.formatAmount(ctxOrder.size)} ` +
                     `-> ${chainOrderId}`,
                     'info'
                 );
             } else {
                 const fingerprint = [
-                    `type=${ctx.order.type || 'unknown'}`,
-                    `price=${Format.formatPrice6(ctx.order.price)}`,
-                    `size=${Format.formatAmount(ctx.order.size)}`
+                    `type=${ctxOrder.type || 'unknown'}`,
+                    `price=${Format.formatPrice6(ctxOrder.price)}`,
+                    `size=${Format.formatAmount(ctxOrder.size)}`
                 ].join(',');
                 bot.manager.logger.log(
-                    `[COW] CRITICAL: Create op for slot ${ctx.order.id} (type=${ctx.order.type}) ` +
-                    `returned no chainOrderId. Identify any orphaned on-chain order by local fingerprint ` +
+                    `[COW] CRITICAL: Create op for slot ${ctxOrder.id} (type=${ctxOrder.type}) ` +
+                    `returned no chainOrderId. Identify orphaned on-chain orders by local fingerprint ` +
                     `${fingerprint} before cancelling.`,
                     'error'
                 );
@@ -5716,16 +5865,20 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
         }
         else if (ctx.kind === 'rotation') {
             hadRotation = true;
-            const { rotation } = ctx;
-            const { oldOrder, newPrice, newGridId, newSize, type } = rotation;
+            const rotation = (ctx.rotation ?? {}) as JsonObj;
+            const oldOrder = rotation.oldOrder as JsonObj | undefined;
+            const newPrice = rotation.newPrice;
+            const newGridId = rotation.newGridId as string | undefined;
+            const newSize = rotation.newSize;
+            const type = rotation.type as ManagedOrder['type'];
 
             if (!newGridId) {
-                const ord = bot.manager.orders.get(oldOrder.id || rotation.id);
+                const ord = bot.manager.orders.get(String(oldOrder?.id || rotation.id));
 
-                await applyOptimisticFeeBalance(bot, oldOrder, ord, 'order-update', btsFeeData?.updateFee || 0);
+                await applyOptimisticFeeBalance(bot, oldOrder as unknown as ManagedOrder, ord as ManagedOrder, 'order-update', btsFeeData?.updateFee || 0);
 
                 if (ord) {
-                    const updatedSlot = { ...ord, size: newSize };
+                    const updatedSlot = { ...ord, size: newSize as number };
                     if (ctx.finalInts) {
                         updatedSlot.rawOnChain = rawOnChainFromInts(ord.orderId, ctx.finalInts);
                     }
@@ -5742,7 +5895,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
                     'error'
                 );
                 if (oldOrder?.id && oldOrder.id !== newGridId) {
-                    const staleSource = bot.manager.orders.get(oldOrder.id);
+                    const staleSource = bot.manager.orders.get(String(oldOrder.id));
                     if (staleSource?.orderId) {
                         updatesToApply.push({
                             order: { ...staleSource, state: ORDER_STATES.VIRTUAL, orderId: null, rawOnChain: null },
@@ -5759,17 +5912,17 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
                 size: newSize,
                 price: newPrice,
                 state: ORDER_STATES.ACTIVE,
-                orderId: oldOrder?.orderId || slot.orderId || null
+                orderId: (oldOrder?.orderId as string | null | undefined) || slot.orderId || null
             };
 
             if (ctx.finalInts) {
                 updatedSlot.rawOnChain = rawOnChainFromInts(updatedSlot.orderId, ctx.finalInts);
             }
 
-            await applyOptimisticFeeBalance(bot, oldOrder, updatedSlot, 'order-update', btsFeeData?.updateFee || 0);
+            await applyOptimisticFeeBalance(bot, oldOrder as ManagedOrder, updatedSlot as ManagedOrder, 'order-update', btsFeeData?.updateFee || 0);
 
             if (oldOrder?.id && oldOrder.id !== newGridId) {
-                const currentSource = bot.manager.orders.get(oldOrder.id);
+                const currentSource = bot.manager.orders.get(String(oldOrder.id));
                 if (currentSource && currentSource.orderId) {
                     updatesToApply.push({
                         order: {
@@ -5789,7 +5942,7 @@ async function processBatchResults(bot: any, result: any, opContexts: any) {
 
     if (updatesToApply.length > 0) {
         await bot.manager.applyGridUpdateBatch(
-            updatesToApply.map((u: any) => u.order), 
+            updatesToApply.map((u) => u.order), 
             'batch-results-process',
             { skipAccounting: true }
         );

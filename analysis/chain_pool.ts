@@ -16,6 +16,9 @@
  */
 
 import * as C from '../modules/constants.js';
+import type { createReadOnlyClient } from '../modules/bitshares-native/index.js';
+
+type ReadOnlyClient = Awaited<ReturnType<typeof createReadOnlyClient>>;
 
 /** Nodes for ephemeral read-only analysis connections (node management pool). */
 function defaultNodePool(): string[] {
@@ -27,7 +30,7 @@ function defaultNodePool(): string[] {
  * Transport INFO logging is silenced for the duration of the short-lived
  * connection and the client is always disconnected afterwards.
  */
-async function withReadOnlyClient<T>(fn: (client: any) => Promise<T>): Promise<T> {
+async function withReadOnlyClient<T>(fn: (client: ReadOnlyClient) => Promise<T>): Promise<T> {
     const { createReadOnlyClient } = await import('../modules/bitshares-native/index.js');
     const client = createReadOnlyClient({ nodes: defaultNodePool() });
     // Suppress transport INFO logs during ephemeral connection:

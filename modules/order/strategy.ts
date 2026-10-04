@@ -61,14 +61,26 @@ import {
     hasOnChainId,
     isOrderPlaced
 } from "./utils/order.js";
+import type { OrderManagerLike, ManagedOrder, GridConfig, AssetPair, ProjectedFunds } from "../types.js";
+
+interface FillInput {
+    id?: string;
+    type?: string;
+    price?: number;
+    size?: number;
+    isPartial?: boolean;
+    isDelayedRotationTrigger?: boolean;
+    orderId?: string | null;
+    [key: string]: unknown;
+}
 
 class StrategyEngine {
-    manager: any;
+    manager: OrderManagerLike;
 
     /**
      * @param {Object} manager - OrderManager instance
      */
-    constructor(manager: any) {
+    constructor(manager: OrderManagerLike) {
         this.manager = manager;
     }
 
@@ -106,14 +118,14 @@ class StrategyEngine {
      * @returns {Promise<boolean>} True if processing completed successfully
      * @async
      */
-    async processFillsOnly(filledOrders: any, excludeOrderIds: any = new Set()) {
+    async processFillsOnly(filledOrders: FillInput[], excludeOrderIds: Set<string> = new Set()) {
         const mgr = this.manager;
         if (!Array.isArray(filledOrders) || filledOrders.length === 0) return true;
 
         mgr.logger.log(`[STRATEGY] Processing batch of ${filledOrders.length} filled orders...`, 'info');
 
         for (const filledOrder of filledOrders) {
-            if (excludeOrderIds?.has?.(filledOrder.id)) {
+            if (filledOrder.id != null && excludeOrderIds?.has?.(filledOrder.id)) {
                 mgr.logger.log(`[STRATEGY] Skipping excluded fill for order ${filledOrder.id}`, 'debug');
                 continue;
             }
@@ -137,25 +149,25 @@ class StrategyEngine {
                 // guard the ledger at its single writer so a future dryRun
                 // simulation cannot grow it unbounded.
                 && mgr.config?.dryRun !== true) {
-                const pending = (mgr as any)._pendingFillCrawls;
+                const pending = mgr._pendingFillCrawls;
                 if (Array.isArray(pending)) {
                     // Slot-level dedupe: a slot with no live order cannot
                     // refill (and therefore re-fill) while its hole persists,
                     // so a second entry for the same slotId can only be a
                     // reprocessed duplicate, never a second owed crawl.
                     // Replace (keep newest) instead of stacking.
-                    const at = pending.findIndex((e: any) => e && e.slotId === filledOrder.id);
+                    const at = pending.findIndex((e) => e && e.slotId === filledOrder.id);
                     if (at >= 0) pending.splice(at, 1);
                     pending.push({ slotId: filledOrder.id, side: filledOrder.type, ts: Date.now() });
                     // Hard cap AFTER push so the in-memory length matches the
                     // persisted cap (account_orders stores slice(-500)).
                     while (pending.length > 500) pending.shift();
-                    if (typeof (mgr as any)._markGridDirty === 'function') (mgr as any)._markGridDirty();
+                    if (typeof mgr._markGridDirty === 'function') mgr._markGridDirty();
                 }
             }
 
             if (!isPartial || filledOrder.isDelayedRotationTrigger) {
-                const currentSlot = mgr.orders.get(filledOrder.id);
+                const currentSlot = filledOrder.id != null ? mgr.orders.get(filledOrder.id) : undefined;
                 const slotReused = currentSlot && hasOnChainId(currentSlot) && filledOrder.orderId && currentSlot.orderId !== filledOrder.orderId;
 
                 if (currentSlot && !slotReused && isOrderPlaced(currentSlot) && currentSlot.size > 0) {
@@ -165,12 +177,12 @@ class StrategyEngine {
                     // geometry survives the fill cycle; only true gap-band
                     // slots become side-neutral SPREAD. Geometry by slot id,
                     // never the stored type.
-                    let filledHole: any = null;
+                    let filledHole: ManagedOrder | null = null;
                     try {
                         const filledGeoType = geometryTypeForSlotIndex(
                             parseSlotIndex(currentSlot?.id),
-                            (mgr as any)?.boundaryIdx,
-                            (mgr as any)?._gapSlots
+                            mgr.boundaryIdx,
+                            mgr._gapSlots
                         );
                         filledHole = (filledGeoType === ORDER_TYPES.BUY || filledGeoType === ORDER_TYPES.SELL)
                             ? toRailHolePlaceholder(currentSlot, filledGeoType, 0)
@@ -250,12 +262,12 @@ class StrategyEngine {
      *   - boundaryIdx {number}: New boundary index
      */
     calculateTargetGrid(params: {
-        frozenMasterGrid: Map<string, any>;
-        config: any;
-        accountAssets: any;
-        funds: any;
-        fills: any[];
-        currentBoundaryIdx: number;
+        frozenMasterGrid: Map<string, ManagedOrder>;
+        config: GridConfig;
+        accountAssets: AssetPair | null;
+        funds: ProjectedFunds | null;
+        fills: FillInput[];
+        currentBoundaryIdx: number | null;
     }) {
         // Core params needed for calculation
         const { 
@@ -271,9 +283,9 @@ class StrategyEngine {
         // Clone grid for local simulation (Target Grid)
         // We work with "slots" which are the potential order locations
         const allSlots = Array.from(frozenMasterGrid.values())
-            .filter((o: any) => o.price != null)
-            .sort((a: any, b: any) => a.price - b.price)
-            .map((o: any) => ({ ...o })); // Shallow clone for simulation
+            .filter((o) => o.price != null)
+            .sort((a, b) => a.price - b.price)
+            .map((o) => ({ ...o })); // Shallow clone for simulation
 
         if (allSlots.length === 0) return { targetGrid: new Map(), boundaryIdx: currentBoundaryIdx };
 
@@ -281,14 +293,14 @@ class StrategyEngine {
         // Use the stored gapSlots from grid creation (always consistent with
         // the grid geometry) instead of recomputing from live config which may
         // have drifted if targetSpreadPercent or gridLimits changed.
-        const gapSlots = (this.manager as any)._genesis?.gapSlots ?? this.manager._gapSlots ?? calculateGapSlots(config.incrementPercent, config.targetSpreadPercent, config.gridLimits);
-        const crossChunkBudget = (this.manager as any)._boundaryShiftBudget;
+        const gapSlots = this.manager._genesis?.gapSlots ?? this.manager._gapSlots ?? calculateGapSlots(config.incrementPercent, config.targetSpreadPercent, config.gridLimits);
+        const crossChunkBudget = this.manager._boundaryShiftBudget as number | null | undefined;
         // Anchor recovery on the frozen genesis center when config.startPrice
         // is an unresolved "pool"/"book" mode string: a fill carries direction
         // but not position, and an unanchored recovery fabricates a rail-edge
         // boundary (the slot-77→slot-192 teleport). The numeric config center
         // still wins when present.
-        const genesisStart = Number((this.manager as any)?._genesis?.startPrice);
+        const genesisStart = Number(this.manager._genesis?.startPrice);
         const boundaryConfig = (!Number.isFinite(Number(config?.startPrice)) && Number.isFinite(genesisStart))
             ? { ...config, genesisStartPrice: genesisStart }
             : config;
@@ -301,9 +313,9 @@ class StrategyEngine {
             buy: resolveLiveReserveEdgeAnchorPrice(this.manager, 'buy'),
             sell: resolveLiveReserveEdgeAnchorPrice(this.manager, 'sell'),
         };
-        const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, boundaryConfig, gapSlots, crossChunkBudget, (this.manager as any)?._pendingFillCrawls, reserveEdgeAnchors);
+        const { boundaryIdx: newBoundaryIdx, remainingBudget } = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, boundaryConfig, gapSlots, crossChunkBudget, this.manager._pendingFillCrawls, reserveEdgeAnchors);
         if (crossChunkBudget != null) {
-            (this.manager as any)._boundaryShiftBudget = remainingBudget;
+            this.manager._boundaryShiftBudget = remainingBudget;
         }
         // Unanchorable (null boundary, no numeric center anywhere): refuse to
         // plan rotations on fabricated geometry. The COW engine routes this
@@ -317,7 +329,7 @@ class StrategyEngine {
         const updatedSlots = assignGridRoles(allSlots, newBoundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES, { assignOnChain: true });
 
         this.manager.logger.log(`[DEBUG] calculateTargetGrid: boundary=${newBoundaryIdx}, gap=${gapSlots}, allSlots=${updatedSlots.length}`, 'debug');
-        updatedSlots.forEach((s: any) => this.manager.logger.log(`  Slot ${s.id}: price=${s.price}, size=${s.size ?? 'n/a'}, type=${s.type}`, 'debug'));
+        updatedSlots.forEach((s) => this.manager.logger.log(`  Slot ${s.id}: price=${s.price}, size=${s.size ?? 'n/a'}, type=${s.type}`, 'debug'));
 
         // 3. Calculate Ideal Sizes (Budgeting)
         const totalTarget = getActiveOrdersTotal(config);
@@ -325,8 +337,8 @@ class StrategyEngine {
         const budgetSell = getSideBudget('sell', funds, config, totalTarget);
         
         // Filter slots into BUY/SELL
-        const allBuySlots = updatedSlots.filter((o: any) => o.type === ORDER_TYPES.BUY);
-        const allSellSlots = updatedSlots.filter((o: any) => o.type === ORDER_TYPES.SELL);
+        const allBuySlots = updatedSlots.filter((o) => o.type === ORDER_TYPES.BUY);
+        const allSellSlots = updatedSlots.filter((o) => o.type === ORDER_TYPES.SELL);
 
         // Apply Window Discipline (activeOrders count)
         const targetCountBuy = Math.max(1, (config.activeOrders?.buy ?? 1));
@@ -340,8 +352,8 @@ class StrategyEngine {
         // inside the gap (spread removed). Exclude stray slots by geometry
         // (shared MathUtils.isSlotInRail helper) so reconcile treats them as
         // surplus and relocates them back onto the rail.
-        const inBuyRail = (o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.BUY, o);
-        const inSellRail = (o: any) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.SELL, o);
+        const inBuyRail = (o: ManagedOrder) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.BUY, o);
+        const inSellRail = (o: ManagedOrder) => isSlotInRail(newBoundaryIdx, gapSlots, ORDER_TYPES.SELL, o);
 
         // Sort Closest-First for windowing, then collapse duplicate price levels
         // before slicing so the active window keeps as many unique-priced
@@ -350,21 +362,21 @@ class StrategyEngine {
         // duplicate levels after rotation re-typing (e.g. 902.08089 x2).
         const buyCandidates = allBuySlots
             .filter(inBuyRail)
-            .sort((a: any, b: any) => b.price - a.price);
+            .sort((a, b) => b.price - a.price);
         const sellCandidates = allSellSlots
             .filter(inSellRail)
-            .sort((a: any, b: any) => a.price - b.price);
+            .sort((a, b) => a.price - b.price);
 
-        const snapRail = (slots: any[], dir: number) => {
-            const kept: any[] = [];
+        const snapRail = (slots: ManagedOrder[], dir: number) => {
+            const kept: ManagedOrder[] = [];
             for (const s of slots) {
-                if (!kept.some((k: any) => k.id === s.id)) kept.push(s);
-                else if (!isOrderPlaced(kept.find((k: any) => k.id === s.id)) && isOrderPlaced(s)) {
-                    const idx = kept.findIndex((k: any) => k.id === s.id);
+                if (!kept.some((k) => k.id === s.id)) kept.push(s);
+                else if (!isOrderPlaced(kept.find((k) => k.id === s.id)) && isOrderPlaced(s)) {
+                    const idx = kept.findIndex((k) => k.id === s.id);
                     kept[idx] = s;
                 }
             }
-            kept.sort((a: any, b: any) => dir > 0 ? Number(a.price) - Number(b.price) : Number(b.price) - Number(a.price));
+            kept.sort((a, b) => dir > 0 ? Number(a.price) - Number(b.price) : Number(b.price) - Number(a.price));
             return kept;
         };
 
@@ -375,8 +387,8 @@ class StrategyEngine {
         // Size distribution must be computed on the FULL side topology, not only
         // the active window. Otherwise budgets get concentrated into targetCount
         // slots (e.g., 3), producing absurd per-order sizes.
-        const allBuySortedForSizing = [...allBuySlots].sort((a: any, b: any) => a.price - b.price);
-        const allSellSortedForSizing = [...allSellSlots].sort((a: any, b: any) => a.price - b.price);
+        const allBuySortedForSizing = [...allBuySlots].sort((a, b) => a.price - b.price);
+        const allSellSortedForSizing = [...allSellSlots].sort((a, b) => a.price - b.price);
 
         const fullBuySizes = calculateBudgetedSizes(
             allBuySortedForSizing,
@@ -395,8 +407,8 @@ class StrategyEngine {
             accountAssets
         );
 
-        const buySizeById = new Map(allBuySortedForSizing.map((slot: any, i: any) => [slot.id, fullBuySizes[i] || 0]));
-        const sellSizeById = new Map(allSellSortedForSizing.map((slot: any, i: any) => [slot.id, fullSellSizes[i] || 0]));
+        const buySizeById = new Map(allBuySortedForSizing.map((slot, i) => [slot.id, fullBuySizes[i] || 0]));
+        const sellSizeById = new Map(allSellSortedForSizing.map((slot, i) => [slot.id, fullSellSizes[i] || 0]));
 
         // Reserve ladder: edge-pinned insurance orders stay live alongside the
         // window. Buys pin at the floor (lowest prices), sells at the ceiling
@@ -406,30 +418,30 @@ class StrategyEngine {
         // Both edges anchor at the live grid's own edge (reserveEdgeAnchors),
         // which is the same pair deriveTargetBoundary classified against.
         const reserveBuySlots = selectReserveEdgeSlots(
-            allBuySortedForSizing.filter((s: any) => inBuyRail(s)),
+            allBuySortedForSizing.filter((s) => inBuyRail(s)),
             resolveReserveCount(config, 'buy'),
-            new Set(buySlots.map((s: any) => s.id)),
+            new Set(buySlots.map((s) => s.id)),
             'floor',
             reserveEdgeAnchors.buy
         );
         const reserveSellSlots = selectReserveEdgeSlots(
-            allSellSortedForSizing.filter((s: any) => inSellRail(s)),
+            allSellSortedForSizing.filter((s) => inSellRail(s)),
             resolveReserveCount(config, 'sell'),
-            new Set(sellSlots.map((s: any) => s.id)),
+            new Set(sellSlots.map((s) => s.id)),
             'ceiling',
             reserveEdgeAnchors.sell
         );
         const buySlotsAll = [...buySlots, ...reserveBuySlots];
         const sellSlotsAll = [...sellSlots, ...reserveSellSlots];
 
-        const buySizes = buySlotsAll.map((slot: any) => buySizeById.get(slot.id) || 0);
-        const sellSizes = sellSlotsAll.map((slot: any) => sellSizeById.get(slot.id) || 0);
+        const buySizes = buySlotsAll.map((slot) => buySizeById.get(slot.id) || 0);
+        const sellSizes = sellSlotsAll.map((slot) => sellSizeById.get(slot.id) || 0);
 
         // Apply sizes to target grid map
-        const targetGrid = new Map();
+        const targetGrid = new Map<string, ManagedOrder>();
         
-        const applySizes = (slots: any, sizes: any) => {
-            slots.forEach((slot: any, i: any) => {
+        const applySizes = (slots: ManagedOrder[], sizes: number[]) => {
+            slots.forEach((slot, i) => {
                 const size = sizes[i] || 0;
                 targetGrid.set(slot.id, {
                     id: slot.id,
@@ -437,12 +449,11 @@ class StrategyEngine {
                     type: slot.type,
                     size: size,
                     idealSize: size,
-                    // If size > 0, we WANT it active. If size 0, we want it VIRTUAL/SPREAD
                     state: size > 0 ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL,
                     committedSide: (slot.type === ORDER_TYPES.BUY || slot.type === ORDER_TYPES.SELL)
                         ? slot.type
                         : slot.committedSide
-                });
+                } as ManagedOrder);
             });
         };
 
@@ -453,8 +464,8 @@ class StrategyEngine {
         // Window Discipline only controls WHICH orders are placed on-chain,
         // not the grid's fund allocation. Virtual orders must retain their
         // sizes so that funds.virtual reflects the full grid commitment.
-        const windowIds = new Set([...buySlotsAll, ...sellSlotsAll].map((s: any) => s.id));
-        updatedSlots.forEach((slot: any) => {
+        const windowIds = new Set([...buySlotsAll, ...sellSlotsAll].map((s) => s.id));
+        updatedSlots.forEach((slot) => {
             if (!windowIds.has(slot.id)) {
                 // Use calculated size from full-rail sizing (preserves fund allocation)
                 const calculatedSize = buySizeById.get(slot.id) ?? sellSizeById.get(slot.id) ?? slot.size ?? 0;
@@ -468,7 +479,7 @@ class StrategyEngine {
                     committedSide: (slot.type === ORDER_TYPES.BUY || slot.type === ORDER_TYPES.SELL)
                         ? slot.type
                         : slot.committedSide
-                });
+                } as ManagedOrder);
             }
         });
 

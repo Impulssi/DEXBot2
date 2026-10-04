@@ -38,7 +38,7 @@ export async function withTimeout<T>(
     const onTimeout = options?.onTimeout ?? 'reject';
     const label = options?.label;
     const onTimeoutCallback = options?.onTimeoutCallback;
-    let timerId: any;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<T>((_, reject) => {
         timerId = setTimeout(() => {
             try { onTimeoutCallback?.(); } catch (_) { /* non-fatal */ }
@@ -57,7 +57,7 @@ export async function withTimeout<T>(
         : promise;
     try {
         return await Promise.race([racePromise, timeoutPromise]);
-    } catch (err: any) {
+    } catch (err) {
         if (onTimeout === 'resolve' && err === TIMEOUT_RESOLVE_SENTINEL) {
             return options!.defaultValue as T;
         }

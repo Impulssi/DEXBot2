@@ -48,7 +48,14 @@ export interface HuberEstimatorStats {
 }
 
 /** Estimator function shape accepted by simulateGridResetSeries (cfg.slopeEstimator). */
-export type HuberEstimator = ((amaValues: any, index: number, lookbackBars: any) => number | null) & {
+export interface HuberConsts {
+    C?: number;
+    ITERATIONS?: number;
+    SCALE_FLOOR?: number;
+    ZERO_EPSILON?: number;
+}
+
+export type HuberEstimator = ((amaValues: unknown, index: number, lookbackBars: unknown) => number | null) & {
     stats: HuberEstimatorStats;
 };
 
@@ -112,11 +119,11 @@ function solveMScale(resid: number[], c: number, seed: number, floor: number): n
  * Huber weight `min(1, C*s/|r|)`.
  */
 export function huberSlopeCore(
-    amaValues: any,
+    amaValues: unknown,
     index: number,
-    lookbackBars: any,
+    lookbackBars: unknown,
     mode: HuberScaleMode = 'none',
-    hub: any = (MARKET_ADAPTER as any).DYNAMIC_WEIGHT_AMA_HUBER,
+    hub: HuberConsts = MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER,
 ): HuberDiagnostics | null {
     const bars = Number.isFinite(lookbackBars) && Number(lookbackBars) > 0
         ? Math.ceil(Number(lookbackBars))
@@ -131,10 +138,10 @@ export function huberSlopeCore(
         y.push(Math.log(v));
     }
     const n = y.length;
-    const c = Number.isFinite(hub?.C) ? hub.C : 1.345;
-    const iterations = Number.isFinite(hub?.ITERATIONS) ? hub.ITERATIONS : 5;
-    const scaleFloor = Number.isFinite(hub?.SCALE_FLOOR) ? hub.SCALE_FLOOR : 1e-6;
-    const zeroEpsilon = Number.isFinite(hub?.ZERO_EPSILON) ? hub.ZERO_EPSILON : 1e-9;
+    const c = Number.isFinite(Number(hub?.C)) ? Number(hub.C) : 1.345;
+    const iterations = Number.isFinite(Number(hub?.ITERATIONS)) ? Number(hub.ITERATIONS) : 5;
+    const scaleFloor = Number.isFinite(Number(hub?.SCALE_FLOOR)) ? Number(hub.SCALE_FLOOR) : 1e-6;
+    const zeroEpsilon = Number.isFinite(Number(hub?.ZERO_EPSILON)) ? Number(hub.ZERO_EPSILON) : 1e-9;
 
     const xMean = (n - 1) / 2;
     const wls = (w: number[]) => {
@@ -188,10 +195,10 @@ export function huberSlopeCore(
  */
 export function createHuberEstimator(
     mode: HuberScaleMode = 'none',
-    hub: any = (MARKET_ADAPTER as any).DYNAMIC_WEIGHT_AMA_HUBER,
+    hub: HuberConsts = MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER,
 ): HuberEstimator {
     const stats: HuberEstimatorStats = { calls: 0, outlierFractionSum: 0, scaleSum: 0 };
-    const fn = ((amaValues: any, index: number, lookbackBars: any) => {
+    const fn = ((amaValues: unknown, index: number, lookbackBars: unknown) => {
         const d = huberSlopeCore(amaValues, index, lookbackBars, mode, hub);
         if (d == null) return null;
         stats.calls++;

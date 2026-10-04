@@ -29,6 +29,7 @@
 
 
 import { fetchKibanaCandles, fetchKibanaClosePrices } from './kibana_candles.js';
+import type { AssetRef, KibanaCandleConfig } from './kibana_candles.js';
 
 
 const OP_FILL_ORDER = 4;
@@ -53,7 +54,7 @@ const FILL_FIELD_MAP = {
  * @param {Object} [config]
  * @returns {Promise<Array>} OHLCV candles in B-per-A units
  */
-async function getMarketCandles(assetA: any, assetB: any, config: any = {}) {
+async function getMarketCandles(assetA: AssetRef, assetB: AssetRef, config: KibanaCandleConfig = {}) {
   return fetchKibanaCandles({
     opType: OP_FILL_ORDER,
     fieldMap: FILL_FIELD_MAP,
@@ -71,7 +72,7 @@ async function getMarketCandles(assetA: any, assetB: any, config: any = {}) {
  * @param {Object} [config] – Optional configuration overrides
  * @returns {Promise<Object>} Parsed close price response
  */
-async function getMarketClosePrices(assetA: any, assetB: any, config: any = {}) {
+async function getMarketClosePrices(assetA: AssetRef, assetB: AssetRef, config: KibanaCandleConfig = {}) {
   return fetchKibanaClosePrices({
     opType: OP_FILL_ORDER,
     fieldMap: FILL_FIELD_MAP,

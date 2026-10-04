@@ -6,17 +6,23 @@ import { MARKET_ADAPTER } from '../../../modules/constants.js';
 /**
  * Kaufman's Adaptive Moving Average (KAMA/AMA).
  */
-class AMA {
-    erPeriod: any;
-    fastSC: any;
-    slowSC: any;
-    prevAMA: any;
-    history: any;
-    warmedUp: any;
-    smaSum: any;
-    smaCount: any;
+export interface AmaParams {
+    erPeriod: number;
+    fastPeriod: number;
+    slowPeriod: number;
+}
 
-    constructor(erPeriod: any, fastPeriod: any, slowPeriod: any) {
+class AMA {
+    erPeriod: number;
+    fastSC: number;
+    slowSC: number;
+    prevAMA: number | null;
+    history: number[];
+    warmedUp: boolean;
+    smaSum: number;
+    smaCount: number;
+
+    constructor(erPeriod: number, fastPeriod: number, slowPeriod: number) {
         if (!Number.isFinite(erPeriod) || erPeriod <= 0) {
             throw new TypeError(`AMA erPeriod must be a positive finite number, got ${erPeriod}`);
         }
@@ -37,7 +43,7 @@ class AMA {
         this.smaCount = 0;
     }
 
-    update(price: any) {
+    update(price: number): number {
         if (!Number.isFinite(price)) {
             throw new TypeError(`AMA price must be a finite number, got ${price}`);
         }
@@ -69,15 +75,16 @@ class AMA {
 
         const er = volatility === 0 ? 0 : direction / volatility;
 
+        const prevAMA = this.prevAMA as number;
         const smooth = (er * (this.fastSC - this.slowSC) + this.slowSC) ** 2;
-        const ama = this.prevAMA + smooth * (price - this.prevAMA);
+        const ama = prevAMA + smooth * (price - prevAMA);
 
         this.prevAMA = ama;
         return ama;
     }
 }
 
-function getAmaWarmupBars(erPeriod: any, slowPeriod: any, lookbackBars: any, fastPeriod: any) {
+function getAmaWarmupBars(erPeriod: number, slowPeriod: number, lookbackBars: number, fastPeriod: number): number {
     if (!Number.isFinite(erPeriod) || erPeriod <= 0) {
         throw new TypeError(`getAmaWarmupBars erPeriod must be a positive finite number, got ${erPeriod}`);
     }
@@ -105,7 +112,7 @@ function getAmaWarmupBars(erPeriod: any, slowPeriod: any, lookbackBars: any, fas
     return safeErPeriod + convergenceBars + safeLookbackBars;
 }
 
-function calculateAMA(closes: any, params: any) {
+function calculateAMA(closes: number[], params: AmaParams): number[] {
     if (!params || typeof params !== 'object') {
         throw new TypeError('calculateAMA params must be an object with erPeriod, fastPeriod, slowPeriod');
     }

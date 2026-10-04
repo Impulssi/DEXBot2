@@ -3,12 +3,12 @@ const require = createRequire(import.meta.url);
 
 import type { CryptoProvider, ScryptOptions, Aes256GcmEncryptResult } from './provider.js';
 
-let _crypto: any;
-function getNodeCrypto(): any {
+let _crypto: typeof import('node:crypto') | null = null;
+function getNodeCrypto(): typeof import('node:crypto') {
     if (!_crypto) {
-        try { _crypto = require('crypto'); } catch { _crypto = null; }
+        try { _crypto = require('crypto') as typeof import('node:crypto'); } catch { _crypto = null; }
     }
-    return _crypto;
+    return _crypto as typeof import('node:crypto');
 }
 
 export class NodeCryptoProvider implements CryptoProvider {
@@ -54,7 +54,7 @@ export class NodeCryptoProvider implements CryptoProvider {
 
     scrypt(password: Uint8Array, salt: Uint8Array, keyLength: number, options?: ScryptOptions): Promise<Uint8Array> {
         return new Promise((resolve, reject) => {
-            getNodeCrypto().scrypt(password, salt, keyLength, options as any, (err: any, key: Buffer) => {
+            getNodeCrypto().scrypt(password, salt, keyLength, options as import('node:crypto').ScryptOptions, (err: Error | null, key: Buffer) => {
                 if (err) reject(err);
                 else resolve(new Uint8Array(key));
             });

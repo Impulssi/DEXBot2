@@ -41,10 +41,17 @@ import { usesAmaGridPrice } from '../grid_price_source.js';
 
 const storage = getStorage();
 
+interface AdapterBotConfig {
+    name?: string;
+    gridPrice?: unknown;
+    active?: boolean;
+    [key: string]: unknown;
+}
+
 // Lazy require: keeps the ../order/utils/system test seam working (tests
 // stub parseJsonWithComments via the module cache).
-function parseJsonWithComments(...args: any): any {
-    return (require('../order/utils/system') as any).parseJsonWithComments(...args);
+function parseJsonWithComments(...args: unknown[]): Record<string, unknown> {
+    return (require('../order/utils/system') as { parseJsonWithComments: (...a: unknown[]) => Record<string, unknown> }).parseJsonWithComments(...args);
 }
 
 /** Env var the unlock wrapper sets on bot children it supervises. */
@@ -58,7 +65,7 @@ const WRAPPER_ADAPTER_OWNER = 'wrapper';
  * @param {NodeJS.ProcessEnv} [env=process.env] - Environment to inspect
  * @returns {boolean} True when running as a wrapper-supervised bot child
  */
-function isWrapperAdapterOwner(env: any = process.env): boolean {
+function isWrapperAdapterOwner(env: Record<string, string | undefined> = process.env): boolean {
     try {
         return !!env && env[ADAPTER_OWNER_ENV] === WRAPPER_ADAPTER_OWNER;
     } catch {
@@ -66,38 +73,38 @@ function isWrapperAdapterOwner(env: any = process.env): boolean {
     }
 }
 
-function normalizeGridPrice(value: any): string {
+function normalizeGridPrice(value: unknown): string {
     return String(value ?? '').trim().toLowerCase();
 }
 
 /**
  * Build the semantic adapter fingerprint for an active-bot list.
  * Only AMA-priced bots contribute; sorted so bot order is irrelevant.
- * @param {any[]} activeBots - Bots with active !== false
+ * @param {unknown[]} activeBots - Bots with active !== false
  * @returns {string} Fingerprint ('' when no AMA bot is active)
  */
-function buildAdapterFingerprint(activeBots: any[]): string {
+function buildAdapterFingerprint(activeBots: AdapterBotConfig[]): string {
     const bots = Array.isArray(activeBots) ? activeBots : [];
     return bots
-        .filter((b: any) => b && b.active !== false && usesAmaGridPrice(b))
-        .map((b: any) => `${String(b.name ?? '').trim()}:${normalizeGridPrice((b as any).gridPrice)}`)
+        .filter((b) => b && b.active !== false && usesAmaGridPrice(b))
+        .map((b) => `${String(b.name ?? '').trim()}:${normalizeGridPrice(b.gridPrice)}`)
         .sort()
         .join('|');
 }
 
 /**
  * Summarize parsed bots.json content for adapter decisions.
- * @param {any} parsed - Parsed bots.json object
+ * @param {unknown} parsed - Parsed bots.json object
  * @returns {{activeBots: any[], needsMarketAdapter: boolean, fingerprint: string}}
  */
-function summarizeBotsConfig(parsed: any): { activeBots: any[]; needsMarketAdapter: boolean; fingerprint: string } {
-    const bots = Array.isArray((parsed as any)?.bots)
-        ? (parsed as any).bots.filter(Boolean)
-        : [];
-    const activeBots = bots.filter((bot: any) => bot && bot.active !== false);
+function summarizeBotsConfig(parsed: unknown): { activeBots: AdapterBotConfig[]; needsMarketAdapter: boolean; fingerprint: string } {
+    const rec = parsed as Record<string, unknown> | null;
+    const rawBots = Array.isArray(rec?.bots) ? rec.bots : [];
+    const bots = rawBots.filter(Boolean) as AdapterBotConfig[];
+    const activeBots = bots.filter((bot) => bot && bot.active !== false);
     return {
         activeBots,
-        needsMarketAdapter: activeBots.some((bot: any) => usesAmaGridPrice(bot)),
+        needsMarketAdapter: activeBots.some((bot) => usesAmaGridPrice(bot)),
         fingerprint: buildAdapterFingerprint(activeBots),
     };
 }
@@ -114,8 +121,8 @@ function summarizeBotsConfig(parsed: any): { activeBots: any[]; needsMarketAdapt
 function readAdapterRequirement(botsFile?: string): {
     exists: boolean;
     fingerprint: string;
-    config: any;
-    activeBots: any[];
+    config: unknown;
+    activeBots: AdapterBotConfig[];
     needsMarketAdapter: boolean;
     corrupt?: boolean;
     readError?: boolean;
@@ -136,7 +143,7 @@ function readAdapterRequirement(botsFile?: string): {
         return { ...empty, readError: true };
     }
     if (!raw || !raw.trim()) return { ...empty };
-    let parsed: any;
+    let parsed: Record<string, unknown>;
     try {
         parsed = parseJsonWithComments(raw);
     } catch {

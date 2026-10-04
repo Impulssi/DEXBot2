@@ -1,3 +1,5 @@
+import { getErrorMessage } from '../utils/errors.js';
+import type { FileStat } from './types.js';
 /**
  * BrowserStorageAdapter — in-memory Map backed by IndexedDB.
  *
@@ -24,24 +26,73 @@
  * MemoryMap adapter that logs a warning.
  */
 
+/** The record persisted in IndexedDB / held in the in-memory Map. */
+interface StoredRecord {
+  content: string;
+  type: 'json' | 'text';
+  mtime: number;
+  mode?: number;
+}
+
+/** Minimal structural IndexedDB surface (avoids depending on DOM lib types). */
+interface IDBRequestEvent<T> {
+  target: { result: T };
+}
+interface IDBCursorLike {
+  key: string;
+  value: StoredRecord;
+  continue(): void;
+  onsuccess: ((event: IDBRequestEvent<IDBCursorLike | null>) => void) | null;
+  onerror: (() => void) | null;
+  error: unknown;
+}
+interface IDBObjectStoreLike {
+  openCursor(): IDBCursorLike;
+  put(value: StoredRecord, key: string): void;
+  delete(key: string): void;
+}
+interface IDBTransactionLike {
+  objectStore(name: string): IDBObjectStoreLike;
+  oncomplete: (() => void) | null;
+  onerror: (() => void) | null;
+  error: unknown;
+}
+interface IDBDatabaseLike {
+  transaction(name: string, mode: 'readonly' | 'readwrite'): IDBTransactionLike;
+  close(): void;
+  objectStoreNames: { contains(name: string): boolean };
+  createObjectStore(name: string): void;
+}
+interface IDBOpenRequestLike {
+  onupgradeneeded: ((event: IDBRequestEvent<IDBDatabaseLike>) => void) | null;
+  onsuccess: ((event: IDBRequestEvent<IDBDatabaseLike>) => void) | null;
+  onerror: (() => void) | null;
+  error: unknown;
+}
+interface IndexedDBLike {
+  open(name: string, version: number): IDBOpenRequestLike;
+}
+
+type WriteOptions = { mode?: number; fsync?: boolean; tmpPrefix?: string; flag?: 'w' | 'wx' };
+
 function createBrowserStorageAdapter() {
-  const store = new Map();
+  const store = new Map<string, StoredRecord>();
   const tombstones = new Set<string>();
   // Paths mutated locally during the startup load window; the ingest cursor
   // must skip them so a stale IndexedDB record cannot revert a fresh write.
   const localMutations = new Set<string>();
   const FLUSH_DEBOUNCE_MS = 500;
-  let flushTimer: any = null;
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Try to open IndexedDB and load all records into memory. */
   async function initFromIndexedDB() {
-    let db;
+    let db: IDBDatabaseLike | undefined;
     try {
       db = await openDB();
       const tx = db.transaction('files', 'readonly');
       const cursor = tx.objectStore('files').openCursor();
-      await new Promise<void>((resolve: any, reject: any) => {
-        cursor.onsuccess = (event: any) => {
+      await new Promise<void>((resolve, reject) => {
+        cursor.onsuccess = (event) => {
           const cur = event.target.result;
           if (cur) {
             // Local mutations (writes or deletes) that ran before the cursor
@@ -59,9 +110,9 @@ function createBrowserStorageAdapter() {
       });
       // Load window over — ingest can no longer clobber local state.
       localMutations.clear();
-    } catch (err: any) {
+    } catch (err) {
       // IndexedDB unavailable — memory-only mode
-      console.warn(`BrowserStorageAdapter: IndexedDB load failed (${err?.message || err}); falling back to memory-only mode`);
+      console.warn(`BrowserStorageAdapter: IndexedDB load failed (${getErrorMessage(err)}); falling back to memory-only mode`);
     } finally {
       if (db) db.close();
     }
@@ -69,7 +120,7 @@ function createBrowserStorageAdapter() {
 
   /** Flush in-memory store back to IndexedDB. */
   async function flush() {
-    let db;
+    let db: IDBDatabaseLike | undefined;
     try {
       db = await openDB();
       const tx = db.transaction('files', 'readwrite');
@@ -82,14 +133,14 @@ function createBrowserStorageAdapter() {
         // any surviving tombstone means the key must not exist in IndexedDB.
         os.delete(key);
       }
-      await new Promise<void>((resolve: any, reject: any) => {
+      await new Promise<void>((resolve, reject) => {
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });
       tombstones.clear();
-    } catch (err: any) {
+    } catch (err) {
       // MemoryMap mode — nothing to flush
-      console.warn(`BrowserStorageAdapter: IndexedDB flush failed (${err?.message || err}); changes remain memory-only`);
+      console.warn(`BrowserStorageAdapter: IndexedDB flush failed (${getErrorMessage(err)}); changes remain memory-only`);
     } finally {
       if (db) db.close();
     }
@@ -103,17 +154,18 @@ function createBrowserStorageAdapter() {
     }, FLUSH_DEBOUNCE_MS);
   }
 
-  function openDB() {
-    const idb: any = (globalThis as any).indexedDB;
-    return new Promise<any>((resolve: any, reject: any) => {
+  function openDB(): Promise<IDBDatabaseLike> {
+    const idb = (globalThis as { indexedDB?: IndexedDBLike }).indexedDB;
+    if (!idb) return Promise.reject(new Error('IndexedDB is unavailable'));
+    return new Promise<IDBDatabaseLike>((resolve, reject) => {
       const request = idb.open('DEXBotStorage', 1);
-      request.onupgradeneeded = (event: any) => {
+      request.onupgradeneeded = (event) => {
         const db = event.target.result;
         if (!db.objectStoreNames.contains('files')) {
           db.createObjectStore('files');
         }
       };
-      request.onsuccess = (event: any) => resolve(event.target.result);
+      request.onsuccess = (event) => resolve(event.target.result);
       request.onerror = () => reject(request.error);
     });
   }
@@ -122,16 +174,15 @@ function createBrowserStorageAdapter() {
   initFromIndexedDB().catch(() => {});
 
   const adapter = {
-    readJSON(path: any) {
+    readJSON<T = unknown>(path: string): T {
       const entry = store.get(path);
       if (!entry) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
-      return JSON.parse(entry.content);
+      return JSON.parse(entry.content) as T;
     },
 
-    writeJSON(path: any, data: any, options: any) {
+    writeJSON(path: string, data: unknown, options: WriteOptions = {}) {
       if (options?.flag === 'wx' && store.has(path)) {
-        const err: any = new Error(`EEXIST: ${path}`);
-        err.code = 'EEXIST';
+        const err = Object.assign(new Error(`EEXIST: ${path}`), { code: 'EEXIST' });
         throw err;
       }
       const content = JSON.stringify(data, null, 2) + '\n';
@@ -146,29 +197,29 @@ function createBrowserStorageAdapter() {
       scheduleFlush();
     },
 
-    exists(path: any) {
+    exists(path: string): boolean {
       return store.has(path);
     },
 
-    ensureDir(_path: any, _options: any) {
+    ensureDir(_path: string, _options?: { mode?: number }): void {
       // In-memory: directories are implicit
     },
 
-    unlink(path: any) {
+    unlink(path: string): void {
       store.delete(path);
       tombstones.add(path);
       localMutations.add(path);
       scheduleFlush();
     },
 
-    readFile(path: any, encoding: any = 'utf8') {
+    readFile(path: string, encoding: string = 'utf8'): string {
       const entry = store.get(path);
       if (!entry) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
       if (encoding === 'utf8' || encoding === 'utf-8') return entry.content;
       return entry.content;
     },
 
-    writeFile(path: any, data: any, options: any) {
+    writeFile(path: string, data: string, options?: { mode?: number } | string): void {
       store.set(path, {
         content: data,
         type: 'text',
@@ -180,7 +231,7 @@ function createBrowserStorageAdapter() {
       scheduleFlush();
     },
 
-    rename(oldPath: any, newPath: any) {
+    rename(oldPath: string, newPath: string): void {
       const entry = store.get(oldPath);
       if (entry) {
         store.set(newPath, entry);
@@ -193,7 +244,7 @@ function createBrowserStorageAdapter() {
       }
     },
 
-    stat(path: any) {
+    stat(path: string): FileStat {
       const entry = store.get(path);
       if (!entry) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
       return {
@@ -203,7 +254,7 @@ function createBrowserStorageAdapter() {
       };
     },
 
-    readdir(dirPath: any) {
+    readdir(dirPath: string): string[] {
       const normalized = dirPath.endsWith('/') ? dirPath : dirPath + '/';
       const entries = new Set<string>();
       for (const key of store.keys()) {
@@ -216,51 +267,51 @@ function createBrowserStorageAdapter() {
       return Array.from(entries);
     },
 
-    open(_path: any, _flags: any, _mode: any) {
+    open(_path: string, _flags: string | number, _mode?: number): never {
       throw new Error('open() not supported in browser adapter');
     },
-    close() {
+    close(): never {
       throw new Error('close() not supported in browser adapter');
     },
-    write() {
+    write(): never {
       throw new Error('write() not supported in browser adapter');
     },
-    fsync() {
+    fsync(): never {
       throw new Error('fsync() not supported in browser adapter');
     },
-    chmod() {
+    chmod(): void {
       // no-op in browser
     },
-    realpath(path: any) {
+    realpath(path: string): string {
       return path;
     },
-    access() {
+    access(): void {
       // no-op — all file operations are permitted in-memory
     },
-    utimes(_path: any, _atime: any, _mtime: any) {
+    utimes(_path: string, _atime: Date | number, _mtime: Date | number): void {
       // no-op in browser
     },
-    lstat(path: any) {
+    lstat(path: string): FileStat {
       return this.stat(path);
     },
 
-    rmdir(_path: any) {
+    rmdir(_path: string): void {
       // no-op in browser
     },
 
-    rm(_path: any, _options: any) {
+    rm(_path: string, _options?: { recursive?: boolean; force?: boolean }): void {
       // no-op in browser
     },
 
-    mkdtemp(prefix: any) {
+    mkdtemp(prefix: string): string {
       return `${prefix}${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
     },
 
-    readlink(path: any) {
+    readlink(path: string): string {
       return path;
     },
 
-    appendFile(path: any, data: any, options: any) {
+    appendFile(path: string, data: string, options?: { mode?: number } | string): void {
       const existing = store.get(path);
       const newContent = existing ? existing.content + data : data;
       store.set(path, {
@@ -274,16 +325,16 @@ function createBrowserStorageAdapter() {
       scheduleFlush();
     },
 
-    appendFileAsync(path: any, data: any, options: any) {
+    appendFileAsync(path: string, data: string, options?: { mode?: number } | string): Promise<void> {
       this.appendFile(path, data, options);
       return Promise.resolve();
     },
 
-    createReadStream() {
+    createReadStream(): never {
       throw new Error('createReadStream() not supported in browser adapter');
     },
 
-    createWriteStream() {
+    createWriteStream(): never {
       throw new Error('createWriteStream() not supported in browser adapter');
     },
 

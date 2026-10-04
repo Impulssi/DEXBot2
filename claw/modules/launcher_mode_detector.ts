@@ -33,12 +33,19 @@ function getConfigPath(options: Record<string, any> = {}) {
  * @param {Object} [options={}]
  * @returns {Object} { preferredMode, lastUsed, history: [...] }
  */
-function loadConfig(options: Record<string, any> = {}) {
+interface LauncherConfig {
+  preferredMode?: string | null;
+  lastUsed?: string | null;
+  history?: Array<{ mode: string; timestamp: string }>;
+  [key: string]: unknown;
+}
+
+function loadConfig(options: Record<string, any> = {}): LauncherConfig {
   const configPath = getConfigPath(options);
 
   try {
     if (storage.exists(configPath)) {
-      return readJSON(configPath);
+      return readJSON<LauncherConfig>(configPath);
     }
   } catch (err: any) {
     // Ignore parse errors, return empty
