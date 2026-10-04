@@ -11,13 +11,18 @@
  *    - Handles branch switching if needed
  *    - Reinstalls npm dependencies and rebuilds TypeScript sources
  *
- * 2. npm package install (e.g. `npm install -g dexbot`):
+ * 2. Package install (npm / pnpm / yarn):
+ *    - Classifies the exact layout via scripts/update_layout.ts
  *    - Compares the installed version against the npm registry
- *    - Runs `npm install -g <pkg>@<latest>` to fetch the newest release
+ *    - npm global: runs `npm install -g <pkg>@<latest>` in place (its package
+ *      directory is stable across reinstalls), then verifies version + dist/
+ *    - local / linked / pnpm / yarn: NOT replaced in place (the parent
+ *      lockfile owns a local dep; pnpm/yarn global trees are
+ *      content-addressed and version-hashed). Update is refused with the exact
+ *      command to run instead.
  *    - Skips the git and local build steps (published packages are pre-built)
- *    - Requires the npm CLI and registry access; only global installs can be
- *      updated in place (local `node_modules` deps must be updated from the
- *      parent project with `npm update`)
+ *    - Resolves the manager CLI next to the running Node (process.execPath) so
+ *      a version-manager (nvm/fnm/volta) PATH mismatch is not a false failure
  *
  * Shared tail for both layouts:
  * - Selectively restarts active runtime processes
@@ -41,11 +46,20 @@ import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { sendControlCommand } from '../modules/launcher/supervisor_control.js';
 import { findMissingDistEntries, inspectDistBundle } from './update_dist_freshness.js';
+import {
+    classifyInstallLayout,
+    globalInstallArgs,
+    globalInstallCommand,
+    parseVersionLine,
+    type GlobalRoots,
+    type InstallLayout,
+    type PackageManager,
+} from './update_layout.js';
 
 // Import update configuration from constants
 // Contains: REPOSITORY_URL, BRANCH, BUILD_DIR settings
 import { UPDATER, BUILD_DIR } from '../modules/constants.js';
-import { PATHS, isGlobalNpmPackageDir } from '../modules/paths.js';
+import { PATHS } from '../modules/paths.js';
 import { Config } from '../modules/config.js';
 import { getStorage } from '../modules/storage/index.js';
 const { readJSON } = getStorage();
@@ -157,35 +171,39 @@ function compareVersions(a: string, b: string): number {
 }
 
 /**
- * getNpmLatestVersion: Query the npm registry for the latest published version.
+ * spawnCli: spawn a package-manager CLI portably.
  *
- * Throws when the registry is unreachable so the update is treated as failed
- * (exit 1) and the scheduler does not restart the daemon for a no-op.
+ * On Windows the manager is a `.cmd`/`.bat` shim that CreateProcess cannot
+ * launch directly, and Node's `shell: true` joins the file path into the
+ * command line without quoting — which breaks the very common
+ * `C:\Program Files\nodejs\npm.cmd`. Route through `cmd.exe /c` with every
+ * argument explicitly quoted so spaces and the shim both survive.
  */
-function getNpmLatestVersion(pkgName: string): string {
-    try {
-        const version = execSync(`npm view ${pkgName} version`, { stdio: 'pipe' }).toString().trim();
-        if (!version) throw new Error('npm returned an empty version.');
-        return version;
-    } catch (err) {
-        throw new Error(`Could not reach the npm registry to check for updates (${getErrorMessage(err)}).`);
+function spawnCli(bin: string, args: string[], opts: Parameters<typeof spawnSync>[2]) {
+    if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(bin)) {
+        const quote = (s: string) => `"${s.replace(/"/g, '""')}"`;
+        const line = [quote(bin), ...args.map(quote)].join(' ');
+        return spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', line], opts);
     }
+    return spawnSync(bin, args, opts);
 }
 
 /**
- * getGlobalNpmRoot: Resolve the npm global install root (e.g. <prefix>/lib/node_modules).
- * Returns an empty string when npm is unavailable.
+ * getLatestVersion: Query npm for the latest published version.
+ *
+ * Uses the npm CLI that belongs to the *running* Node (resolved next to
+ * process.execPath) rather than whatever `npm` is first on PATH. A Node
+ * version manager (nvm/fnm/volta) can put a different Node's npm on PATH,
+ * whose global root does not contain this package — the mismatch that used to
+ * reject perfectly valid global installs.
+ *
+ * Returns '' when the registry cannot be reached; callers then install
+ * `@latest` and verify the result instead of failing the whole update.
  */
-function getGlobalNpmRoot(): string {
-    try {
-        // npm prints only the root to stdout, but notifications can land there
-        // in some setups — take the LAST non-empty line so a stray leading
-        // notice cannot produce a garbage path.
-        const lines = execSync('npm root -g', { stdio: 'pipe' }).toString().split('\n').filter((l) => l.trim());
-        return lines.length > 0 ? lines[lines.length - 1].trim() : '';
-    } catch (_) {
-        return '';
-    }
+function getLatestVersion(pkgName: string): string {
+    const res = spawnCli(resolveManagerBinary('npm'), ['view', pkgName, 'version'], { encoding: 'utf8' });
+    if (res.error || res.status !== 0) return '';
+    return parseVersionLine(String(res.stdout || ''));
 }
 
 /**
@@ -205,21 +223,88 @@ function realpathSafe(p: string): string {
 }
 
 /**
- * True when the project root is a DIRECT child of the npm global install root
- * (e.g. <prefix>/lib/node_modules/dexbot). Comparing the immediate parent —
- * rather than a string prefix — rejects nested packages, custom `--prefix`
- * layouts where the package lives deeper in the tree, and relative/absolute
- * path mismatches. Both sides are realpath'd so a symlinked global prefix
- * (e.g. a nvm/system prefix with a symlink component) is not falsely
- * rejected: import.meta.url already realpaths PROJECT_ROOT, while `npm
- * root -g` returns the un-resolved prefix. Symlinked layouts (e.g. `npm
- * link`) resolve to the real package location, which is intentionally not a
- * global-root child, so they fall through to the manual-update error below.
+ * resolveManagerBinary: Find a package manager CLI.
+ *
+ * Prefers the binary next to the running Node (process.execPath), which is
+ * what makes version-manager installs work: the npm beside the running node
+ * necessarily shares its global root. Falls back to the bare name so the PATH
+ * is used when the launcher layout is unusual (npx, shims).
  */
-function isDirectGlobalInstall(projectRoot: string, globalRoot: string): boolean {
-    const resolvedRoot = realpathSafe(path.resolve(globalRoot));
-    const resolvedProject = realpathSafe(path.resolve(projectRoot));
-    return path.dirname(resolvedProject) === resolvedRoot;
+function resolveManagerBinary(manager: PackageManager): string {
+    const dir = path.dirname(process.execPath);
+    const candidates = process.platform === 'win32'
+        ? [`${manager}.cmd`, `${manager}.exe`, manager]
+        : [manager];
+    for (const candidate of candidates) {
+        const full = path.join(dir, candidate);
+        if (fs.existsSync(full)) return full;
+    }
+    return manager;
+}
+
+/** Last non-empty line of a CLI query, or '' when the command fails. */
+function queryCliLine(bin: string, args: string[]): string {
+    try {
+        const res = spawnCli(bin, args, { encoding: 'utf8' });
+        if (res.error || res.status !== 0) return '';
+        const lines = String(res.stdout || '').split('\n').map((l) => l.trim()).filter(Boolean);
+        return lines.length > 0 ? lines[lines.length - 1] : '';
+    } catch (_) {
+        return '';
+    }
+}
+
+/**
+ * collectGlobalRoots: Ask each manager where its global tree lives.
+ *
+ * Any query may fail (CLI missing, pnpm refusing when its bin dir is off
+ * PATH) — the classifier falls back to path signatures for those. Roots are
+ * realpath'd so a symlinked prefix compares equal to the already-realpath'd
+ * PROJECT_ROOT.
+ */
+function collectGlobalRoots(npmRootKnown?: string): GlobalRoots {
+    const npmRoot = npmRootKnown ?? queryCliLine(resolveManagerBinary('npm'), ['root', '-g']);
+    const pnpmRoot = queryCliLine(resolveManagerBinary('pnpm'), ['root', '-g']);
+    const yarnDir = queryCliLine(resolveManagerBinary('yarn'), ['global', 'dir']);
+    return {
+        npm: npmRoot ? realpathSafe(npmRoot) : '',
+        pnpm: pnpmRoot ? realpathSafe(pnpmRoot) : '',
+        yarn: yarnDir ? realpathSafe(path.join(yarnDir, 'node_modules')) : '',
+    };
+}
+
+/**
+ * detectInstallLayout: classify the install, probing only what is needed.
+ *
+ * An npm-global match settles the layout without spawning pnpm/yarn: invoking
+ * pnpm can trigger a corepack download or hit a broken shim on first run, and
+ * there is no reason to pay for that when npm already matched. Non-npm layouts
+ * fall through to the full probe (required for pnpm/yarn root comparison).
+ */
+function detectInstallLayout(pkgName: string): InstallLayout {
+    const npmRoot = queryCliLine(resolveManagerBinary('npm'), ['root', '-g']);
+    const npmOnly = classifyInstallLayout(
+        PATHS.PROJECT_ROOT,
+        { npm: npmRoot ? realpathSafe(npmRoot) : '', pnpm: '', yarn: '' },
+        pkgName
+    );
+    if (npmOnly.kind === 'npm-global') return npmOnly;
+    return classifyInstallLayout(PATHS.PROJECT_ROOT, collectGlobalRoots(npmRoot), pkgName);
+}
+
+/**
+ * runProgram: Spawn a CLI with inherited stdio, throwing on failure.
+ *
+ * An argv array (not a shell string) keeps paths with spaces intact; spawnCli
+ * handles the Windows `.cmd` shim case.
+ */
+function runProgram(cwd: string, bin: string, args: string[]) {
+    log(`Executing: ${bin} ${args.join(' ')}`);
+    const res = spawnCli(bin, args, { stdio: 'inherit', cwd });
+    if (res.error || res.status !== 0) {
+        console.error(updateError(`[ERROR] Command failed: ${bin} ${args.join(' ')}`));
+        throw res.error ?? new Error(`Command exited with status ${res.status}`);
+    }
 }
 
 function readLivePidFile(filePath: string): number {
@@ -727,21 +812,24 @@ async function buildAndRestartRuntimes({
 // ── npm-install update flow ──────────────────────────────────────────
 
 /**
- * Update a globally installed npm package to the latest published version.
+ * Update an installed package to the latest published version.
  *
  * Steps:
- * 1. Compare installed package.json version against the npm registry.
- * 2. Exit cleanly (0) when already up to date — no restart needed.
- * 3. Verify this is a global install (only that layout can be replaced in place).
- * 4. Snapshot runtime state, then run `npm install -g <pkg>@<latest>` from a
- *    neutral cwd (home dir) so npm can freely swap the package directory the
- *    currently running process executes from.
+ * 1. Classify the install layout (scripts/update_layout.ts).
+ * 2. Compare the installed package.json version against the npm registry and
+ *    exit cleanly (0) when already up to date — no restart needed.
+ * 3. In-place update is only safe for an npm global install; local, linked,
+ *    pnpm and yarn layouts are refused with the exact command to run (the
+ *    running process cannot safely re-resolve a content-addressed tree).
+ * 4. Snapshot runtime state, then run the manager's global install from a
+ *    neutral cwd (home dir) so it can freely swap the package directory this
+ *    process executes from.
  * 5. Regenerate the ecosystem config and restart active runtimes using the
  *    new code — the published package ships a pre-built dist/, so there is
  *    no local TypeScript build step.
  */
-async function runNpmUpdateFlow() {
-    log('Detected npm package installation. Checking npm registry for updates...');
+async function runPackageUpdateFlow() {
+    log('Detected a package install. Checking registry for updates...');
 
     const pkgName = readPackageName(PATHS.PROJECT_ROOT);
     const currentVersion = readPackageVersion(PATHS.PROJECT_ROOT);
@@ -750,52 +838,47 @@ async function runNpmUpdateFlow() {
     }
     log(`Current installed version: ${currentVersion}`);
 
-    // Verify the npm CLI is available and this is a genuine global install
-    // BEFORE querying the registry. Only a global layout can be replaced in
-    // place by `npm install -g`; a local (project) dependency must be updated
-    // from its own package tree instead.
-    const globalRoot = getGlobalNpmRoot();
-    if (!globalRoot) {
-        throw new Error(
-            'DEXBot2 auto-update requires the npm CLI with registry access (it runs `npm view` and ' +
-            '`npm install -g`). npm could not be found on PATH or returned no global root. ' +
-            'Install Node.js/npm or update the package manually.'
-        );
-    }
-    if (!isDirectGlobalInstall(PATHS.PROJECT_ROOT, globalRoot)) {
-        // A genuine local (non-global) dependency resolves to a different real
-        // parent; a symlinked prefix or version-manager/pnpm store lands the
-        // package somewhere `npm root -g` does not point at. Either way the
-        // package cannot be swapped in place.
-        throw new Error(
-            'DEXBot2 is installed at ' + PATHS.PROJECT_ROOT + ' but `npm root -g` reports ' + globalRoot + '. ' +
-            'Auto-update cannot replace the package in place; the install root differs from `npm root -g` ' +
-            '(a symlinked prefix, pnpm/yarn global store, or a different Node version manager prefix). ' +
-            'Run `npm update ' + pkgName + '` in the parent project directory, or fix the mismatch and re-run `dexbot update`.'
-        );
-    }
+    // Classify where we are INSTALLED before touching anything. Local, linked,
+    // pnpm and yarn layouts must not be replaced in place; each gets an exact
+    // command instead. Only an npm global install is swapped in place (its
+    // package directory is stable across reinstalls).
+    const layout = detectInstallLayout(pkgName);
+    log(`Install layout: ${layout.kind}${layout.manager ? ` (${layout.manager})` : ''}`);
 
-    const latestVersion = getNpmLatestVersion(pkgName);
-    log(`Latest published version: ${latestVersion}`);
+    // Best-effort: an unreachable registry means we install `@latest` and let
+    // the post-install check confirm the result instead of failing outright.
+    const latestVersion = getLatestVersion(pkgName);
+    log(`Latest published version: ${latestVersion || 'unknown'}`);
 
-    if (compareVersions(currentVersion, latestVersion) >= 0) {
+    if (latestVersion && compareVersions(currentVersion, latestVersion) >= 0) {
         log('DEXBot2 is already up to date (installed version matches or exceeds the latest published version).');
         process.exit(0);
     }
 
-    log(`${currentVersion} -> ${latestVersion} update available. Proceeding with npm update...`);
+    if (!layout.autoUpdatable) {
+        throw new Error(
+            `DEXBot2 is installed at ${PATHS.PROJECT_ROOT} (${layout.kind} layout). ` +
+            'Auto-update cannot replace this installation in place. ' +
+            layout.hint
+        );
+    }
 
-    // Snapshot pre-update runtime state BEFORE npm replaces the package files.
+    const manager = layout.manager ?? 'npm';
+    const managerBin = resolveManagerBinary(manager);
+    const versionToInstall = latestVersion || 'latest';
+    log(`${currentVersion} -> ${versionToInstall} update available. Proceeding with ${manager} update...`);
+
+    // Snapshot pre-update runtime state BEFORE the package files are replaced.
     const snapshot = snapshotMonolithicState();
 
-    // Run from a neutral cwd: npm's reify swaps the package directory this
-    // process is executing from, so the working directory may briefly not exist.
-    runIn(homedir(), `npm install -g ${pkgName}@${latestVersion}`);
+    // Run from a neutral cwd: the manager swaps the package directory this
+    // process is executing from, so the working directory may briefly vanish.
+    runProgram(homedir(), managerBin, globalInstallArgs(manager, pkgName, versionToInstall));
 
     // Post-install sanity checks: the published package is pre-built, so a
-    // successful `npm install -g` MUST leave the requested version and a
-    // usable dist/ bundle behind. Refuse to restart runtimes against a broken
-    // install (mirrors the git flow's staleness guard).
+    // successful install MUST leave the requested version and a usable dist/
+    // bundle behind. Refuse to restart runtimes against a broken install
+    // (mirrors the git flow's staleness guard).
     const installedAfter = readPackageVersion(PATHS.PROJECT_ROOT);
     log(`Installed version after update: ${installedAfter || 'unknown'}`);
     if (!installedAfter) {
@@ -804,10 +887,10 @@ async function runNpmUpdateFlow() {
             `The global install may be broken; inspect it with \`npm ls -g ${pkgName}\`.`
         );
     }
-    if (compareVersions(installedAfter, latestVersion) < 0) {
+    if (latestVersion && compareVersions(installedAfter, latestVersion) < 0) {
         throw new Error(
             `Update completed but the installed version (${installedAfter}) is older than the requested ` +
-            `${latestVersion}. Run \`npm install -g ${pkgName}@${latestVersion}\` manually and inspect the npm output.`
+            `${latestVersion}. Run \`${globalInstallCommand(manager, pkgName, latestVersion)}\` manually and inspect the output.`
         );
     }
 
@@ -838,28 +921,20 @@ try {
     /**
      * STEP 0: Detect Installation Layout
      *
-     * Two supported layouts:
-     * 1. Git checkout (has a .git dir) -> git pull + npm install + build
-     * 2. Global npm package install (path under a node_modules tree) ->
-     *    `npm install -g <pkg>@<latest>` (pre-built dist, no local build)
+     * A git checkout (has a .git dir) -> git pull + npm install + build.
+     * Any npm/pnpm/yarn package install -> runPackageUpdateFlow(), which
+     * classifies the exact layout and either updates in place (npm global) or
+     * reports the precise command to run (local, linked, pnpm, yarn).
      *
-     * A git checkout wins over the npm path so a repo that was npm-linked is
-     * still updated through git. Neither layout -> fail with a clear message.
+     * A git checkout wins over the package path so a repo that was npm-linked
+     * is still updated through git.
      */
     const isGitRepo = fs.existsSync(path.join(PATHS.PROJECT_ROOT, '.git'));
-    const isNpmInstall = isGlobalNpmPackageDir(PATHS.PROJECT_ROOT);
-
-    if (!isGitRepo && isNpmInstall) {
-        await runNpmUpdateFlow();
-        logSuccess('DEXBot2 update completed successfully.');
-        process.exit(0);
-    }
 
     if (!isGitRepo) {
-        throw new Error(
-            'DEXBot2 is neither a git checkout nor an npm package install. ' +
-            'Auto-update is not available for this installation.'
-        );
+        await runPackageUpdateFlow();
+        logSuccess('DEXBot2 update completed successfully.');
+        process.exit(0);
     }
 
     // Get configured repository URL and target branch
