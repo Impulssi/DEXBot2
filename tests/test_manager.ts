@@ -108,11 +108,16 @@ assert(mgr.funds && typeof mgr.funds.available.buy === 'number', 'manager should
     
     assert(placedBuys.length >= 2, 'Should plan at least two buys');
     assert(placedSells.length >= 2, 'Should plan at least two sells');
-    
     // Verify we covered the window (both Inner and Outer)
-    assert.strictEqual(placedBuys[0].order.price, 90, 'Should have planned Inner Buy (90)');
-    assert.strictEqual(placedBuys[1].order.price, 80, 'Should have planned Outer Buy (80)');
-    
+    // Fork buy-window semantics (default buyWindowMode 'low', boundary
+    // undefined -> fail-open rail): buys take the rail BOTTOM (static low
+    // ladder), sells stay market-closest. Upstream-origin expectations
+    // [90,80]/[110,120] assumed a gap-excluded geometry that no longer
+    // applies; intent (2 buys + 2 sells planned) is unchanged.
+    assert.strictEqual(placedBuys[0].order.price, 60, 'Should have planned rail-bottom Buy (60)');
+    assert.strictEqual(placedBuys[1].order.price, 50, 'Should have planned rail-bottom Buy (50)');
+
+
     assert.strictEqual(placedSells[0].order.price, 110, 'Should have planned Inner Sell (110)');
     assert.strictEqual(placedSells[1].order.price, 120, 'Should have planned Outer Sell (120)');
 
