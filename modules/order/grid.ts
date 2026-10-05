@@ -2174,7 +2174,7 @@ export async function compareGrids(calculatedGrid: unknown[], persistedGrid: unk
             // Deep shelf orders are dip insurance outside the slot-N grid —
             // they must not skew the divergence metric (ideals never contain
             // them, so counting persisted deeps would fake permanent drift).
-            const result = Array.isArray(orders) ? orders.filter((o) => o && o.type === type && o.state === ORDER_STATES.ACTIVE && !MathUtils.isDeepShelfId(o.id)) : [];
+            const result = Array.isArray(orders) ? orders.filter((o) => o && o.type === type && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.VIRTUAL) && !MathUtils.isDeepShelfId(o.id)) : [];
             return result
                 .sort((a, b) => (a.price ?? 0) - (b.price ?? 0));
         };

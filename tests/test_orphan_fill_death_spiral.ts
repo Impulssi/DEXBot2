@@ -503,6 +503,11 @@ async function runTests() {
   {
     const { bot } = await createMinimalBot('ghost-order');
 
+    // This test asserts ghost-fill rotation planning (exactly one CREATE),
+    // orthogonal to the fork buy-delay feature (which would keep buys
+    // virtual after any BUY fill). Disable the delay here; the delay itself
+    // is covered by its own tests.
+    (bot.manager as any).config = { ...((bot.manager as any).config || {}), buyDelayMinutes: 0 };
     bot.manager._gapSlots = 2;
     bot.manager.boundaryIdx = 5;
     // Set up a grid order (slot-N in-rail)

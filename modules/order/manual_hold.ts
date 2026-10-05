@@ -25,7 +25,7 @@
 import fs from 'node:fs';
 import { loadAmaCenterPrice, loadAmaCenterSnapshot } from './utils/system.js';
 import { getErrorMessage } from '../utils/errors.js';
-import { wasRecentlyOwnCancelled } from '../chain_orders.js';
+import * as chainOrders from '../chain_orders.js';
 import { path } from '../path_api.js';
 
 // How many grid increments of market movement release a hold, measured
@@ -235,8 +235,12 @@ function classifyDisappearance(manager: any, slot: any): 'fill' | 'own' | 'manua
             }
         } catch { /* fall through to own/manual below */ }
         // The bot's own recent cancel (rotation/replace counterpart in flight)?
+        // Defensive access (same pattern as grid_reconcile.ts): chain_orders
+        // is stubbed with a partial mock in several tests, so a static named
+        // import would fail at link time when the mock lacks the key.
         try {
-            if (wasRecentlyOwnCancelled(orderId)) return 'own';
+            const wro = (chainOrders as any)?.wasRecentlyOwnCancelled;
+            if (typeof wro === 'function' && wro(orderId)) return 'own';
         } catch { /* fall through to manual below */ }
         return 'manual';
     } catch {

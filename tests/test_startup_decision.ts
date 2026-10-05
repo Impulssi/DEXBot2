@@ -105,7 +105,10 @@ const { _setFeeCache } = require('../modules/order/utils/math');
                 assetA: { id: '1.3.1', symbol: 'ASSETA', precision: 5 },
                 assetB: { id: '1.3.2', symbol: 'ASSETB', precision: 5 },
             },
-            config: { activeOrders: { sell: 2, buy: 2 } },
+            // buyFloorUSDT: 0 disables the fork buy-floor gate for this
+            // ordering test (its 0.99/0.97 sizes are below the 1.0 default;
+            // the floor is covered by its own tests, not by ordering here).
+            config: { activeOrders: { sell: 2, buy: 2 }, buyFloorUSDT: 0 },
             accountTotals: { sellFree: 1000, buyFree: 1000 },
             logger: { log: () => {} },
             strategy: { hasAnyDust: () => false },

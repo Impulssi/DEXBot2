@@ -61,7 +61,7 @@ async function testLFP1_StoreLoadRoundTrip() {
     await accountOrders.storeMasterGrid(
         [{ id: 'slot-0', type: 'buy', state: 'virtual', price: LEVEL0, size: 0, orderId: null }],
         0, 0, null, null, null, null,
-        undefined, undefined,
+        undefined, undefined, undefined,
         { price: LEVEL0, type: 'buy', fillsAt: FILLS_AT, genesisHash: 'abc12345' }
     );
     const loaded = accountOrders.loadLastFillPivot();
@@ -69,15 +69,15 @@ async function testLFP1_StoreLoadRoundTrip() {
         price: LEVEL0, type: 'buy', fillsAt: FILLS_AT, genesisHash: 'abc12345',
     }, 'row survives the persist/load round-trip normalized');
     // Garbage rows never surface: all rejected as null.
-    await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, undefined, { price: 0, type: 'buy', fillsAt: 1, genesisHash: 'x' });
+    await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, undefined, undefined, { price: 0, type: 'buy', fillsAt: 1, genesisHash: 'x' });
     assert.strictEqual(accountOrders.loadLastFillPivot(), null, 'non-positive price rejected');
-    await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, undefined,
+    await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, undefined, undefined,
         { price: LEVEL0, type: 'sideways', fillsAt: 1, genesisHash: 'x' });
     assert.strictEqual(accountOrders.loadLastFillPivot(), null, 'invalid side rejected');
-    await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, undefined,
+    await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, undefined, undefined,
         { price: LEVEL0, type: 'buy', fillsAt: Number.NaN, genesisHash: 'x' });
     assert.strictEqual(accountOrders.loadLastFillPivot(), null, 'non-finite fillsAt rejected');
-    await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, undefined,
+    await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, undefined, undefined,
         { price: LEVEL0, type: 'buy', fillsAt: 1 });
     assert.strictEqual(accountOrders.loadLastFillPivot(), null, 'missing genesisHash rejected');
     console.log('✓ LFP-1 passed');
@@ -86,14 +86,14 @@ async function testLFP1_StoreLoadRoundTrip() {
 async function testLFP2_NullClears_UndefinedNoOp() {
     console.log('\n[LFP-2] explicit null clears the row; undefined stays a legacy no-op...');
     const accountOrders = new AccountOrders({ botKey: 'last-fill-pivot-nullclear' });
-    await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, undefined,
+    await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, undefined, undefined,
         { price: LEVEL0, type: 'sell', fillsAt: FILLS_AT, genesisHash: 'abc12345' });
     assert.ok(accountOrders.loadLastFillPivot(), 'row persisted');
     // Explicit null (live cold manager) must clear, not leave a stale row.
-    await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, undefined, null);
+    await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, undefined, undefined, null);
     assert.strictEqual(accountOrders.loadLastFillPivot(), null, 'null clears the stored row');
     // Re-store, then a legacy caller (undefined) must leave it untouched.
-    await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, undefined,
+    await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, undefined, undefined,
         { price: LEVEL0, type: 'buy', fillsAt: FILLS_AT, genesisHash: 'abc12345' });
     await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, undefined);
     assert.deepStrictEqual(accountOrders.loadLastFillPivot(), {
@@ -134,9 +134,9 @@ async function testLFP3_SnapshotProvenanceGate() {
         lastFillPivotSource: 'fill',
         _genesis: { priceLevelsHash: 'livehash01' },
     } as any, accountOrders as any);
-    assert.deepStrictEqual(captured[9], {
+    assert.deepStrictEqual(captured[10], {
         price: LEVEL0, type: 'buy', fillsAt: FILLS_AT, genesisHash: 'livehash01',
-    }, 'fill pivot rides the 10th storeMasterGrid param');
+    }, 'fill pivot rides the 11th storeMasterGrid param (fork manualHolds at 10th)');
     // Book-provenanced pivot → cleared, never fossilized as market truth.
     await persistGridSnapshot({
         ...base,
@@ -146,10 +146,10 @@ async function testLFP3_SnapshotProvenanceGate() {
         lastFillPivotSource: 'book',
         _genesis: null,
     } as any, accountOrders as any);
-    assert.strictEqual(captured[9], null, 'book seed never persists');
+    assert.strictEqual(captured[10], null, 'book seed never persists');
     // Legacy stub (no pivot fields at all) → clear, not undefined tombstone.
     await persistGridSnapshot({ ...base, _genesis: null } as any, accountOrders as any);
-    assert.strictEqual(captured[9], null, 'cold manager always passes an explicit clear');
+    assert.strictEqual(captured[10], null, 'cold manager always passes an explicit clear');
     console.log('✓ LFP-3 passed');
 }
 
@@ -207,7 +207,7 @@ async function testLFP5_TTLExpiry() {
 async function testLFP6_GenesisMismatchDropsAndErases() {
     console.log('\n[LFP-6] a pivot from a dead genesis is refused and erased from disk...');
     const accountOrders = new AccountOrders({ botKey: 'last-fill-pivot-genesis' });
-    await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, undefined,
+    await accountOrders.storeMasterGrid([], 0, null, null, null, null, null, undefined, undefined, undefined,
         { price: LEVEL0, type: 'buy', fillsAt: FILLS_AT, genesisHash: 'deadgen000' });
     const manager: any = {
         orders: new Map(),
