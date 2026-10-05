@@ -708,6 +708,16 @@ function analyzeOrder(botData: GridSnapshot, config: BotConfig, botKey: string):
     // from the analyzed grid). Shown as its own "Deep: x/y" row.
     deepActive: deepBuys.filter((s: any) => s.type === ORDER_TYPES.BUY && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL)).length,
     deepTarget: Math.max(0, Math.floor(Number(config?.buyDeepCount) || 0)),
+    // Manual-cancel holds (operator-cancelled slots stay empty until the
+    // market moves past). Persisted snapshot rows {slotId, price, ts}.
+    // Shown as their own "Hold:" row with the held slot ids.
+    holdSlots: (() => {
+      const raw: unknown = (botData as GridSnapshot).manualHolds;
+      if (!Array.isArray(raw)) return [];
+      return raw
+        .filter((e: any) => e && typeof e.slotId === 'string' && e.slotId.length > 0)
+        .map((e: any) => String(e.slotId));
+    })(),
     // Deep shelf (dip-insurance BUYs above the reserve floor), top-first.
     // Carried separately so the report can render its own row.
     deepShelf: deepBuys
@@ -1396,6 +1406,13 @@ function formatAnalysis(analysisInput: JsonObj): string {
     if (Number(analysis.deepTarget) > 0 || Number(analysis.deepActive) > 0) {
       lines.push(`   Deep:   ${(analysis.deepActive + '/' + analysis.deepTarget).padEnd(maxBuyWidth)} ${colors.buy}buy${colors.reset}`);
     }
+    // Manual-cancel holds: operator-emptied slots the strategy refuses to
+    // refill. Count plus held slot ids (truncated); 0 means nothing held.
+    {
+      const holdIds: string[] = Array.isArray(analysis.holdSlots) ? analysis.holdSlots : [];
+      const holdShown = holdIds.slice(0, 8).join(', ') + (holdIds.length > 8 ? ` +${holdIds.length - 8} more` : '');
+      lines.push(`   Hold:   ${(String(holdIds.length)).padEnd(maxBuyWidth)}${holdShown}`);
+    }
     lines.push(``);
     const weightLine = formatWeightLine(analysis.weightDistribution, analysis.dynamicWeight, maxBuyWidth, maxSellWidth);
     if (weightLine) {
@@ -1496,6 +1513,12 @@ function formatAnalysis(analysisInput: JsonObj): string {
         .map((d: any) => `${d.id} @${formatCurrency(d.price)} x${Number(d.size).toFixed(2)}${d.orderId ? '' : ' (virtual)'}`)
         .join(', ');
     lines.push(`    Deep:  ${colors.buy}${deepTxt}${colors.reset}`);
+  }
+
+  // Manual-cancel hold row (operator-emptied slots). Shown only when holds
+  // exist in the persisted snapshot.
+  if (Array.isArray(analysis.holdSlots) && analysis.holdSlots.length > 0) {
+    lines.push(`    Hold:  ${analysis.holdSlots.join(', ')}`);
   }
 
   /**
