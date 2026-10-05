@@ -27,6 +27,7 @@ Conventional prefix (`fix:`, `feat:`, `docs:`) + body explaining **why** for non
 Full maps (don't duplicate here): `docs/architecture.md`, `docs/developer_guide.md`, `docs/LIFECYCLE.md`, `modules/README.md`, `market_adapter/README.md`, `analysis/README.md`, `tests/README.md`.
 
 ## Version Management
+Never bump the version and never propose, suggest, or ask for a bump — the user alone decides when one happens. Apply the steps below only in a turn where the user explicitly asked for it; that request is also the authorization for the commits/tags it needs.
 1. Bump `version` in `package.json`.
 2. `npm run version:check` (dry-run) → `npm run version:sync` (source of truth: `scripts/sync-version.js`).
 3. Update `CHANGELOG.md` (all changes since last tag) + `docs/EVOLUTION.md` + its footer (commit count, version/date).

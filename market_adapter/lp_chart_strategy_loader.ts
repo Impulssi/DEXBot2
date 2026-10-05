@@ -2,7 +2,8 @@
 
 import { path } from '../modules/path_api.js';
 import { getStorage } from '../modules/storage/index.js';
-import { normalizeAssetSymbol, isExactPair, isSamePair } from './utils/chain.js';
+import { isExactPair, isSamePair } from './utils/chain.js';
+import { normalizeAssetSymbol } from '../modules/utils/asset_symbols.js';
 import { toIntervalLabel } from './interval_utils.js';
 import { PATHS } from '../modules/paths.js';
 
@@ -13,13 +14,56 @@ const { readJSON } = storage;
 const ANALYSIS_AMA_FITTING_DIR = path.join(PATHS.PROJECT_ROOT, 'analysis', 'ama_fitting');
 const MARKET_ADAPTER_DIR = path.join(PATHS.PROJECT_ROOT, 'market_adapter');
 
-function inferIntervalLabel(meta: any) {
+interface AmaLike {
+    label?: unknown;
+    name?: unknown;
+    erPeriod?: unknown;
+    er?: unknown;
+    fastPeriod?: unknown;
+    fast?: unknown;
+    slowPeriod?: unknown;
+    slow?: unknown;
+    [key: string]: unknown;
+}
+
+type AmaStrategy = {
+    name: string;
+    erPeriod: unknown;
+    fastPeriod: unknown;
+    slowPeriod: unknown;
+    color: string;
+    dash: string;
+    lineWidth: number;
+};
+
+interface LpMeta {
+    intervalSeconds?: unknown;
+    assetA?: { symbol?: unknown; id?: unknown };
+    assetB?: { symbol?: unknown; id?: unknown };
+    amas?: Record<string, AmaLike>;
+    areaCapPct?: unknown;
+    prodCapPct?: unknown;
+    [key: string]: unknown;
+}
+
+interface ProfileEntry {
+    assetA?: unknown;
+    assetB?: unknown;
+    assetAId?: unknown;
+    assetBId?: unknown;
+    intervalSeconds?: unknown;
+    intervalLabel?: unknown;
+    updatedAt?: unknown;
+    amas?: Record<string, AmaLike>;
+}
+
+function inferIntervalLabel(meta: { intervalSeconds?: unknown } | null | undefined): string | null {
     const sec = Number(meta?.intervalSeconds);
     if (!Number.isFinite(sec) || sec <= 0) return null;
     return toIntervalLabel(sec);
 }
 
-function buildAmaStrategy(name: any, ama: any, color: any, dash: any, lineWidth: any = 1.5) {
+function buildAmaStrategy(name: string, ama: AmaLike | null | undefined, color: string, dash: string, lineWidth: number = 1.5): AmaStrategy | null {
     if (!ama) return null;
     return {
         name,
@@ -32,21 +76,21 @@ function buildAmaStrategy(name: any, ama: any, color: any, dash: any, lineWidth:
     };
 }
 
-function loadStrategiesFromResults(resultsPath: any): any {
+function loadStrategiesFromResults(resultsPath: string): AmaStrategy[] | null {
     if (!resultsPath || !storage.exists(resultsPath)) return null;
 
     const json = readJSON(resultsPath);
-    const meta = json?.meta;
+    const meta = json?.meta as LpMeta | undefined;
     if (!meta) return null;
 
     if (meta.amas && meta.amas.AMA1 && meta.amas.AMA2 && meta.amas.AMA3 && meta.amas.AMA4) {
-        const order = [
+        const order: Array<[string, string, string]> = [
             ['AMA1', '#fb8c00', 'solid'],
             ['AMA2', '#42a5f5', 'dash'],
             ['AMA3', '#66bb6a', 'longdash'],
             ['AMA4', '#ef5350', 'longdashdot'],
         ];
-        const out: any[] = [];
+        const out: AmaStrategy[] = [];
         for (const [k, color, dash] of order) {
             const r = meta.amas[k];
             if (!r) continue;
@@ -62,15 +106,16 @@ function loadStrategiesFromResults(resultsPath: any): any {
         return out.length ? out : null;
     }
 
-    const strategies: any[] = [];
-    function add(key: any, label: any, color: any, dash: any) {
-        const r = meta[key];
+    const metaCfg: LpMeta = meta;
+    const strategies: AmaStrategy[] = [];
+    function add(key: string, label: string, color: string, dash: string) {
+        const r = metaCfg[key] as AmaLike | undefined;
         const strat = buildAmaStrategy(label, r, color, dash, 1.5);
         if (strat) strategies.push(strat);
     }
 
-    const areaCap = Number.isFinite(meta.areaCapPct) ? meta.areaCapPct : null;
-    const prodCap = Number.isFinite(meta.prodCapPct) ? meta.prodCapPct : null;
+    const areaCap = Number.isFinite(metaCfg.areaCapPct) ? Number(metaCfg.areaCapPct) : null;
+    const prodCap = Number.isFinite(metaCfg.prodCapPct) ? Number(metaCfg.prodCapPct) : null;
     add('bestProdMaxDist', 'MAX PROD/MAXDIST', '#42a5f5', 'dash');
     add('bestAreaMaxDist', 'MAX AREA/MAXDIST', '#fb8c00', 'solid');
     add('bestAreaMaxDistCapped', areaCap === null ? 'MAX AREA/MAXDIST (cap)' : `MAX AREA/MAXDIST (<=${areaCap.toFixed(1)}%)`, '#66bb6a', 'longdash');
@@ -79,12 +124,12 @@ function loadStrategiesFromResults(resultsPath: any): any {
     return strategies.length ? strategies : null;
 }
 
-function loadStrategiesFromProfiles(profilesPath: any, meta: any): any {
+function loadStrategiesFromProfiles(profilesPath: string | null | undefined, meta: LpMeta | null | undefined): AmaStrategy[] | null {
     if (!profilesPath || !storage.exists(profilesPath)) return null;
     if (!meta) return null;
 
     const json = readJSON(profilesPath);
-    const profiles = Array.isArray(json?.profiles) ? json.profiles : [];
+    const profiles: ProfileEntry[] = Array.isArray(json?.profiles) ? json.profiles : [];
     if (profiles.length === 0) return null;
 
     const assetASymbol = normalizeAssetSymbol(meta?.assetA?.symbol);
@@ -94,7 +139,7 @@ function loadStrategiesFromProfiles(profilesPath: any, meta: any): any {
     const intervalSeconds = Number(meta?.intervalSeconds);
     const intervalLabel = inferIntervalLabel(meta);
 
-    const matches = profiles.map((p: any) => {
+    const matches = profiles.map((p) => {
         const pA = normalizeAssetSymbol(p?.assetA);
         const pB = normalizeAssetSymbol(p?.assetB);
         const pAId = normalizeAssetSymbol(p?.assetAId);
@@ -106,14 +151,14 @@ function loadStrategiesFromProfiles(profilesPath: any, meta: any): any {
         const symmetricById = assetAId && assetBId && isSamePair(assetAId, assetBId, pAId, pBId);
         const matchRank = (exactBySymbol || exactById) ? 2 : ((symmetricBySymbol || symmetricById) ? 1 : 0);
         return { profile: p, matchRank };
-    }).filter((entry: any) => entry.matchRank > 0);
+    }).filter((entry) => entry.matchRank > 0);
     if (matches.length === 0) return null;
 
-    const exactMatches = matches.filter((entry: any) => entry.matchRank === 2);
+    const exactMatches = matches.filter((entry) => entry.matchRank === 2);
     const matchedProfiles = (exactMatches.length > 0 ? exactMatches : matches)
-        .map((entry: any) => entry.profile);
+        .map((entry) => entry.profile);
 
-    const sameInterval = matchedProfiles.filter((p: any) => {
+    const sameInterval = matchedProfiles.filter((p) => {
         if (Number.isFinite(intervalSeconds) && intervalSeconds > 0 && Number(p?.intervalSeconds) === intervalSeconds) {
             return true;
         }
@@ -123,7 +168,7 @@ function loadStrategiesFromProfiles(profilesPath: any, meta: any): any {
         return false;
     });
     const candidates = sameInterval.length > 0 ? sameInterval : matchedProfiles;
-    const profile = [...candidates].sort((a: any, b: any) => {
+    const profile = [...candidates].sort((a, b) => {
         const aTs = Date.parse(String(a?.updatedAt || 0)) || 0;
         const bTs = Date.parse(String(b?.updatedAt || 0)) || 0;
         return bTs - aTs;
@@ -136,14 +181,14 @@ function loadStrategiesFromProfiles(profilesPath: any, meta: any): any {
     if (!ama1 || !ama2 || !ama3 || !ama4) return null;
 
     return [
-        buildAmaStrategy(ama1.name || 'AMA1', ama1, '#fb8c00', 'solid'),
-        buildAmaStrategy(ama2.name || 'AMA2', ama2, '#42a5f5', 'dash', 2),
-        buildAmaStrategy(ama3.name || 'AMA3', ama3, '#66bb6a', 'longdash'),
-        buildAmaStrategy(ama4.name || 'AMA4', ama4, '#ef5350', 'longdashdot'),
-    ].filter((x: any): x is any => x != null);
+        buildAmaStrategy(String(ama1.name || 'AMA1'), ama1, '#fb8c00', 'solid'),
+        buildAmaStrategy(String(ama2.name || 'AMA2'), ama2, '#42a5f5', 'dash', 2),
+        buildAmaStrategy(String(ama3.name || 'AMA3'), ama3, '#66bb6a', 'longdash'),
+        buildAmaStrategy(String(ama4.name || 'AMA4'), ama4, '#ef5350', 'longdashdot'),
+    ].filter((x): x is AmaStrategy => x != null);
 }
 
-function candidateResultsPaths(dataFile: any, extraSearchDirs: any[] = []) {
+function candidateResultsPaths(dataFile: string, extraSearchDirs: string[] = []): string[] {
     const base = path.basename(dataFile, '.json');
     const dirs = [
         path.dirname(dataFile),
@@ -165,7 +210,7 @@ function candidateResultsPaths(dataFile: any, extraSearchDirs: any[] = []) {
     return out;
 }
 
-function loadStrategiesForLpChart({ dataFile, meta, profilesFile, extraSearchDirs = [] }: { dataFile: any; meta: any; profilesFile?: any; extraSearchDirs?: any[] }) {
+function loadStrategiesForLpChart({ dataFile, meta, profilesFile, extraSearchDirs = [] }: { dataFile: string; meta: LpMeta | null | undefined; profilesFile?: string | null; extraSearchDirs?: string[] }): AmaStrategy[] | null {
     for (const resultsPath of candidateResultsPaths(dataFile, extraSearchDirs)) {
         const fromResults = loadStrategiesFromResults(resultsPath);
         if (fromResults) return fromResults;

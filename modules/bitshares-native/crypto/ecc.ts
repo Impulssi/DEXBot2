@@ -226,7 +226,7 @@ function sign(digest: Buffer, privateKey: Buffer): Buffer {
                     recoveryId = i;
                     break;
                 }
-            } catch (err: any) { console.warn('[ecc]', 'recoverPublicKey failed:', getErrorMessage(err)); }
+            } catch (err) { console.warn('[ecc]', 'recoverPublicKey failed:', getErrorMessage(err)); }
         }
         if (recoveryId < 0 || recoveryId > 3) {
             nonce++;

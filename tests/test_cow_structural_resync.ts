@@ -453,7 +453,7 @@ async function runTests() {
         chainOrdersModule.readOpenOrdersWithMeta = async () => ({ orders: [], truncated: false });
 
         try {
-            // Two unmatched chain orders (no fingerprints, no price-drift-orphan).
+            // Two unmatched chain orders (no fingerprints, no reason tag).
             (manager as any)._lastUnmatchedChainOrders = [
                 { chainOrderId: '1.7.572303058', type: ORDER_TYPES.SELL, price: 1.101, size: 10 },
                 { chainOrderId: '1.7.572303059', type: ORDER_TYPES.BUY, price: 0.999, size: 5 }

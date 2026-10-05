@@ -1,7 +1,7 @@
 # DEXBot vs DEXBot2 — Detailed Comparison Report
 
 > **Date:** 2026-09-02 *(metrics refreshed against local source trees)*
-> **Scope:** Full architectural, functional, and operational comparison between the original [DEXBot](https://github.com/Codaone/DEXBot) (Python, v1.0.0) and DEXBot2 (TypeScript, v1.6.7).
+> **Scope:** Full architectural, functional, and operational comparison between the original [DEXBot](https://github.com/Codaone/DEXBot) (Python, v1.0.0) and DEXBot2 (TypeScript, v1.6.11).
 > **Audience:** Developers, contributors, and operators evaluating or migrating between the two projects.
 
 ---
@@ -36,7 +36,7 @@
 
 | Attribute | DEXBot (original) | DEXBot2 |
 |---|---|---|
-| **Release Track** | 1.0.0 | v1.6.7 |
+| **Release Track** | 1.0.0 | v1.6.11 |
 | **Language** | Python 3.6+ | TypeScript 5.x |
 | **Status** | Released 1.0.0, unmaintained | Active development |
 | **Last Repo Activity** | May 23, 2020 | 2026-09-02 |
@@ -776,7 +776,7 @@ Where:
 
 | Metric | DEXBot | DEXBot2 |
 |---|---|---|
-| **Release Track** | 1.0.0 | v1.6.7 |
+| **Release Track** | 1.0.0 | v1.6.11 |
 | **Active Since** | ~2018 | December 2025 |
 | **Last Commit** | May 23, 2020 | 2026-09-02 |
 | **Total Commits** | 2281 | 2,125 (v1.4.25) |
@@ -882,7 +882,7 @@ The 500× figure is not theoretical: it materializes in production when higher o
 | **Security** | ★★★☆☆ | ★★★★★ (AES-256-GCM, credential daemon, authority resolution) | DEXBot2 |
 | **Ease of Setup** | ★★☆☆☆ (PyQt5/PyInstaller/Systemd dependency hell) | ★★★★★ (`npm i -g dexbot`, zero deps) | DEXBot2 |
 | **Accessibility** | ★★★★★ (GUI) | ★★☆☆☆ (CLI only) | DEXBot |
-| **Testing Depth** | ★★★☆☆ | ★★★★★ (256 test files; focused regressions) | DEXBot2 |
+| **Testing Depth** | ★★★☆☆ | ★★★★★ (305 test files; focused regressions) | DEXBot2 |
 | **Documentation** | ★★★☆☆ | ★★★★★ (architecture/accounting/security/adapter docs) | DEXBot2 |
 | **Dependency Footprint** | ★★☆☆☆ (heavy) | ★★★★★ (0 runtime deps) | DEXBot2 |
 | **Extensibility** | ★★★★★ (plugins) | ★☆☆☆☆ | DEXBot |

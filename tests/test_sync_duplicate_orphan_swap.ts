@@ -20,8 +20,13 @@ const assert = require('assert');
 const SyncEngine = require('../modules/order/sync_engine').default;
 const AsyncLock = require('../modules/order/async_lock').default;
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { makeLadderFromPrices } = require('./helpers/order_test_helpers');
 
 const SLOT_PRICE = 1014.1608858656156;
+const SLOT_INDEX = 140;
+// Ladder with slot-140 at SLOT_PRICE (and 0.001-wide levels around it), so
+// `slot-140` really is the level a resting chain price maps to.
+const LADDER = Array.from({ length: SLOT_INDEX + 1 }, (_, i) => SLOT_PRICE - (SLOT_INDEX - i) * 0.001);
 const CHAIN_PRICE = 1014.1608800120139;
 const BOOKED_SIZE = 0.5626;   // post-fill remaining (booked by fill processing)
 const FULL_SIZE = 0.6659;     // pre-fill size (the mis-tracked duplicate)
@@ -40,6 +45,12 @@ function makeMgr(opts = {}) {
     return {
         orders,
         assets,
+        // Genesis-frozen engine: the ladder defines which level a resting chain
+        // price belongs to (the sync gate refuses a ladder-less grid).
+        _genesis: makeLadderFromPrices(LADDER),
+        // Pre-boundary syncs defer nearest-slot work entirely, so the fixture
+        // commits a boundary: slot-140 is deep on the SELL rail.
+        boundaryIdx: 0,
         config: (opts as any).config,
         logger: {
             log: (msg: string, level: string) => { logEntries.push({ msg, level }); }

@@ -11,35 +11,93 @@ import { getErrorMessage } from '../utils/errors.js';
 
 const signingClientLogger = new Logger('SigningClient');
 
-function wifToBuffer(wif: any): any {
-    if (typeof wif !== 'string') return wif;
+type ChainClientRef = Parameters<typeof createTransactionBuilder>[0];
+
+interface TxBuilderLike {
+    sign(keyBuf: Buffer | Uint8Array): unknown;
+    prepare(): Promise<unknown>;
+    addOperation(type: string, params: unknown): unknown;
+    getOperationCount(): number;
+    setRequiredFees(feeAssetId: unknown): unknown;
+    limit_order_create(data: Record<string, unknown>): unknown;
+    limit_order_cancel(data: unknown): unknown;
+    limit_order_update(data: unknown): unknown;
+    call_order_update(data: unknown): unknown;
+    asset_settle(data: unknown): unknown;
+    transfer(data: unknown): unknown;
+    [key: string]: unknown;
+}
+
+interface BroadcastReply {
+    operation_results?: unknown[];
+    trx?: { operation_results?: unknown[] };
+    id?: unknown;
+    [key: string]: unknown;
+}
+
+export interface BtsdexTx {
+    initPromise: Promise<void> | null;
+    limit_order_create(data: Record<string, unknown>): unknown;
+    limit_order_cancel(data: unknown): unknown;
+    limit_order_update(data: unknown): unknown;
+    call_order_update(data: unknown): unknown;
+    asset_settle(data: unknown): unknown;
+    transfer(data: unknown): unknown;
+    addOperation(type: string, params: unknown): unknown;
+    broadcast(): Promise<unknown>;
+    setRequiredFees(feeAssetId: unknown): unknown;
+    getOperationCount(): number;
+    [key: string]: unknown;
+}
+
+export interface SigningClient {
+    client: {
+        initPromise: Promise<void> | null;
+        newTx(): BtsdexTx;
+        broadcast(operation: unknown): Promise<unknown>;
+        readonly accountId: string | null;
+        accountName: string;
+    };
+    newTx(): BtsdexTx;
+    broadcast(operation: unknown): Promise<unknown>;
+    accountName: string;
+    accountId(): string | null;
+    dispose(): void;
+}
+
+function wifToBuffer(wif: unknown): Buffer {
+    if (typeof wif !== 'string') return wif as Buffer;
     try {
         const { wifDecode } = require('./crypto/ecc_selector').default();
         return wifDecode(wif).privateKey;
-    } catch (_: any) {
+    } catch (_) {
         return Buffer.from(wif, 'hex');
     }
 }
 
-function createSigningClient(chainClient: any, accountName: string, privateKey: any): any {
+function createSigningClient(chainClient: ChainClientRef, accountName: string, privateKey: unknown): SigningClient {
     if (!chainClient) throw new Error('chainClient is required');
     if (!accountName) throw new Error('accountName is required');
     if (!privateKey) throw new Error('privateKey is required');
 
-    let _accountId: any = null;
+    let _accountId: string | null = null;
     let _disposed = false;
-    let _initPromise: any = null;
+    let _initPromise: Promise<void> | null = null;
 
     _initPromise = (async () => {
         try {
-            const full = await chainClient.db.get_full_accounts([accountName], false);
+            const db = chainClient.db as unknown as {
+                get_full_accounts(accounts: string[], subscribe: boolean): Promise<unknown>;
+            };
+            const full = await db.get_full_accounts([accountName], false) as
+                Array<[string, { account?: { id?: string } }]> | null;
             if (full && full[0]) {
                 if (full[0][1] && full[0][1].account && full[0][1].account.id) {
                     _accountId = full[0][1].account.id;
                 }
             }
             // _initResolved handled below
-        } catch (err: any) {
+        } catch (err) {
             // _initResolved handled below
         }
     })();
@@ -58,32 +116,33 @@ function createSigningClient(chainClient: any, accountName: string, privateKey: 
         return wrapTxForBtsdexCompat(tx, chainClient, privateKey);
     }
 
-    function wrapTxForBtsdexCompat(tx: any, client: any, key: any): any {
+    function wrapTxForBtsdexCompat(tx: TxBuilderLike, client: ChainClientRef, key: unknown): BtsdexTx {
         const wrapped = {
             initPromise: _initPromise,
 
-            limit_order_create(data: any): any {
+            limit_order_create(data: Record<string, unknown>): unknown {
                 if (data.on_fill && Array.isArray(data.on_fill)) {
                     data.extensions = data.extensions || {};
-                    data.extensions.on_fill = data.on_fill;
+                    (data.extensions as Record<string, unknown>).on_fill = data.on_fill;
                 }
                 delete data.on_fill;
                 return tx.limit_order_create(data);
             },
 
-            limit_order_cancel(data: any): any { return tx.limit_order_cancel(data); },
-            limit_order_update(data: any): any { return tx.limit_order_update(data); },
-            call_order_update(data: any): any { return tx.call_order_update(data); },
-            asset_settle(data: any): any { return tx.asset_settle(data); },
-            transfer(data: any): any { return tx.transfer(data); },
+            limit_order_cancel(data: unknown): unknown { return tx.limit_order_cancel(data); },
+            limit_order_update(data: unknown): unknown { return tx.limit_order_update(data); },
+            call_order_update(data: unknown): unknown { return tx.call_order_update(data); },
+            asset_settle(data: unknown): unknown { return tx.asset_settle(data); },
+            transfer(data: unknown): unknown { return tx.transfer(data); },
 
-            addOperation(type: any, params: any): any { return tx.addOperation(type, params); },
+            addOperation(type: string, params: unknown): unknown { return tx.addOperation(type, params); },
 
             async broadcast() {
                 await tx.prepare();
                 const keyBuf = wifToBuffer(key);
-                const signed = tx.sign(keyBuf);
-                const broadcast = client.broadcast || {};
+                const signed = tx.sign(keyBuf) as { signedTxObject?: unknown };
+                const clientRef = client as unknown as { broadcast?: Record<string, (...a: unknown[]) => Promise<unknown>> };
+                const broadcast = clientRef.broadcast || {};
                 const broadcastFn = typeof broadcast.broadcast_transaction_synchronous === 'function'
                     ? broadcast.broadcast_transaction_synchronous.bind(broadcast)
                     : typeof broadcast.broadcast_transaction === 'function'
@@ -92,10 +151,10 @@ function createSigningClient(chainClient: any, accountName: string, privateKey: 
                 if (!broadcastFn) {
                     throw new Error('Broadcast API does not support transaction broadcast');
                 }
-                let result: any;
+                let result: unknown;
                 try {
                     result = await broadcastFn(signed.signedTxObject);
-                } catch (err: any) {
+                } catch (err) {
                     const msg = String(getErrorMessage(err) || err || '');
                     if (/fee/i.test(msg)) {
                         txCache.invalidateFees();
@@ -103,26 +162,28 @@ function createSigningClient(chainClient: any, accountName: string, privateKey: 
                     throw err;
                 }
 
-                if (result && Array.isArray(result.operation_results)) {
-                    return { ...result, operation_results: result.operation_results };
+                const reply = result as BroadcastReply | BroadcastReply[] | null | undefined;
+
+                if (reply && !Array.isArray(reply) && Array.isArray(reply.operation_results)) {
+                    return { ...reply, operation_results: reply.operation_results };
                 }
 
-                if (result && result.trx && Array.isArray(result.trx.operation_results)) {
-                    return { ...result, operation_results: result.trx.operation_results };
+                if (reply && !Array.isArray(reply) && reply.trx && Array.isArray(reply.trx.operation_results)) {
+                    return { ...reply, operation_results: reply.trx.operation_results };
                 }
 
-                if (Array.isArray(result) && result[0] && result[0].trx && Array.isArray(result[0].trx.operation_results)) {
-                    return { raw: result, operation_results: result[0].trx.operation_results };
+                if (Array.isArray(reply) && reply[0] && reply[0].trx && Array.isArray(reply[0].trx.operation_results)) {
+                    return { raw: reply, operation_results: reply[0].trx.operation_results };
                 }
 
-                if (typeof result === 'object' && result !== null && result.id && !result.operation_results) {
+                if (reply && !Array.isArray(reply) && reply.id && !reply.operation_results) {
                     signingClientLogger.warn('Async broadcast returned no operation_results — tx may not have been processed');
                 }
 
-                return { ...result, operation_results: [] };
+                return { ...(reply as Record<string, unknown> | null | undefined), operation_results: [] };
             },
 
-            setRequiredFees(feeAssetId: any): any {
+            setRequiredFees(feeAssetId: unknown): unknown {
                 return tx.setRequiredFees(feeAssetId);
             },
 
@@ -130,25 +191,27 @@ function createSigningClient(chainClient: any, accountName: string, privateKey: 
         };
 
         return new Proxy(wrapped, {
-            get(target: any, prop: any): any {
+            get(target: BtsdexTx, prop: string | symbol): unknown {
                 if (prop === 'sign') {
-                    return (keyBuf: any) => tx.sign(keyBuf);
+                    return (keyBuf: Buffer) => tx.sign(keyBuf);
                 }
                 if (typeof prop === 'string' && !(prop in target)) {
-                    return (data: any): any => tx.addOperation(prop, data);
+                    return (data: unknown): unknown => tx.addOperation(prop, data);
                 }
-                return (target as any)[prop];
+                return (target as Record<string, unknown>)[prop as string];
             },
         });
     }
 
-    async function broadcast(operation: any): Promise<any> {
+    async function broadcast(operation: unknown): Promise<unknown> {
         if (_disposed) throw new Error('Signing client has been disposed');
         const tx = newTx();
-        if (operation && operation.op_name && typeof (tx as any)[operation.op_name] === 'function') {
-            (tx as any)[operation.op_name](operation.op_data);
-        } else if (operation && operation.op_name) {
-            tx.addOperation(operation.op_name, operation.op_data);
+        const op = operation as { op_name?: string; op_data?: unknown } | null | undefined;
+        const method = op?.op_name ? tx[op.op_name] : undefined;
+        if (op && op.op_name && typeof method === 'function') {
+            (method as (data: unknown) => unknown)(op.op_data);
+        } else if (op && op.op_name) {
+            tx.addOperation(op.op_name, op.op_data);
         } else {
             throw new Error('Operation must have op_name and op_data');
         }
@@ -166,7 +229,7 @@ function createSigningClient(chainClient: any, accountName: string, privateKey: 
         newTx,
         broadcast,
         accountName,
-        accountId(): any { return _accountId; },
+        accountId(): string | null { return _accountId; },
         /**
          * Dispose the signing client: zeroes the WIF buffer (heap-dump safety) and
          * marks the client as disposed.  After calling dispose(), any subsequent

@@ -4,6 +4,10 @@
 # This combines the behavior of clear-orders.sh, clear-logs.sh, and
 # clear-market-adapter.sh while using a single confirmation prompt. It also
 # removes claw data (positions, watcher health, memu) from <profiles>/claw/data.
+# That includes the credential daemon's audit trail (daemon-audit.jsonl and its
+# rotated siblings), which is named in the preview so the wipe is never a surprise.
+# Advisory only: if a runtime is detected, a warning is printed (the deletion
+# still runs — stop with `dexbot stop` first if you want it to take effect).
 # Usage: ./scripts/clear-all.sh or bash scripts/clear-all.sh
 
 set -e
@@ -66,7 +70,7 @@ else
 fi
 
 if [ -d "$LOGS_DIR" ]; then
-    LOG_COUNT=$(find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.log.*" -o -name "*.jsonl" \) 2>/dev/null | wc -l)
+    LOG_COUNT=$(log_files "$LOGS_DIR" | wc -l)
 else
     log_warning "Logs directory does not exist: $LOGS_DIR"
 fi
@@ -111,7 +115,7 @@ fi
 
 if [ "$LOG_COUNT" -gt 0 ]; then
     log_info "Log files to be deleted:"
-    find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.log.*" -o -name "*.jsonl" \) 2>/dev/null | while read -r file; do
+    log_files "$LOGS_DIR" | while read -r file; do
         SIZE=$(du -h "$file" | cut -f1)
         echo -e "${BLUE}  -${NC} $(realpath --relative-to="$PROJECT_ROOT" "$file") ($SIZE)"
     done
@@ -145,6 +149,11 @@ if [ "$CLAW_COUNT" -gt 0 ]; then
     log_info ""
 fi
 
+# Warn (advisory) when a live runtime would undo the deletion
+warn_if_runtime_running
+note_audit_included "$LOGS_DIR"
+log_info ""
+
 # Ask for confirmation
 read -p "Delete all listed files? (y/n): " -r CONFIRM
 
@@ -159,7 +168,7 @@ if [ "$ORDER_COUNT" -gt 0 ]; then
 fi
 
 if [ "$LOG_COUNT" -gt 0 ]; then
-    find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.log.*" -o -name "*.jsonl" \) 2>/dev/null -delete
+    log_files "$LOGS_DIR" | while read -r file; do rm -f "$file"; done
 fi
 
 if [ "$MA_DATA_COUNT" -gt 0 ]; then
@@ -188,7 +197,7 @@ if [ -d "$ORDERS_DIR" ]; then
 fi
 
 if [ -d "$LOGS_DIR" ]; then
-    REMAINING_LOGS=$(find "$LOGS_DIR" -type f \( -name "*.log" -o -name "*.log.*" -o -name "*.jsonl" \) 2>/dev/null | wc -l)
+    REMAINING_LOGS=$(log_files "$LOGS_DIR" | wc -l)
 fi
 
 if [ -d "$MA_DATA_DIR" ]; then

@@ -9,6 +9,7 @@ const { calculateATR, computeATRSeries } = require('../market_adapter/core/strat
 const { computeVolatilityShift } = require('../market_adapter/core/strategies/volatility_shift');
 const { KalmanTrendAnalyzer } = require('../analysis/trend_detection/kalman_trend_analyzer');
 const { computeRegimeMultiplier } = require('../market_adapter/core/strategies/regime_gate');
+const { getAmaWarmupBars } = require('../market_adapter/core/strategies/ama');
 const { generateHTML } = require('../analysis/trend_detection/dynamic_weight_chart_generator');
 const { generateHTML: generateVolatilityHTML } = require('../analysis/trend_detection/volatility_chart_generator');
 
@@ -226,12 +227,75 @@ function testDynamicWeightChartUsesErPlusLookbackWarmup() {
     }, 'Dynamic Weight Test');
 
     const payload = extractHtmlPayload(html);
+    const defaultAma = MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY];
     assert.strictEqual(payload.amaSlowPeriod, 1, 'chart payload should still expose the AMA slow period');
-    assert.strictEqual(payload.amaWarmupBars, 5, 'chart payload should expose the full AMA warmup window');
-    assert.strictEqual(payload.amaSlopeReadyBars, 2, 'chart payload should expose the ER-plus-lookback readiness gate');
-    assert.strictEqual(payload.amaPercentiles[100], 999, 'AMA clip percentiles should start once ER-plus-lookback bars are available');
+    // `lookbackBars` is clamped to the slider's LB_MIN by the chart, so derive
+    // the expected warmup from the payload rather than a hardcoded value.
+    assert.strictEqual(
+        payload.amaWarmupBars,
+        getAmaWarmupBars(1, 1, payload.lookbackBars, defaultAma.fastPeriod),
+        'chart payload should expose the full AMA warmup window'
+    );
+    assert.strictEqual(payload.amaSlopeReadyBars, 1 + payload.lookbackBars, 'chart payload should expose the ER-plus-lookback readiness gate');
+    assert.strictEqual(payload.amaPercentiles[100], 2, 'AMA clip percentiles should start once ER-plus-lookback bars are available');
     assert.match(html, /data\.amaErPeriod/, 'interactive chart should use the AMA ER period in its readiness gate');
     assert.match(html, /const amaReadyBar = Math\.max\(lb, amaErWarmup \+ lb\);/, 'interactive clip-threshold recompute should start at ER-plus-lookback readiness');
+}
+
+function testDynamicWeightChartDisablesAmaClipWithoutStaleCap() {
+    const html = generateHTML({
+        allResults: [
+            { timestamp: '2026-01-01T00:00:00Z', price: 100, ama3Price: 100, amaSlopePct: 999, velocityPct: null, displacementPct: null, isReady: false, signal: 'NEUTRAL' },
+            { timestamp: '2026-01-01T01:00:00Z', price: 101, ama3Price: 101, amaSlopePct: 1, velocityPct: null, displacementPct: null, isReady: true, signal: 'NEUTRAL' },
+        ],
+        amaConfig: { erPeriod: 1, slowPeriod: 1 },
+        amaWeightConfig: { lookbackBars: 1 },
+        clipPct: 0,
+    }, 'Dynamic Weight Clip Test');
+
+    // The AMA clip threshold must always come from the canonical
+    // computeAmaSlopeClipThreshold (Infinity when clipping is off), never from a
+    // stale generation-time percentile cap that no longer matches the current
+    // lookback. Regression guard for the clipPct===0 / lookback-knob bug.
+    assert.doesNotMatch(html, /currentAmaClipThreshold/, 'chart must not keep a stale AMA clip cap');
+    assert.match(
+        html,
+        /amaClipThreshold: dynamicClipThreshold,/,
+        'AMA clip threshold should always come from the canonical recompute'
+    );
+    // The old two-point estimator is no longer called by this page.
+    assert.doesNotMatch(
+        html,
+        /function computeAverageAmaSlopePct\(/,
+        'DW chart should not embed the unused endpoint estimator'
+    );
+}
+
+function testDynamicWeightChartRegimeParityWithLiveGate() {
+    const html = generateHTML({
+        allResults: [
+            { timestamp: '2026-01-01T00:00:00Z', price: 100, ama3Price: 100, amaSlopePct: 1, velocityPct: 0.1, displacementPct: 0.01, isReady: true, signal: 'NEUTRAL', hurst: 0.6, pe: 0.8 },
+            { timestamp: '2026-01-01T01:00:00Z', price: 101, ama3Price: 101, amaSlopePct: 1, velocityPct: 0.1, displacementPct: 0.01, isReady: true, signal: 'NEUTRAL', hurst: 0.6, pe: 0.8 },
+        ],
+        amaConfig: { erPeriod: 1, slowPeriod: 1 },
+        amaWeightConfig: { lookbackBars: 1 },
+    }, 'Dynamic Weight Regime Test');
+
+    // bilinearInterpolate reads `opts.peNodes`; passing `pNodes` silently used
+    // the inline defaults instead of the configured PE nodes.
+    assert.match(
+        html,
+        /bilinearInterpolate\(H, PE, REGIME_TABLE, \{ hNodes: H_NODES, peNodes: P_NODES \}\)/,
+        'chart should pass peNodes (the canonical option name) to bilinearInterpolate'
+    );
+    assert.doesNotMatch(html, /hNodes: H_NODES, pNodes: P_NODES/, 'chart must not pass the misspelled pNodes key');
+    // Live rounds the per-bar regime series to 3 decimals and clamps to 1.0
+    // before the absolute-threshold dead-band; the chart must do the same.
+    assert.match(
+        html,
+        /roundToN\(Math\.min\(Math\.pow\(baseMult, currentRegimeSensitivity\), 1\.0\), 1000\)/,
+        'chart regime series should match the live clamp + 3-decimal rounding'
+    );
 }
 
 function testDynamicWeightChartKeepsGainLinearAtEnd() {
@@ -250,6 +314,10 @@ function testDynamicWeightChartKeepsGainLinearAtEnd() {
         html,
         /function computeDynamicWeightSeries\(/,
         'chart should embed the canonical dynamic weight pipeline'
+    );
+    assert.ok(
+        html.includes(`const AMA_SLOPE_HUBER = ${JSON.stringify(MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER)};`),
+        'chart should inject the centralized Huber params from constants'
     );
 
     const embedded = evalEmbeddedSharedFunctions(html);
@@ -417,7 +485,12 @@ function extractEmbeddedSharedFunctions(html) {
 
 function evalEmbeddedSharedFunctions(html) {
     const block = extractEmbeddedSharedFunctions(html);
-    const f = new Function(block + '\nreturn { computeDynamicWeightSeries, echoLatchSeries, computeAverageAmaSlopePct, bilinearInterpolate, buildKalmanVelocitySeries };');
+    // The generated page declares the centralized Huber params before the
+    // embedded functions; the estimator's default `hub` reads that const, so
+    // the eval scope must define it too (empty when a chart omits it).
+    const hubMatch = /const AMA_SLOPE_HUBER = (\{[^;]*\});/.exec(html);
+    const hubPrefix = hubMatch ? `const AMA_SLOPE_HUBER = ${hubMatch[1]};\n` : '';
+    const f = new Function(hubPrefix + block + '\nreturn { computeDynamicWeightSeries, echoLatchSeries, bilinearInterpolate, buildKalmanVelocitySeries, computeHuberWindowSlopePct };');
     return f();
 }
 
@@ -510,6 +583,8 @@ function main() {
     testKalmanWarmupIsConfigurable();
     testRegimeMultiplierReturnsSeries();
     testDynamicWeightChartUsesErPlusLookbackWarmup();
+    testDynamicWeightChartDisablesAmaClipWithoutStaleCap();
+    testDynamicWeightChartRegimeParityWithLiveGate();
     testDynamicWeightChartKeepsGainLinearAtEnd();
     testDynamicWeightChartShowsOutputClampGuide();
     testVolatilityChartEmbedsCanonicalFunctions();

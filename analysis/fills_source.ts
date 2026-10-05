@@ -10,6 +10,7 @@
  * resolution, query builder and paginated fetch); all of it lives here now.
  */
 
+import { getErrorMessage } from '../modules/utils/errors.js';
 import * as KC from '../market_adapter/core/kibana_client.js';
 import { withReadOnlyClient } from './chain_pool.js';
 
@@ -39,7 +40,7 @@ interface FillRecord {
     receives: AssetAmount;
     fee: AssetAmount;
     isMaker: boolean;
-    sort: any[];
+    sort: unknown[];
 }
 
 const ASSETS: Record<string, AssetInfo> = {
@@ -89,11 +90,12 @@ const ASSETS: Record<string, AssetInfo> = {
     '1.3.6627': { symbol: 'XBTSX.LINK',   precision: 6 },
 };
 
-/** Precisions learned on-chain this run (populated by resolveAssetPrecisions). */
+/** Precisions/symbols learned on-chain this run (populated by resolveAssetPrecisions). */
 const resolvedPrecisions: Record<string, number> = {};
+const resolvedSymbols: Record<string, string> = {};
 
 function assetSymbol(id: string): string {
-    return ASSETS[id]?.symbol ?? id;
+    return ASSETS[id]?.symbol ?? resolvedSymbols[id] ?? id;
 }
 
 function assetPrec(id: string): number | undefined {
@@ -130,6 +132,7 @@ async function resolveAssetPrecisions(fills: FillRecord[]): Promise<void> {
                 for (const asset of assets) {
                     if (asset?.id && asset.precision != null) {
                         resolvedPrecisions[asset.id] = asset.precision;
+                        if (asset.symbol) resolvedSymbols[asset.id] = String(asset.symbol);
                         console.log(`    ${asset.id} → ${asset.symbol || '?'} (precision ${asset.precision})`);
                     }
                 }
@@ -139,8 +142,8 @@ async function resolveAssetPrecisions(fills: FillRecord[]): Promise<void> {
                 console.warn(`  [warn] ${missing.length} asset(s) not found on chain: ${missing.join(', ')}. Fills referencing them will be skipped.`);
             }
         });
-    } catch (e: any) {
-        console.warn(`  [warn] Asset resolution failed: ${e.message}. Fills with unknown assets will be skipped.`);
+    } catch (e) {
+        console.warn(`  [warn] Asset resolution failed: ${getErrorMessage(e)}. Fills with unknown assets will be skipped.`);
     }
 }
 
@@ -175,42 +178,59 @@ function buildFillQuery(accountId: string, gte: string, lte: string, size: numbe
     };
 }
 
+interface FillHit {
+    _source?: {
+        operation_history?: { op_object?: {
+            pays?: { amount?: unknown; asset_id?: unknown };
+            receives?: { amount?: unknown; asset_id?: unknown };
+            fee?: { amount?: unknown; asset_id?: unknown };
+            order_id?: unknown;
+            account_id?: unknown;
+            is_maker?: unknown;
+        } };
+        block_data?: { block_time?: unknown; block_num?: unknown };
+        operation_id_num?: unknown;
+    };
+    sort?: unknown[];
+}
+
 /** Fetch every fill_order for an account in [gte, lte], paginated via search_after. */
-async function fetchAllFills(config: any, accountId: string, gte: string, lte: string): Promise<FillRecord[]> {
+async function fetchAllFills(config: Record<string, unknown>, accountId: string, gte: string, lte: string): Promise<FillRecord[]> {
     const pageSize = 10000;
     const fills: FillRecord[] = [];
-    let searchAfter: any[] | null = null;
+    let searchAfter: unknown[] | null = null;
     const cfg = { ...BASE_CONFIG, timeout: 60000, ...config };
 
     while (true) {
         const query = buildFillQuery(accountId, gte, lte, pageSize);
-        if (searchAfter) (query as any).search_after = searchAfter;
+        if (searchAfter) (query as { search_after?: unknown[] }).search_after = searchAfter;
 
-        const result: any = await kibanaSearch(cfg, query);
+        const result = await kibanaSearch(cfg as never, query) as { hits?: { hits?: unknown[] } } | null;
         const hits = result?.hits?.hits ?? [];
         if (!hits.length) break;
 
-        for (const hit of hits) {
+        for (const rawHit of hits) {
+            const hit = rawHit as FillHit;
             const src = hit?._source;
             const op = src?.operation_history?.op_object;
             if (!op || !op.pays || !op.receives) continue;
 
             fills.push({
-                time: src.block_data?.block_time ?? '',
-                blockNum: src.block_data?.block_num ?? 0,
+                time: String(src.block_data?.block_time ?? ''),
+                blockNum: Number(src.block_data?.block_num ?? 0),
                 opNum: Number(src.operation_id_num ?? 0),
-                orderId: op.order_id ?? '',
-                accountId: op.account_id ?? '',
-                pays: { amount: Number(op.pays.amount ?? 0), asset_id: op.pays.asset_id ?? '' },
-                receives: { amount: Number(op.receives.amount ?? 0), asset_id: op.receives.asset_id ?? '' },
-                fee: { amount: Number(op.fee?.amount ?? 0), asset_id: op.fee?.asset_id ?? '' },
-                isMaker: op.is_maker ?? false,
-                sort: hit.sort,
+                orderId: String(op.order_id ?? ''),
+                accountId: String(op.account_id ?? ''),
+                pays: { amount: Number(op.pays.amount ?? 0), asset_id: String(op.pays.asset_id ?? '') },
+                receives: { amount: Number(op.receives.amount ?? 0), asset_id: String(op.receives.asset_id ?? '') },
+                fee: { amount: Number(op.fee?.amount ?? 0), asset_id: String(op.fee?.asset_id ?? '') },
+                isMaker: Boolean(op.is_maker ?? false),
+                sort: hit.sort ?? [],
             });
         }
 
         if (hits.length < pageSize) break;
-        searchAfter = hits[hits.length - 1].sort;
+        searchAfter = (hits[hits.length - 1] as FillHit).sort ?? null;
         if (!Array.isArray(searchAfter)) break;
     }
 

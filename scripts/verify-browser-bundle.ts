@@ -201,6 +201,14 @@ const TESTS: BundleTest[] = [
     externalizeNodeBuiltins: true,
   },
   {
+    // The canonical AMA-slope estimator; guards the browser-safe surface now
+    // that this module imports modules/constants.ts.
+    label: 'market_adapter/core/strategies/dynamic_weight_series.ts (browser-safe)',
+    entry: 'market_adapter/core/strategies/dynamic_weight_series.ts',
+    expectFail: false,
+    externalizeNodeBuiltins: true,
+  },
+  {
     label: 'modules/bitshares-native/serial/serializer.ts (browser-safe)',
     entry: 'modules/bitshares-native/serial/serializer.ts',
     expectFail: false,

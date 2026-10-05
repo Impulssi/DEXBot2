@@ -10,6 +10,27 @@ const ecc = getEcc();
 const DEFAULT_ADDRESS_PREFIX = NATIVE_CLIENT.CHAIN.ADDRESS_PREFIX;
 const logger = new Logger('authority-resolver');
 
+type AuthEntry = [string, number];
+
+interface ChainAuthority {
+    weight_threshold?: number | string;
+    account_auths?: unknown;
+    key_auths?: unknown;
+}
+
+interface FullAccountEntry {
+    account?: { name?: string; active?: ChainAuthority };
+}
+
+interface ChainClientLike {
+    db: { get_full_accounts(accounts: string[], subscribe: boolean): Promise<unknown> };
+    getConfig?(): { addressPrefix?: string } | null;
+}
+
+type TryGetKey = (name: string) => Promise<string | null>;
+type ListNames = () => string[];
+type StoredKey = { name: string; wif: string };
+
 /**
  * Resolve a signing key for an account by walking on-chain authority structures.
  *
@@ -37,12 +58,12 @@ const logger = new Logger('authority-resolver');
  * @returns {Promise<string>} Private key WIF string
  */
 async function resolvePrivateKey(
-    accountName: any,
-    chainClient: any,
-    tryGetKey: any,
-    listNames: any,
-    depth: any = 0,
-    pubKeyCache: any = new Map()
+    accountName: string,
+    chainClient: ChainClientLike,
+    tryGetKey: TryGetKey,
+    listNames: ListNames,
+    depth: number = 0,
+    pubKeyCache: Map<string, string> = new Map()
 ) {
     if (depth > 2) {
         throw new Error(
@@ -57,20 +78,21 @@ async function resolvePrivateKey(
     logger.debug(`No direct key for '${accountName}', fetching authority from chain (depth=${depth})`);
 
     // Step 2: Fetch account from chain
-    let full;
+    let full: unknown;
     try {
         full = await chainClient.db.get_full_accounts([accountName], false);
-    } catch (e: any) {
+    } catch (e) {
         throw new Error(
             `Failed to fetch account '${accountName}' from chain: ${getErrorMessage(e)}`
         );
     }
 
-    if (!full || !full[0] || !full[0][1] || !full[0][1].account) {
+    const fullRows = full as Array<[string, FullAccountEntry] | undefined> | null | undefined;
+    if (!fullRows || !fullRows[0] || !fullRows[0][1] || !fullRows[0][1].account) {
         throw new Error(`Account '${accountName}' not found on chain`);
     }
 
-    const account = full[0][1].account;
+    const account = fullRows[0][1].account;
     const active = account.active;
 
     if (!active || typeof active.weight_threshold === 'undefined') {
@@ -95,7 +117,7 @@ async function resolvePrivateKey(
         let refName;
         try {
             refName = await resolveAccountIdToName(chainClient, accountId);
-        } catch (e: any) {
+        } catch (e) {
             logger.debug(`  account_auth entry ${accountId}: name resolution failed — ${getErrorMessage(e)}`);
             continue;
         }
@@ -103,7 +125,7 @@ async function resolvePrivateKey(
         try {
             logger.debug(`  account_auth: '${accountName}' → resolving via '${refName}'`);
             return await resolvePrivateKey(refName, chainClient, tryGetKey, listNames, depth + 1, pubKeyCache);
-        } catch (e: any) {
+        } catch (e) {
             logger.debug(`  account_auth: '${refName}' resolution failed — ${getErrorMessage(e)}`);
             continue;
         }
@@ -154,21 +176,22 @@ async function resolvePrivateKey(
 /**
  * Normalize account_auths / key_auths from either array or object format.
  */
-function normalizeAuthMap(auth: any) {
+function normalizeAuthMap(auth: unknown): AuthEntry[] {
     if (!auth) return [];
-    if (Array.isArray(auth)) return auth;
-    return Object.entries(auth);
+    if (Array.isArray(auth)) return auth as AuthEntry[];
+    return Object.entries(auth as Record<string, number | string>).map(([k, v]) => [k, Number(v)] as AuthEntry);
 }
 
 /**
  * Resolve account ID (1.2.x) to account name via chain.
  */
-async function resolveAccountIdToName(chainClient: any, accountId: any) {
+async function resolveAccountIdToName(chainClient: ChainClientLike, accountId: string | number): Promise<string> {
     if (!/^1\.2\./.test(String(accountId))) return String(accountId);
 
-    const full = await chainClient.db.get_full_accounts([accountId], false);
-    if (full && full[0] && full[0][1] && full[0][1].account && full[0][1].account.name) {
-        return full[0][1].account.name;
+    const full = await chainClient.db.get_full_accounts([String(accountId)], false);
+    const fullRows = full as Array<[string, FullAccountEntry] | undefined> | null | undefined;
+    if (fullRows && fullRows[0] && fullRows[0][1] && fullRows[0][1].account && fullRows[0][1].account.name) {
+        return fullRows[0][1].account.name;
     }
     throw new Error(`Could not resolve account ID '${accountId}' to name`);
 }
@@ -176,13 +199,13 @@ async function resolveAccountIdToName(chainClient: any, accountId: any) {
 /**
  * Get address prefix from chain config, falling back to default.
  */
-function getAddressPrefix(chainClient: any) {
+function getAddressPrefix(chainClient: ChainClientLike): string {
     try {
         const config = typeof chainClient.getConfig === 'function'
             ? chainClient.getConfig()
             : null;
         if (config && config.addressPrefix) return config.addressPrefix;
-    } catch (e: any) {
+    } catch (e) {
         logger.warn(`getAddressPrefix: failed to read chain config: ${getErrorMessage(e)}`);
     }
     return DEFAULT_ADDRESS_PREFIX;
@@ -191,9 +214,9 @@ function getAddressPrefix(chainClient: any) {
 /**
  * Collect all stored keys by calling tryGetKey for every known account name.
  */
-async function collectAllStoredKeys(tryGetKey: any, listNames: any) {
+async function collectAllStoredKeys(tryGetKey: TryGetKey, listNames: ListNames): Promise<StoredKey[]> {
     const names = typeof listNames === 'function' ? listNames() : [];
-    const results: { name: any; wif: any; }[] = [];
+    const results: StoredKey[] = [];
     for (const name of names) {
         const wif = await tryGetKey(name);
         if (wif) results.push({ name, wif });
@@ -205,15 +228,18 @@ async function collectAllStoredKeys(tryGetKey: any, listNames: any) {
  * Match a stored private key against a target public key string.
  * Uses the per-call pubKeyCache to avoid re-deriving public keys.
  */
-function matchKeyByPublicKey(targetPubKey: any, storedKeys: any, prefix: any, pubKeyCache: any) {
+function matchKeyByPublicKey(targetPubKey: string, storedKeys: StoredKey[], prefix: string, pubKeyCache: Map<string, string>): string | null {
     for (const { wif } of storedKeys) {
         try {
             let pubKeyStr = pubKeyCache.get(wif);
             if (!pubKeyStr) {
                 const { privateKey } = ecc.wifDecode(wif);
                 const pubKeyBuf = ecc.privateKeyToPublicKey(privateKey);
-                pubKeyStr = ecc.publicKeyToString(pubKeyBuf, prefix);
-                pubKeyCache.set(wif, pubKeyStr);
+                if (!pubKeyBuf) continue;
+                const derived = ecc.publicKeyToString(pubKeyBuf, prefix);
+                if (!derived || typeof derived !== 'string') continue;
+                pubKeyStr = derived;
+                pubKeyCache.set(wif, derived);
             }
             if (pubKeyStr === targetPubKey) return wif;
         } catch (e) {
@@ -226,18 +252,18 @@ function matchKeyByPublicKey(targetPubKey: any, storedKeys: any, prefix: any, pu
 /**
  * Build a human-readable summary of an authority object.
  */
-function buildAuthSummary(auth: any) {
+function buildAuthSummary(auth: ChainAuthority): string {
     const parts: string[] = [];
     parts.push(`threshold=${auth.weight_threshold}`);
 
     const keyAuths = normalizeAuthMap(auth.key_auths);
     if (keyAuths.length > 0) {
-        parts.push(`keys=[${keyAuths.map(([k, w]: any) => `${k.substring(0, 12)}…:${w}`).join(', ')}]`);
+        parts.push(`keys=[${keyAuths.map(([k, w]) => `${k.substring(0, 12)}…:${w}`).join(', ')}]`);
     }
 
     const accountAuths = normalizeAuthMap(auth.account_auths);
     if (accountAuths.length > 0) {
-        parts.push(`accounts=[${accountAuths.map(([id, w]: any) => `${id}:${w}`).join(', ')}]`);
+        parts.push(`accounts=[${accountAuths.map(([id, w]) => `${id}:${w}`).join(', ')}]`);
     }
 
     return parts.join(' ');
@@ -246,7 +272,7 @@ function buildAuthSummary(auth: any) {
 /**
  * Find the highest single weight across all authority entries.
  */
-function findMaxWeight(auth: any) {
+function findMaxWeight(auth: ChainAuthority): number {
     let max = 0;
     for (const [, weight] of normalizeAuthMap(auth.key_auths)) {
         if (weight > max) max = weight;

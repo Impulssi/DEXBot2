@@ -25,6 +25,9 @@
 
 type MergeStrategy = 'replace' | 'shallow' | 'deep';
 
+import type { UnknownRecord } from './types.js';
+import { isUnknownRecord } from './types.js';
+
 const MERGE_STRATEGIES: Record<string, MergeStrategy> = {
     LOG_LEVEL: 'replace',
     TIMING: 'shallow',
@@ -50,7 +53,7 @@ const MERGE_STRATEGIES: Record<string, MergeStrategy> = {
  * Filter out comment/metadata keys (prefixed with _) from user settings.
  * These are used for JSON documentation but should not override code defaults.
  */
-function filterCommentKeys(obj: Record<string, any>): Record<string, any> {
+function filterCommentKeys(obj: UnknownRecord): UnknownRecord {
     return Object.fromEntries(
         Object.entries(obj).filter(([key]) => !key.startsWith('_'))
     );
@@ -65,18 +68,15 @@ const UNSAFE_MERGE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
  * Prototype-dangerous own keys from JSON-parsed sources ('__proto__' et al) are
  * skipped so crafted config files cannot pollute Object.prototype.
  */
-function deepMerge(target: any, source: any): any {
-    const result = { ...target };
+function deepMerge(target: UnknownRecord, source: UnknownRecord): UnknownRecord {
+    const result: UnknownRecord = { ...target };
     for (const key of Object.keys(source)) {
         if (key.startsWith('_') || UNSAFE_MERGE_KEYS.has(key)) continue;
         const sv = source[key];
         if (sv === undefined) continue;
-        if (sv !== null && typeof sv === 'object' && !Array.isArray(sv)) {
-            if (result[key] !== undefined && result[key] !== null && typeof result[key] === 'object' && !Array.isArray(result[key])) {
-                result[key] = deepMerge(result[key], sv);
-            } else {
-                result[key] = { ...sv };
-            }
+        if (isUnknownRecord(sv)) {
+            const targetValue = result[key];
+            result[key] = isUnknownRecord(targetValue) ? deepMerge(targetValue, sv) : { ...sv };
         } else {
             result[key] = sv;
         }
@@ -103,21 +103,51 @@ const NODES_SUBKEY_MAP: Record<string, Record<string, string>> = {
 /**
  * Apply raw.NODES sub-key values onto a NODE_MANAGEMENT result object.
  */
-function applyNodesToNodeManagement(nodes: any, nm: Record<string, any>): void {
+function applyNodesToNodeManagement(nodes: UnknownRecord, nm: UnknownRecord): void {
     if (nodes.enabled !== undefined) nm.DEFAULT_ENABLED = nodes.enabled;
     if (Array.isArray(nodes.list)) nm.DEFAULT_NODES = nodes.list;
-    if (nodes.healthCheck && typeof nodes.healthCheck === 'object') {
-        const hc = filterCommentKeys(nodes.healthCheck);
+    const healthCheck = nodes.healthCheck;
+    if (isUnknownRecord(healthCheck)) {
+        const hc = filterCommentKeys(healthCheck);
         for (const [subKey, constantName] of Object.entries(NODES_SUBKEY_MAP.healthCheck)) {
             if (hc[subKey] !== undefined) nm[constantName] = hc[subKey];
         }
     }
-    if (nodes.selection && typeof nodes.selection === 'object') {
-        const sel = filterCommentKeys(nodes.selection);
+    const selection = nodes.selection;
+    if (isUnknownRecord(selection)) {
+        const sel = filterCommentKeys(selection);
         for (const [subKey, constantName] of Object.entries(NODES_SUBKEY_MAP.selection)) {
             if (sel[subKey] !== undefined) nm[constantName] = sel[subKey];
         }
     }
+}
+
+/**
+ * The NODES view built from a NODE_MANAGEMENT-style section. `healthCheck` and
+ * `selection` are typed because callers read/write those sub-fields directly;
+ * the index signature keeps unmapped passthrough keys reachable.
+ */
+export interface NodesHealthCheckView {
+    enabled?: boolean;
+    intervalMs?: number;
+    timeoutMs?: number;
+    maxPingMs?: number;
+    blacklistThreshold?: number;
+    [key: string]: unknown;
+}
+
+export interface NodesSelectionView {
+    strategy?: string;
+    preferredNode?: string | null;
+    [key: string]: unknown;
+}
+
+export interface NodesView {
+    enabled?: boolean;
+    list?: string[];
+    healthCheck: NodesHealthCheckView;
+    selection: NodesSelectionView;
+    [key: string]: unknown;
 }
 
 /**
@@ -128,19 +158,19 @@ function applyNodesToNodeManagement(nodes: any, nm: Record<string, any>): void {
  * document can never drift. Passthrough of unmapped raw.NODES sub-keys stays
  * with the merge below; this only builds the base view.
  */
-function buildNodesView(nm: Record<string, any>): Record<string, any> {
+function buildNodesView(nm: UnknownRecord): NodesView {
     return {
-        enabled: nm.DEFAULT_ENABLED,
-        list: nm.DEFAULT_NODES,
+        enabled: nm.DEFAULT_ENABLED as boolean | undefined,
+        list: nm.DEFAULT_NODES as string[] | undefined,
         healthCheck: {
             enabled: true,
-            intervalMs: nm.HEALTH_CHECK_INTERVAL_MS,
-            timeoutMs: nm.HEALTH_CHECK_TIMEOUT_MS,
-            maxPingMs: nm.MAX_PING_MS,
-            blacklistThreshold: nm.BLACKLIST_THRESHOLD,
+            intervalMs: nm.HEALTH_CHECK_INTERVAL_MS as number | undefined,
+            timeoutMs: nm.HEALTH_CHECK_TIMEOUT_MS as number | undefined,
+            maxPingMs: nm.MAX_PING_MS as number | undefined,
+            blacklistThreshold: nm.BLACKLIST_THRESHOLD as number | undefined,
         },
         selection: {
-            strategy: nm.SELECTION_STRATEGY,
+            strategy: nm.SELECTION_STRATEGY as string | undefined,
             preferredNode: null,
         },
     };
@@ -154,10 +184,10 @@ function buildNodesView(nm: Record<string, any>): Record<string, any> {
  * @returns Merged result with same shape as defaults (new objects where overridden,
  *          same references where not)
  */
-function mergeSettings(raw: any, defaults: Record<string, any>): Record<string, any> {
-    if (!raw || typeof raw !== 'object') raw = {};
+function mergeSettings<T extends UnknownRecord>(rawInput: unknown, defaults: T): T {
+    const raw: UnknownRecord = isUnknownRecord(rawInput) ? rawInput : {};
 
-    const result: Record<string, any> = {};
+    const result: UnknownRecord = {};
 
     for (const key of Object.keys(defaults)) {
         const rawVal = raw[key];
@@ -176,81 +206,81 @@ function mergeSettings(raw: any, defaults: Record<string, any>): Record<string, 
                 break;
 
             case 'shallow': {
-                const cleanRaw = typeof rawVal === 'object' && !Array.isArray(rawVal) && rawVal !== null
-                    ? filterCommentKeys(rawVal)
-                    : rawVal;
-                const base = typeof defaultVal === 'object' && !Array.isArray(defaultVal) && defaultVal !== null
-                    ? { ...defaultVal }
-                    : defaultVal;
-                result[key] = typeof base === 'object' && base !== null && !Array.isArray(base)
-                    ? (typeof cleanRaw === 'object' && cleanRaw !== null && !Array.isArray(cleanRaw)
-                        ? { ...base, ...cleanRaw }
-                        : base)
+                const cleanRaw = isUnknownRecord(rawVal) ? filterCommentKeys(rawVal) : rawVal;
+                const base = isUnknownRecord(defaultVal) ? { ...defaultVal } : defaultVal;
+                result[key] = isUnknownRecord(base)
+                    ? (isUnknownRecord(cleanRaw) ? { ...base, ...cleanRaw } : base)
                     : cleanRaw;
                 break;
             }
 
             case 'deep': {
-                const cleanRaw = typeof rawVal === 'object' && !Array.isArray(rawVal) && rawVal !== null
-                    ? filterCommentKeys(rawVal)
-                    : rawVal;
-                if (typeof defaultVal === 'object' && !Array.isArray(defaultVal) && defaultVal !== null) {
-                    result[key] = deepMerge(defaultVal, cleanRaw);
-                } else {
-                    result[key] = cleanRaw;
-                }
+                const cleanRaw = isUnknownRecord(rawVal) ? filterCommentKeys(rawVal) : rawVal;
+                result[key] = isUnknownRecord(defaultVal) && isUnknownRecord(cleanRaw)
+                    ? deepMerge(defaultVal, cleanRaw)
+                    : cleanRaw;
                 break;
             }
         }
     }
 
     // Post-processing: GRID_COMPARISON sub-object deep merge for GRID_LIMITS
-    if (
-        raw.GRID_LIMITS && typeof raw.GRID_LIMITS === 'object' && raw.GRID_LIMITS.GRID_COMPARISON &&
-        typeof raw.GRID_LIMITS.GRID_COMPARISON === 'object'
-    ) {
-        const rawComparison = filterCommentKeys(raw.GRID_LIMITS.GRID_COMPARISON);
-        const defaultComparison = defaults.GRID_LIMITS && defaults.GRID_LIMITS.GRID_COMPARISON
-            ? { ...defaults.GRID_LIMITS.GRID_COMPARISON }
-            : {};
-        result.GRID_LIMITS = {
-            ...result.GRID_LIMITS,
-            GRID_COMPARISON: { ...defaultComparison, ...rawComparison },
-        };
+    const rawGridLimits = raw.GRID_LIMITS;
+    if (isUnknownRecord(rawGridLimits)) {
+        const rawComparisonRaw = rawGridLimits.GRID_COMPARISON;
+        if (isUnknownRecord(rawComparisonRaw)) {
+            const rawComparison = filterCommentKeys(rawComparisonRaw);
+            const defaultGridLimits = defaults.GRID_LIMITS;
+            const defaultComparisonRaw = isUnknownRecord(defaultGridLimits) ? defaultGridLimits.GRID_COMPARISON : undefined;
+            const defaultComparison = isUnknownRecord(defaultComparisonRaw) ? { ...defaultComparisonRaw } : {};
+            const resultGridLimits = isUnknownRecord(result.GRID_LIMITS) ? result.GRID_LIMITS : {};
+            result.GRID_LIMITS = {
+                ...resultGridLimits,
+                GRID_COMPARISON: { ...defaultComparison, ...rawComparison },
+            };
+        }
     }
 
-    // Post-processing: NODES → NODE_MANAGEMENT mapping, then build NODES output
-    if (result.NODE_MANAGEMENT) {
+    // Post-processing: NODES -> NODE_MANAGEMENT mapping, then build NODES output
+    const resultNodeManagement = result.NODE_MANAGEMENT;
+    if (isUnknownRecord(resultNodeManagement)) {
+        const rawNodes = raw.NODES;
+
         // Step 1: Map raw.NODES sub-keys to NODE_MANAGEMENT constants
-        if (raw.NODES && typeof raw.NODES === 'object') {
-            const nm = { ...result.NODE_MANAGEMENT };
-            applyNodesToNodeManagement(raw.NODES, nm);
-            result.NODE_MANAGEMENT = nm;
+        let mergedNodeManagement = resultNodeManagement;
+        if (isUnknownRecord(rawNodes)) {
+            const nm = { ...resultNodeManagement };
+            applyNodesToNodeManagement(rawNodes, nm);
+            mergedNodeManagement = nm;
         }
+        result.NODE_MANAGEMENT = mergedNodeManagement;
 
         // Step 2: Build NODES output object from merged NODE_MANAGEMENT
-        const nodesConfig = buildNodesView(result.NODE_MANAGEMENT);
+        const nodesConfig = buildNodesView(mergedNodeManagement);
 
         // Step 3: Passthrough unmapped top-level keys from raw.NODES
-        if (raw.NODES && typeof raw.NODES === 'object') {
-            const rawNodes = raw.NODES;
-            if (rawNodes.enabled !== undefined) nodesConfig.enabled = rawNodes.enabled;
-            if (Array.isArray(rawNodes.list)) nodesConfig.list = rawNodes.list;
+        if (isUnknownRecord(rawNodes)) {
+            if (rawNodes.enabled !== undefined) nodesConfig.enabled = rawNodes.enabled as boolean;
+            if (Array.isArray(rawNodes.list)) nodesConfig.list = rawNodes.list as string[];
             // HealthCheck: keep mapped values, add any unmapped sub-keys
-            if (rawNodes.healthCheck && typeof rawNodes.healthCheck === 'object') {
-                for (const k of Object.keys(rawNodes.healthCheck)) {
+            const rawHealthCheck = rawNodes.healthCheck;
+            if (isUnknownRecord(rawHealthCheck)) {
+                const nodeHealth = nodesConfig.healthCheck;
+                for (const k of Object.keys(rawHealthCheck)) {
                     if (k.startsWith('_')) continue;
                     if (!(k in NODES_SUBKEY_MAP.healthCheck)) {
-                        nodesConfig.healthCheck[k] = rawNodes.healthCheck[k];
+                        nodeHealth[k] = rawHealthCheck[k];
                     }
                 }
             }
             // Selection: keep mapped values, add any unmapped sub-keys
-            if (rawNodes.selection && typeof rawNodes.selection === 'object') {
-                for (const k of Object.keys(rawNodes.selection)) {
+            const rawSelection = rawNodes.selection;
+            if (isUnknownRecord(rawSelection)) {
+                const nodeSelection = nodesConfig.selection;
+                for (const k of Object.keys(rawSelection)) {
                     if (k.startsWith('_')) continue;
                     if (!(k in NODES_SUBKEY_MAP.selection)) {
-                        nodesConfig.selection[k] = rawNodes.selection[k];
+                        nodeSelection[k] = rawSelection[k];
                     }
                 }
             }
@@ -261,25 +291,39 @@ function mergeSettings(raw: any, defaults: Record<string, any>): Record<string, 
 
     // Backward-compatible EXPERT second-pass overrides (GRID_LIMITS and TIMING only).
     // These WIN over any top-level setting from the main merge above.
-    if (raw.EXPERT && typeof raw.EXPERT === 'object') {
-        if (raw.EXPERT.GRID_LIMITS && typeof raw.EXPERT.GRID_LIMITS === 'object') {
-            const expertGrid = filterCommentKeys(raw.EXPERT.GRID_LIMITS);
-            const priorComparison = result.GRID_LIMITS && result.GRID_LIMITS.GRID_COMPARISON;
+    const expert = raw.EXPERT;
+    if (isUnknownRecord(expert)) {
+        const expertGridLimits = expert.GRID_LIMITS;
+        if (isUnknownRecord(expertGridLimits)) {
+            const expertGrid = filterCommentKeys(expertGridLimits);
+            const resultGridLimits = result.GRID_LIMITS;
+            const priorComparison = isUnknownRecord(resultGridLimits) ? resultGridLimits.GRID_COMPARISON : undefined;
             const { GRID_COMPARISON: expertComparison, ...expertRest } = expertGrid;
-            result.GRID_LIMITS = { ...result.GRID_LIMITS, ...expertRest };
-            if (expertComparison && typeof expertComparison === 'object') {
-                result.GRID_LIMITS.GRID_COMPARISON = { ...(priorComparison || {}), ...expertComparison };
-            } else if (expertComparison !== undefined && priorComparison) {
-                result.GRID_LIMITS.GRID_COMPARISON = priorComparison;
+            const nextGridLimits: UnknownRecord = {
+                ...(isUnknownRecord(resultGridLimits) ? resultGridLimits : {}),
+                ...expertRest,
+            };
+            if (isUnknownRecord(expertComparison)) {
+                nextGridLimits.GRID_COMPARISON = {
+                    ...(isUnknownRecord(priorComparison) ? priorComparison : {}),
+                    ...expertComparison,
+                };
+            } else if (expertComparison !== undefined && priorComparison !== undefined) {
+                nextGridLimits.GRID_COMPARISON = priorComparison;
             }
+            result.GRID_LIMITS = nextGridLimits;
         }
-        if (raw.EXPERT.TIMING && typeof raw.EXPERT.TIMING === 'object') {
-            const expertTiming = filterCommentKeys(raw.EXPERT.TIMING);
-            result.TIMING = { ...result.TIMING, ...expertTiming };
+        const expertTiming = expert.TIMING;
+        if (isUnknownRecord(expertTiming)) {
+            const cleanedTiming = filterCommentKeys(expertTiming);
+            result.TIMING = {
+                ...(isUnknownRecord(result.TIMING) ? result.TIMING : {}),
+                ...cleanedTiming,
+            };
         }
     }
 
-    return result;
+    return result as T;
 }
 
 export { deepMerge, mergeSettings, buildNodesView, MERGE_STRATEGIES }

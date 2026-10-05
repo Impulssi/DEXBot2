@@ -36,10 +36,9 @@ function testBuildDynamicWeightInputsLogFormatsFields() {
         erPeriod: 781,
         fastPeriod: 5.2,
         slowPeriod: 82.7,
-        erSmoothPeriod: 3,
     });
 
-    assert.ok(text.includes('ama=781/5.2/82.7/es3'), 'AMA tuple should include ER smoothing');
+    assert.ok(text.includes('ama=781/5.2/82.7'), 'AMA tuple should be formatted');
     assert.ok(text.includes('base=0.60/0.40'), 'base weights should be formatted');
     assert.ok(text.includes('clamp=0.50/0.25'), 'clamp pair should be formatted');
     assert.ok(text.includes('atr=14'), 'ATR period should be shown');
@@ -101,9 +100,11 @@ function testBuildStartupDefaultsLogReflectsExplicitOnlyDynamicBase() {
     const text = buildStartupDefaultsLog(DEFAULT_AMA, DEFAULT_CONFIG, MARKET_ADAPTER);
     const expectedFallback = `weightFallback=${fixedTo(DEFAULT_CONFIG.weightDistribution.sell, 2)}/${fixedTo(DEFAULT_CONFIG.weightDistribution.buy, 2)}`;
 
+    const expectedAsymCap = `asymCap=${(MARKET_ADAPTER.ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR * 100).toFixed(0)}%`;
+
     assert.ok(text.includes('dynamicBase=explicit-only'), 'startup defaults should document explicit-only dynamic base weights');
     assert.ok(text.includes(expectedFallback), 'startup defaults should include fallback weights');
-    assert.ok(text.includes('asymCap=33%'), 'startup defaults should include default asymmetry cap');
+    assert.ok(text.includes(expectedAsymCap), 'startup defaults should include the merged asymmetry cap');
 }
 
 testBuildWeightSummaryFormatsSellBuyOrder();

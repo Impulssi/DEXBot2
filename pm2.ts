@@ -85,7 +85,7 @@ import { path } from './modules/path_api.js';
 import { spawn, execSync } from 'node:child_process';
 import { parseJsonWithComments } from './modules/order/utils/system.js';
 import { readBotsFileWithLock } from './modules/bots_file_lock.js';
-import { loadSettingsFile, selectActiveBotEntries } from './modules/bot_settings.js';
+import { loadSettingsFile, selectActiveBotEntries, type BotEntry } from './modules/bot_settings.js';
 import * as chainKeys from './modules/chain_keys.js';
 import * as credentialPolicy from './modules/credential_policy.js';
 import { readHeadlessPassword } from './modules/launcher/headless_password.js';
@@ -102,6 +102,7 @@ import * as readline from 'node:readline';
 import { getErrorMessage } from './modules/utils/errors.js';
 import { isSameBotName } from './modules/utils/sanitize_key.js';
 import { muteChainLogs } from './modules/utils/chain_logs.js';
+import { startVersionStatusCheck, flushVersionStatusOrHeader } from './modules/version_notice.js';
 import { CLI_COLORS } from './modules/cli_colors.js';
 import { getStorage } from './modules/storage/index.js';
 import { usesAmaGridPrice } from './modules/dexbot_maintenance_runtime.js';
@@ -124,7 +125,22 @@ const PM2_COLORS = {
     error: CLI_COLORS.boldRed,
 };
 
-function colorPm2Output(text: string, color: string, stream: any = process.stdout): string {
+interface Pm2App {
+    name: string;
+    script: string;
+    cwd: string;
+    args?: string;
+    env?: Record<string, string>;
+    [key: string]: unknown;
+}
+
+interface CredentialBootstrap {
+    socketPath: string;
+    waitForTransfer(): Promise<unknown>;
+    close(): void;
+}
+
+function colorPm2Output(text: string, color: string, stream: { isTTY?: boolean } = process.stdout): string {
     return stream.isTTY && !Config.NO_COLOR
         ? `${color}${text}${PM2_COLORS.reset}`
         : text;
@@ -151,26 +167,26 @@ function runtimeScript(...segments: string[]) {
     return path.join(CODE_ROOT, ...segments);
 }
 
-function needsMarketAdapter(bots: any) {
-    return (bots || []).some((bot: any) => usesAmaGridPrice(bot));
+function needsMarketAdapter(bots: BotEntry[] | null | undefined): boolean {
+    return (bots || []).some((bot) => usesAmaGridPrice(bot));
 }
 
-function isServiceApp(app: any) {
+function isServiceApp(app: Pm2App | null | undefined): boolean {
     const name = String(app?.name || '');
     return name === 'dexbot-update' || name === CREDENTIAL_DAEMON_APP_NAME || name === 'dexbot-adapter';
 }
 
-function countManagedBots(apps: any) {
-    return (apps || []).filter((app: any) => !isServiceApp(app)).length;
+function countManagedBots(apps: Pm2App[] | null | undefined): number {
+    return (apps || []).filter((app) => !isServiceApp(app)).length;
 }
 
-function isPm2TableLine(line: any) {
+function isPm2TableLine(line: unknown): boolean {
     const trimmed = String(line || '').trim();
     if (!trimmed) return true;
     return /^[┌┬│├┤└┴─\s]+$/.test(trimmed) || /^[┌┬│├┤└┴]/.test(trimmed);
 }
 
-function transformPm2Line(line: any) {
+function transformPm2Line(line: unknown): string | null {
     const trimmed = String(line || '').trim();
     if (!trimmed) return null;
     if (isPm2TableLine(trimmed)) return null;
@@ -182,7 +198,7 @@ function transformPm2Line(line: any) {
     return trimmed.replace(/\s+\(\d+ instances?\)$/, '');
 }
 
-function flushPm2Buffer(buffer: any, writer: any, { final = false }: { final?: boolean } = {}) {
+function flushPm2Buffer(buffer: string, writer: (line: string) => void, { final = false }: { final?: boolean } = {}): string {
     if (!buffer) return '';
     const lines = buffer.split(/\r?\n/);
     const trailing = lines.pop();
@@ -205,8 +221,8 @@ function flushPm2Buffer(buffer: any, writer: any, { final = false }: { final?: b
  * @param {boolean} [options.includeUpdater=true] - Whether to add the updater service.
  * @returns {Array<Object>} PM2 app definitions.
  */
-function buildEcosystemApps(bots: any, { includeUpdater = true }: { includeUpdater?: boolean } = {}) {
-    const apps = (bots || []).map((bot: any, index: number) => {
+function buildEcosystemApps(bots: BotEntry[] | null | undefined, { includeUpdater = true }: { includeUpdater?: boolean } = {}): Pm2App[] {
+    const apps: Pm2App[] = (bots || []).map((bot, index) => {
         const botName = bot.name || `bot-${index}`;
         return {
             name: botName,
@@ -265,7 +281,7 @@ function buildEcosystemApps(bots: any, { includeUpdater = true }: { includeUpdat
     return apps;
 }
 
-function buildCredentialDaemonApp({ credentialEnv = {} }: { credentialEnv?: any } = {}) {
+function buildCredentialDaemonApp({ credentialEnv = {} }: { credentialEnv?: Record<string, string> } = {}): Pm2App {
     return {
         name: CREDENTIAL_DAEMON_APP_NAME,
         script: runtimeScript('credential-daemon.js'),
@@ -294,12 +310,12 @@ function buildCredentialDaemonApp({ credentialEnv = {} }: { credentialEnv?: any 
  * @returns {Array<Object>} The generated app configurations.
  */
 function generateEcosystemConfig({ botNameFilter = null, clawOnly = false, exitOnError = true }: { botNameFilter?: string | null; clawOnly?: boolean; exitOnError?: boolean } = {}) {
-    function fail(message: any) {
+    function fail(message: unknown): never {
         if (exitOnError) {
             console.error(pm2Error(String(message)));
             process.exit(1);
         }
-        throw new Error(message);
+        throw new Error(String(message));
     }
 
     // Ensure logs directory exists
@@ -309,7 +325,7 @@ function generateEcosystemConfig({ botNameFilter = null, clawOnly = false, exitO
 
     try {
         if (clawOnly) {
-            const appsClaw: any[] = [];
+            const appsClaw: Pm2App[] = [];
             const ecosystemContent = `// Auto-generated by pm2.js - DO NOT EDIT
 // Regenerate with: dexbot pm2 or node dist/dexbot.js pm2
 module.exports = { apps: ${JSON.stringify(appsClaw, null, 2)} }
@@ -327,7 +343,7 @@ module.exports = { apps: ${JSON.stringify(appsClaw, null, 2)} }
         const bots = selectActiveBotEntries(config);
 
         if (botNameFilter) {
-            const filtered = bots.filter((b: any) => isSameBotName(b.name, botNameFilter));
+            const filtered = bots.filter((b) => isSameBotName(b.name, botNameFilter));
             if (filtered.length === 0) {
                 fail(`Bot '${botNameFilter}' not found or not active in ${BOTS_JSON}`);
             }
@@ -354,12 +370,12 @@ module.exports = { apps: ${JSON.stringify(apps, null, 2)} };
 
         storage.writeFile(ECOSYSTEM_FILE, ecosystemContent);
         return apps;
-    } catch (err: any) {
+    } catch (err) {
         fail(`Error reading bots.json: ${getErrorMessage(err)}`);
     }
 }
 
-async function runManagedAppsPm2Action(action: any, { regenerate = false }: { regenerate?: boolean } = {}) {
+async function runManagedAppsPm2Action(action: string, { regenerate = false }: { regenerate?: boolean } = {}): Promise<boolean> {
     if (regenerate) {
         generateEcosystemConfig({ clawOnly: false, exitOnError: false });
     }
@@ -380,7 +396,7 @@ function cleanupStaleCredentialDaemonFiles() {
 
 async function ensureCredentialDaemonPM2({ forceRefresh = false, headless = false, passwordFile = null }: {
     forceRefresh?: boolean;
-    logReuse?: any;
+    logReuse?: boolean;
     headless?: boolean;
     passwordFile?: string | null;
 } = {}) {
@@ -399,7 +415,7 @@ async function ensureCredentialDaemonPM2({ forceRefresh = false, headless = fals
         cleanupStaleCredentialDaemonFiles();
     }
 
-    let bootstrap: any = null;
+    let bootstrap: CredentialBootstrap | null = null;
     try {
         let vaultSecret;
 
@@ -413,21 +429,21 @@ async function ensureCredentialDaemonPM2({ forceRefresh = false, headless = fals
         console.log(pm2Success('✓ Authentication successful'));
         await startManagedRuntimePM2({ apps: [], bootstrap });
         return true;
-    } catch (error: any) {
+    } catch (error) {
         if (bootstrap) bootstrap.close();
         throw error;
     }
 }
 
-async function assertActiveBotTarget(target: any) {
+async function assertActiveBotTarget(target: string): Promise<string> {
     try {
         const { config } = await readBotsFileWithLock(BOTS_JSON, parseJsonWithComments);
-        const match = selectActiveBotEntries(config).find((b: any) => isSameBotName(b.name, target));
+        const match = selectActiveBotEntries(config).find((b) => isSameBotName(b.name, target));
         if (!match) {
             throw new Error(`Bot '${target}' not found or not active in ${BOTS_JSON}`);
         }
-        return match.name;
-    } catch (err: any) {
+        return match.name ?? target;
+    } catch (err) {
         if (String(err && getErrorMessage(err) || '').includes('not found or not active')) {
             throw err;
         }
@@ -465,6 +481,14 @@ async function main({ botNameFilter = null, clawOnly = false, headless = false, 
     console.log('='.repeat(50));
     console.log();
 
+    // Start the passive version check immediately but do not await it: the
+    // BitShares connect in Step 0 (and the PM2 work below) takes seconds, which
+    // fully hides the registry round-trip. The installed-vs-published status is
+    // printed in the success block at the end, below the banner, so it can
+    // never be mistaken for part of the startup status. The promise never
+    // rejects.
+    const versionStatus = startVersionStatusCheck();
+
     if (!clawOnly) {
         // Step 0: Wait for BitShares connection. The native chain stack
         // ([Transport]/[NodeManager]/[bitshares_client]) logs straight to
@@ -492,8 +516,12 @@ async function main({ botNameFilter = null, clawOnly = false, headless = false, 
     // Step 2: Ensure credential daemon availability
     try {
         await ensureCredentialDaemonPM2({ headless, passwordFile });
-    } catch (error: any) {
+    } catch (error) {
         console.error(pm2Error(`\n❌ ${getErrorMessage(error)}`));
+        // Surface the version state on the failure path too: a start that dies
+        // here is exactly when the operator wants to know which build they are
+        // on and whether it is current, and the probe is already in flight.
+        await flushVersionStatusOrHeader(versionStatus);
         process.exit(1);
     }
 
@@ -516,9 +544,14 @@ async function main({ botNameFilter = null, clawOnly = false, headless = false, 
     console.log('If dexbot-cred stops, rerun `dexbot pm2` to unlock it again.');
     console.log('='.repeat(50));
     console.log();
+
+    // The status line names the installed version; with the check switched off
+    // the shared helper falls back to the bare header, so `dexbot pm2` reports
+    // the running build exactly as `dexbot stat` does.
+    await flushVersionStatusOrHeader(versionStatus);
 }
 
-function startPM2Process(args: any, env: any = buildScopedChildEnv()) {
+function startPM2Process(args: string[], env: ReturnType<typeof buildScopedChildEnv> = buildScopedChildEnv()): Promise<void> {
     return new Promise((resolve, reject) => {
         const pm2 = spawn('pm2', args, {
             cwd: PATHS.PROJECT_ROOT,
@@ -531,19 +564,19 @@ function startPM2Process(args: any, env: any = buildScopedChildEnv()) {
         let stdoutBuffer = '';
         let stderrBuffer = '';
 
-        pm2.stdout.on('data', (data: any) => {
+        pm2.stdout.on('data', (data: Buffer) => {
             stdoutBuffer += data.toString();
-            stdoutBuffer = flushPm2Buffer(stdoutBuffer, (line: any) => console.log(line));
+            stdoutBuffer = flushPm2Buffer(stdoutBuffer, (line: string) => console.log(line));
         });
 
-        pm2.stderr.on('data', (data: any) => {
+        pm2.stderr.on('data', (data: Buffer) => {
             stderrBuffer += data.toString();
-            stderrBuffer = flushPm2Buffer(stderrBuffer, (line: any) => console.error(line));
+            stderrBuffer = flushPm2Buffer(stderrBuffer, (line: string) => console.error(line));
         });
 
-        pm2.on('close', (code: any) => {
-            stdoutBuffer = flushPm2Buffer(stdoutBuffer, (line: any) => console.log(line), { final: true });
-            stderrBuffer = flushPm2Buffer(stderrBuffer, (line: any) => console.error(line), { final: true });
+        pm2.on('close', (code: number | null) => {
+            stdoutBuffer = flushPm2Buffer(stdoutBuffer, (line: string) => console.log(line), { final: true });
+            stderrBuffer = flushPm2Buffer(stderrBuffer, (line: string) => console.error(line), { final: true });
             if (code === 0) {
                 // Ensure we disconnect from PM2's file descriptors
                 setImmediate(resolve);
@@ -556,23 +589,23 @@ function startPM2Process(args: any, env: any = buildScopedChildEnv()) {
     });
 }
 
-function startManagedAppsPM2(apps: any) {
+function startManagedAppsPM2(apps: Pm2App[] | null | undefined): Promise<void> {
     if (!apps || apps.length === 0) {
         return Promise.resolve();
     }
     return startPM2Process(['start', ECOSYSTEM_FILE]);
 }
 
-function startCredentialDaemonPM2({ credentialEnv = {} }: { credentialEnv?: any } = {}) {
+function startCredentialDaemonPM2({ credentialEnv = {} }: { credentialEnv?: Record<string, string> } = {}): Promise<void> {
     const app = buildCredentialDaemonApp({ credentialEnv });
     const args = [
         'start',
         app.script,
         '--name', app.name,
-        '--cwd', app.cwd,
-        '--output', app.out_file,
-        '--error', app.error_file,
-        '--log-date-format', app.log_date_format,
+        '--cwd', app.cwd as string,
+        '--output', app.out_file as string,
+        '--error', app.error_file as string,
+        '--log-date-format', app.log_date_format as string,
         '--no-autorestart',
     ];
     return startPM2Process(args, buildScopedChildEnv({ extra: app.env }))
@@ -581,7 +614,7 @@ function startCredentialDaemonPM2({ credentialEnv = {} }: { credentialEnv?: any 
         });
 }
 
-async function startManagedRuntimePM2({ apps, bootstrap }: { apps?: any; bootstrap?: any } = {}) {
+async function startManagedRuntimePM2({ apps, bootstrap }: { apps?: Pm2App[] | null; bootstrap?: CredentialBootstrap | null } = {}) {
     if (bootstrap) {
         await execPM2CommandIgnoreMissing('delete', CREDENTIAL_DAEMON_APP_NAME);
 
@@ -596,7 +629,7 @@ async function startManagedRuntimePM2({ apps, bootstrap }: { apps?: any; bootstr
         );
         try {
             storage.writeFile(bootstrapPathFile, bootstrap.socketPath, { mode: 0o600 });
-        } catch (err: any) {
+        } catch (err) {
             throw new Error(
                 `Cannot write bootstrap path file at ${bootstrapPathFile}: ${getErrorMessage(err)}. ` +
                 `The daemon needs this file to find the bootstrap socket.`
@@ -643,7 +676,7 @@ function runPm2Raw(args: string[], { timeoutMs = 0 }: { timeoutMs?: number } = {
         let stdout = '';
         let stderr = '';
         let settled = false;
-        let timer: any = null;
+        let timer: ReturnType<typeof setTimeout> | null = null;
         if (timeoutMs > 0) {
             timer = setTimeout(() => {
                 if (settled) return;
@@ -658,10 +691,10 @@ function runPm2Raw(args: string[], { timeoutMs = 0 }: { timeoutMs?: number } = {
             if (timer) clearTimeout(timer);
             fn();
         };
-        child.stdout.on('data', (data: any) => { stdout += data.toString(); });
-        child.stderr.on('data', (data: any) => { stderr += data.toString(); });
-        child.on('error', (err: any) => finish(() => reject(err)));
-        child.on('close', (code: any) => finish(() => resolve({ code: code ?? 0, stdout, stderr })));
+        child.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
+        child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+        child.on('error', (err: Error) => finish(() => reject(err)));
+        child.on('close', (code: number | null) => finish(() => resolve({ code: code ?? 0, stdout, stderr })));
     });
 }
 
@@ -680,8 +713,8 @@ async function ensurePm2Logrotate() {
         let installed = false;
         try {
             const parsed = JSON.parse(list.stdout || '[]');
-            installed = Array.isArray(parsed) && parsed.some((app: any) => app && app.name === 'pm2-logrotate');
-        } catch (err: any) {
+            installed = Array.isArray(parsed) && (parsed as unknown[]).some((app) => Boolean(app && (app as { name?: unknown }).name === 'pm2-logrotate'));
+        } catch (err) {
             installed = false;
         }
         if (installed) return;
@@ -696,7 +729,7 @@ async function ensurePm2Logrotate() {
         await runPm2Raw(['set', 'pm2-logrotate:retain', '10'], { timeoutMs: 15000 });
         await runPm2Raw(['set', 'pm2-logrotate:compress', 'true'], { timeoutMs: 15000 });
         console.log('Enabled PM2 log rotation (pm2-logrotate: 100M files, retain 10, compressed).');
-    } catch (err: any) {
+    } catch (err) {
         console.warn(`PM2 log rotation not enabled: ${getErrorMessage(err)}`);
     }
 }
@@ -732,7 +765,7 @@ async function installPM2() {
     });
 
     return new Promise<void>((resolve, reject) => {
-        rl.question('PM2 is not installed. Install now? (Y/n): ', (answer: any) => {
+        rl.question('PM2 is not installed. Install now? (Y/n): ', (answer: string) => {
             rl.close();
 
             if (answer.toLowerCase() === 'n') {
@@ -743,17 +776,17 @@ async function installPM2() {
             console.log('Installing PM2...');
 
             // Helper to run installation command
-            const runInstall = (command: any, args: any) => {
+            const runInstall = (command: string, args: string[]) => {
                 return new Promise<void>((res, rej) => {
                     const proc = spawn(command, args, {
                         stdio: 'inherit',
                         shell: process.platform === 'win32'
                     });
-                    proc.on('close', (code: any) => {
+                    proc.on('close', (code: number | null) => {
                         if (code === 0) res();
                         else rej(code);
                     });
-                    proc.on('error', (err: any) => rej(err));
+                    proc.on('error', (err: Error) => rej(err));
                 });
             };
 
@@ -763,7 +796,7 @@ async function installPM2() {
                     console.log(pm2Success('PM2 installed successfully!'));
                     resolve();
                 })
-                .catch((_err: any) => {
+                .catch((_err) => {
                     // If failed and not on Windows, try sudo
                     if (process.platform !== 'win32') {
                         console.log('\nStandard installation failed (likely permissions). Trying with sudo...');
@@ -774,7 +807,7 @@ async function installPM2() {
                                 console.log(pm2Success('PM2 installed successfully with sudo!'));
                                 resolve();
                             })
-                            .catch((_finalErr: any) => {
+                            .catch((_finalErr) => {
                                 reject(new Error('PM2 installation failed even with sudo'));
                             });
                     } else {
@@ -797,7 +830,7 @@ async function installPM2() {
                                     reject(new Error('PM2 installation failed or was cancelled in the elevated window.'));
                                 }
                             })
-                            .catch((_winErr: any) => {
+                            .catch((_winErr) => {
                                 console.error(pm2Error('\nFailed to elevate permissions.'));
                                 console.error(pm2Error('Please manually run "npm install -g pm2" as Administrator.'));
                                 reject(new Error('PM2 installation failed.'));
@@ -818,7 +851,7 @@ async function installPM2() {
  * @returns {Promise<Object>} Command result.
  * @throws {Error} If action is invalid or command fails.
  */
-async function execPM2Command(action: any, target: any, { suppressStderrOnError = false, silent = false }: { suppressStderrOnError?: boolean; silent?: boolean } = {}) {
+async function execPM2Command(action: string, target: string | null | undefined, { suppressStderrOnError = false, silent = false }: { suppressStderrOnError?: boolean; silent?: boolean } = {}): Promise<{ success: boolean; stdout: string; stderr: string }> {
     // Validate action to prevent injection
     const validActions = ['start', 'stop', 'delete', 'restart'];
     if (!validActions.includes(action)) {
@@ -842,21 +875,21 @@ async function execPM2Command(action: any, target: any, { suppressStderrOnError 
         let stderr = '';
         let stdoutBuffer = '';
 
-        pm2.stdout.on('data', (data: any) => {
+        pm2.stdout.on('data', (data: Buffer) => {
             stdout += data.toString();
             if (!silent) {
                 stdoutBuffer += data.toString();
-                stdoutBuffer = flushPm2Buffer(stdoutBuffer, (line: any) => console.log(line));
+                stdoutBuffer = flushPm2Buffer(stdoutBuffer, (line: string) => console.log(line));
             }
         });
 
-        pm2.stderr.on('data', (data: any) => {
+        pm2.stderr.on('data', (data: Buffer) => {
             stderr += data.toString();
         });
 
-        pm2.on('close', (code: any) => {
+        pm2.on('close', (code: number | null) => {
             if (!silent) {
-                stdoutBuffer = flushPm2Buffer(stdoutBuffer, (line: any) => console.log(line), { final: true });
+                stdoutBuffer = flushPm2Buffer(stdoutBuffer, (line: string) => console.log(line), { final: true });
             }
             if (code === 0) {
                 resolve({ success: true, stdout, stderr });
@@ -870,11 +903,11 @@ async function execPM2Command(action: any, target: any, { suppressStderrOnError 
     });
 }
 
-async function execPM2CommandIgnoreMissing(action: any, target: any, options: any = {}) {
+async function execPM2CommandIgnoreMissing(action: string, target: string | null | undefined, options: { suppressStderrOnError?: boolean; silent?: boolean } = {}): Promise<boolean> {
     try {
         await execPM2Command(action, target, { suppressStderrOnError: true, ...options });
         return true;
-    } catch (error: any) {
+    } catch (error) {
         const message = String(error && getErrorMessage(error) ? getErrorMessage(error) : error);
         if (message.includes('Process or Namespace') || message.includes('not found') || message.includes('does not exist')) {
             return false;
@@ -889,7 +922,7 @@ async function execPM2CommandIgnoreMissing(action: any, target: any, options: an
  * @returns {Promise<void>}
  * @throws {Error} If target not found or stopping fails.
  */
-async function stopPM2Processes(target: any) {
+async function stopPM2Processes(target: string): Promise<void> {
     console.log(`Stopping PM2 processes: ${target}`);
 
     if (target === 'all') {
@@ -903,7 +936,7 @@ async function stopPM2Processes(target: any) {
         } else if (storage.exists(BOTS_JSON)) {
             try {
                 await runManagedAppsPm2Action('stop', { regenerate: true });
-            } catch (err: any) {
+            } catch (err) {
                 console.warn(`Skipping managed bot stop: ${getErrorMessage(err)}`);
             }
         }
@@ -922,13 +955,13 @@ async function stopPM2Processes(target: any) {
     // and resolve to the canonical stored name (PM2 process names are case-sensitive).
     try {
         const { config } = await readBotsFileWithLock(BOTS_JSON, parseJsonWithComments);
-        const match = selectActiveBotEntries(config).find((b: any) => isSameBotName(b.name, target));
+        const match = selectActiveBotEntries(config).find((b) => isSameBotName(b.name, target));
 
         if (!match) {
             throw new Error(`Bot '${target}' not found or not active in ${BOTS_JSON}`);
         }
-        target = match.name;
-    } catch (err: any) {
+        target = match.name ?? target;
+    } catch (err) {
         throw new Error(`Failed to read bots configuration: ${getErrorMessage(err)}`);
     }
 
@@ -943,7 +976,7 @@ async function stopPM2Processes(target: any) {
  * @returns {Promise<void>}
  * @throws {Error} If target not found or deleting fails.
  */
-async function deletePM2Processes(target: any) {
+async function deletePM2Processes(target: string): Promise<void> {
     console.log(`Deleting PM2 processes: ${target}`);
 
     if (target === 'all') {
@@ -954,7 +987,7 @@ async function deletePM2Processes(target: any) {
         } else if (storage.exists(BOTS_JSON)) {
             try {
                 await runManagedAppsPm2Action('delete', { regenerate: true });
-            } catch (err: any) {
+            } catch (err) {
                 console.warn(`Skipping managed bot delete: ${getErrorMessage(err)}`);
             }
         }
@@ -972,13 +1005,13 @@ async function deletePM2Processes(target: any) {
         // and resolve to the canonical stored name (PM2 process names are case-sensitive).
         try {
             const { config } = await readBotsFileWithLock(BOTS_JSON, parseJsonWithComments);
-            const match = selectActiveBotEntries(config).find((b: any) => isSameBotName(b.name, target));
+            const match = selectActiveBotEntries(config).find((b) => isSameBotName(b.name, target));
 
             if (!match) {
                 throw new Error(`Bot '${target}' not found or not active in ${BOTS_JSON}`);
             }
-            target = match.name;
-        } catch (err: any) {
+            target = match.name ?? target;
+        } catch (err) {
             throw new Error(`Failed to read bots configuration: ${getErrorMessage(err)}`);
         }
 
@@ -988,7 +1021,7 @@ async function deletePM2Processes(target: any) {
     }
 }
 
-async function restartPM2Processes(target: any, { headless = false, passwordFile = null }: { headless?: boolean; passwordFile?: string | null } = {}) {
+async function restartPM2Processes(target: string, { headless = false, passwordFile = null }: { headless?: boolean; passwordFile?: string | null } = {}) {
     console.log(`Restarting PM2 processes: ${target}`);
 
     if (target === 'all') {
@@ -1019,7 +1052,7 @@ async function restartPM2Processes(target: any, { headless = false, passwordFile
  * @returns {Promise<void>}
  * @throws {Error} If target not found, is dexbot-cred, or reloading fails.
  */
-async function reloadPM2Processes(target: any) {
+async function reloadPM2Processes(target: string): Promise<void> {
     console.log(`Reloading PM2 processes: ${target}`);
 
     if (target === 'all') {
@@ -1111,7 +1144,7 @@ if (isPm2DirectRun) {
                 process.exit(0);
             } else if (command === 'update') {
                 const update = spawn(Config.EXEC_PATH, [runtimeScript('scripts', 'update.js')], { stdio: 'inherit' });
-                update.on('close', (code: any) => process.exit(code));
+                update.on('close', (code: number | null) => process.exit(code));
             } else if (command === 'stop') {
                 if (!target) {
                     console.error(pm2Error('Error: Target required. Specify bot name or "all".'));
@@ -1121,7 +1154,7 @@ if (isPm2DirectRun) {
                 try {
                     await stopPM2Processes(target);
                     process.exit(0);
-                } catch (err: any) {
+                } catch (err) {
                     console.error(pm2Error(`Failed to stop processes: ${getErrorMessage(err)}`));
                     process.exit(1);
                 }
@@ -1134,7 +1167,7 @@ if (isPm2DirectRun) {
                 try {
                     await deletePM2Processes(target);
                     process.exit(0);
-                } catch (err: any) {
+                } catch (err) {
                     console.error(pm2Error(`Failed to delete processes: ${getErrorMessage(err)}`));
                     process.exit(1);
                 }
@@ -1147,7 +1180,7 @@ if (isPm2DirectRun) {
                 try {
                     await restartPM2Processes(target, { headless, passwordFile });
                     process.exit(0);
-                } catch (err: any) {
+                } catch (err) {
                     console.error(pm2Error(`Failed to restart processes: ${getErrorMessage(err)}`));
                     process.exit(1);
                 }
@@ -1160,7 +1193,7 @@ if (isPm2DirectRun) {
                 try {
                     await reloadPM2Processes(target);
                     process.exit(0);
-                } catch (err: any) {
+                } catch (err) {
                     console.error(pm2Error(`Failed to reload processes: ${getErrorMessage(err)}`));
                     process.exit(1);
                 }
@@ -1172,7 +1205,7 @@ if (isPm2DirectRun) {
                 showPM2Help();
                 process.exit(1);
             }
-        } catch (err: any) {
+        } catch (err) {
             console.error(pm2Error(`Error: ${getErrorMessage(err)}`));
             process.exit(1);
         }

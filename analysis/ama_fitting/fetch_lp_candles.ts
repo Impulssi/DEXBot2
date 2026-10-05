@@ -100,16 +100,16 @@ function printHelp() {
     console.log('  --hours <n>              Lookback hours (default: 26280 = 3 years)');
     console.log('  --out <filename>         Output filename (default: auto-generated in market_adapter/data/lp/)');
 }
-function validateArgs(args: Record<string, any>) {
+function validateArgs(args: Record<string, unknown>) {
     if (!args.pool)            throw new Error('--pool is required');
     if (!args.assetAId)        throw new Error('--assetAId is required');
-    if (!Number.isFinite(args.assetAPrecision)) throw new Error('--assetAPrecision is required');
+    if (!Number.isFinite(Number(args.assetAPrecision))) throw new Error('--assetAPrecision is required');
     if (!args.assetBId)        throw new Error('--assetBId is required');
-    if (!Number.isFinite(args.assetBPrecision)) throw new Error('--assetBPrecision is required');
-    if (!Number.isFinite(args.hours) || args.hours <= 0) throw new Error('--hours must be > 0');
+    if (!Number.isFinite(Number(args.assetBPrecision))) throw new Error('--assetBPrecision is required');
+    if (!Number.isFinite(Number(args.hours)) || Number(args.hours) <= 0) throw new Error('--hours must be > 0');
     // Reject unknown/NaN intervals here instead of letting NaN flow silently
     // into Kibana range queries (production throws on unsupported intervals).
-    if (!Number.isFinite(args.intervalSeconds) || args.intervalSeconds <= 0) {
+    if (!Number.isFinite(Number(args.intervalSeconds)) || Number(args.intervalSeconds) <= 0) {
         throw new Error('Unsupported --interval: use one of 1m, 5m, 15m, 1h, 4h, 1d or a positive number of seconds');
     }
 }
@@ -178,7 +178,7 @@ async function main() {
     console.log('Run optimizer:');
     console.log(`  npm run build && node dist/analysis/ama_fitting/optimizer_high_resolution.js --data ${path.relative(process.cwd(), outPath)}`);
 }
-main().catch((err: any) => {
+main().catch((err: unknown) => {
     console.error('Error:', getErrorMessage(err));
     process.exit(1);
 });

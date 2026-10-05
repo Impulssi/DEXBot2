@@ -24,55 +24,98 @@ const { ensureDir, unlink: safeUnlink } = storage;
 import * as fundRegistry from './fund_registry.js';
 
 import * as bitsharesModule from './bitshares_client.js';
-const { BitShares } = bitsharesModule as any;
+const { BitShares } = bitsharesModule;
 import { BroadcastUncertainError } from './dexbot_credential_client.js';
 import * as configModule from './config.js';
 const { Config } = configModule;
 import { getErrorMessage } from './utils/errors.js';
+import type { BotLike, OrderManagerLike, ManagedOrder, OrderType } from './types.js';
+
+/** Loose JSON-object view used across the maintenance runtime. */
+type JsonObj = Record<string, unknown>;
+
+/** A ranked BTS-acquisition pool candidate. */
+interface PoolCandidate {
+    asset: { id?: unknown; precision?: number; symbol?: unknown; free?: number; [key: string]: unknown };
+    poolId?: unknown;
+    sellAmount: number;
+    expectedReceive: number;
+    priceImpact: number;
+    [key: string]: unknown;
+}
+
+/** Minimal bot-context surface used by the idle/defer schedulers. */
+interface MaintenanceCtx {
+    _shuttingDown?: unknown;
+    _maintenanceIdleTimer?: unknown;
+    _deferredGridResyncTimer?: unknown;
+    _incomingFillQueue?: unknown[];
+    _lastGridActivityAt?: unknown;
+    _runGridMaintenance?: (context: string, options: JsonObj) => Promise<unknown>;
+    _warn?: (message: string) => void;
+    _performGridResync?: (options: JsonObj) => Promise<unknown>;
+    triggerFile?: string;
+    manager?: {
+        _fillProcessingLock?: { acquire: (fn: () => Promise<void>) => Promise<unknown> };
+        _recoveryState?: JsonObj;
+        [key: string]: unknown;
+    };
+    [key: string]: unknown;
+}
+
+/** A stranded/held chain order as seen by the deferred-hold helpers. */
+interface HeldChainOrder {
+    type?: unknown;
+    price?: unknown;
+    size?: unknown;
+    reason?: unknown;
+    chainOrderId?: unknown;
+    [key: string]: unknown;
+}
 import { isSameBotName } from './utils/sanitize_key.js';
 import { usesAmaGridPrice } from './grid_price_source.js';
-function hasOpenOrdersSyncLoopMsSet(...args: any) { return require('./config').hasOpenOrdersSyncLoopMsSet(...args); }
-function getOpenOrdersSyncLoopMs(...args: any) { return require('./config').getOpenOrdersSyncLoopMs(...args); }
-function isGridBloated(...args: any) { return (grid.isGridBloated as any)(...args); }
-function isGridBloatGraceActive(...args: any) { return (grid.isGridBloatGraceActive as any)(...args); }
-function clearGridBloatFlag(...args: any) { return (grid.clearGridBloatFlag as any)(...args); }
-function recalculateGrid(...args: any) { return (grid.recalculateGrid as any)(...args); }
-function buildRuntimeScriptPath(...args: any) { return require('./launcher/runtime_entry').buildRuntimeScriptPath(...args); }
-function applyGridDivergenceCorrections(...args: any) { return require('./order/utils/system').applyGridDivergenceCorrections(...args); }
-function updateGridFromBlockchainSnapshot(...args: any) { return require('./order/grid').updateGridFromBlockchainSnapshot(...args); }
-function loadAmaCenterSnapshot(...args: any) { return require('./order/utils/system').loadAmaCenterSnapshot(...args); }
-function sleep(...args: any) { return require('./order/utils/system').sleep(...args); }
-function parseJsonWithComments(...args: any) { return require('./order/utils/system').parseJsonWithComments(...args); }
-function isPm2Runtime(...args: any) { return require('./order/logger').isPm2Runtime(...args); }
-function isWrapperAdapterOwner(...args: any) { return require('./launcher/adapter_requirement').isWrapperAdapterOwner(...args); }
-function readAdapterRequirement(...args: any) { return require('./launcher/adapter_requirement').readAdapterRequirement(...args); }
-function getSharedMarketAdapterRuntime(...args: any) { return require('./launcher/market_adapter_runtime').getSharedMarketAdapterRuntime(...args); }
-function resetMarketAdapterWhitelistCache(...args: any) { return require('./market_adapter_whitelist').resetMarketAdapterWhitelistCache(...args); }
-function isBotDynamicWeightWhitelisted(...args: any) { return require('./market_adapter_whitelist').isBotDynamicWeightWhitelisted(...args); }
+function hasOpenOrdersSyncLoopMsSet(...args: unknown[]) { return require('./config').hasOpenOrdersSyncLoopMsSet(...args); }
+function getOpenOrdersSyncLoopMs(...args: unknown[]) { return require('./config').getOpenOrdersSyncLoopMs(...args); }
+function isGridBloated(...args: unknown[]) { return (grid.isGridBloated as (...a: unknown[]) => { bloated?: boolean; details?: { gridSize?: number; maxAllowed?: number } })(...args); }
+function isGridBloatGraceActive(...args: unknown[]) { return (grid.isGridBloatGraceActive as (...a: unknown[]) => { active?: boolean; graceMs?: number })(...args); }
+function clearGridBloatFlag(...args: unknown[]) { return (grid.clearGridBloatFlag as (...a: unknown[]) => unknown)(...args); }
+function recalculateGrid(...args: unknown[]) { return (grid.recalculateGrid as (...a: unknown[]) => unknown)(...args); }
+function buildRuntimeScriptPath(...args: unknown[]) { return require('./launcher/runtime_entry').buildRuntimeScriptPath(...args); }
+function applyGridDivergenceCorrections(...args: unknown[]) { return require('./order/utils/system').applyGridDivergenceCorrections(...args); }
+function updateGridFromBlockchainSnapshot(...args: unknown[]) { return require('./order/grid').updateGridFromBlockchainSnapshot(...args); }
+function loadAmaCenterSnapshot(...args: unknown[]) { return require('./order/utils/system').loadAmaCenterSnapshot(...args); }
+function sleep(...args: unknown[]) { return require('./order/utils/system').sleep(...args); }
+function parseJsonWithComments(...args: unknown[]) { return require('./order/utils/system').parseJsonWithComments(...args); }
+function isPm2Runtime(...args: unknown[]) { return require('./order/logger').isPm2Runtime(...args); }
+function isWrapperAdapterOwner(...args: unknown[]) { return require('./launcher/adapter_requirement').isWrapperAdapterOwner(...args); }
+function readAdapterRequirement(...args: unknown[]) { return require('./launcher/adapter_requirement').readAdapterRequirement(...args); }
+function getSharedMarketAdapterRuntime(...args: unknown[]) { return require('./launcher/market_adapter_runtime').getSharedMarketAdapterRuntime(...args); }
+function resetMarketAdapterWhitelistCache(...args: unknown[]) { return require('./market_adapter_whitelist').resetMarketAdapterWhitelistCache(...args); }
+function isBotDynamicWeightWhitelisted(...args: unknown[]) { return require('./market_adapter_whitelist').isBotDynamicWeightWhitelisted(...args); }
 function getRuntimeSettingsKeys() { return require('./runtime_settings').RUNTIME_SETTINGS_KEYS; }
-function cloneWeightDistribution(...args: any) { return require('./order/utils/math').cloneWeightDistribution(...args); }
-function calculateOrderCreationFees(...args: any) { return require('./order/utils/math').calculateOrderCreationFees(...args); }
-function calculateSwapInAmount(...args: any) { return require('./order/utils/math').calculateSwapInAmount(...args); }
-function floatToBlockchainInt(...args: any) { return require('./order/utils/math').floatToBlockchainInt(...args); }
-function blockchainToFloat(...args: any) { return require('./order/utils/math').blockchainToFloat(...args); }
-function updateDynamicGridSnapshotSync(...args: any) { return require('../market_adapter/utils/dynamic_grid_snapshot').updateDynamicGridSnapshotSync(...args); }
+function cloneWeightDistribution(...args: unknown[]) { return require('./order/utils/math').cloneWeightDistribution(...args); }
+function calculateOrderCreationFees(...args: unknown[]) { return require('./order/utils/math').calculateOrderCreationFees(...args); }
+function calculateSwapInAmount(...args: unknown[]) { return require('./order/utils/math').calculateSwapInAmount(...args); }
+function floatToBlockchainInt(...args: unknown[]) { return require('./order/utils/math').floatToBlockchainInt(...args); }
+function blockchainToFloat(...args: unknown[]) { return require('./order/utils/math').blockchainToFloat(...args); }
+function updateDynamicGridSnapshotSync(...args: unknown[]) { return require('../market_adapter/utils/dynamic_grid_snapshot').updateDynamicGridSnapshotSync(...args); }
 // Lazy require: dexbot_fill_runtime imports this module, so a static import
 // would be circular; at call time both modules are fully loaded.
-function scheduleFillConsumerRestartFn(...args: any) { return require('./dexbot_fill_runtime').scheduleFillConsumerRestart(...args); }
-function reconcileGridOrders(...args: any) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
-function resolveReserveCount(...args: any) { return require('./order/utils/order').resolveReserveCount(...args); }
-function reserveEdgeIdSet(...args: any) { return require('./order/utils/order').reserveEdgeIdSet(...args); }
-function liveWindowIdSet(...args: any) { return require('./order/utils/order').liveWindowIdSet(...args); }
-function resolveLiveReserveEdgeAnchorPrice(...args: any) { return require('./order/utils/order').resolveLiveReserveEdgeAnchorPrice(...args); }
-function formatUnmatchedChainOrder(...args: any) { return require('./order/utils/order').formatUnmatchedChainOrder(...args); }
-function isNonBlockingUnmatchedOrder(...args: any) { return require('./order/utils/order').isNonBlockingUnmatchedOrder(...args); }
-function isStrandedHoldOrder(...args: any) { return require('./order/utils/order').isStrandedHoldOrder(...args); }
-function getSideBudget(...args: any) { return require('./order/utils/order').getSideBudget(...args); }
-function getActiveOrdersTotal(config: any) { return require('./order/utils/order').getActiveOrdersTotal(config); }
-function correctAllPriceMismatches(...args: any) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
-function isOrderOnChain(...args: any) { return require('./order/utils/order').isOrderOnChain(...args); }
-function parseChainOrder(...args: any) { return require('./order/utils/order').parseChainOrder(...args); }
-function parseSlotIndex(...args: any) { return require('./order/utils/order').parseSlotIndex(...args); }
+function scheduleFillConsumerRestartFn(...args: unknown[]) { return require('./dexbot_fill_runtime').scheduleFillConsumerRestart(...args); }
+function reconcileGridOrders(...args: unknown[]) { return require('./order/grid_reconcile').reconcileGridOrders(...args); }
+function resolveReserveCount(...args: unknown[]) { return require('./order/utils/order').resolveReserveCount(...args); }
+function reserveEdgeIdSet(...args: unknown[]) { return require('./order/utils/order').reserveEdgeIdSet(...args); }
+function liveWindowIdSet(...args: unknown[]) { return require('./order/utils/order').liveWindowIdSet(...args); }
+function resolveLiveReserveEdgeAnchorPrice(...args: unknown[]) { return require('./order/utils/order').resolveLiveReserveEdgeAnchorPrice(...args); }
+function formatUnmatchedChainOrder(...args: unknown[]) { return require('./order/utils/order').formatUnmatchedChainOrder(...args); }
+function isNonBlockingUnmatchedOrder(...args: unknown[]) { return require('./order/utils/order').isNonBlockingUnmatchedOrder(...args); }
+function isStrandedHoldOrder(...args: unknown[]) { return require('./order/utils/order').isStrandedHoldOrder(...args); }
+function getSideBudget(...args: unknown[]) { return require('./order/utils/order').getSideBudget(...args); }
+function getActiveOrdersTotal(config: unknown) { return require('./order/utils/order').getActiveOrdersTotal(config); }
+function correctAllPriceMismatches(...args: unknown[]) { return require('./order/utils/order').correctAllPriceMismatches(...args); }
+function isOrderOnChain(...args: unknown[]) { return require('./order/utils/order').isOrderOnChain(...args); }
+function parseChainOrder(...args: unknown[]) { return require('./order/utils/order').parseChainOrder(...args); }
+function parseSlotIndex(...args: unknown[]) { return require('./order/utils/order').parseSlotIndex(...args); }
 
 const CODE_ROOT = path.join(__dirname, '..');
 const PROFILES_DIR = PATHS.PROFILES_DIR;
@@ -127,18 +170,18 @@ const GRID_RESYNC_REASONS = Object.freeze({
 /**
  * Find a bot entry in the bots config snapshot that matches a runtime config.
  * Matches by botKey or name.
- * @param {any} snapshot - Bots configuration snapshot
+ * @param {unknown} snapshot - Bots configuration snapshot
  * @param {Object} config - Runtime bot configuration
  * @returns {Object|null} Matched bot entry or null
  */
-function findSnapshotBotForRuntimeConfig(snapshot: any, config: any) {
+function findSnapshotBotForRuntimeConfig(snapshot: { activeBots?: BotLike[] }, config: JsonObj) {
     if (!snapshot || !Array.isArray(snapshot.activeBots) || !config) {
         return null;
     }
 
     const botKey = config.botKey ? String(config.botKey) : null;
     const name = config.name ? String(config.name) : null;
-    return snapshot.activeBots.find((bot: any) => {
+    return snapshot.activeBots.find((bot: BotLike) => {
         if (!bot) return false;
         if (botKey && String(bot.botKey || '') === botKey) return true;
         if (name && String(bot.name || '') === name) return true;
@@ -148,14 +191,14 @@ function findSnapshotBotForRuntimeConfig(snapshot: any, config: any) {
 
 /**
  * Check if a runtime bot configuration requires the market adapter.
- * @param {any} snapshot - Bots configuration snapshot
+ * @param {unknown} snapshot - Bots configuration snapshot
  * @param {Object} config - Runtime bot configuration
  * @returns {boolean} True if the bot uses AMA grid pricing
  */
-function runtimeConfigNeedsMarketAdapter(snapshot: any, config: any) {
+function runtimeConfigNeedsMarketAdapter(snapshot: { activeBots?: BotLike[] }, config: JsonObj) {
     const snapshotBot = findSnapshotBotForRuntimeConfig(snapshot, config);
     if (snapshotBot) {
-        return usesAmaGridPrice(snapshotBot);
+        return usesAmaGridPrice(snapshotBot as unknown as Record<string, unknown>);
     }
     return usesAmaGridPrice(config);
 }
@@ -181,17 +224,18 @@ const BOT_CONFIG_FINGERPRINT_IGNORED_KEYS = Object.freeze([
 /**
  * Deterministic JSON stringify with recursively sorted object keys.
  * Key order in bots.json must not count as a config change.
- * @param {any} value - Value to stringify
+ * @param {unknown} value - Value to stringify
  * @returns {string} Stable string representation
  */
-function stableStringifyForBotConfig(value: any): string {
+function stableStringifyForBotConfig(value: unknown): string {
     if (value === null || value === undefined) return 'null';
     if (Array.isArray(value)) {
-        return `[${value.map((v: any) => stableStringifyForBotConfig(v)).join(',')}]`;
+        return `[${value.map((v) => stableStringifyForBotConfig(v)).join(',')}]`;
     }
     if (typeof value === 'object') {
-        const keys = Object.keys(value).filter((k: string) => (value as any)[k] !== undefined).sort();
-        return `{${keys.map((k: string) => `${JSON.stringify(k)}:${stableStringifyForBotConfig((value as any)[k])}`).join(',')}}`;
+        const obj = value as Record<string, unknown>;
+        const keys = Object.keys(obj).filter((k: string) => obj[k] !== undefined).sort();
+        return `{${keys.map((k: string) => `${JSON.stringify(k)}:${stableStringifyForBotConfig(obj[k])}`).join(',')}}`;
     }
     const serialized = JSON.stringify(value);
     return serialized === undefined ? 'null' : serialized;
@@ -199,15 +243,16 @@ function stableStringifyForBotConfig(value: any): string {
 
 /**
  * Normalize a raw bots.json entry for fingerprinting: drop volatile keys.
- * @param {any} entry - Raw bot entry from bots.json
- * @returns {any} Normalized plain object ({} when entry is missing)
+ * @param {unknown} entry - Raw bot entry from bots.json
+ * @returns {unknown} Normalized plain object ({} when entry is missing)
  */
-function normalizeBotEntryForFingerprint(entry: any): any {
+function normalizeBotEntryForFingerprint(entry: unknown): Record<string, unknown> {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return {};
-    const out: Record<string, any> = {};
-    for (const key of Object.keys(entry)) {
+    const out: Record<string, unknown> = {};
+    const e = entry as Record<string, unknown>;
+    for (const key of Object.keys(e)) {
         if ((BOT_CONFIG_FINGERPRINT_IGNORED_KEYS as readonly string[]).includes(key)) continue;
-        out[key] = (entry as any)[key];
+        out[key] = e[key];
     }
     return out;
 }
@@ -215,10 +260,10 @@ function normalizeBotEntryForFingerprint(entry: any): any {
 /**
  * Build the full-entry fingerprint for one bot (stable across key order and
  * comment/whitespace edits, since those never reach the parsed entry).
- * @param {any} entry - Raw bot entry from bots.json
+ * @param {unknown} entry - Raw bot entry from bots.json
  * @returns {string} Fingerprint ('' when entry is missing)
  */
-function buildBotConfigFingerprint(entry: any): string {
+function buildBotConfigFingerprint(entry: unknown): string {
     if (!entry || typeof entry !== 'object') return '';
     return stableStringifyForBotConfig(normalizeBotEntryForFingerprint(entry));
 }
@@ -227,13 +272,13 @@ function buildBotConfigFingerprint(entry: any): string {
  * Plain-data deep clone (bots.json entries are JSON-parsed, always
  * serializable; the fallback only guards exotic test doubles).
  * Single helper replacing the previously triplicated inline clones.
- * @param {any} value - Value to clone
- * @returns {any} Deep clone (or the original when unserializable)
+ * @param {unknown} value - Value to clone
+ * @returns {unknown} Deep clone (or the original when unserializable)
  */
-function cloneJsonValue(value: any): any {
-    if (value === undefined) return undefined;
+function cloneJsonValue<T>(value: T): T {
+    if (value === undefined) return undefined as T;
     try {
-        return JSON.parse(JSON.stringify(value));
+        return JSON.parse(JSON.stringify(value)) as T;
     } catch {
         return value;
     }
@@ -246,27 +291,28 @@ function cloneJsonValue(value: any): any {
  * grid-resync path uses replaceBotConfigFromEntryPreservingRuntime below.
  * Synchronous in-memory merge only: no chain I/O, no fill-lock (assignments
  * are atomic; maintenance / targeted-reconcile ticks heal shortfalls/excess).
- * @param {any} bot - DEXBot instance
- * @param {any} entry - Raw bot entry from bots.json
+ * @param {unknown} bot - DEXBot instance
+ * @param {unknown} entry - Raw bot entry from bots.json
  * @param {string[]} keys - Entry keys to merge
  * @returns {string[]} Merged key names
  */
-function mergeBotConfigKeysIntoRuntime(bot: any, entry: any, keys: string[]): string[] {
+function mergeBotConfigKeysIntoRuntime(bot: BotLike, entry: unknown, keys: string[]): string[] {
     const applied: string[] = [];
     if (!bot?.config || !entry || typeof entry !== 'object') return applied;
+    const e = entry as Record<string, unknown>;
     for (const key of keys) {
         // A deleted key applies as null (mirrors the former ?? null diff
         // semantics) so the running config can never keep a stale value.
         // Cloned twice: bot.config and manager.config must never alias the
         // same nested object, or a future in-place mutation of one would
         // silently corrupt the other.
-        const cloned = cloneJsonValue((entry as any)[key] ?? null);
+        const cloned = cloneJsonValue(e[key] ?? null);
         bot.config[key] = cloned;
         if (bot.manager?.config) {
-            bot.manager.config[key] = cloneJsonValue((entry as any)[key] ?? null);
+            bot.manager.config[key] = cloneJsonValue(e[key] ?? null);
         }
         if (key === 'weightDistribution') {
-            bot._baseWeightDistribution = cloned && typeof cloned === 'object' ? { ...cloned } : cloned;
+            bot._baseWeightDistribution = (cloned && typeof cloned === 'object' ? { ...(cloned as JsonObj) } : cloned) as BotLike['_baseWeightDistribution'];
         }
         applied.push(key);
     }
@@ -278,24 +324,25 @@ function mergeBotConfigKeysIntoRuntime(bot: any, entry: any, keys: string[]): st
  * constructor-resolved runtime settings (timing, gridLimits, feeParams,
  * etc.). Shared single implementation for performGridResync (previously an
  * inline block duplicating the merge/weights/refresh steps).
- * @param {any} bot - DEXBot instance
- * @param {any} updatedBot - Raw bot entry from bots.json
+ * @param {unknown} bot - DEXBot instance
+ * @param {unknown} updatedBot - Raw bot entry from bots.json
  * @param {string} contextLabel - Label for the weights-refresh log context
  */
-function replaceBotConfigFromEntryPreservingRuntime(bot: any, updatedBot: any, contextLabel: string) {
+function replaceBotConfigFromEntryPreservingRuntime(bot: BotLike, updatedBot: unknown, contextLabel: string) {
     const oldKey = bot.config.botKey;
     const oldIndex = bot.config.botIndex;
+    const u = updatedBot as Record<string, unknown>;
     // Preserve runtime-only properties set by the constructor
     // (timing, gridLimits, feeParams, etc.) that are not present
     // in the raw profile from bots.json.
-    const runtimeProps: Record<string, any> = {};
+    const runtimeProps: Record<string, unknown> = {};
     for (const key of getRuntimeSettingsKeys()) {
         if (bot.config[key] !== undefined) {
             runtimeProps[key] = bot.config[key];
         }
     }
     bot._log(`Reloaded configuration for bot '${bot.config.name}'`);
-    bot.config = { ...updatedBot, botKey: oldKey, botIndex: oldIndex, ...runtimeProps };
+    bot.config = { ...u, botKey: oldKey, botIndex: oldIndex, ...runtimeProps } as BotLike['config'];
     if (bot.manager?.config) {
         bot.manager.config = { ...bot.manager.config, ...bot.config };
     }
@@ -306,7 +353,7 @@ function replaceBotConfigFromEntryPreservingRuntime(bot: any, updatedBot: any, c
         bot._creditRuntime.config = bot.config;
     }
     bot._baseWeightDistribution = cloneWeightDistribution(
-        updatedBot.weightDistribution,
+        u.weightDistribution,
         bot._baseWeightDistribution
     );
     refreshDynamicWeightDistribution(bot, contextLabel);
@@ -318,18 +365,21 @@ function replaceBotConfigFromEntryPreservingRuntime(bot: any, updatedBot: any, c
  * bot_settings.ts). Full numeric validation stays where it belongs:
  * the `dexbot bot` editor at save time and per-offer at runtime.
  * null/undefined (policy removal) is safe — it takes the disable path.
- * @param {any} value - New debtPolicy value from bots.json
+ * @param {unknown} value - New debtPolicy value from bots.json
  * @returns {boolean} True when safe to merge live
  */
-function isDebtPolicyLiveApplySafe(value: any): boolean {
+function isDebtPolicyLiveApplySafe(value: unknown): boolean {
     if (value === null || value === undefined) return true;
     if (typeof value !== 'object' || Array.isArray(value)) return false;
-    const lending = (value as any).lending;
+    const lending = (value as { lending?: unknown }).lending;
     if (!Array.isArray(lending) || lending.length === 0) return false;
-    return lending.every((item: any) => item && typeof item === 'object'
-        && typeof item.type === 'string' && item.type.length > 0
-        && typeof item.asset === 'string' && item.asset.length > 0
-        && typeof item.collateralAsset === 'string' && item.collateralAsset.length > 0);
+    return lending.every((item: unknown) => {
+        if (!item || typeof item !== 'object') return false;
+        const it = item as { type?: unknown; asset?: unknown; collateralAsset?: unknown };
+        return typeof it.type === 'string' && it.type.length > 0
+            && typeof it.asset === 'string' && it.asset.length > 0
+            && typeof it.collateralAsset === 'string' && it.collateralAsset.length > 0;
+    });
 }
 
 /**
@@ -339,14 +389,14 @@ function isDebtPolicyLiveApplySafe(value: any): boolean {
  * an already-loaded runtime and both maintenance entry points bail while
  * disabled or in-flight, so this is safe on any tick (bot-level seams
  * guarded for stripped test doubles).
- * @param {any} bot - DEXBot instance
+ * @param {unknown} bot - DEXBot instance
  */
-async function reconcileCreditRuntimeAfterPolicyChange(bot: any) {
+async function reconcileCreditRuntimeAfterPolicyChange(bot: BotLike) {
     try {
         if (typeof bot._setupCreditRuntime === 'function') {
             await bot._setupCreditRuntime();
         }
-    } catch (err: any) {
+    } catch (err) {
         bot._warn?.(`Credit runtime setup failed after debtPolicy change: ${getErrorMessage(err)}`);
         return;
     }
@@ -358,7 +408,7 @@ async function reconcileCreditRuntimeAfterPolicyChange(bot: any) {
         } else if (typeof bot._stopCreditWatchdogInterval === 'function') {
             bot._stopCreditWatchdogInterval();
         }
-    } catch (err: any) {
+    } catch (err) {
         bot._warn?.(`Credit watchdog reconcile failed after debtPolicy change: ${getErrorMessage(err)}`);
     }
 }
@@ -367,17 +417,17 @@ async function reconcileCreditRuntimeAfterPolicyChange(bot: any) {
  * Diff two normalized entries in a single pass over the key union.
  * Replaces the former twin-loop diffLiveBotConfig +
  * detectNonLiveBotConfigChanges pair.
- * @param {any} oldNormalized - Previously seen normalized entry
- * @param {any} newNormalized - New normalized entry
+ * @param {unknown} oldNormalized - Previously seen normalized entry
+ * @param {unknown} newNormalized - New normalized entry
  * @returns {{liveChanges: Array<{key: string, oldValue: any, newValue: any}>, otherKeys: string[]}} Split changes
  */
-function diffBotConfigEntries(oldNormalized: any, newNormalized: any): {
-    liveChanges: Array<{ key: string; oldValue: any; newValue: any }>;
+function diffBotConfigEntries(oldNormalized: unknown, newNormalized: unknown): {
+    liveChanges: Array<{ key: string; oldValue: unknown; newValue: unknown }>;
     otherKeys: string[];
 } {
-    const prev = oldNormalized && typeof oldNormalized === 'object' ? oldNormalized : {};
-    const next = newNormalized && typeof newNormalized === 'object' ? newNormalized : {};
-    const liveChanges: Array<{ key: string; oldValue: any; newValue: any }> = [];
+    const prev = (oldNormalized && typeof oldNormalized === 'object' ? oldNormalized : {}) as Record<string, unknown>;
+    const next = (newNormalized && typeof newNormalized === 'object' ? newNormalized : {}) as Record<string, unknown>;
+    const liveChanges: Array<{ key: string; oldValue: unknown; newValue: unknown }> = [];
     const otherKeys: string[] = [];
     for (const key of new Set([...Object.keys(prev), ...Object.keys(next)])) {
         const before = stableStringifyForBotConfig(prev[key] ?? null);
@@ -409,12 +459,12 @@ function diffBotConfigEntries(oldNormalized: any, newNormalized: any): {
  * the baseline with no hint. Corrupt/unreadable files and missing entries
  * never touch the stored fingerprint (except the missing-entry hint
  * throttle) so the next tick re-evaluates.
- * @param {any} bot - DEXBot instance
+ * @param {unknown} bot - DEXBot instance
  * @param {string} [context='bots-config poll'] - Context label for logging
- * @param {any} [preloadedSnapshot=null] - Reuse an already-loaded snapshot
+ * @param {unknown} [preloadedSnapshot=null] - Reuse an already-loaded snapshot
  * @returns {Promise<any>} Result with applied/liveChanges/otherKeys or skipped
  */
-async function checkAndApplyBotConfigChanges(bot: any, context: any = 'bots-config poll', preloadedSnapshot: any = null): Promise<any> {
+async function checkAndApplyBotConfigChanges(bot: BotLike, context: string = 'bots-config poll', preloadedSnapshot: JsonObj | null = null): Promise<unknown> {
     try {
         if (!bot || !bot.config) {
             return { skipped: true, reason: 'missing-config' };
@@ -452,7 +502,7 @@ async function checkAndApplyBotConfigChanges(bot: any, context: any = 'bots-conf
             // running bot can never sit on a value the file no longer
             // contains. weightDistribution is excluded —
             // refreshDynamicWeightDistribution owns the live value at runtime.
-            const racePrev: Record<string, any> = {};
+            const racePrev: Record<string, unknown> = {};
             for (const key of (BOT_LIVE_CONFIG_KEYS as readonly string[])) {
                 if (key === 'weightDistribution') continue;
                 racePrev[key] = bot.config?.[key];
@@ -460,7 +510,7 @@ async function checkAndApplyBotConfigChanges(bot: any, context: any = 'bots-conf
             const raceDiff = diffBotConfigEntries(racePrev, normalized);
             // Same invariant as the steady-state path: a malformed debtPolicy
             // never reaches the runtime (warn once; the next save re-evaluates).
-            const raceLive = raceDiff.liveChanges.filter((c: any) =>
+            const raceLive = raceDiff.liveChanges.filter((c) =>
                 c.key !== 'debtPolicy' || isDebtPolicyLiveApplySafe(c.newValue));
             if (raceLive.length !== raceDiff.liveChanges.length) {
                 bot._warn?.(
@@ -468,7 +518,7 @@ async function checkAndApplyBotConfigChanges(bot: any, context: any = 'bots-conf
                     `keeping startup policy — fix the shape or run 'dexbot reset ${botName}'.`
                 );
             }
-            const raceApplied = mergeBotConfigKeysIntoRuntime(bot, entry, raceLive.map((c: any) => c.key));
+            const raceApplied = mergeBotConfigKeysIntoRuntime(bot, entry, raceLive.map((c) => c.key));
             if (raceApplied.includes('debtPolicy')) {
                 await reconcileCreditRuntimeAfterPolicyChange(bot);
             }
@@ -496,7 +546,7 @@ async function checkAndApplyBotConfigChanges(bot: any, context: any = 'bots-conf
         const { liveChanges: rawLiveChanges, otherKeys: rawOtherKeys } = diffBotConfigEntries(bot._appliedBotConfigEntry, normalized);
         // Malformed debtPolicy never reaches the runtime: hint reset/restart
         // instead of merging garbage the credit cycle would choke on.
-        const liveChanges = rawLiveChanges.filter((c: any) =>
+        const liveChanges = rawLiveChanges.filter((c) =>
             c.key !== 'debtPolicy' || isDebtPolicyLiveApplySafe(c.newValue));
         const otherKeys = [...rawOtherKeys];
         for (const c of rawLiveChanges) {
@@ -504,7 +554,7 @@ async function checkAndApplyBotConfigChanges(bot: any, context: any = 'bots-conf
                 otherKeys.push('debtPolicy');
             }
         }
-        const appliedKeys = mergeBotConfigKeysIntoRuntime(bot, entry, liveChanges.map((c: any) => c.key));
+        const appliedKeys = mergeBotConfigKeysIntoRuntime(bot, entry, liveChanges.map((c) => c.key));
         if (appliedKeys.includes('debtPolicy')) {
             await reconcileCreditRuntimeAfterPolicyChange(bot);
         }
@@ -518,7 +568,7 @@ async function checkAndApplyBotConfigChanges(bot: any, context: any = 'bots-conf
         bot._appliedBotConfigEntry = normalized;
         if (liveChanges.length > 0) {
             const summary = liveChanges
-                .map((c: any) => `${c.key} ${stableStringifyForBotConfig(c.oldValue)}->${stableStringifyForBotConfig(c.newValue)}`)
+                .map((c) => `${c.key} ${stableStringifyForBotConfig(c.oldValue)}->${stableStringifyForBotConfig(c.newValue)}`)
                 .join('; ');
             bot._log?.(
                 `Applied bots.json changes for '${botName}' live during ${context} (no restart needed): ${summary}. ` +
@@ -528,11 +578,11 @@ async function checkAndApplyBotConfigChanges(bot: any, context: any = 'bots-conf
             // Deliver the promise above instead of waiting for the next fill
             // or the 240-min fetch: run the targeted drift reconciliation
             // right away (same fire-and-forget shape as the poll tick — the
-            // callee owns its cooldown and pipeline gates; a busy pipeline
+            // callee owns its cooldown and pipeline gates, so a busy pipeline
             // skips and the next maintenance tick retries).
             try {
                 const driftRun = maybeRunTargetedDriftReconciliation(bot, `${context} config pickup`);
-                driftRun?.catch?.((err: any) => {
+                driftRun?.catch?.((err: unknown) => {
                     bot._log?.(`[TARGETED-SYNC] Config-pickup reconciliation failed: ${getErrorMessage(err)}`, 'debug');
                 });
             } catch { /* never break the poll tick */ }
@@ -552,8 +602,8 @@ async function checkAndApplyBotConfigChanges(bot: any, context: any = 'bots-conf
                 'debug'
             );
         }
-        return { applied: liveChanges.length > 0, liveChanges: liveChanges.map((c: any) => c.key), otherKeys, fingerprint };
-    } catch (err: any) {
+        return { applied: liveChanges.length > 0, liveChanges: liveChanges.map((c) => c.key), otherKeys, fingerprint };
+    } catch (err) {
         try {
             bot?._warn?.(`Bot-config live check failed during ${context}: ${getErrorMessage(err)}`);
         } catch { /* logging must never break the tick */ }
@@ -561,21 +611,21 @@ async function checkAndApplyBotConfigChanges(bot: any, context: any = 'bots-conf
     }
 }
 
-function countLiveGridOrders(manager: any, type: any) {
+function countLiveGridOrders(manager: OrderManagerLike, type: unknown) {
     if (!manager) return 0;
-    const active = manager.getOrdersByTypeAndState?.(type, ORDER_STATES.ACTIVE) || [];
-    const partial = manager.getOrdersByTypeAndState?.(type, ORDER_STATES.PARTIAL) || [];
+    const active = manager.getOrdersByTypeAndState?.(type as OrderType | null | undefined, ORDER_STATES.ACTIVE) || [];
+    const partial = manager.getOrdersByTypeAndState?.(type as OrderType | null | undefined, ORDER_STATES.PARTIAL) || [];
     // Slot-N gated: fork-kept shelf/manual orders (non-slot-N ids, e.g.
     // deep-*) sit outside window accounting — same gate as reserve
     // classification and startup cancel candidates (issue #27 follow-up).
     // Without this, a live shelf inflates the live window+reserves count and
     // masks a real window/reserve shortfall, so targeted sync never fires.
     // No-op on grids that only mint slot-N ids.
-    return active.concat(partial).filter((o: any) => o?.orderId && parseSlotIndex(o?.id) !== null).length;
+    return active.concat(partial).filter((o) => o?.orderId && parseSlotIndex(o?.id) !== null).length;
 }
 
-function getTargetActiveOrders(config: any, side: any) {
-    const configured = Number(config?.activeOrders?.[side]);
+function getTargetActiveOrders(config: JsonObj, side: unknown) {
+    const configured = Number((config?.activeOrders as JsonObj | undefined)?.[side as string]);
     // Reserve ladder rests live on-chain: countLiveGridOrders sees window +
     // edge orders, so the shortfall target must include reserves too —
     // otherwise live reserves mask window shortfalls and a filled/cancelled
@@ -603,12 +653,12 @@ function getTargetActiveOrders(config: any, side: any) {
  * window = bottom slots = floor edge) makes the edge pick land on window
  * members and the count reads N/N with zero dedicated reserves, so the
  * deficit never fires (issue #27 follow-up).
- * @param {any} manager - OrderManager
- * @param {any} config - Bot configuration (reserve count source)
- * @param {any} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+ * @param {unknown} manager - OrderManager
+ * @param {unknown} config - Bot configuration (reserve count source)
+ * @param {unknown} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
  * @returns {number|null} Live reserve count, or null when unclassifiable
  */
-function countLiveReserveOrders(manager: any, config: any, type: any): number | null {
+function countLiveReserveOrders(manager: OrderManagerLike, config: JsonObj, type: unknown): number | null {
     try {
         const side = type === ORDER_TYPES.SELL ? 'sell' : 'buy';
         const required = resolveReserveCount(config, side);
@@ -618,7 +668,7 @@ function countLiveReserveOrders(manager: any, config: any, type: any): number | 
         // would pick the "edge" of the live subset, not the grid edge, and
         // mis-fire on stripped test doubles. Fail closed (null) without it.
         if (!manager.orders || typeof manager.orders.values !== 'function') return null;
-        const allSlots: any[] = Array.from(manager.orders.values());
+        const allSlots: ManagedOrder[] = Array.from(manager.orders.values());
         if (allSlots.length === 0) return null;
         const anchor = resolveLiveReserveEdgeAnchorPrice(manager, side);
         // Fail open on unknown window geometry (null): without a boundary the
@@ -630,7 +680,7 @@ function countLiveReserveOrders(manager: any, config: any, type: any): number | 
         const liveIds = new Set<string>();
         if (typeof manager.getOrdersByTypeAndState === 'function') {
             for (const state of [ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL]) {
-                for (const o of manager.getOrdersByTypeAndState(type, state) || []) {
+                for (const o of manager.getOrdersByTypeAndState(type as OrderType | null | undefined, state) || []) {
                     if (o?.id != null && o?.orderId) liveIds.add(String(o.id));
                 }
             }
@@ -647,7 +697,7 @@ function countLiveReserveOrders(manager: any, config: any, type: any): number | 
     } catch { return null; }
 }
 
-function _hasBudgetForSide(manager: any, config: any, side: any) {
+function _hasBudgetForSide(manager: OrderManagerLike, config: JsonObj, side: unknown) {
     try {
         const funds = manager?.getChainFundsSnapshot?.();
         if (!funds) return true;
@@ -659,7 +709,7 @@ function _hasBudgetForSide(manager: any, config: any, side: any) {
     } catch { return true; }
 }
 
-function getTargetedSyncReason(bot: any) {
+function getTargetedSyncReason(bot: BotLike) {
     if (!bot.manager || bot.config?.dryRun) return null;
 
     const targetBuy = getTargetActiveOrders(bot.config, 'buy');
@@ -714,7 +764,7 @@ function getTargetedSyncReason(bot: any) {
     return null;
 }
 
-async function maybeRunTargetedDriftReconciliation(bot: any, context: any) {
+async function maybeRunTargetedDriftReconciliation(bot: BotLike, context: string) {
     const trigger = getTargetedSyncReason(bot);
     if (!trigger) return false;
 
@@ -773,7 +823,7 @@ async function maybeRunTargetedDriftReconciliation(bot: any, context: any) {
         bot._lastTargetedDriftSyncAt = Date.now();
         await bot.manager.persistGrid?.();
         return true;
-    } catch (err: any) {
+    } catch (err) {
         bot._warn(`[TARGETED-SYNC] Failed during ${context}: ${getErrorMessage(err)}`);
         return false;
     }
@@ -784,7 +834,7 @@ async function maybeRunTargetedDriftReconciliation(bot: any, context: any) {
  * Delegates to the canonical launcher/adapter_requirement helper so the
  * fingerprint is semantic (AMA-relevant changes only) and identical to the
  * unlock wrapper watchdog's view of the same file.
- * @returns {any} Snapshot with exists flag, fingerprint, active bots list, and adapter requirement
+ * @returns {unknown} Snapshot with exists flag, fingerprint, active bots list, and adapter requirement
  */
 function loadBotsConfigSnapshot() {
     return readAdapterRequirement(PROFILES_BOTS_FILE);
@@ -796,7 +846,7 @@ function loadBotsConfigSnapshot() {
  * @returns {string[]} Array of process names
  * @throws {Error} If output cannot be parsed
  */
-function parsePm2JlistOutput(stdout: any) {
+function parsePm2JlistOutput(stdout: string) {
     const output = String(stdout || '').trim();
     if (!output) return [];
 
@@ -810,7 +860,7 @@ function parsePm2JlistOutput(stdout: any) {
         throw new Error('pm2 jlist output was not an array');
     }
 
-    return parsed.map((proc: any) => String(proc?.name || '')).filter(Boolean);
+    return parsed.map((proc) => String(proc?.name || '')).filter(Boolean);
 }
 
 /**
@@ -819,8 +869,8 @@ function parsePm2JlistOutput(stdout: any) {
  * @returns {Promise<{stdout: string, stderr: string}>} Command output
  * @throws {Error} If the command exits with non-zero code
  */
-function runPm2Command(args: any): Promise<{ stdout: string; stderr: string }> {
-    return new Promise((resolve: any, reject: any) => {
+function runPm2Command(args: string[]): Promise<{ stdout: string; stderr: string }> {
+    return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
         const child = spawn('pm2', args, {
             stdio: 'pipe',
             shell: Config.PLATFORM === 'win32',
@@ -829,15 +879,15 @@ function runPm2Command(args: any): Promise<{ stdout: string; stderr: string }> {
         let stdout = '';
         let stderr = '';
 
-        child.stdout.on('data', (data: any) => {
+        child.stdout.on('data', (data: Buffer) => {
             stdout += data.toString();
         });
 
-        child.stderr.on('data', (data: any) => {
+        child.stderr.on('data', (data: Buffer) => {
             stderr += data.toString();
         });
 
-        child.on('close', (code: any) => {
+        child.on('close', (code: number) => {
             if (code === 0) {
                 resolve({ stdout, stderr });
                 return;
@@ -903,7 +953,7 @@ async function stopMarketAdapterPm2() {
  * @param {string} [context='periodic'] - Context label for logging
  * @returns {Promise<any>}
  */
-async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = 'periodic') {
+async function syncMarketAdapterOnPeriodicConfigCheck(bot: BotLike, context: string = 'periodic') {
     // Test seam: compiled ESM exports cannot be monkey-patched.
     if (typeof bot._syncMarketAdapterHook === 'function') {
         return await bot._syncMarketAdapterHook(context);
@@ -912,12 +962,12 @@ async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = '
     // adapter drive below (one read per tick, not two). Throwing reads
     // (transient I/O) behave like corrupt: skip everything, keep stored
     // fingerprints, retry next tick.
-    let snapshot: any = null;
+    let snapshot: JsonObj | null = null;
     try {
-        snapshot = typeof bot._loadBotsConfigSnapshot === 'function'
+        snapshot = (typeof bot._loadBotsConfigSnapshot === 'function'
             ? await bot._loadBotsConfigSnapshot()
-            : loadBotsConfigSnapshot();
-    } catch (err: any) {
+            : loadBotsConfigSnapshot()) as JsonObj;
+    } catch (err) {
         bot._warn(`Ignoring unreadable bots.json during ${context}; keeping previous market adapter state.`);
         return { skipped: true, reason: 'unreadable-config' };
     }
@@ -958,8 +1008,9 @@ async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = '
         // ?? (not ||): the semantic fingerprint is legitimately '' when no
         // active AMA bot exists, and '' must compare equal to a stored ''.
         const previousFingerprint = bot._marketAdapterWatchdogFingerprint ?? null;
-        const changed = snapshot.fingerprint !== previousFingerprint;
-        bot._marketAdapterWatchdogFingerprint = snapshot.fingerprint;
+        const fingerprint = snapshot.fingerprint as string | null;
+        const changed = fingerprint !== previousFingerprint;
+        bot._marketAdapterWatchdogFingerprint = fingerprint;
 
         if (changed) {
             bot._log(`Detected bots.json changes during ${context}; re-evaluating market adapter requirements.`);
@@ -1014,16 +1065,17 @@ async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = '
         let pm2QueryFailed = false;
         try {
             processNames = await getPm2ProcessNamesFn();
-        } catch (err: any) {
+        } catch (err) {
             pm2QueryFailed = true;
             bot._warn(`Could not query PM2 for ${MARKET_ADAPTER_APP_NAME}: ${getErrorMessage(err)}. Using a direct PM2 action.`);
         }
 
         // Cross-reference config-active bots against actually running PM2 processes
         // so we don't start the adapter for configured AMA bots that aren't running.
+        const activeBots = (snapshot.activeBots ?? []) as Array<{ name?: unknown }>;
         const runningActiveBots = pm2QueryFailed
-            ? snapshot.activeBots
-            : snapshot.activeBots.filter((b: any) => processNames.includes(b.name));
+            ? activeBots
+            : activeBots.filter((b) => processNames.includes(String(b.name)));
         const needsAdapterForRunningBots = runningActiveBots.some(usesAmaGridPrice);
 
         if (!snapshot.exists || !needsAdapterForRunningBots) {
@@ -1073,7 +1125,7 @@ async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = '
             stopped: false,
             mode: 'pm2',
         };
-    } catch (err: any) {
+    } catch (err) {
         bot._warn(`Market adapter watchdog failed during ${context}: ${getErrorMessage(err)}`);
         return {
             changed: false,
@@ -1093,9 +1145,9 @@ async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = '
  * Applies live dynamic weights if the bot is whitelisted and weights are ready.
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} [context='runtime'] - Context label for logging
- * @returns {any}
+ * @returns {unknown}
  */
-function refreshDynamicWeightDistribution(bot: any, context: any = 'runtime') {
+function refreshDynamicWeightDistribution(bot: BotLike, context: string = 'runtime') {
     const baseWeights = cloneWeightDistribution(
         bot._baseWeightDistribution,
         bot.config?.weightDistribution || bot.manager?.config?.weightDistribution
@@ -1112,14 +1164,14 @@ function refreshDynamicWeightDistribution(bot: any, context: any = 'runtime') {
     const botKey = bot.config.botKey;
     let nextWeights = baseWeights;
     let source = 'static';
-    let snapshot: any = null;
+    let snapshot: JsonObj | null = null;
 
     // Re-read the shared whitelist on every refresh so live flag changes apply
     // without requiring a bot restart.
     resetMarketAdapterWhitelistCache();
     if (isBotDynamicWeightWhitelisted(botKey)) {
-        snapshot = loadAmaCenterSnapshot(botKey);
-        const dw = snapshot?.dynamicWeights;
+        snapshot = loadAmaCenterSnapshot(botKey) as JsonObj | null;
+        const dw = snapshot?.dynamicWeights as JsonObj | undefined;
         const liveWeights = cloneWeightDistribution(dw?.effectiveWeights);
         if (dw?.isReady && liveWeights) {
             const snapshotBase = cloneWeightDistribution(dw?.baseWeights);
@@ -1164,15 +1216,15 @@ function refreshDynamicWeightDistribution(bot: any, context: any = 'runtime') {
  * Read and parse a trigger file's metadata payload.
  * Determines whether the trigger originated from the market adapter or was manual.
  * @param {string} triggerFile - Path to the trigger file
- * @returns {any} Parsed trigger metadata
+ * @returns {unknown} Parsed trigger metadata
  */
-function readTriggerMetadata(triggerFile: any) {
-    const manualTriggerMetadata = (payload: any = null) => ({
+function readTriggerMetadata(triggerFile: string) {
+    const manualTriggerMetadata = (payload: JsonObj | null = null) => ({
         ...buildGridResyncMetadata('manual_grid_resync'),
         payload,
     });
 
-    const marketAdapterTriggerMetadata = (payload: any) => {
+    const marketAdapterTriggerMetadata = (payload: JsonObj) => {
         const reason = String(payload?.reason || '').trim();
         return {
             ...buildGridResyncMetadata(reason || 'market_adapter_grid_resync'),
@@ -1192,7 +1244,7 @@ function readTriggerMetadata(triggerFile: any) {
         return source === MARKET_ADAPTER_TRIGGER_SOURCE
             ? marketAdapterTriggerMetadata(payload)
             : manualTriggerMetadata(payload);
-    } catch (_: any) {
+    } catch (_) {
         return manualTriggerMetadata();
     }
 }
@@ -1201,9 +1253,9 @@ function readTriggerMetadata(triggerFile: any) {
  * Build grid resync metadata from a reason string.
  * Maps known reason strings to structured metadata with refresh flags.
  * @param {string} reason - Resync reason identifier (e.g. 'manual_grid_resync', 'rms_structural_grid_resync')
- * @returns {any}
+ * @returns {unknown}
  */
-function buildGridResyncMetadata(reason: any) {
+function buildGridResyncMetadata(reason: string) {
     const resetSource = String(reason || '').trim() || 'dexbot_grid_resync';
     const defaults = {
         shouldRefreshCenterPrice: false,
@@ -1219,7 +1271,7 @@ function buildGridResyncMetadata(reason: any) {
     return {
         ...defaults,
         ...marketAdapterUnknown,
-        ...((GRID_RESYNC_REASONS as Record<string, any>)[resetSource] || {}),
+        ...((GRID_RESYNC_REASONS as Record<string, unknown>)[resetSource] || {}),
         resetSource,
     };
 }
@@ -1227,17 +1279,22 @@ function buildGridResyncMetadata(reason: any) {
 /**
  * Build grid resync options from a reason string or metadata object.
  * @param {string|any} reasonOrMetadata - Reason string or metadata object
- * @returns {any}
+ * @returns {unknown}
  */
-function buildGridResyncOptions(reasonOrMetadata: any) {
-    const metadata = typeof reasonOrMetadata === 'string'
+function buildGridResyncOptions(reasonOrMetadata: unknown): {
+    refreshCenterPrice?: boolean;
+    centerRefreshContext?: string;
+    centerRefreshLabel?: string;
+    resetSource?: string;
+} {
+    const metadata = (typeof reasonOrMetadata === 'string'
         ? buildGridResyncMetadata(reasonOrMetadata)
-        : reasonOrMetadata;
+        : reasonOrMetadata) as JsonObj | null | undefined;
     return {
         refreshCenterPrice: !!metadata?.shouldRefreshCenterPrice,
-        centerRefreshContext: metadata?.centerRefreshContext,
-        centerRefreshLabel: metadata?.centerRefreshLabel,
-        resetSource: metadata?.resetSource,
+        centerRefreshContext: metadata?.centerRefreshContext as string | undefined,
+        centerRefreshLabel: metadata?.centerRefreshLabel as string | undefined,
+        resetSource: metadata?.resetSource as string | undefined,
     };
 }
 
@@ -1247,7 +1304,7 @@ function buildGridResyncOptions(reasonOrMetadata: any) {
  * @param {string} botKey - Bot identifier key
  * @returns {boolean} True if promotion succeeded
  */
-function promoteAmaCenterSnapshotForGridReset(botKey: any) {
+function promoteAmaCenterSnapshotForGridReset(botKey: string | undefined) {
     if (!botKey) return false;
 
     // Full grid resets rebuild from the latest AMA center. The active grid
@@ -1255,26 +1312,27 @@ function promoteAmaCenterSnapshotForGridReset(botKey: any) {
     // AMA output remains intact in amaCenterPrice for diagnostics.
     const snapshotPath = path.join(PATHS.ORDERS_DIR, `${botKey}.dynamicgrid.json`);
     try {
-        const result = updateDynamicGridSnapshotSync(snapshotPath, (snapshot: any) => {
-            const amaCenterPrice = Number(snapshot?.amaCenterPrice);
+        const result = updateDynamicGridSnapshotSync(snapshotPath, (snapshot: unknown) => {
+            const snap = snapshot as JsonObj | null | undefined;
+            const amaCenterPrice = Number(snap?.amaCenterPrice);
             if (!Number.isFinite(amaCenterPrice) || amaCenterPrice <= 0) {
                 return { ok: false, write: false };
             }
 
-            const currentCenterPrice = Number(snapshot?.gridCenterPrice ?? snapshot?.centerPrice);
+            const currentCenterPrice = Number(snap?.gridCenterPrice ?? snap?.centerPrice);
             if (Number.isFinite(currentCenterPrice) && currentCenterPrice === amaCenterPrice) {
                 return { write: false };
             }
 
             return {
-                ...snapshot,
+                ...snap,
                 gridCenterPrice: amaCenterPrice,
                 centerPrice: amaCenterPrice,
                 updatedAt: nowIso(),
             };
         });
         return result.ok;
-    } catch (_: any) {
+    } catch (_) {
         return false;
     }
 }
@@ -1287,7 +1345,7 @@ function promoteAmaCenterSnapshotForGridReset(botKey: any) {
  * @param {string} [options.resetSource] - Source label for the reset (defaults to 'dexbot_grid_resync')
  * @returns {boolean} True if metadata was written
  */
-function updateBotGridResetMetadata(botKey: any, options: { resetAt?: string; resetSource?: string } = {}) {
+function updateBotGridResetMetadata(botKey: string | undefined, options: { resetAt?: string; resetSource?: string } = {}) {
     if (!botKey) return false;
 
     const resetAt = options.resetAt || nowIso();
@@ -1295,13 +1353,14 @@ function updateBotGridResetMetadata(botKey: any, options: { resetAt?: string; re
     const snapshotPath = path.join(PATHS.ORDERS_DIR, `${botKey}.dynamicgrid.json`);
 
     try {
-        const result = updateDynamicGridSnapshotSync(snapshotPath, (snapshot: any) => {
-            const gridCenterPrice = Number(snapshot?.gridCenterPrice ?? snapshot?.centerPrice);
+        const result = updateDynamicGridSnapshotSync(snapshotPath, (snapshot: unknown) => {
+            const snap = snapshot as JsonObj;
+            const gridCenterPrice = Number(snap?.gridCenterPrice ?? snap?.centerPrice);
             if (!Number.isFinite(gridCenterPrice) || gridCenterPrice <= 0) {
                 return { ok: false, write: false };
             }
             return {
-                ...snapshot,
+                ...snap,
                 gridCenterPrice,
                 centerPrice: gridCenterPrice,
                 lastGridResetAt: resetAt,
@@ -1310,7 +1369,7 @@ function updateBotGridResetMetadata(botKey: any, options: { resetAt?: string; re
             };
         });
         return result.ok && result.written;
-    } catch (_: any) {
+    } catch (_) {
         return false;
     }
 }
@@ -1319,11 +1378,11 @@ function updateBotGridResetMetadata(botKey: any, options: { resetAt?: string; re
  * Perform a full grid resync: reload config, optionally refresh center price,
  * recalculate the grid, persist, and record reset metadata.
  * @param {import('./dexbot_class.js').DEXBot} bot
- * @param {any} [options] - Grid resync options
+ * @param {unknown} [options] - Grid resync options
  * @param {boolean} [options.skipIdle=false] - Skip the idle-cooldown deferral
  * @returns {Promise<boolean>} True if resync succeeded
  */
-function performGridResync(bot: any, options: {
+function performGridResync(bot: BotLike, options: {
     refreshCenterPrice?: boolean;
     centerRefreshContext?: string;
     centerRefreshLabel?: string;
@@ -1337,14 +1396,14 @@ function performGridResync(bot: any, options: {
     const centerRefreshLabel = options.centerRefreshLabel || (refreshCenterPrice ? 'grid reset' : 'grid resync');
     const resetSource = options.resetSource || (refreshCenterPrice ? 'manual_grid_resync' : 'dexbot_grid_resync');
     const skipIdle = options.skipIdle === true;
-    const idleDelayMs = getMaintenanceIdleDelayMs(self);
+    const idleDelayMs = getMaintenanceIdleDelayMs(self as unknown as MaintenanceCtx);
     if (!skipIdle && idleDelayMs > 0) {
         self._log(
             `[MAINT-IDLE] Deferring grid resync until bot is idle` +
             ` (next check in ${Math.ceil(idleDelayMs / TIMING.MILLISECONDS_PER_SECOND)}s)`,
             'info'
         );
-        scheduleDeferredGridResync(self, options);
+        scheduleDeferredGridResync(self as unknown as MaintenanceCtx, options);
         return Promise.resolve(false);
     }
 
@@ -1356,12 +1415,12 @@ function performGridResync(bot: any, options: {
                 const content = storage.readFile(PROFILES_BOTS_FILE);
                 const allBotsConfig = parseJsonWithComments(content).bots || [];
                 const myName = self.config.name;
-                const updatedBot = allBotsConfig.find((b: any) => isSameBotName(b.name, myName));
+                const updatedBot = allBotsConfig.find((b: { name?: unknown }) => isSameBotName(b.name, myName));
 
                 if (updatedBot) {
                     replaceBotConfigFromEntryPreservingRuntime(self, updatedBot, 'grid resync');
                 }
-            } catch (e: any) {
+            } catch (e) {
                 self._warn(`Failed to reload config during resync (using current settings): ${getErrorMessage(e)}`);
             }
 
@@ -1385,7 +1444,7 @@ function performGridResync(bot: any, options: {
             // so the resync retries on a clean read.
             let resyncReadAmbiguous = false;
             const readOpenOrdersForResync = (label: string) => readOpenOrdersGuarded(chainOrders, self.accountId, {
-                log: (message: string, level: any) => self._log(message, level),
+                log: (message: string, level?: string) => self._log(message, level),
                 label,
                 detail: 'trigger-file resync',
             });
@@ -1455,10 +1514,10 @@ function performGridResync(bot: any, options: {
                         self.updateOrdersOnChainPlan?.bind(self)
                     );
                     await cancelDustOrders(self, {
-                        buy: resyncHealth.buyDustOrders,
-                        sell: resyncHealth.sellDustOrders,
+                        buy: resyncHealth.buyDustOrders as ManagedOrder[] | undefined,
+                        sell: resyncHealth.sellDustOrders as ManagedOrder[] | undefined,
                     });
-                } catch (_dustErr: any) {
+                } catch (_dustErr) {
                     self._warn(`[DUST] Post-resync dust cancel failed: ${getErrorMessage(_dustErr)}`);
                 }
             }
@@ -1472,7 +1531,7 @@ function performGridResync(bot: any, options: {
                 self.manager._lastUnmatchedChainOrders = [];
                 self.manager._lastUnmatchedChainOrdersAt = 0;
             }
-        } catch (err: any) {
+        } catch (err) {
             self._log(`Error during triggered resync: ${getErrorMessage(err)}`, 'error');
         } finally {
             self.manager.finishBootstrap();
@@ -1488,7 +1547,7 @@ function performGridResync(bot: any, options: {
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Promise<boolean>} True if reset was handled successfully
  */
-async function handlePendingTriggerReset(bot: any) {
+async function handlePendingTriggerReset(bot: BotLike) {
     if (!storage.exists(bot.triggerFile)) {
         return false;
     }
@@ -1517,7 +1576,7 @@ async function handlePendingTriggerReset(bot: any) {
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Promise<void>}
  */
-async function setupTriggerFileDetection(bot: any) {
+async function setupTriggerFileDetection(bot: BotLike) {
     if (bot._triggerWatcher && typeof bot._triggerWatcher.close === 'function') {
         bot._triggerWatcher.close();
         bot._triggerWatcher = null;
@@ -1529,7 +1588,7 @@ async function setupTriggerFileDetection(bot: any) {
     }
 
     try {
-        bot._triggerWatcher = fs.watch(PROFILES_DIR, (eventType: any, filename: any) => {
+        bot._triggerWatcher = fs.watch(PROFILES_DIR, (eventType: string, filename: string | null) => {
             try {
                 if (bot._shuttingDown) return;
 
@@ -1558,18 +1617,18 @@ async function setupTriggerFileDetection(bot: any) {
                                 if (!ok) {
                                     bot._warn('Runtime trigger reset failed; retaining existing grid state.');
                                 }
-                            }).catch((err: any) => {
+                            }).catch((err: unknown) => {
                                 bot._warn(`Trigger reset lock error: ${getErrorMessage(err)}`);
                                 bot.manager._recoveryState = { ...bot.manager._recoveryState, lastFailureAt: Date.now() };
                             });
                         }, 200);
                     }
                 }
-            } catch (err: any) {
+            } catch (err) {
                 bot._warn(`fs.watch handler error: ${err && getErrorMessage(err) ? getErrorMessage(err) : err}`);
             }
         });
-    } catch (err: any) {
+    } catch (err) {
         bot._warn(`Failed to setup file watcher: ${getErrorMessage(err)}`);
     }
 }
@@ -1580,7 +1639,7 @@ async function setupTriggerFileDetection(bot: any) {
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Promise<void>}
  */
-async function performPeriodicGridChecks(bot: any) {
+async function performPeriodicGridChecks(bot: BotLike) {
     if (typeof bot._runGridMaintenance === 'function') {
         await bot._runGridMaintenance('periodic');
     } else {
@@ -1602,11 +1661,11 @@ async function performPeriodicGridChecks(bot: any) {
  *
  * @param {import('./dexbot_class.js').DEXBot} bot
  */
-function logDeferredHoldSummary(bot: any) {
+function logDeferredHoldSummary(bot: BotLike) {
     const unmatched = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
         ? bot.manager._lastUnmatchedChainOrders
         : [];
-    const heldOrders = unmatched.filter((u: any) => isNonBlockingUnmatchedOrder(u));
+    const heldOrders = unmatched.filter((u) => isNonBlockingUnmatchedOrder(u));
     const held = heldOrders.length;
     if (held === 0) {
         bot._lastHeldChainOrderSignature = '';
@@ -1631,7 +1690,7 @@ function logDeferredHoldSummary(bot: any) {
     // when THAT order was first seen stranded. Unrelated churn cannot touch it.
     if (!(bot._strandedHoldSince instanceof Map)) bot._strandedHoldSince = new Map();
     const strandedHoldSince: Map<string, number> = bot._strandedHoldSince;
-    const stranded = heldOrders.filter((u: any) => isStrandedHoldOrder(u));
+    const stranded = heldOrders.filter((u) => isStrandedHoldOrder(u));
     const seenKeys = new Set<string>();
     const now = Date.now();
     let oldestStrandedMs = 0;
@@ -1648,7 +1707,7 @@ function logDeferredHoldSummary(bot: any) {
     }
 
     const signature = heldOrders
-        .map((u: any) => `${u?.chainOrderId ?? '?'}@${u?.price ?? '?'}/${u?.size ?? '?'}:${u?.reason ?? '?'}`)
+        .map((u) => `${u?.chainOrderId ?? '?'}@${u?.price ?? '?'}/${u?.size ?? '?'}:${u?.reason ?? '?'}`)
         .sort()
         .join(',');
 
@@ -1722,9 +1781,9 @@ function logDeferredHoldSummary(bot: any) {
  *
  * Fire-and-forget; the resync is itself debounced and batch-in-flight aware.
  */
-function considerDeferredHoldEscalation(bot: any, strandedOrders: any[], strandedMs: number) {
-    const escalateMs = Number((TIMING as any)?.DEFERRED_HOLD_ESCALATE_MS) > 0
-        ? Number((TIMING as any).DEFERRED_HOLD_ESCALATE_MS)
+function considerDeferredHoldEscalation(bot: BotLike, strandedOrders: HeldChainOrder[], strandedMs: number) {
+    const escalateMs = Number(TIMING?.DEFERRED_HOLD_ESCALATE_MS) > 0
+        ? Number(TIMING.DEFERRED_HOLD_ESCALATE_MS)
         : 24 * 60 * 60 * 1000;
     const held = strandedOrders.length;
     if (held === 0) return;
@@ -1744,8 +1803,8 @@ function considerDeferredHoldEscalation(bot: any, strandedOrders: any[], strande
         return;
     }
 
-    const cooldownMs = Number((TIMING as any)?.DEFERRED_HOLD_RESYNC_COOLDOWN_MS) > 0
-        ? Number((TIMING as any).DEFERRED_HOLD_RESYNC_COOLDOWN_MS)
+    const cooldownMs = Number(TIMING?.DEFERRED_HOLD_RESYNC_COOLDOWN_MS) > 0
+        ? Number(TIMING.DEFERRED_HOLD_RESYNC_COOLDOWN_MS)
         : 6 * 60 * 60 * 1000;
     const now = Date.now();
     const lastAt = Number(bot._lastDeferredHoldResyncAt) || 0;
@@ -1766,13 +1825,13 @@ function considerDeferredHoldEscalation(bot: any, strandedOrders: any[], strande
             heldCount: held,
             heldMs,
         });
-        (res as any)?.catch?.((err: any) => {
+        res?.catch?.((err: unknown) => {
             bot.manager?.logger?.log?.(
                 `[HOLD] Structural resync for stale hold failed: ${getErrorMessage(err)}`,
                 'error'
             );
         });
-    } catch (err: any) {
+    } catch (err) {
         bot.manager?.logger?.log?.(
             `[HOLD] Structural resync for stale hold failed: ${getErrorMessage(err)}`,
             'error'
@@ -1788,14 +1847,14 @@ function considerDeferredHoldEscalation(bot: any, strandedOrders: any[], strande
  * a near-miss (a few bps outside, likely a rounding/drift artifact) from a
  * deliberately-placed far order (dip protection after a grid reset).
  */
-function describeDeferredHolds(bot: any, heldOrders: any[]): string {
-    const genesis = (bot.manager as any)?._genesis;
-    const levels: any[] = Array.isArray(genesis?.priceLevels) ? genesis.priceLevels : [];
+function describeDeferredHolds(bot: BotLike, heldOrders: HeldChainOrder[]): string {
+    const genesis = bot.manager?._genesis;
+    const levels: number[] = Array.isArray(genesis?.priceLevels) ? genesis.priceLevels as number[] : [];
     const lower = levels.length > 0 ? Number(levels[0]) : NaN;
     const upper = levels.length > 0 ? Number(levels[levels.length - 1]) : NaN;
 
     return heldOrders
-        .map((u: any) => {
+        .map((u) => {
             const side = u?.type === ORDER_TYPES.SELL ? 'sell' : u?.type === ORDER_TYPES.BUY ? 'buy' : 'unknown';
             const price = Number(u?.price);
             const size = u?.size != null ? u.size : '?';
@@ -1818,7 +1877,7 @@ function describeDeferredHolds(bot: any, heldOrders: any[]): string {
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {boolean} True if the sync loop is enabled in TIMING config
  */
-function isOpenOrdersSyncLoopEnabled(bot: any) {
+function isOpenOrdersSyncLoopEnabled(bot: BotLike) {
     if (bot.config?.timing?.openOrdersSyncLoopEnabled !== undefined) {
         return !!bot.config.timing.openOrdersSyncLoopEnabled;
     }
@@ -1830,7 +1889,7 @@ function isOpenOrdersSyncLoopEnabled(bot: any) {
  * Periodically reads on-chain orders and synchronizes with the grid manager.
  * @param {import('./dexbot_class.js').DEXBot} bot
  */
-function startOpenOrdersSyncLoop(bot: any) {
+function startOpenOrdersSyncLoop(bot: BotLike) {
     if (bot._mainLoopPromise) return;
 
     const hasEnvLoopDelay = hasOpenOrdersSyncLoopMsSet();
@@ -1871,7 +1930,7 @@ function startOpenOrdersSyncLoop(bot: any) {
                             const chainOpenOrders = (typeof bot._readOpenOrdersHook === 'function')
                                 ? await bot._readOpenOrdersHook()
                                 : await readOpenOrdersGuarded(chainOrders, bot.accountId, {
-                                    log: (message: string, level: any) => bot._log(message, level),
+                                    log: (message: string, level?: string) => bot._log(message, level),
                                     label: 'OPEN-ORDERS-SYNC',
                                 });
                             if (chainOpenOrders !== null) {
@@ -1897,13 +1956,13 @@ function startOpenOrdersSyncLoop(bot: any) {
                         });
                     }
                 }
-            } catch (err: any) {
+            } catch (err) {
                 bot._warn(`Order manager loop error: ${getErrorMessage(err)}`);
             }
 
             await sleep(loopDelayMs);
         }
-    })().catch((err: any) => {
+    })().catch((err: unknown) => {
         bot._warn(`Open-orders sync loop failed: ${err && getErrorMessage(err) ? getErrorMessage(err) : err}`);
     }).finally(() => {
         bot._mainLoopPromise = null;
@@ -1915,7 +1974,7 @@ function startOpenOrdersSyncLoop(bot: any) {
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Promise<void>}
  */
-async function stopOpenOrdersSyncLoop(bot: any) {
+async function stopOpenOrdersSyncLoop(bot: BotLike) {
     bot._mainLoopActive = false;
     if (bot._mainLoopPromise) {
         await bot._mainLoopPromise;
@@ -1927,8 +1986,8 @@ async function stopOpenOrdersSyncLoop(bot: any) {
  * Periodically fetches account totals and syncs open orders from the blockchain.
  * @param {import('./dexbot_class.js').DEXBot} bot
  */
-function setupBlockchainFetchInterval(bot: any) {
-    let intervalMin = bot.config?.timing?.BLOCKCHAIN_FETCH_INTERVAL_MIN;
+function setupBlockchainFetchInterval(bot: BotLike) {
+    let intervalMin = bot.config?.timing?.BLOCKCHAIN_FETCH_INTERVAL_MIN as number;
 
     // Use the per-instance override if set (e.g., from fund registry shared-account detection)
     if (typeof bot._blockchainFetchIntervalMin === 'number' && Number.isFinite(bot._blockchainFetchIntervalMin) && bot._blockchainFetchIntervalMin > 0) {
@@ -1940,13 +1999,13 @@ function setupBlockchainFetchInterval(bot: any) {
                 intervalMin = TIMING.SHARED_ACCOUNT_FETCH_INTERVAL_MIN;
                 bot._blockchainFetchIntervalMin = intervalMin;
             }
-        } catch (_err: any) {
+        } catch (_err) {
             bot?._warn?.(`Registry unavailable for shared-account interval check: ${getErrorMessage(_err)}`);
         }
     }
 
     syncMarketAdapterOnPeriodicConfigCheck(bot, 'startup blockchain fetch setup')
-        .catch((err: any) => {
+        .catch((err: unknown) => {
             bot._warn(`Market adapter watchdog failed during startup blockchain fetch setup: ${getErrorMessage(err)}`);
         });
 
@@ -2003,7 +2062,7 @@ function setupBlockchainFetchInterval(bot: any) {
                     bot._log(`Fetching blockchain account values (interval: every ${intervalMin}min)`);
                     await bot.manager.fetchAccountTotals(bot.accountId);
 
-                    let chainOpenOrders: any = [];
+                    let chainOpenOrders: unknown[] | null = [];
                     if (!bot.config.dryRun) {
                         try {
                             // Truncated-read guard: a partial get_full_accounts
@@ -2012,12 +2071,12 @@ function setupBlockchainFetchInterval(bot: any) {
                             // from the window (then re-create them as duplicates).
                             // Defer the sync to a clean read; fills are still
                             // caught by subscription events and the next cycle.
-                            chainOpenOrders = (typeof bot._readOpenOrdersHook === 'function')
+                            chainOpenOrders = ((typeof bot._readOpenOrdersHook === 'function')
                                 ? await bot._readOpenOrdersHook()
                                 : await readOpenOrdersGuarded(chainOrders, bot.accountId, {
-                                    log: (message: string, level: any) => bot._log(message, level),
+                                    log: (message: string, level?: string) => bot._log(message, level),
                                     label: 'PERIODIC-SYNC',
-                                });
+                                })) as unknown[];
                             if (chainOpenOrders !== null) {
                                 const syncResult = await bot.manager.synchronizeWithChain(chainOpenOrders, 'periodicBlockchainFetch');
 
@@ -2044,14 +2103,14 @@ function setupBlockchainFetchInterval(bot: any) {
                                     );
                                 }
                             }
-                        } catch (err: any) {
+                        } catch (err) {
                             bot._warn(`Error reading open orders during periodic fetch: ${getErrorMessage(err)}`);
                         }
                     }
 
                     await performPeriodicGridChecks(bot);
                 });
-            } catch (err: any) {
+            } catch (err) {
                 bot._warn(`Error during periodic blockchain fetch: ${err && getErrorMessage(err) ? getErrorMessage(err) : err}`);
             }
         } finally {
@@ -2069,7 +2128,7 @@ function setupBlockchainFetchInterval(bot: any) {
  * Stop the periodic blockchain fetch interval.
  * @param {import('./dexbot_class.js').DEXBot} bot
  */
-function stopBlockchainFetchInterval(bot: any) {
+function stopBlockchainFetchInterval(bot: BotLike) {
     if (bot._blockchainFetchInterval !== null && bot._blockchainFetchInterval !== undefined) {
         clearInterval(bot._blockchainFetchInterval);
         bot._blockchainFetchInterval = null;
@@ -2089,9 +2148,9 @@ function stopBlockchainFetchInterval(bot: any) {
  * (default 1min, shared with the wrapper watchdog interval).
  * @param {import('./dexbot_class.js').DEXBot} bot
  */
-function setupBotsConfigPollInterval(bot: any) {
+function setupBotsConfigPollInterval(bot: BotLike) {
     // Allow per-bot timing override (e.g. tests or per-bot tuning)
-    let intervalMs = bot.config?.timing?.BOTS_CONFIG_POLL_INTERVAL_MS;
+    let intervalMs = bot.config?.timing?.BOTS_CONFIG_POLL_INTERVAL_MS as number;
     if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
         intervalMs = Number(TIMING.BOTS_CONFIG_POLL_INTERVAL_MS);
     }
@@ -2112,7 +2171,7 @@ function setupBotsConfigPollInterval(bot: any) {
     // (e.g. dryRun or accountId missing). Gate on === null (never checked):
     // '' is a valid checked steady-state and must not re-trigger the pre-seed.
     if (bot._marketAdapterWatchdogFingerprint === null || bot._marketAdapterWatchdogFingerprint === undefined) {
-        syncMarketAdapterOnPeriodicConfigCheck(bot, 'startup bots-config poll setup').catch((err: any) => {
+        syncMarketAdapterOnPeriodicConfigCheck(bot, 'startup bots-config poll setup').catch((err: unknown) => {
             bot._warn(`Bots-config poll setup failed: ${getErrorMessage(err)}`);
         });
     }
@@ -2130,7 +2189,7 @@ function setupBotsConfigPollInterval(bot: any) {
         bot._botsConfigPollInFlight = true;
         try {
             await syncMarketAdapterOnPeriodicConfigCheck(bot, 'bots-config poll');
-        } catch (err: any) {
+        } catch (err) {
             bot._warn(`Bots-config poll failed: ${getErrorMessage(err)}`);
         } finally {
             bot._botsConfigPollInFlight = false;
@@ -2147,7 +2206,7 @@ function setupBotsConfigPollInterval(bot: any) {
  * Stop the periodic bots.json fingerprint poll interval.
  * @param {import('./dexbot_class.js').DEXBot} bot
  */
-function stopBotsConfigPollInterval(bot: any) {
+function stopBotsConfigPollInterval(bot: BotLike) {
     if (bot._botsConfigPollInterval !== null && bot._botsConfigPollInterval !== undefined) {
         clearInterval(bot._botsConfigPollInterval);
         bot._botsConfigPollInterval = null;
@@ -2163,7 +2222,7 @@ function stopBotsConfigPollInterval(bot: any) {
  * @param {string} [context='shutdown'] - Context label for logging
  * @returns {Promise<any>}
  */
-async function releaseMarketAdapterRuntime(_bot: any, botId: any, context: any = 'shutdown') {
+async function releaseMarketAdapterRuntime(_bot: unknown, botId: string, context: string = 'shutdown') {
     if (isPm2Runtime()) {
         return { released: false, mode: 'pm2' };
     }
@@ -2194,7 +2253,7 @@ async function releaseMarketAdapterRuntime(_bot: any, botId: any, context: any =
  * @param {string} [orderId] - Optional order ID for context-aware matching
  * @returns {boolean} True if the message indicates a nonexistent order
  */
-function isOrderDoesNotExistError(message: any, orderId: any) {
+function isOrderDoesNotExistError(message: unknown, orderId: string) {
     return require('./order/utils/order').isOrderGoneErrorMessage(message, orderId);
 }
 
@@ -2216,16 +2275,16 @@ function isOrderDoesNotExistError(message: any, orderId: any) {
  * manager._broadcastingStartedAt on every holder, so its age stays small;
  * a frozen timestamp ages past BROADCAST_STALE_CLEAR_MS and we let the tick
  * through so maintenance can hard-reset the flag.
- * @param {any} bot
+ * @param {unknown} bot
  * @returns {boolean} true when the caller should skip this tick
  */
-function shouldDeferMaintenanceForBroadcast(bot: any): boolean {
+function shouldDeferMaintenanceForBroadcast(bot: BotLike): boolean {
     try {
         if (bot?.manager?.isBroadcastingActive?.() !== true) return false;
         const startedAt = Number(bot?.manager?._broadcastingStartedAt) || 0;
         if (!startedAt) return false;
-        const staleMs = Number((TIMING as any)?.BROADCAST_STALE_CLEAR_MS) > 0
-            ? Number((TIMING as any).BROADCAST_STALE_CLEAR_MS)
+        const staleMs = Number(TIMING?.BROADCAST_STALE_CLEAR_MS) > 0
+            ? Number(TIMING.BROADCAST_STALE_CLEAR_MS)
             : 120000;
         return (Date.now() - startedAt) < staleMs;
     } catch {
@@ -2242,22 +2301,22 @@ function shouldDeferMaintenanceForBroadcast(bot: any): boolean {
  * any such section visible: when the live hold crosses
  * TIMING.GRID_LOCK_HOLD_WARN_MS it emits a rate-limited warn. Called from the
  * maintenance tick so holds outside a broadcast region are observed too.
- * @param {any} bot
+ * @param {unknown} bot
  * @returns {number} Observed hold duration in ms (0 when not held)
  */
-function checkGridLockHoldDuration(bot: any): number {
+function checkGridLockHoldDuration(bot: BotLike): number {
     try {
         const lock = bot?.manager?._gridLock;
         if (!lock || typeof lock.heldForMs !== 'function') return 0;
         const heldMs = Number(lock.heldForMs()) || 0;
         if (heldMs <= 0) return 0;
-        const warnMs = Number((TIMING as any)?.GRID_LOCK_HOLD_WARN_MS) > 0
-            ? Number((TIMING as any).GRID_LOCK_HOLD_WARN_MS)
+        const warnMs = Number(TIMING?.GRID_LOCK_HOLD_WARN_MS) > 0
+            ? Number(TIMING.GRID_LOCK_HOLD_WARN_MS)
             : 15000;
         if (heldMs >= warnMs) {
             const now = Date.now();
-            const rateLimitMs = Number((TIMING as any)?.STALE_TOTALS_WARN_RATE_LIMIT_MS) > 0
-                ? Number((TIMING as any).STALE_TOTALS_WARN_RATE_LIMIT_MS)
+            const rateLimitMs = Number(TIMING?.STALE_TOTALS_WARN_RATE_LIMIT_MS) > 0
+                ? Number(TIMING.STALE_TOTALS_WARN_RATE_LIMIT_MS)
                 : 60000;
             const lastWarnAt = Number(bot?._gridLockHoldWarnAt) || 0;
             if (now - lastWarnAt >= rateLimitMs) {
@@ -2281,13 +2340,13 @@ function checkGridLockHoldDuration(bot: any): number {
  * @param {Object} ctx - Bot context with _lastGridActivityAt and _incomingFillQueue
  * @returns {number} Remaining idle delay in ms (0 if bot is idle)
  */
-function getMaintenanceIdleDelayMs(ctx: any) {
+function getMaintenanceIdleDelayMs(ctx: MaintenanceCtx | null | undefined) {
     const settleDelayMs = Number.isFinite(TIMING.BLOCKCHAIN_SETTLE_DELAY_MS)
         ? Math.max(0, TIMING.BLOCKCHAIN_SETTLE_DELAY_MS)
         : TIMING.BLOCKCHAIN_SETTLE_DELAY_MS;
     if (settleDelayMs <= 0) return 0;
 
-    if (ctx?._incomingFillQueue?.length > 0) return settleDelayMs;
+    if ((ctx?._incomingFillQueue?.length ?? 0) > 0) return settleDelayMs;
 
     const lastActivityAt = Number(ctx?._lastGridActivityAt || 0);
     if (!Number.isFinite(lastActivityAt) || lastActivityAt <= 0) return 0;
@@ -2301,7 +2360,7 @@ function getMaintenanceIdleDelayMs(ctx: any) {
  * @param {string} context - Context label for logging
  * @param {Object} [options] - Maintenance options forwarded to runGridMaintenance
  */
-function scheduleMaintenanceAfterIdle(ctx: any, context: any, options: any = {}) {
+function scheduleMaintenanceAfterIdle(ctx: MaintenanceCtx, context: string, options: JsonObj = {}) {
     if (!ctx || ctx._shuttingDown || ctx._maintenanceIdleTimer || !ctx.manager?._fillProcessingLock) return;
 
     const delayMs = getMaintenanceIdleDelayMs(ctx);
@@ -2314,9 +2373,9 @@ function scheduleMaintenanceAfterIdle(ctx: any, context: any, options: any = {})
     ctx._maintenanceIdleTimer = setTimeout(() => {
         ctx._maintenanceIdleTimer = null;
         if (ctx._shuttingDown) return;
-        ctx._runGridMaintenance(context, timerOptions)
-            .catch((err: any) => {
-                ctx._warn(`Deferred ${context} grid maintenance failed: ${getErrorMessage(err)}`);
+        ctx._runGridMaintenance?.(context, timerOptions)
+            ?.catch((err: unknown) => {
+                ctx._warn?.(`Deferred ${context} grid maintenance failed: ${getErrorMessage(err)}`);
                 if (ctx.manager) {
                     ctx.manager._recoveryState = { ...ctx.manager._recoveryState, lastFailureAt: Date.now() };
                 }
@@ -2327,9 +2386,9 @@ function scheduleMaintenanceAfterIdle(ctx: any, context: any, options: any = {})
 /**
  * Schedule a deferred grid resync after idle delay elapses.
  * @param {Object} ctx - Bot context
- * @param {any} [options] - Grid resync options
+ * @param {unknown} [options] - Grid resync options
  */
-function scheduleDeferredGridResync(ctx: any, options: any = {}) {
+function scheduleDeferredGridResync(ctx: MaintenanceCtx, options: JsonObj = {}) {
     if (
         !ctx ||
         ctx._shuttingDown ||
@@ -2350,19 +2409,19 @@ function scheduleDeferredGridResync(ctx: any, options: any = {}) {
     ctx._deferredGridResyncTimer = setTimeout(() => {
         ctx._deferredGridResyncTimer = null;
         if (ctx._shuttingDown) return;
-        if (triggerFileWasPresent && !storage.exists(ctx.triggerFile)) return;
+        if (triggerFileWasPresent && !storage.exists(ctx.triggerFile as string)) return;
 
-        ctx.manager._fillProcessingLock.acquire(async () => {
-            const ok = await ctx._performGridResync(options);
+        ctx.manager?._fillProcessingLock?.acquire?.(async () => {
+            const ok = await ctx._performGridResync?.(options);
             if (!ok && !ctx._shuttingDown) {
                 const curIdleMs = getMaintenanceIdleDelayMs(ctx);
                 const reason = curIdleMs > 0
                     ? `idle cooldown (${Math.ceil(curIdleMs / TIMING.MILLISECONDS_PER_SECOND)}s)`
                     : 'grid resync rejected or failed';
-                ctx._warn(`Deferred trigger reset blocked: ${reason}; retaining existing grid state.`);
+                ctx._warn?.(`Deferred trigger reset blocked: ${reason}; retaining existing grid state.`);
             }
-        }).catch((err: any) => {
-            ctx._warn(`Deferred trigger reset lock error: ${getErrorMessage(err)}`);
+        })?.catch((err: unknown) => {
+            ctx._warn?.(`Deferred trigger reset lock error: ${getErrorMessage(err)}`);
             if (ctx.manager) {
                 ctx.manager._recoveryState = { ...ctx.manager._recoveryState, lastFailureAt: Date.now() };
             }
@@ -2378,7 +2437,7 @@ function scheduleDeferredGridResync(ctx: any, options: any = {}) {
  * @param {string} context - Context label for logging (e.g. 'periodic', 'dust-timer')
  * @returns {Promise<void>}
  */
-async function executeMaintenanceLogic(bot: any, context: any) {
+async function executeMaintenanceLogic(bot: BotLike, context: string) {
     // Surface any over-long _gridLock hold first — observational only, and it
     // must run even when the rest of the tick defers on a broadcast region.
     checkGridLockHoldDuration(bot);
@@ -2417,7 +2476,7 @@ async function executeMaintenanceLogic(bot: any, context: any) {
         if (!grace.active) {
             const bloatResult = isGridBloated(bot.manager, bot.manager.orders);
             if (bloatResult.bloated) {
-                const d = bloatResult.details;
+                const d = bloatResult.details as { gridSize: number; maxAllowed: number };
                 bot._log(
                     `[GRID-BLOAT] Grid size ${d.gridSize} still exceeds expected maximum ${d.maxAllowed} ` +
                     `after grace period (${grace.graceMs}ms). Triggering structural resync.`,
@@ -2426,7 +2485,7 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                 bot.manager.requestStructuralGridResync(
                     'grid-bloat-persistent',
                     { reason: `Grid size ${d.gridSize} still exceeds max ${d.maxAllowed} after grace` }
-                ).catch((err: any) => {
+                ).catch((err: unknown) => {
                     bot.manager?.logger?.log?.(
                         `[GRID-BLOAT] Structural resync request failed: ${getErrorMessage(err)}`,
                         'error'
@@ -2460,7 +2519,7 @@ async function executeMaintenanceLogic(bot: any, context: any) {
             // full synchronizeWithChain on a partial snapshot (pass-1 phantom
             // virtualization). Defer to a clean read.
             const chainOpenOrdersResult = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
-                log: (message: string, level: any) => bot._log(message, level),
+                log: (message: string, level?: string) => bot._log(message, level),
                 label: 'LIGHTWEIGHT-SYNC',
                 skipMessage: (kind: string) =>
                     `[LIGHTWEIGHT-SYNC] Open-order read ${kind}; skipping consistency check (partial snapshot cannot drive count comparisons)`,
@@ -2470,9 +2529,9 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                 if (!assets) {
                     bot._log('[LIGHTWEIGHT-SYNC] Skipped: manager assets not available', 'debug');
                 } else {
-                    const chainOrdersCount = chainOpenOrdersResult.filter((o: any) => parseChainOrder(o, assets) !== null).length;
+                    const chainOrdersCount = chainOpenOrdersResult.filter((o) => parseChainOrder(o, assets) !== null).length;
                     const gridActive = Array.from(bot.manager.orders.values()).filter(
-                        (o: any) => isOrderOnChain(o)
+                        (o) => isOrderOnChain(o)
                     ).length;
                     const diff = Math.abs(chainOrdersCount - gridActive);
                     if (diff > 2) {
@@ -2493,7 +2552,7 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                     }
                 }
             }
-        } catch (e: any) {
+        } catch (e) {
             bot._log(`[LIGHTWEIGHT-SYNC] Check failed: ${getErrorMessage(e)}`, 'debug');
         }
     }
@@ -2510,9 +2569,9 @@ async function executeMaintenanceLogic(bot: any, context: any) {
         );
         if (correctionResult.failed > 0) {
             const failedDetails = (correctionResult.results || [])
-                .filter((r: any) => !(r.result && r.result.success))
+                .filter((r: { result?: { success?: unknown } }) => !(r.result && r.result.success))
                 .slice(0, 3)
-                .map((r: any) => `${r.chainOrderId ?? '?'}: ${r.result?.error ?? 'unknown'}`)
+                .map((r: { chainOrderId?: unknown; result?: { error?: unknown } }) => `${r.chainOrderId ?? '?'}: ${r.result?.error ?? 'unknown'}`)
                 .join(' | ');
             bot._warn(
                 `[MAINT] ${correctionResult.failed}/${pendingCorrections} price correction(s) failed` +
@@ -2542,27 +2601,16 @@ async function executeMaintenanceLogic(bot: any, context: any) {
             healthResult = freshHealth;
         }
 
-        if (!repairedFromTarget) {
-            const autoCancelResult = await bot._autoCancelOneUnmatchedOrphan();
-            if (autoCancelResult?.cancelled) {
-                bot._log(
-                    `[MAINT] Auto-cancelled unmatched price-drift orphan ${autoCancelResult.orderId} during ${context} ` +
-                    `(unblocking CREATE pipeline that targeted-drift reconcile could not adopt).`,
-                    'warn'
-                );
-            } else if (autoCancelResult?.reason) {
-                bot._log(
-                    `[MAINT] Skipped unmatched-orphan auto-cancel during ${context}: ${autoCancelResult.reason}`,
-                    'debug'
-                );
-            }
-        }
+        // NOTE: no unmatched-orphan auto-cancel here any more. The
+        // price-drift-orphan tag came from the legacy tolerance band, which no
+        // longer exists: an off-grid chain order is HELD (out-of-grid-deferred)
+        // and resolved structurally, never cancelled off a fuzzy price diff.
 
         refreshDynamicWeightDistribution(bot, context);
 
         const dustCancelResult = await cancelDustOrders(bot, {
-            buy: healthResult.buyDustOrders,
-            sell: healthResult.sellDustOrders,
+            buy: healthResult.buyDustOrders as ManagedOrder[] | undefined,
+            sell: healthResult.sellDustOrders as ManagedOrder[] | undefined,
         });
         if (dustCancelResult?.batchResult?.aborted) {
             return;
@@ -2589,7 +2637,7 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                     bot._log(`Grid update triggered by funds during ${context} (buy: ${divergence.buy.ratio}${buyDir}, sell: ${divergence.sell.ratio}${sellDir})`);
                 }
                 if (hasRmsDivergence) {
-                    const rmsThresholdPct = (divergence as any)?.thresholdPct ?? grid.resolveRmsThresholdPct(bot.manager);
+                    const rmsThresholdPct = divergence?.thresholdPct ?? grid.resolveRmsThresholdPct(bot.manager);
                     const rmsTriggeredSides = [
                         divergence.buy.rms ? 'buy' : null,
                         divergence.sell.rms ? 'sell' : null,
@@ -2618,7 +2666,7 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                     );
                     if (await bot._abortFlowIfIllegalState(`${context} divergence correction`)) return;
                     bot._log(`Grid divergence corrections applied during ${context}`);
-                } catch (err: any) {
+                } catch (err) {
                     bot._warn(`Error applying divergence corrections during ${context}: ${getErrorMessage(err)}`);
                 }
 
@@ -2654,8 +2702,8 @@ async function executeMaintenanceLogic(bot: any, context: any) {
             // correction from pre-fill budgets would under/over-fund the
             // repair — defer to the next tick so the fill cycle runs first
             // and side choice + sizing read fresh funds.
-            const queuedFills = Array.isArray((bot as any)?._incomingFillQueue)
-                ? (bot as any)._incomingFillQueue.length
+            const queuedFills = Array.isArray(bot?._incomingFillQueue)
+                ? bot._incomingFillQueue.length
                 : 0;
             if (queuedFills > 0) {
                 bot._log(
@@ -2679,7 +2727,7 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                 // while the spread stays wide is a stale grid, not patience.
                 trackOutOfSpreadStaleness(bot, true, spreadPlaced);
             }
-        } catch (err: any) {
+        } catch (err) {
             bot._warn(`Error running divergence check during ${context}: ${getErrorMessage(err)}`);
         }
     } else {
@@ -2704,12 +2752,12 @@ async function executeMaintenanceLogic(bot: any, context: any) {
  * dedupe concurrent requests; the re-center moves the boundary, which clears
  * any held-plan signature). Resets whenever the spread heals or a correction
  * places orders.
- * @param {any} bot
+ * @param {unknown} bot
  * @param {boolean} spreadChecked - Whether the spread check ran this tick
  * @param {number} ordersPlaced - Correction orders placed this tick
  * @returns {{staleMs: number, escalated: boolean}}
  */
-export function trackOutOfSpreadStaleness(bot: any, spreadChecked: boolean, ordersPlaced: number) {
+export function trackOutOfSpreadStaleness(bot: BotLike, spreadChecked: boolean, ordersPlaced: number) {
     const outOfSpread = Number(bot?.manager?.outOfSpread) || 0;
     if (ordersPlaced > 0 || outOfSpread === 0) {
         bot._outOfSpreadSince = 0;
@@ -2724,11 +2772,11 @@ export function trackOutOfSpreadStaleness(bot: any, spreadChecked: boolean, orde
     if (!Number(bot._outOfSpreadSince)) bot._outOfSpreadSince = now;
     const staleMs = now - Number(bot._outOfSpreadSince);
     const staleMin = Math.round(staleMs / 60000);
-    const warnMs = Number((TIMING as any)?.SPREAD_STALE_WARN_MS) > 0
-        ? Number((TIMING as any).SPREAD_STALE_WARN_MS)
+    const warnMs = Number(TIMING?.SPREAD_STALE_WARN_MS) > 0
+        ? Number(TIMING.SPREAD_STALE_WARN_MS)
         : 10 * 60 * 1000;
-    const escalateMs = Number((TIMING as any)?.SPREAD_STALE_ESCALATE_MS) > 0
-        ? Number((TIMING as any).SPREAD_STALE_ESCALATE_MS)
+    const escalateMs = Number(TIMING?.SPREAD_STALE_ESCALATE_MS) > 0
+        ? Number(TIMING.SPREAD_STALE_ESCALATE_MS)
         : 30 * 60 * 1000;
     if (staleMs >= warnMs && !bot._outOfSpreadStaleWarned) {
         bot._outOfSpreadStaleWarned = true;
@@ -2743,10 +2791,10 @@ export function trackOutOfSpreadStaleness(bot: any, spreadChecked: boolean, orde
         // the two watchdogs must tune independently). Falls back to the legacy
         // boundary-hold key only for operators who overrode it before the split,
         // then to the 5min default.
-        const cooldownMs = Number((TIMING as any)?.SPREAD_STALE_RESYNC_COOLDOWN_MS) > 0
-            ? Number((TIMING as any).SPREAD_STALE_RESYNC_COOLDOWN_MS)
-            : Number((TIMING as any)?.BOUNDARY_HOLD_RESYNC_COOLDOWN_MS) > 0
-                ? Number((TIMING as any).BOUNDARY_HOLD_RESYNC_COOLDOWN_MS)
+        const cooldownMs = Number(TIMING?.SPREAD_STALE_RESYNC_COOLDOWN_MS) > 0
+            ? Number(TIMING.SPREAD_STALE_RESYNC_COOLDOWN_MS)
+            : Number(TIMING?.BOUNDARY_HOLD_RESYNC_COOLDOWN_MS) > 0
+                ? Number(TIMING.BOUNDARY_HOLD_RESYNC_COOLDOWN_MS)
                 : 5 * 60 * 1000;
         const lastAt = Number(bot._lastSpreadStaleResyncAt) || 0;
         if (now - lastAt >= cooldownMs) {
@@ -2760,13 +2808,13 @@ export function trackOutOfSpreadStaleness(bot: any, spreadChecked: boolean, orde
                 const res = bot.manager.requestStructuralGridResync('spread-stale-persistent', {
                     reason: `Spread out of tolerance for ${staleMin}min with no effective correction (outOfSpread=${outOfSpread})`
                 });
-                (res as any)?.catch?.((err: any) => {
+                res?.catch?.((err: unknown) => {
                     bot.manager?.logger?.log?.(
                         `[SPREAD-STALE] Structural re-center request failed: ${getErrorMessage(err)}`,
                         'error'
                     );
                 });
-            } catch (err: any) {
+            } catch (err) {
                 bot.manager?.logger?.log?.(
                     `[SPREAD-STALE] Structural re-center request failed: ${getErrorMessage(err)}`,
                     'error'
@@ -2796,14 +2844,14 @@ export function trackOutOfSpreadStaleness(bot: any, spreadChecked: boolean, orde
  * @param {import('./types.js').Order} order
  * @returns {Promise<*>} Result from chainOrders.cancelOrder
  */
-async function cancelOrderDeferredOnUncertain(bot: any, order: any) {
+async function cancelOrderDeferredOnUncertain(bot: BotLike, order: { orderId?: string | null; id?: unknown }) {
     try {
         // Test seam: compiled ESM exports cannot be monkey-patched, so tests
         // may override cancellation through this bot-level hook.
         if (typeof bot._submitCancelOrder === 'function') {
-            return await bot._submitCancelOrder(order.orderId);
+            return await bot._submitCancelOrder(String(order.orderId));
         }
-        return await chainOrders.cancelOrder(bot.account, bot.privateKey, order.orderId);
+        return await chainOrders.cancelOrder(bot.account, bot.privateKey, String(order.orderId));
     } catch (err) {
         if (err instanceof BroadcastUncertainError) {
             bot._warn(`[DUST] Broadcast uncertain for ${order.id} (${order.orderId}); outcome deferred to chain verification`);
@@ -2823,17 +2871,17 @@ async function cancelOrderDeferredOnUncertain(bot: any, order: any) {
  * @param {import('./types.js').Order[]} [options.sell=[]] - Sell-side dust orders
  * @returns {Promise<{cancelledCount: number, batchResult: {aborted: boolean}|null}>}
  */
-async function cancelDustOrders(bot: any, { buy: buyDust = [], sell: sellDust = [] }: any = {}) {
+async function cancelDustOrders(bot: BotLike, { buy: buyDust = [], sell: sellDust = [] }: { buy?: ManagedOrder[]; sell?: ManagedOrder[] } = {}) {
     const allDust = [...buyDust, ...sellDust];
     if (allDust.length === 0) return { cancelledCount: 0, batchResult: null };
 
-    const syntheticFills: any[] = [];
+    const syntheticFills: unknown[] = [];
     for (const order of allDust) {
         if (!order.orderId) continue;
         try {
             const cancelResult = await cancelOrderDeferredOnUncertain(bot, order);
             try {
-                if (cancelResult?.verifiedAfterFailure) {
+                if ((cancelResult as { verifiedAfterFailure?: boolean } | null)?.verifiedAfterFailure) {
                     const accountRef = bot.accountId || bot.account;
                     // The cancel was verified absent on an authoritative
                     // (non-empty, non-truncated) read inside cancelOrder, so an
@@ -2845,7 +2893,7 @@ async function cancelDustOrders(bot: any, { buy: buyDust = [], sell: sellDust = 
                         label: 'DUST',
                         deferEmpty: true,
                         skipMessage: (kind: string) =>
-                            `[DUST] Chain refetch after verified cancel is ${kind}; applying local cancel sync for ${(order as any).id}`,
+                            `[DUST] Chain refetch after verified cancel is ${kind}; applying local cancel sync for ${order.id}`,
                     });
                     if (freshOrders === null) {
                         await bot.manager.synchronizeWithChain({ orderId: order.orderId, clearSize: true }, 'cancelOrder');
@@ -2855,25 +2903,25 @@ async function cancelDustOrders(bot: any, { buy: buyDust = [], sell: sellDust = 
                 } else {
                     await bot.manager.synchronizeWithChain({ orderId: order.orderId, clearSize: true }, 'cancelOrder');
                 }
-            } catch (refetchErr: any) {
-                bot._warn(`[DUST] Cancel succeeded but refetch failed for ${(order as any).id} (${(order as any).orderId}): ${getErrorMessage(refetchErr)}`);
+            } catch (refetchErr) {
+                bot._warn(`[DUST] Cancel succeeded but refetch failed for ${order.id} (${order.orderId}): ${getErrorMessage(refetchErr)}`);
             }
             syntheticFills.push({ ...order, isPartial: true, isDelayedRotationTrigger: true });
-            bot._log(`[DUST] Cancelled ${(order as any).id} (${(order as any).orderId}) size=${(order as any).size}`, 'debug');
-        } catch (err: any) {
+            bot._log(`[DUST] Cancelled ${order.id} (${order.orderId}) size=${order.size}`, 'debug');
+        } catch (err) {
             const errMsg = getErrorMessage(err) || '';
-            if (isOrderDoesNotExistError(errMsg, (order as any).orderId)) {
+            if (isOrderDoesNotExistError(errMsg, order.orderId)) {
                 syntheticFills.push({ ...order, isPartial: true, isDelayedRotationTrigger: true });
-                bot._log(`[DUST] Order ${(order as any).id} (${(order as any).orderId}) already gone from chain`, 'debug');
+                bot._log(`[DUST] Order ${order.id} (${order.orderId}) already gone from chain`, 'debug');
             } else {
-                bot._warn(`[DUST] Failed to cancel ${(order as any).id} (${(order as any).orderId}): ${errMsg}`);
+                bot._warn(`[DUST] Failed to cancel ${order.id} (${order.orderId}): ${errMsg}`);
             }
         }
     }
 
     if (syntheticFills.length === 0) return { cancelledCount: 0, batchResult: null };
     const result = await bot._processFillsWithBatching(
-        syntheticFills, new Set(), `dust cancel [${syntheticFills.map((o: any) => o.id).join(', ')}]`, { skipAnchorUpdate: true }
+        syntheticFills, new Set(), `dust cancel [${syntheticFills.map((o) => (o as { id?: unknown }).id).join(', ')}]`, { skipAnchorUpdate: true }
     );
     if (!result.aborted) {
         await bot.manager.persistGrid();
@@ -2891,20 +2939,20 @@ async function cancelDustOrders(bot: any, { buy: buyDust = [], sell: sellDust = 
  * @returns {Promise<void>}
  */
 async function runGridMaintenance(
-    bot: any,
-    context: any = 'periodic',
+    bot: BotLike,
+    context: string = 'periodic',
     options: { skipIdle?: boolean } = {}
 ) {
     const skipIdle = options.skipIdle === true;
     if (!skipIdle) {
-        const idleDelayMs = getMaintenanceIdleDelayMs(bot);
+        const idleDelayMs = getMaintenanceIdleDelayMs(bot as unknown as MaintenanceCtx);
         if (idleDelayMs > 0) {
             bot._log(
                 `[MAINT-IDLE] Deferring ${context} grid maintenance until ` +
                 `${Math.ceil(idleDelayMs / TIMING.MILLISECONDS_PER_SECOND)}s of inactivity has passed`,
                 'debug'
             );
-            scheduleMaintenanceAfterIdle(bot, context, options);
+            scheduleMaintenanceAfterIdle(bot as unknown as MaintenanceCtx, context, options);
             return;
         }
     }
@@ -2924,7 +2972,7 @@ async function runGridMaintenance(
         await bot.manager._fillProcessingLock.acquire(async () => {
             await bot.manager._divergenceLock.acquire(runWithDivergenceLock);
         });
-    } catch (err: any) {
+    } catch (err) {
         bot._warn(`Error during ${context} grid maintenance: ${getErrorMessage(err)}`);
         throw err;
     }
@@ -2939,11 +2987,11 @@ const _lastBtsAcquisitionTimestamps = new Map();
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Promise<void>}
  */
-async function checkBtsBalanceAndAcquire(bot: any) {
+async function checkBtsBalanceAndAcquire(bot: BotLike) {
     if (bot.config.dryRun) return;
     if (bot.config.assetA === 'BTS' || bot.config.assetB === 'BTS') return;
 
-    const cooldownMin = bot.config?.timing?.BTS_ACQUIRE_COOLDOWN_MIN;
+    const cooldownMin = bot.config?.timing?.BTS_ACQUIRE_COOLDOWN_MIN as number;
     const cooldownMs = cooldownMin * 60 * 1000;
     const now = Date.now();
 
@@ -2973,13 +3021,13 @@ async function checkBtsBalanceAndAcquire(bot: any) {
     );
     if (minBtsVal <= 0) return;
 
-    const effectiveMin = (bot.config.min_BTS_value > 0) ? bot.config.min_BTS_value : minBtsVal;
+    const effectiveMin = ((bot.config.min_BTS_value ?? 0) > 0) ? (bot.config.min_BTS_value as number) : minBtsVal;
     const btsFree = bot.manager.btsBalance.free || 0;
-    const btsAcquireThreshold = bot.config?.feeParams?.BTS_ACQUIRE_THRESHOLD;
+    const btsAcquireThreshold = bot.config?.feeParams?.BTS_ACQUIRE_THRESHOLD as number;
     const triggerAt = effectiveMin * btsAcquireThreshold;
     if (btsFree >= triggerAt) return;
 
-    const btsAcquireTargetMultiplier = bot.config?.feeParams?.BTS_ACQUIRE_TARGET_MULTIPLIER;
+    const btsAcquireTargetMultiplier = bot.config?.feeParams?.BTS_ACQUIRE_TARGET_MULTIPLIER as number;
     const target = effectiveMin * btsAcquireTargetMultiplier;
     const deficit = Math.max(0, target - btsFree);
     bot._log(
@@ -2998,7 +3046,7 @@ async function checkBtsBalanceAndAcquire(bot: any) {
  * @param {number} deficit - Amount of BTS needed (float)
  * @returns {Promise<void>}
  */
-async function acquireBts(bot: any, deficit: any) {
+async function acquireBts(bot: BotLike, deficit: number) {
     if (deficit <= 0) return;
     const { BitShares } = require('./bitshares_client');
     if (!BitShares || !BitShares.db) return;
@@ -3009,16 +3057,16 @@ async function acquireBts(bot: any, deficit: any) {
         { id: bot.assets?.assetB?.id, free: bot.manager.accountTotals?.buyFree || 0, precision: bot.assets?.assetB?.precision, symbol: bot.config.assetB }
     ];
 
-    const candidates: any[] = [];
+    const candidates: PoolCandidate[] = [];
     for (const asset of assets) {
         if (!asset.id || asset.free <= 0) continue;
         try {
             const pools = await BitShares.db.get_liquidity_pools_by_both_assets(asset.id, coreAssetId);
-            const validPools = Array.isArray(pools) ? pools.filter((p: any) => p?.id) : [];
+            const validPools = Array.isArray(pools) ? pools.filter((p) => p?.id) : [];
             const poolData = validPools.length
-                ? validPools.sort((a: any, b: any) => {
-                    const getBtsBal = (p: any) => {
-                        const isBts = String(p.asset_a ?? p.asset_ids?.[0] ?? '') === String(coreAssetId);
+                ? validPools.sort((a, b) => {
+                    const getBtsBal = (p: JsonObj) => {
+                        const isBts = String(p.asset_a ?? (p.asset_ids as unknown[] | undefined)?.[0] ?? '') === String(coreAssetId);
                         return Number(isBts ? (p.balance_a ?? 0) : (p.balance_b ?? 0));
                     };
                     return getBtsBal(b) - getBtsBal(a);
@@ -3038,7 +3086,7 @@ async function acquireBts(bot: any, deficit: any) {
             if (sellAmount <= 0 || sellAmount > asset.free) continue;
 
             candidates.push({ asset, poolId: poolData.id, sellAmount, expectedReceive, priceImpact: sellAmount / assetReserve });
-        } catch (e: any) {
+        } catch (e) {
             bot._log(`[BTS-ACQ] Pool lookup failed for ${asset?.symbol}: ${getErrorMessage(e)}`, 'debug');
         }
     }
@@ -3048,14 +3096,14 @@ async function acquireBts(bot: any, deficit: any) {
         return;
     }
 
-    candidates.sort((a: any, b: any) => a.priceImpact - b.priceImpact);
+    candidates.sort((a, b) => a.priceImpact - b.priceImpact);
     const best = candidates[0];
 
-    const poolSlippageTolerance = bot.config?.feeParams?.POOL_SLIPPAGE_TOLERANCE;
+    const poolSlippageTolerance = bot.config?.feeParams?.POOL_SLIPPAGE_TOLERANCE as number;
     const minReceive = best.expectedReceive * (1 - poolSlippageTolerance);
     const sellInt = floatToBlockchainInt(best.sellAmount, best.asset.precision);
     const minReceiveInt = floatToBlockchainInt(minReceive, BTS_PRECISION);
-    const op = chainOrders.buildLiquidityPoolExchangeOp(bot.accountId, best.poolId, sellInt, best.asset.id, minReceiveInt, coreAssetId);
+    const op = chainOrders.buildLiquidityPoolExchangeOp(bot.accountId, best.poolId as string, sellInt, best.asset.id as string, minReceiveInt, coreAssetId);
 
     try {
         if (bot.privateKey) {
@@ -3087,7 +3135,7 @@ async function acquireBts(bot: any, deficit: any) {
  * Run a single dust health check cycle.
  * @param {import('./dexbot_class.js').DEXBot} bot
  */
-async function runDustHealthCheck(bot: any) {
+async function runDustHealthCheck(bot: BotLike) {
     if (bot._shuttingDown || !bot.manager) return;
     try {
         const health = await bot.manager.checkGridHealth(
@@ -3118,7 +3166,7 @@ async function runDustHealthCheck(bot: any) {
                 bot._warn('[DUST] Fill lock unavailable — deferring dust cancel to the next locked maintenance cycle (skipped this tick to avoid racing fill processing)');
             }
         }
-    } catch (err: any) {
+    } catch (err) {
         if (getErrorMessage(err).includes('Lock acquisition timeout')) {
             bot._warn('[DUST] Lock busy, skipping dust cancel this cycle (retry in 5 min)');
         } else {
@@ -3131,7 +3179,7 @@ async function runDustHealthCheck(bot: any) {
  * Set up the periodic dust health check interval.
  * @param {import('./dexbot_class.js').DEXBot} bot
  */
-function setupDustHealthCheckInterval(bot: any) {
+function setupDustHealthCheckInterval(bot: BotLike) {
     bot._dustHealthCheckTimer = setInterval(() => {
         runDustHealthCheck(bot);
     }, TIMING.DUST_HEALTH_CHECK_INTERVAL_MS);
@@ -3149,7 +3197,7 @@ function setupDustHealthCheckInterval(bot: any) {
  * delay) and blocks deferred grid resyncs and periodic maintenance.
  * @param {import('./dexbot_class.js').DEXBot} bot
  */
-function drainFillQueueAfterPipelineClear(bot: any) {
+function drainFillQueueAfterPipelineClear(bot: BotLike) {
     try {
         if (!bot || bot._shuttingDown) return;
         if ((bot._recoverySyncInFlight || 0) > 0) return;
@@ -3169,7 +3217,7 @@ function drainFillQueueAfterPipelineClear(bot: any) {
  * @param {{refreshCenterPrice?: boolean, skipIdle?: boolean, skipFillLock?: boolean}} [options={}]
  * @returns {Promise<Object>}
  */
-async function requestGridReset(bot: any, reason: any = 'structural change', options: { refreshCenterPrice?: boolean; skipIdle?: boolean; skipFillLock?: boolean } = {}) {
+async function requestGridReset(bot: BotLike, reason: string = 'structural change', options: { refreshCenterPrice?: boolean; skipIdle?: boolean; skipFillLock?: boolean } = {}) {
     if (!bot.manager || typeof bot._performGridResync !== 'function') {
         return { skipped: true, reason: 'grid resync unavailable' };
     }
@@ -3208,10 +3256,10 @@ async function requestGridReset(bot: any, reason: any = 'structural change', opt
  * Wire the structural grid resync request handler on the manager.
  * @param {import('./dexbot_class.js').DEXBot} bot
  */
-function wireStructuralGridResyncRequest(bot: any) {
+function wireStructuralGridResyncRequest(bot: BotLike) {
     if (!bot.manager || bot.manager.requestStructuralGridResync) return;
 
-    bot.manager.requestStructuralGridResync = async (reason: any = 'structural recovery', details: { unmatchedChainOrders?: any[]; [key: string]: any } = {}) => {
+    bot.manager.requestStructuralGridResync = async (reason: string = 'structural recovery', details: { unmatchedChainOrders?: unknown[]; [key: string]: unknown } = {}) => {
         if (bot._shuttingDown) {
             bot._warn(`[RECOVERY] Structural resync skip (shutting down): ${reason}`);
             return { skipped: true, reason: 'shutting down' };
@@ -3286,9 +3334,9 @@ function wireStructuralGridResyncRequest(bot: any) {
                 // batch whose broadcast would overlap the reload and force an
                 // avoidable commit refusal + re-adoption cycle.
                 bot._recoverySyncInFlight = (bot._recoverySyncInFlight || 0) + 1;
-                let persistedResult: any;
+                let persistedResult: JsonObj;
                 try {
-                    persistedResult = await bot._recoverFromPersistedGrid();
+                    persistedResult = await bot._recoverFromPersistedGrid() as JsonObj;
                 } finally {
                     bot._recoverySyncInFlight = Math.max(0, (bot._recoverySyncInFlight || 0) - 1);
                 }
@@ -3296,6 +3344,16 @@ function wireStructuralGridResyncRequest(bot: any) {
                     if (bot.manager?._recoveryState) {
                         bot.manager._recoveryState = { ...bot.manager._recoveryState, attemptCount: 0, lastAttemptAt: 0, lastFailureAt: 0 };
                     }
+                    return;
+                }
+                if (persistedResult.halt) {
+                    // Missing-genesis policy 'halt': the operator must reset the
+                    // grid manually. Do not fall through to the automatic
+                    // structural resync below (docs/GRID_PRICE_INVARIANT.md).
+                    bot._warn(
+                        `[RECOVERY] Missing-genesis policy='halt' — suppressing the automatic structural ` +
+                        `resync for ${reason}. Run a manual grid reset for this bot.`
+                    );
                     return;
                 }
 
@@ -3309,16 +3367,16 @@ function wireStructuralGridResyncRequest(bot: any) {
                     // incremented and released the counter; increment again
                     // for the full-resync branch.
                     bot._recoverySyncInFlight = (bot._recoverySyncInFlight || 0) + 1;
-                    let resetResult: any;
+                    let resetResult: JsonObj;
                     try {
-                        resetResult = await bot.requestGridReset('rms_structural_grid_resync', {
+                        resetResult = await (bot.requestGridReset('rms_structural_grid_resync', {
                             refreshCenterPrice: false,
                             // Structural resync is a chain-read/rebuild; do not let a
                             // fill storm starve it behind the idle cooldown or the
                             // fill-processing lock.
                             skipIdle: true,
                             skipFillLock: true,
-                        });
+                        })) as JsonObj;
                     } finally {
                         bot._recoverySyncInFlight = Math.max(0, (bot._recoverySyncInFlight || 0) - 1);
                         if ((bot._recoverySyncInFlight || 0) === 0) drainFillQueueAfterPipelineClear(bot);
@@ -3326,7 +3384,7 @@ function wireStructuralGridResyncRequest(bot: any) {
                 if (resetResult && bot.manager?._recoveryState) {
                     bot.manager._recoveryState = { ...bot.manager._recoveryState, attemptCount: 0, lastAttemptAt: 0, lastFailureAt: 0 };
                 }
-            } catch (err: any) {
+            } catch (err) {
                 bot._warn(`[RECOVERY] Structural full grid resync failed: ${getErrorMessage(err)}`);
             } finally {
                 bot._structuralGridResyncRunning--;
@@ -3346,7 +3404,7 @@ function wireStructuralGridResyncRequest(bot: any) {
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Object}
  */
-function getPipelineSignals(bot: any) {
+function getPipelineSignals(bot: BotLike) {
     bot.manager?._cleanExpiredLocks?.();
     return {
         incomingFillQueueLength: bot._incomingFillQueue.length,
@@ -3362,7 +3420,7 @@ function getPipelineSignals(bot: any) {
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @param {string} [reason='activity']
  */
-function markGridActivity(bot: any, reason: any = 'activity') {
+function markGridActivity(bot: BotLike, reason: string = 'activity') {
     bot._lastGridActivityAt = Date.now();
     bot.manager?.logger?.log?.(`[MAINT-IDLE] Activity observed: ${reason}`, 'debug');
 }
@@ -3372,7 +3430,7 @@ function markGridActivity(bot: any, reason: any = 'activity') {
  * @param {import('./dexbot_class.js').DEXBot} bot
  * @returns {Object}
  */
-function getMetrics(bot: any) {
+function getMetrics(bot: BotLike) {
     bot.manager?._cleanExpiredLocks?.();
     const unmatched = Array.isArray(bot.manager?._lastUnmatchedChainOrders)
         ? bot.manager._lastUnmatchedChainOrders
@@ -3381,7 +3439,7 @@ function getMetrics(bot: any) {
     // but they DO lock funds until an operator clears them. Surface the split
     // so the permanent holds are visible in status/metrics instead of only in
     // per-order sync logs.
-    const heldUnmatched = unmatched.filter((u: any) => isNonBlockingUnmatchedOrder(u));
+    const heldUnmatched = unmatched.filter((u) => isNonBlockingUnmatchedOrder(u));
     return {
         ...bot._metrics,
         queueDepth: bot._incomingFillQueue.length,
@@ -3408,7 +3466,7 @@ function getMetrics(bot: any) {
  * @param {string} tag - Context label for logging
  * @returns {Promise<Object>}
  */
-async function syncOpenOrdersAndProcessFills(bot: any, tag: any) {
+async function syncOpenOrdersAndProcessFills(bot: BotLike, tag: string) {
     return acquireIfNotHeld(bot.manager?._fillProcessingLock, () =>
         syncOpenOrdersAndProcessFillsImpl(bot, tag)
     );
@@ -3421,7 +3479,7 @@ async function syncOpenOrdersAndProcessFills(bot: any, tag: any) {
  * @param {string} tag - Context label for logging
  * @returns {Promise<Object>}
  */
-async function syncOpenOrdersAndProcessFillsImpl(bot: any, tag: any) {
+async function syncOpenOrdersAndProcessFillsImpl(bot: BotLike, tag: string) {
     if (!bot.accountId || bot.config?.dryRun) {
         return { syncResult: null, aborted: false, hasUnmatched: 0, openOrders: null };
     }
@@ -3431,7 +3489,7 @@ async function syncOpenOrdersAndProcessFillsImpl(bot: any, tag: any) {
         // re-create them as duplicates. Defer to a clean read — fill
         // subscription events keep the bot responsive in the meantime.
         const firstRead = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
-            log: (message: string, level: any) => bot._log(message, level),
+            log: (message: string, level?: string) => bot._log(message, level),
             label: 'SYNC-CHAIN',
             detail: `during ${tag}`,
         });
@@ -3458,7 +3516,7 @@ async function syncOpenOrdersAndProcessFillsImpl(bot: any, tag: any) {
                 // caller feeds openOrders into reconcileGridOrders, which must
                 // see the freshest chain state, not the pre-fill first read.
                 const reReadOrders = await readOpenOrdersGuarded(chainOrders, bot.accountId, {
-                    log: (message: string, level: any) => bot._log(message, level),
+                    log: (message: string, level?: string) => bot._log(message, level),
                     label: 'SYNC-CHAIN',
                     detail: `post-fill re-read during ${tag}`,
                 });
@@ -3472,7 +3530,7 @@ async function syncOpenOrdersAndProcessFillsImpl(bot: any, tag: any) {
         }
         const hasUnmatched = syncResult?.unmatchedChainOrders?.length || 0;
         return { syncResult, aborted, hasUnmatched, openOrders };
-    } catch (err: any) {
+    } catch (err) {
         bot._warn(`[SYNC-CHAIN] Open-orders sync failed during ${tag}: ${getErrorMessage(err)}`);
         return { syncResult: null, aborted: true, hasUnmatched: -1, openOrders: null };
     }

@@ -41,7 +41,7 @@ That is the practical split:
 | Basic | `0.5%` | `2.0%` | `20 / 20` | Safe default starting point |
 | Competitive | `0.4%` | `1.6%` | `10-20 / 10-20` | Liquid enough for tighter quoting |
 | Very competitive | `0.3%` | `1.2%` | `5-15 / 5-15` | Mature market, higher maintenance, lower slack |
-| Good-like / aggressive | `0.2%` | `0.8%` | `3-10 / 3-10` | Only when liquidity, fees, and precision support it |
+| Aggressive | `0.2%` | `0.8%` | `3-10 / 3-10` | Only when liquidity, fees, and precision support it |
 
 The main tradeoff is always the same:
 
@@ -121,7 +121,8 @@ These define the outer range of the grid.
   - around `2x` = competitive
   - around `3x` = conservative
   - above `3x` = very conservative
-- treat range ratio as a slow-moving structural setting driven by former price action, not a fast tactical knob
+- treat range ratio as a slow-moving setting driven by former price action, not a fast tactical knob
+- use `dexbot tv <bot>` to see the grid range and AMA recentering against real candles before fixing the bounds
 
 ### `gridPrice`
 
@@ -182,7 +183,7 @@ AMA is the recentering mechanism.
 - it is calculated from 1h candle closes
 - it watches how far the adaptive center moves
 - once the move crosses the configured threshold, DEXBot2 triggers a grid recalculation
-- **AMA recently centering requires whitelisting the bot for the market adapter to work live (otherwise it only logs).**
+- **AMA recentering requires whitelisting the bot for the market adapter to work live (otherwise it only logs).**
 - `gridPrice: "ama"` tells the rebuilt grid to center itself on that AMA reference
 - `gridPrice: "pool"` or `gridPrice: "book"` centers the rebuilt grid on the live pair price instead
 - `gridPrice: null` falls back to the current `startPrice` reference

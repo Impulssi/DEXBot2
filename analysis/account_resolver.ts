@@ -12,7 +12,8 @@
  * handling — all of it lives here now.
  */
 
-import { findBotKeyByAccountRef, loadBotMeta, persistBotAccountId } from './bot_key_utils.js';
+import { getErrorMessage } from '../modules/utils/errors.js';
+import { findBotKeyByAccountRef, loadBotMeta, persistBotAccountId, resolveBotKey } from './bot_key_utils.js';
 import { withReadOnlyClient } from './chain_pool.js';
 
 const ACCOUNT_ID_RE = /^1\.2\.\d+$/;
@@ -27,8 +28,8 @@ async function lookupNameOnChain(name: string): Promise<string | null> {
             const accounts = await client.db('lookup_account_names', [[name]]);
             return Array.isArray(accounts) && accounts[0]?.id ? String(accounts[0].id) : null;
         });
-    } catch (e: any) {
-        console.warn(`  [warn] Account resolution failed: ${e.message}`);
+    } catch (e) {
+        console.warn(`  [warn] Account resolution failed: ${getErrorMessage(e)}`);
         return null;
     }
 }
@@ -52,7 +53,7 @@ interface ResolveOptions {
 interface ResolvedAccount {
     accountId: string | null;
     botKey: string | null;
-    botMeta: any | null;
+    botMeta: Record<string, unknown> | null;
     source: ResolveSource | null;
     reason: ResolveFailure | null;
 }
@@ -140,9 +141,20 @@ async function resolveAccountRef(accountRef: string, options: ResolveOptions = {
         return { accountId: ref, botKey: null, botMeta: null, source: 'typed-id', reason: null };
     }
 
+    // Local profile first: a bot whose profile name/key matches the reference
+    // resolves through its stored accountId/preferredAccount without any chain
+    // lookup. This is what lets `dexbot pnl <bot>` work offline and avoids
+    // treating a bot name as a chain account name.
+    try {
+        const botKey = resolveBotKey(ref, options.botsFile);
+        if (botKey) return resolveBotAccount(botKey, options);
+    } catch (_) {
+        // bots.json issues must never break resolution; fall through to chain.
+    }
+
     // A bot claiming this name is the persist target; its preferredAccount is
     // the same name, so resolveBotAccount owns the whole decision tree.
-    let match: { botKey: string; meta: any } | null = null;
+    let match: { botKey: string; meta: Record<string, unknown> } | null = null;
     try {
         match = findBotKeyByAccountRef(ref, options.botsFile);
     } catch (_) {

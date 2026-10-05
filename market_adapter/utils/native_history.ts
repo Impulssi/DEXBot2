@@ -1,6 +1,42 @@
 'use strict';
 
 import { blockchainToFloat } from '../../modules/order/utils/math.js';
+import type { UnknownRecord } from '../../modules/types.js';
+import { isUnknownRecord } from '../../modules/types.js';
+
+/** Asset identity/precision needed to convert chain amounts. */
+export interface NativeHistoryAssetMeta {
+    id?: unknown;
+    precision?: number;
+}
+
+interface HistoryKey extends UnknownRecord {
+    base?: unknown;
+    quote?: unknown;
+    open?: unknown;
+    time?: unknown;
+    timestamp?: unknown;
+    date?: unknown;
+}
+
+interface HistoryEntry extends UnknownRecord {
+    key?: HistoryKey;
+    open_time?: unknown;
+    time?: unknown;
+    timestamp?: unknown;
+    block_time?: unknown;
+    base_volume?: unknown;
+    quote_volume?: unknown;
+}
+
+/** Normalized OHLCV candle: [tsMs, open, high, low, close, volume]. */
+export type NativeHistoryCandle = [number, number, number, number, number, number];
+interface PairOrientation {
+    baseIsAssetA: boolean;
+    baseIsAssetB: boolean;
+    basePrecision: number | undefined;
+    quotePrecision: number | undefined;
+}
 
 /**
  * Native BitShares market history parsing utilities.
@@ -11,16 +47,18 @@ import { blockchainToFloat } from '../../modules/order/utils/math.js';
  */
 
 
-function parseNativeMarketHistoryTimestamp(entry: any) {
-    const candidates = [
-        entry?.key?.open,
-        entry?.key?.time,
-        entry?.key?.timestamp,
-        entry?.key?.date,
-        entry?.open_time,
-        entry?.time,
-        entry?.timestamp,
-        entry?.block_time,
+function parseNativeMarketHistoryTimestamp(entry: unknown): number | null {
+    if (!isUnknownRecord(entry)) return null;
+    const historyEntry = entry as HistoryEntry;
+    const candidates: unknown[] = [
+        historyEntry.key?.open,
+        historyEntry.key?.time,
+        historyEntry.key?.timestamp,
+        historyEntry.key?.date,
+        historyEntry.open_time,
+        historyEntry.time,
+        historyEntry.timestamp,
+        historyEntry.block_time,
     ];
 
     for (const candidate of candidates) {
@@ -46,7 +84,7 @@ function parseNativeMarketHistoryTimestamp(entry: any) {
     return null;
 }
 
-function resolvePairOrientation(keyBase: any, keyQuote: any, assetA: any, assetB: any) {
+function resolvePairOrientation(keyBase: string, keyQuote: string, assetA: NativeHistoryAssetMeta, assetB: NativeHistoryAssetMeta): PairOrientation | null {
     const baseIsAssetA = keyBase === String(assetA?.id) && keyQuote === String(assetB?.id);
     const baseIsAssetB = keyBase === String(assetB?.id) && keyQuote === String(assetA?.id);
     if (!baseIsAssetA && !baseIsAssetB) return null;
@@ -55,7 +93,7 @@ function resolvePairOrientation(keyBase: any, keyQuote: any, assetA: any, assetB
     return { baseIsAssetA, baseIsAssetB, basePrecision, quotePrecision };
 }
 
-function resolveNativeMarketHistoryRatio(entry: any, field: any, assetA: any, assetB: any) {
+function resolveNativeMarketHistoryRatio(entry: HistoryEntry, field: string, assetA: NativeHistoryAssetMeta, assetB: NativeHistoryAssetMeta): number {
     const keyBase = String(entry?.key?.base || '');
     const keyQuote = String(entry?.key?.quote || '');
     const orientation = resolvePairOrientation(keyBase, keyQuote, assetA, assetB);
@@ -78,8 +116,9 @@ function resolveNativeMarketHistoryRatio(entry: any, field: any, assetA: any, as
 
     const nested = entry?.[field];
     if (nested && typeof nested === 'object') {
-        const base = Number(nested.base ?? nested.amount_base ?? nested.base_amount ?? nested.amount);
-        const quote = Number(nested.quote ?? nested.amount_quote ?? nested.quote_amount ?? nested.value);
+        const nestedRecord = nested as UnknownRecord;
+        const base = Number(nestedRecord.base ?? nestedRecord.amount_base ?? nestedRecord.base_amount ?? nestedRecord.amount);
+        const quote = Number(nestedRecord.quote ?? nestedRecord.amount_quote ?? nestedRecord.quote_amount ?? nestedRecord.value);
         if (!Number.isFinite(base) || !Number.isFinite(quote) || base <= 0 || quote <= 0) {
             return Number.NaN;
         }
@@ -89,23 +128,24 @@ function resolveNativeMarketHistoryRatio(entry: any, field: any, assetA: any, as
     return Number.NaN;
 }
 
-function normalizeNativeMarketHistoryCandles(history: any, assetA: any, assetB: any, _intervalSeconds: any) {
-    const source = Array.isArray(history)
+function normalizeNativeMarketHistoryCandles(history: unknown, assetA: NativeHistoryAssetMeta, assetB: NativeHistoryAssetMeta, _intervalSeconds: unknown): NativeHistoryCandle[] {
+    const historyRecord = isUnknownRecord(history) ? history : undefined;
+    const source: unknown[] = Array.isArray(history)
         ? history
-        : Array.isArray(history?.buckets)
-            ? history.buckets
-            : Array.isArray(history?.history)
-                ? history.history
-                : Array.isArray(history?.result)
-                    ? history.result
+        : Array.isArray(historyRecord?.buckets)
+            ? historyRecord.buckets as unknown[]
+            : Array.isArray(historyRecord?.history)
+                ? historyRecord.history as unknown[]
+                : Array.isArray(historyRecord?.result)
+                    ? historyRecord.result as unknown[]
                     : [];
 
     if (!Array.isArray(source) || source.length === 0) return [];
 
     if (Array.isArray(source[0])) {
         return source
-            .filter((c) => Array.isArray(c) && Number.isFinite(c[0]))
-            .map((c) => {
+            .filter((c): c is unknown[] => Array.isArray(c) && Number.isFinite(c[0]))
+            .map((c): NativeHistoryCandle | null => {
                 let ts = Number(c[0]);
                 if (ts >= 1000000000 && ts <= 9999999999) ts *= 1000;
                 const open = Number(c[1]);
@@ -116,31 +156,32 @@ function normalizeNativeMarketHistoryCandles(history: any, assetA: any, assetB: 
                 if (![ts, open, high, low, close].every(Number.isFinite)) return null;
                 return [ts, open, high, low, close, Number.isFinite(volume) ? volume : 0];
             })
-            .filter((c: any) => c !== null)
-            .sort((a: any, b: any) => a[0] - b[0]);
+            .filter((c): c is NativeHistoryCandle => c !== null)
+            .sort((a, b) => a[0] - b[0]);
     }
 
-    const candles: any[] = [];
+    const candles: NativeHistoryCandle[] = [];
     for (const entry of source) {
-        if (!entry || typeof entry !== 'object') continue;
-        const tsMs = parseNativeMarketHistoryTimestamp(entry);
-        if (!Number.isFinite(tsMs)) continue;
+        if (!isUnknownRecord(entry)) continue;
+        const historyEntry = entry as HistoryEntry;
+        const tsMs = parseNativeMarketHistoryTimestamp(historyEntry);
+        if (tsMs === null || !Number.isFinite(tsMs)) continue;
 
-        const keyBase = String(entry?.key?.base || '');
-        const keyQuote = String(entry?.key?.quote || '');
+        const keyBase = String(historyEntry?.key?.base || '');
+        const keyQuote = String(historyEntry?.key?.quote || '');
         const orientation = resolvePairOrientation(keyBase, keyQuote, assetA, assetB);
         if (!orientation) continue;
 
         const { baseIsAssetA, basePrecision, quotePrecision } = orientation;
-        const baseVolume = Number(entry?.base_volume);
-        const quoteVolume = Number(entry?.quote_volume);
+        const baseVolume = Number(historyEntry?.base_volume);
+        const quoteVolume = Number(historyEntry?.quote_volume);
 
-        const open = resolveNativeMarketHistoryRatio(entry, 'open', assetA, assetB);
-        const resolvedHigh = resolveNativeMarketHistoryRatio(entry, 'high', assetA, assetB);
-        const resolvedLow = resolveNativeMarketHistoryRatio(entry, 'low', assetA, assetB);
+        const open = resolveNativeMarketHistoryRatio(historyEntry, 'open', assetA, assetB);
+        const resolvedHigh = resolveNativeMarketHistoryRatio(historyEntry, 'high', assetA, assetB);
+        const resolvedLow = resolveNativeMarketHistoryRatio(historyEntry, 'low', assetA, assetB);
         const high = Math.max(resolvedHigh, resolvedLow);
         const low = Math.min(resolvedHigh, resolvedLow);
-        const close = resolveNativeMarketHistoryRatio(entry, 'close', assetA, assetB);
+        const close = resolveNativeMarketHistoryRatio(historyEntry, 'close', assetA, assetB);
 
         if (![open, high, low, close].every((value) => Number.isFinite(value) && value > 0)) {
             continue;
@@ -153,7 +194,7 @@ function normalizeNativeMarketHistoryCandles(history: any, assetA: any, assetB: 
         candles.push([tsMs, open, high, low, close, Number.isFinite(volume) ? volume : 0]);
     }
 
-    return (candles as any[]).sort((a: any, b: any) => a[0] - b[0]);
+    return candles.sort((a, b) => a[0] - b[0]);
 }
 
 export { parseNativeMarketHistoryTimestamp, normalizeNativeMarketHistoryCandles }

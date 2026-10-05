@@ -79,8 +79,32 @@ import Logger from '../../order/logger.js';
 import * as fundRegistry from '../../fund_registry.js';
 import { getErrorMessage } from '../../utils/errors.js';
 import { parseSlotIndex } from './slot.js';
+import type { OrderManagerLike, AccountTotals, ManagerFunds, ActiveOrdersConfig, GridFeeParams, ManagedOrder, AssetPair, GridConfig, GridLimitsLike, WeightDistributionConfig } from '../../types.js';
 const { isValidNumber, toFiniteNumber } = Format;
 const mathLogger = new Logger('Math');
+
+interface FeeCacheEntry {
+    limitOrderCreate: { bts: number };
+    limitOrderUpdate: { bts: number };
+    limitOrderCancel?: { bts?: number };
+    makerFeeDiscountPercent?: number;
+    chargesMarketFees?: boolean;
+    marketFee?: { percent?: number };
+    takerFee?: { percent?: number };
+    maxMarketFee?: { float?: number };
+    [key: string]: unknown;
+}
+
+type PricedOrder = { price: number };
+
+interface CollisionItem {
+    id?: string;
+    price?: number;
+    size?: number;
+    type?: string;
+    order?: { price?: number; size?: number; type?: string } | null;
+    [key: string]: unknown;
+}
 
 const MAX_INT64 = 9223372036854775807;
 const MIN_INT64 = -9223372036854775808;
@@ -96,7 +120,7 @@ const MIN_INT64 = -9223372036854775808;
  * @param {*} value - Value to check
  * @returns {boolean} True if value is explicitly zero
  */
-function isExplicitZeroAllocation(value: any) {
+function isExplicitZeroAllocation(value: unknown) {
     if (typeof value === 'number') return value === 0;
     if (typeof value !== 'string') return false;
 
@@ -118,7 +142,7 @@ function isExplicitZeroAllocation(value: any) {
  * @param {*} v - Value to test
  * @returns {boolean} True if v is a string ending with '%'
  */
-function isPercentageString(v: any): v is string {
+function isPercentageString(v: unknown): v is string {
     return typeof v === 'string' && v.trim().endsWith('%');
 }
 
@@ -128,7 +152,7 @@ function isPercentageString(v: any): v is string {
  * @param {*} value - Value to test
  * @returns {boolean} True if the value is a finite number greater than 0
  */
-function isPositiveNumber(value: any) {
+function isPositiveNumber(value: unknown) {
     const num = Number(value);
     return Number.isFinite(num) && num > 0;
 }
@@ -139,7 +163,7 @@ function isPositiveNumber(value: any) {
  * @param {*} value - Value to test
  * @returns {boolean} True if the value is a positive number or a percentage string like "25%"
  */
-function isPositiveNumberOrPercent(value: any) {
+function isPositiveNumberOrPercent(value: unknown) {
     if (isPositiveNumber(value)) return true;
     if (!isPercentageString(value)) return false;
     const percent = parseFloat(value.trim().slice(0, -1));
@@ -152,7 +176,7 @@ function isPositiveNumberOrPercent(value: any) {
  * @param {*} value - Value to test
  * @returns {boolean} True if the value is an integer greater than 0
  */
-function isPositiveInt(value: any) {
+function isPositiveInt(value: unknown) {
     return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
 
@@ -163,7 +187,7 @@ function isPositiveInt(value: any) {
  * @param {string} v - Percentage string (e.g., "50%")
  * @returns {number|null} Decimal form (e.g., 0.5) or null if invalid
  */
-function parsePercentageString(v: any) {
+function parsePercentageString(v: unknown) {
     if (!isPercentageString(v)) return null;
     const num = parseFloat(v.trim().slice(0, -1));
     return Number.isNaN(num) ? null : num / 100.0;
@@ -176,7 +200,7 @@ function parsePercentageString(v: any) {
  * @param {*} value - Number (100 = 100), "100%" (= 1.0), or "100" (= 100)
  * @returns {number} Decimal value, 0 if unparseable
  */
-function toDecimal(value: any) {
+function toDecimal(value: unknown) {
     if (typeof value === 'number') return value;
     if (typeof value === 'string') {
         const trimmed = value.trim();
@@ -198,7 +222,7 @@ function toDecimal(value: any) {
  * @param {*} value - Candidate value
  * @returns {number|null} Multiplier number, or null if not a valid expression
  */
-function parseRelativeMultiplier(value: any) {
+function parseRelativeMultiplier(value: unknown) {
     if (typeof value === 'string' && /^[\s]*[0-9]+(?:\.[0-9]+)?x[\s]*$/i.test(value)) {
         const m = parseFloat(value.trim().toLowerCase().slice(0, -1));
         return Number.isNaN(m) ? null : m;
@@ -215,10 +239,11 @@ function parseRelativeMultiplier(value: any) {
  * @param {string} [mode='min'] - "min" divides (price/multiplier), "max" multiplies (price*multiplier)
  * @returns {number|null} Resolved price or null if value is not a relative expression
  */
-function resolveRelativePrice(value: any, startPrice: any, mode: any = 'min') {
+function resolveRelativePrice(value: unknown, startPrice: unknown, mode: string = 'min') {
     const multiplier = parseRelativeMultiplier(value);
-    if (multiplier !== null && Number.isFinite(startPrice) && multiplier !== 0) {
-        return mode === 'min' ? startPrice / multiplier : startPrice * multiplier;
+    const sp = Number(startPrice);
+    if (multiplier !== null && Number.isFinite(sp) && multiplier !== 0) {
+        return mode === 'min' ? sp / multiplier : sp * multiplier;
     }
     return null;
 }
@@ -237,23 +262,26 @@ function resolveRelativePrice(value: any, startPrice: any, mode: any = 'min') {
  * @param {number} centerPrice - Grid center used as the multiplier reference
  * @throws {Error} If bounds do not strictly bracket the center
  */
-function validateGridPriceBounds(minPrice: any, maxPrice: any, centerPrice: any) {
-    if (!Number.isFinite(minPrice) || !Number.isFinite(maxPrice)
-        || !Number.isFinite(centerPrice) || centerPrice <= 0) {
+function validateGridPriceBounds(minPrice: unknown, maxPrice: unknown, centerPrice: unknown) {
+    const minP = Number(minPrice);
+    const maxP = Number(maxPrice);
+    const center = Number(centerPrice);
+    if (!Number.isFinite(minP) || !Number.isFinite(maxP)
+        || !Number.isFinite(center) || center <= 0) {
         return; // Non-finite/invalid prices are handled by other validators.
     }
-    if (minPrice > centerPrice) {
+    if (minP > center) {
         throw new Error(
-            `Geometrically broken grid: resolved minPrice ${minPrice} is above the grid center ${centerPrice}. ` +
-            `With min x-multiplier semantics "Nx" means center/N, so a multiplier < 1 (e.g. "0.7x" => ${centerPrice / 0.7}) ` +
+            `Geometrically broken grid: resolved minPrice ${minP} is above the grid center ${center}. ` +
+            `With min x-multiplier semantics "Nx" means center/N, so a multiplier < 1 (e.g. "0.7x" => ${center / 0.7}) ` +
             `places the lower bound ABOVE the center. Use a numeric price below the center, or a multiplier > 1 ` +
             `(e.g. "1.43x" for 70% of center).`
         );
     }
-    if (maxPrice < centerPrice) {
+    if (maxP < center) {
         throw new Error(
-            `Geometrically broken grid: resolved maxPrice ${maxPrice} is below the grid center ${centerPrice}. ` +
-            `With max x-multiplier semantics "Nx" means center*N, so a multiplier < 1 (e.g. "0.7x" => ${centerPrice * 0.7}) ` +
+            `Geometrically broken grid: resolved maxPrice ${maxP} is below the grid center ${center}. ` +
+            `With max x-multiplier semantics "Nx" means center*N, so a multiplier < 1 (e.g. "0.7x" => ${center * 0.7}) ` +
             `places the upper bound below the center. Use a numeric price above the center, or a multiplier > 1 for maxPrice.`
         );
     }
@@ -272,7 +300,7 @@ function validateGridPriceBounds(minPrice: any, maxPrice: any, centerPrice: any)
  * @returns {Object} Summary object with chainFreeBuy, chainFreeSell, committedChainBuy, 
  *                   committedChainSell, freePlusLockedBuy, freePlusLockedSell, chainTotalBuy, chainTotalSell
  */
-function computeChainFundTotals(accountTotals: any, committedChain: any) {
+function computeChainFundTotals(accountTotals: AccountTotals | null | undefined, committedChain: { buy?: number; sell?: number } | null | undefined) {
     const chainFreeBuy = toFiniteNumber(accountTotals?.buyFree);
     const chainFreeSell = toFiniteNumber(accountTotals?.sellFree);
     const committedChainBuy = toFiniteNumber(committedChain?.buy);
@@ -282,10 +310,10 @@ function computeChainFundTotals(accountTotals: any, committedChain: any) {
     const freePlusLockedSell = chainFreeSell + committedChainSell;
 
     const chainTotalBuy = isValidNumber(accountTotals?.buy)
-        ? Math.max(Number(accountTotals.buy), freePlusLockedBuy)
+        ? Math.max(Number(accountTotals?.buy), freePlusLockedBuy)
         : freePlusLockedBuy;
     const chainTotalSell = isValidNumber(accountTotals?.sell)
-        ? Math.max(Number(accountTotals.sell), freePlusLockedSell)
+        ? Math.max(Number(accountTotals?.sell), freePlusLockedSell)
         : freePlusLockedSell;
 
     return {
@@ -313,7 +341,7 @@ function computeChainFundTotals(accountTotals: any, committedChain: any) {
  * @param {number} precision - Asset precision (satoshis)
  * @returns {number} Quantized float value
  */
-function quantizeFloat(value: any, precision: any) {
+function quantizeFloat(value: number, precision: number) {
     return blockchainToFloat(floatToBlockchainInt(value, precision), precision);
 }
 
@@ -327,7 +355,7 @@ function quantizeFloat(value: any, precision: any) {
  * @param {number} precision - Asset precision (satoshis)
  * @returns {number} Normalized integer value
  */
-function normalizeInt(value: any, precision: any) {
+function normalizeInt(value: number, precision: number) {
     return floatToBlockchainInt(blockchainToFloat(value, precision), precision);
 }
 
@@ -335,7 +363,7 @@ function normalizeInt(value: any, precision: any) {
  * Fee cache local to math.js for getAssetFees.
  * Will be populated by system.js::initializeFeeCache.
  */
-let feeCache: Record<string, any> = {};
+let feeCache: Record<string, FeeCacheEntry> = {};
 
 // Track markets already warned about a missing fee cache so the "Using fallback
 // fee" notice is logged once per pair instead of once per sizing calculation.
@@ -347,7 +375,7 @@ const warnedMissingFeeCachePairs = new Set<string>();
  * @param {Object} cache - Fee cache object keyed by asset symbol
  * @returns {void}
  */
-function _setFeeCache(cache: any) { feeCache = cache; }
+function _setFeeCache(cache: Record<string, FeeCacheEntry>) { feeCache = cache; }
 
 /**
  * Get fee information for an asset.
@@ -360,7 +388,7 @@ function _setFeeCache(cache: any) { feeCache = cache; }
  * @returns {Object} Fee structure with create/update/net fees or net proceeds if amount provided
  * @throws {Error} If fees not cached (call initializeFeeCache first)
  */
-function getAssetFees(assetSymbol: any, assetAmount: any = null, isMaker: any = true) {
+function getAssetFees(assetSymbol: string, assetAmount: number | null = null, isMaker: boolean = true) {
     const cachedFees = feeCache[assetSymbol];
     if (!cachedFees) {
         throw new Error(`Fees not cached for ${assetSymbol}. Call initializeFeeCache first.`);
@@ -412,7 +440,7 @@ function getAssetFees(assetSymbol: any, assetAmount: any = null, isMaker: any = 
     if (assetAmount !== null && assetAmount !== undefined) {
         const amount = Number(assetAmount);
         const maxMarketFee = Number.isFinite(Number(cachedFees.maxMarketFee?.float))
-            ? Math.max(0, Number(cachedFees.maxMarketFee.float))
+            ? Math.max(0, Number(cachedFees.maxMarketFee?.float))
             : Infinity;
         const feeAmount = Math.min((amount * feePercent) / 100, maxMarketFee);
         const netProceeds = amount - feeAmount;
@@ -441,7 +469,7 @@ function getAssetFees(assetSymbol: any, assetAmount: any = null, isMaker: any = 
  * @param {boolean} [isMaker=true] - Whether this is a maker or taker
  * @returns {Object|null} Fee structure or null when fees are not cached
  */
-function getAssetFeesSafe(assetSymbol: any, assetAmount: any = null, isMaker: any = true) {
+function getAssetFeesSafe(assetSymbol: string, assetAmount: number | null = null, isMaker: boolean = true) {
     try {
         return getAssetFees(assetSymbol, assetAmount, isMaker);
     } catch {
@@ -461,7 +489,7 @@ function getAssetFeesSafe(assetSymbol: any, assetAmount: any = null, isMaker: an
  * @param {Object} [activeOrders=null] - Active order counts {buy, sell} for BTS reservation calculation
  * @returns {number} Available funds for the side (0 if side invalid or insufficient funds)
  */
-function calculateAvailableFundsValue(side: any, accountTotals: any, funds: any, assetA: any, assetB: any, activeOrders: any = null, configMinBtsValue: number | null = null, feeParams: any = null) {
+function calculateAvailableFundsValue(side: string, accountTotals: AccountTotals | null | undefined, funds: ManagerFunds, assetA: string | undefined, assetB: string | undefined, activeOrders: ActiveOrdersConfig | null = null, configMinBtsValue: number | null = null, feeParams: GridFeeParams | null = null) {
     if (side !== 'buy' && side !== 'sell') return 0;
 
     const chainFree = toFiniteNumber(side === 'buy' ? accountTotals?.buyFree : accountTotals?.sellFree);
@@ -539,7 +567,7 @@ function computeBtsFeeImpact(
  * Uses computeBtsFeeImpact for proportional deduction; falls back to 0.5
  * split when totalFree is exhausted (legacy sizing-path behavior).
  */
-function adjustBudgetForBtsFees(allocated: any, isBtsSide: any, formulaBudget: any, minBtsValue: any, btsFree: any, sideFree: any, totalFree: any) {
+function adjustBudgetForBtsFees(allocated: number, isBtsSide: boolean, formulaBudget: number, minBtsValue: number, btsFree: number, sideFree: number, totalFree: number) {
     if (allocated <= 0) return 0;
     const impact = computeBtsFeeImpact(isBtsSide, formulaBudget, minBtsValue, btsFree, sideFree, totalFree);
     if (impact > 0) return Math.max(0, allocated - impact);
@@ -558,9 +586,9 @@ function adjustBudgetForBtsFees(allocated: any, isBtsSide: any, formulaBudget: a
  * @param {Array<Object>} activeSells - Active sell orders with price property
  * @returns {{bestBuy: number|null, bestSell: number|null}} Best prices or null if no orders
  */
-function getGridBestPrices(activeBuys: any, activeSells: any) {
-    const bestBuy  = activeBuys.length  > 0 ? Math.max(...activeBuys.map((o: any) => o.price))  : null;
-    const bestSell = activeSells.length > 0 ? Math.min(...activeSells.map((o: any) => o.price)) : null;
+function getGridBestPrices(activeBuys: PricedOrder[], activeSells: PricedOrder[]) {
+    const bestBuy  = activeBuys.length  > 0 ? Math.max(...activeBuys.map((o) => o.price))  : null;
+    const bestSell = activeSells.length > 0 ? Math.min(...activeSells.map((o) => o.price)) : null;
     return { bestBuy, bestSell };
 }
 
@@ -576,7 +604,7 @@ function getGridBestPrices(activeBuys: any, activeSells: any) {
  * (shouldFlagOutOfSpread) take the empty-side branch before touching this
  * value; display callers must handle non-finite (see logger status line).
  */
-function calculateSpreadFromOrders(activeBuys: any, activeSells: any) {
+function calculateSpreadFromOrders(activeBuys: PricedOrder[], activeSells: PricedOrder[]) {
     const { bestBuy, bestSell } = getGridBestPrices(activeBuys, activeSells);
     if (bestBuy === null || bestSell === null || bestBuy === 0) return Infinity;
     return ((bestSell / bestBuy) - 1) * 100;
@@ -590,13 +618,13 @@ function calculateSpreadFromOrders(activeBuys: any, activeSells: any) {
  * @param {number} total - Total amount for percentage calculations
  * @returns {number} Resolved numeric value or 0 if uninterpretable
  */
-function resolveConfigValue(value: any, total: any) {
+function resolveConfigValue(value: unknown, total: unknown) {
     if (typeof value === 'number') return value;
     if (typeof value === 'string') {
         const p = parsePercentageString(value);
         if (p !== null) {
             if (total === null || total === undefined) return 0;
-            return total * p;
+            return Number(total) * p;
         }
         const n = parseFloat(value);
         return Number.isNaN(n) ? 0 : n;
@@ -617,8 +645,9 @@ function resolveConfigValue(value: any, total: any) {
  * @param {'buy'|'sell'} side - Trade side
  * @returns {number} Resolved numeric value or 0 if uninterpretable
  */
-function resolveConfigValueWithRegistry(value: any, chainTotal: any, account: any, botName: any, side: any) {
-    const effective = fundRegistry.getEffectiveAllocationSync(account, botName, side, chainTotal);
+function resolveConfigValueWithRegistry(value: unknown, chainTotal: number, account: string | undefined, botName: string | undefined, side: string) {
+    if (account === undefined || botName === undefined) return resolveConfigValue(value, chainTotal);
+    const effective = fundRegistry.getEffectiveAllocationSync(account, botName, side as 'buy' | 'sell', chainTotal);
     if (effective !== null) return effective;
     return resolveConfigValue(value, chainTotal);
 }
@@ -754,7 +783,7 @@ function deepShelfPrices(floorPrice: any, stepUp: any, count: any): number[] {
  * @param {boolean} [checkFree=true] - Check free balances if true, else check total balances
  * @returns {boolean} True if both buy and sell values are valid finite numbers
  */
-function hasValidAccountTotals(accountTotals: any, checkFree: any = true) {
+function hasValidAccountTotals(accountTotals: AccountTotals | null | undefined, checkFree: boolean = true) {
     if (!accountTotals) return false;
     const buyKey = checkFree ? 'buyFree' : 'buy';
     const sellKey = checkFree ? 'sellFree' : 'sell';
@@ -775,7 +804,7 @@ function hasValidAccountTotals(accountTotals: any, checkFree: any = true) {
  * @returns {number} Float representation in human-readable units
  * @throws {Error} If precision is invalid
  */
-function blockchainToFloat(intValue: any, precision: any) {
+function blockchainToFloat(intValue: unknown, precision: number | null | undefined) {
     if (!isValidNumber(precision)) {
         throw new Error(`Invalid precision for blockchainToFloat: ${precision}`);
     }
@@ -796,7 +825,7 @@ function blockchainToFloat(intValue: any, precision: any) {
  * @returns {number} Blockchain integer representation (satoshi units)
  * @throws {Error} If precision is invalid
  */
-function floatToBlockchainInt(floatValue: any, precision: any) {
+function floatToBlockchainInt(floatValue: unknown, precision: number | null | undefined) {
     if (!isValidNumber(precision)) {
         throw new Error(`Invalid precision for floatToBlockchainInt: ${precision}`);
     }
@@ -821,7 +850,7 @@ function floatToBlockchainInt(floatValue: any, precision: any) {
  * @returns {number} Asset precision
  * @throws {Error} If precision missing for the required asset
  */
-function getPrecisionByOrderType(assets: any, orderType: any) {
+function getPrecisionByOrderType(assets: AssetPair | null | undefined, orderType: string) {
     return getPrecision(assets, { type: orderType });
 }
 
@@ -832,7 +861,7 @@ function getPrecisionByOrderType(assets: any, orderType: any) {
  * @returns {Object} Object with A and B precision properties
  * @throws {Error} If precision missing for either asset
  */
-function getPrecisionsForManager(assets: any) {
+function getPrecisionsForManager(assets: AssetPair | null | undefined) {
     return {
         A: getPrecision(assets, { type: ORDER_TYPES.SELL }),
         B: getPrecision(assets, { type: ORDER_TYPES.BUY })
@@ -843,8 +872,8 @@ function getPrecisionsForManager(assets: any) {
  * Compute the quantum (smallest representable unit) for a given asset precision.
  * quantum = 10^-precision (e.g., 8 decimals → 1e-8).
  */
-function quantumForPrecision(precision: any): number {
-    return Math.pow(10, -precision);
+function quantumForPrecision(precision: number | undefined): number {
+    return Math.pow(10, -Number(precision));
 }
 
 /**
@@ -855,7 +884,7 @@ function quantumForPrecision(precision: any): number {
  * @param {number} [factor=2] - Multiplier for slack (default 2)
  * @returns {number} Tolerance value (e.g., 2 * 10^-8 for 8-decimal precision)
  */
-function getPrecisionSlack(precision: any, factor: any = 2) {
+function getPrecisionSlack(precision: number | undefined, factor: number = 2) {
     return factor * quantumForPrecision(precision);
 }
 
@@ -866,7 +895,7 @@ function getPrecisionSlack(precision: any, factor: any = 2) {
  * @param {Object} [options={}] - Lookup options { type, side, proceeds }
  * @returns {number} Asset precision
  */
-function getPrecision(assets: any, { type, side, proceeds = false }: { type?: string; side?: string; proceeds?: boolean } = {}) {
+function getPrecision(assets: AssetPair | null | undefined, { type, side, proceeds = false }: { type?: string; side?: string; proceeds?: boolean } = {}) {
     if (!assets) throw new Error("Assets object required for precision lookup");
     
     // Determine target side: side param priority, then type param
@@ -890,7 +919,7 @@ function getPrecision(assets: any, { type, side, proceeds = false }: { type?: st
  * Determine which side holds BTS for a trading pair.
  * Returns ORDER_TYPES.SELL if assetA is BTS, ORDER_TYPES.BUY if assetB is BTS, null otherwise.
  */
-function getBtsSide(assetA: string, assetB: string): string | null {
+function getBtsSide(assetA: string | undefined, assetB: string | undefined): string | null {
     if (assetA === 'BTS') return ORDER_TYPES.SELL;
     if (assetB === 'BTS') return ORDER_TYPES.BUY;
     return null;
@@ -917,10 +946,12 @@ function getBtsSide(assetA: string, assetB: string): string | null {
  * @returns {number|null} Price tolerance value or null if invalid inputs
  * @throws {Error} If assets missing or precisions invalid
  */
-function calculatePriceTolerance(gridPrice: any, orderSize: any, orderType: any, assets: any = null) {
+function calculatePriceTolerance(gridPrice: unknown, orderSize: unknown, orderType: string, assets: AssetPair | null = null): number | null {
     if (!isValidNumber(gridPrice) || !isValidNumber(orderSize)) return null;
     if (!assets) throw new Error("CRITICAL: Assets object required for calculatePriceTolerance");
 
+    const gp = Number(gridPrice);
+    const size = Number(orderSize);
     const precisionA = assets.assetA?.precision;
     const precisionB = assets.assetB?.precision;
 
@@ -928,18 +959,18 @@ function calculatePriceTolerance(gridPrice: any, orderSize: any, orderType: any,
         throw new Error(`CRITICAL: Missing precision for price tolerance (A=${precisionA}, B=${precisionB})`);
     }
 
-    if (!orderSize || orderSize <= 0) return null;
+    if (!size || size <= 0) return null;
 
     // Minimum amount in blockchain satoshis that the chain will accept for an order.
     // Uses GRID_LIMITS.MIN_ORDER_SIZE_FACTOR (same constant as getMinOrderSize).
 
-    let orderSizeA, orderSizeB;
+    let orderSizeA: number, orderSizeB: number;
     if (orderType === 'sell' || orderType === 'SELL' || orderType === 'Sell') {
-        orderSizeA = orderSize;
-        orderSizeB = orderSize * gridPrice;
+        orderSizeA = size;
+        orderSizeB = size * gp;
     } else {
-        orderSizeB = orderSize;
-        orderSizeA = orderSize / gridPrice;
+        orderSizeB = size;
+        orderSizeA = size / gp;
     }
 
     const minOrderSats = GRID_LIMITS.MIN_ORDER_SIZE_FACTOR;
@@ -948,8 +979,8 @@ function calculatePriceTolerance(gridPrice: any, orderSize: any, orderType: any,
 
     const termA = 1 / satsA;
     const termB = 1 / satsB;
-    const tolerance = (termA + termB) * gridPrice;
-    const maxTolerance = Math.max(gridPrice * GRID_LIMITS.PRICE_TOLERANCE_MAX_PERCENT, GRID_LIMITS.PRICE_TOLERANCE_MIN_ABSOLUTE);
+    const tolerance = (termA + termB) * gp;
+    const maxTolerance = Math.max(gp * GRID_LIMITS.PRICE_TOLERANCE_MAX_PERCENT, GRID_LIMITS.PRICE_TOLERANCE_MIN_ABSOLUTE);
     return Math.min(tolerance, maxTolerance);
 }
 
@@ -967,14 +998,14 @@ function calculatePriceTolerance(gridPrice: any, orderSize: any, orderType: any,
  * @returns {object|null} The colliding item, or null
  */
 function findPriceCollision(
-    items: Iterable<any>,
+    items: Iterable<CollisionItem>,
     excludeId: string,
     targetPrice: number,
     targetSize: number,
     targetType: string,
-    assets: any,
-    isValid?: ((item: any) => boolean) | null
-): any {
+    assets: AssetPair | null,
+    isValid?: ((item: CollisionItem) => boolean) | null
+): CollisionItem | null {
     for (const item of items) {
         if (item.id === excludeId) continue;
         if (isValid && !isValid(item)) continue;
@@ -1036,17 +1067,17 @@ function findPriceCollision(
  * @param {Iterable<any>} items - Candidate orders (e.g. manager.orders.values())
  * @param {number} price - Candidate placement price
  * @param {string} type - Candidate placement type (ORDER_TYPES.BUY / SELL)
- * @param {any} assets - Asset metadata (precisions) for tolerance
+ * @param {unknown} assets - Asset metadata (precisions) for tolerance
  * @param {((item: any) => boolean)|null} [isValid] - Optional filter
  * @returns {any|null} The first crossed order, or null when the placement crosses nothing
  */
 function findCrossedOrder(
-    items: Iterable<any>,
+    items: Iterable<CollisionItem>,
     price: number,
     type: string,
-    assets: any,
-    isValid?: ((item: any) => boolean) | null
-): any {
+    assets: AssetPair | null,
+    isValid?: ((item: CollisionItem) => boolean) | null
+): CollisionItem | null {
     if (price == null || !Number.isFinite(Number(price)) || type == null) return null;
     for (const item of items) {
         if (!item || (isValid && !isValid(item))) continue;
@@ -1101,7 +1132,7 @@ function findCrossedOrder(
  * @param {number} receivePrecision - Precision of receive asset
  * @returns {boolean} True if both amounts are valid and within limits
  */
-function validateOrderAmountsWithinLimits(amountToSell: any, minToReceive: any, sellPrecision: any, receivePrecision: any) {
+function validateOrderAmountsWithinLimits(amountToSell: number, minToReceive: number, sellPrecision: number, receivePrecision: number) {
     const sellPrecFloat = Math.pow(10, toFiniteNumber(sellPrecision));
     const receivePrecFloat = Math.pow(10, toFiniteNumber(receivePrecision));
 
@@ -1131,7 +1162,7 @@ function validateOrderAmountsWithinLimits(amountToSell: any, minToReceive: any, 
  * @returns {number} Minimum order size in asset units
  * @throws {Error} If precision cannot be determined
  */
-function getMinOrderSize(orderType: any, assets: any, factor: any = GRID_LIMITS.MIN_ORDER_SIZE_FACTOR) {
+function getMinOrderSize(orderType: string, assets: AssetPair | null | undefined, factor: number = GRID_LIMITS.MIN_ORDER_SIZE_FACTOR) {
     const f = Number(factor);
     if (!f || !Number.isFinite(f) || f <= 0) return 0;
 
@@ -1154,7 +1185,7 @@ function getMinOrderSize(orderType: any, assets: any, factor: any = GRID_LIMITS.
  * @param {number} [dustThresholdPercent=5] - Dust threshold percentage (default 5%)
  * @returns {number} Dust factor (e.g., 0.05 for 5%)
  */
-function getDustThresholdFactor(dustThresholdPercent: any = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE) {
+function getDustThresholdFactor(dustThresholdPercent: number = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE) {
     return dustThresholdPercent / 100;
 }
 
@@ -1166,7 +1197,7 @@ function getDustThresholdFactor(dustThresholdPercent: any = GRID_LIMITS.PARTIAL_
  * @param {number} [dustThresholdPercent=5] - Threshold percentage (default 5%)
  * @returns {number} Single dust threshold (0 if idealSize invalid)
  */
-function getSingleDustThreshold(idealSize: any, dustThresholdPercent: any = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE) {
+function getSingleDustThreshold(idealSize: number, dustThresholdPercent: number = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE) {
     if (!idealSize || idealSize <= 0) return 0;
     return idealSize * getDustThresholdFactor(dustThresholdPercent);
 }
@@ -1180,7 +1211,7 @@ function getSingleDustThreshold(idealSize: any, dustThresholdPercent: any = GRID
  * @param {number} [dustThresholdPercent=5] - Threshold percentage (default 5%)
  * @returns {number} Double dust threshold (0 if idealSize invalid)
  */
-function getDoubleDustThreshold(idealSize: any, dustThresholdPercent: any = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE) {
+function getDoubleDustThreshold(idealSize: number, dustThresholdPercent: number = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE) {
     if (!idealSize || idealSize <= 0) return 0;
     return idealSize * getDustThresholdFactor(dustThresholdPercent) * 2;
 }
@@ -1197,19 +1228,19 @@ function getDoubleDustThreshold(idealSize: any, dustThresholdPercent: any = GRID
  * @param {number} [dustThresholdPercent=5] - Dust threshold percentage (default 5%)
  * @returns {Object} Validation result {isValid, reason, minAbsoluteSize, minDustSize}
  */
-function validateOrderSize(orderSize: any, orderType: any, assets: any, minFactor: any = GRID_LIMITS.MIN_ORDER_SIZE_FACTOR, idealSize: any = null, dustThresholdPercent: any = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE) {
+function validateOrderSize(orderSize: number, orderType: string, assets: AssetPair | null | undefined, minFactor: number = GRID_LIMITS.MIN_ORDER_SIZE_FACTOR, idealSize: number | null = null, dustThresholdPercent: number = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE): { isValid: boolean; reason: string | null; minAbsoluteSize: number; minDustSize: number | null } {
      const orderSizeFloat = toFiniteNumber(orderSize);
      const minAbsoluteSize = getMinOrderSize(orderType, assets, minFactor);
      
-     let precision: any = null;
+     let precision: number | null = null;
      if (assets) {
          if ((orderType === ORDER_TYPES.SELL) && assets.assetA) precision = assets.assetA.precision;
          else if ((orderType === ORDER_TYPES.BUY) && assets.assetB) precision = assets.assetB.precision;
      }
-      const displayPrecision = precision;
+      const displayPrecision = precision ?? undefined;
      
      if (orderSizeFloat < minAbsoluteSize) {
-         return { isValid: false, reason: `Order size (${Format.formatAmountByPrecision(orderSizeFloat, displayPrecision)}) below absolute minimum (${Format.formatAmountByPrecision(minAbsoluteSize, displayPrecision)})`, minAbsoluteSize, minDustSize: null as any };
+         return { isValid: false, reason: `Order size (${Format.formatAmountByPrecision(orderSizeFloat, displayPrecision)}) below absolute minimum (${Format.formatAmountByPrecision(minAbsoluteSize, displayPrecision)})`, minAbsoluteSize, minDustSize: null };
      }
 
      if (idealSize !== null && idealSize !== undefined && idealSize > 0) {
@@ -1221,11 +1252,11 @@ function validateOrderSize(orderSize: any, orderType: any, assets: any, minFacto
 
      if (typeof precision === 'number') {
          if (floatToBlockchainInt(orderSizeFloat, precision) <= 0) {
-             return { isValid: false, reason: `Order size (${orderSizeFloat}) rounds to 0 on blockchain`, minAbsoluteSize, minDustSize: idealSize ? getDoubleDustThreshold(idealSize, dustThresholdPercent) : null as any };
+             return { isValid: false, reason: `Order size (${orderSizeFloat}) rounds to 0 on blockchain`, minAbsoluteSize, minDustSize: idealSize ? getDoubleDustThreshold(idealSize, dustThresholdPercent) : null };
          }
      }
 
-     return { isValid: true, reason: null, minAbsoluteSize, minDustSize: idealSize ? getDoubleDustThreshold(idealSize, dustThresholdPercent) : null as any };
+     return { isValid: true, reason: null, minAbsoluteSize, minDustSize: idealSize ? getDoubleDustThreshold(idealSize, dustThresholdPercent) : null };
 }
 
 // ================================================================================
@@ -1246,19 +1277,20 @@ function validateOrderSize(orderSize: any, orderType: any, assets: any, minFacto
  * @param {number} [precision=null] - Asset precision; if provided, quantize to blockchain integers
  * @returns {Array<number>} Array of n allocation sizes
  */
-function allocateFundsByWeights(totalFunds: any, n: any, weight: any, incrementFactor: any, reverse: any = false, _minSize: any = 0, precision: any = null) {
+function allocateFundsByWeights(totalFunds: number, n: number, weight: unknown, incrementFactor: number, reverse: boolean = false, _minSize: number = 0, precision: number | null = null): number[] {
     if (n <= 0) return [];
     if (!Number.isFinite(totalFunds) || totalFunds <= 0) return new Array(n).fill(0);
 
+    const weightNum = Number(weight);
     const base = 1 - incrementFactor;
     const rawWeights = new Array(n);
     for (let i = 0; i < n; i++) {
         const idx = reverse ? (n - 1 - i) : i;
-        rawWeights[i] = Math.pow(base, idx * weight);
+        rawWeights[i] = Math.pow(base, idx * weightNum);
     }
 
     const sizes = new Array(n).fill(0);
-    const totalWeight = rawWeights.reduce((s: any, w: any) => s + w, 0) || 1;
+    const totalWeight = rawWeights.reduce((s: number, w: number) => s + w, 0) || 1;
 
     if (precision !== null && precision !== undefined) {
         const totalUnits = floatToBlockchainInt(totalFunds, precision);
@@ -1303,12 +1335,14 @@ function allocateFundsByWeights(totalFunds: any, n: any, weight: any, incrementF
  * @param {number} [precisionB=null] - Precision for assetB (BUY asset)
  * @returns {Array<Object>} Orders array with size property added to each
  */
-function calculateOrderSizes(orders: any, config: any, sellFunds: any, buyFunds: any, minSellSize: any = 0, minBuySize: any = 0, precisionA: any = null, precisionB: any = null) {
-    const { incrementPercent, weightDistribution: { sell: sellWeight, buy: buyWeight } } = config;
+function calculateOrderSizes(orders: ManagedOrder[], config: GridConfig, sellFunds: number, buyFunds: number, minSellSize: number = 0, minBuySize: number = 0, precisionA: number | null = null, precisionB: number | null = null): ManagedOrder[] {
+    const incrementPercent = config.incrementPercent ?? 0;
+    const sellWeight = config.weightDistribution?.sell ?? 0;
+    const buyWeight = config.weightDistribution?.buy ?? 0;
     const incrementFactor = incrementPercent / 100;
 
-    const sellOrders = orders.filter((o: any) => o.type === ORDER_TYPES.SELL);
-    const buyOrders = orders.filter((o: any) => o.type === ORDER_TYPES.BUY);
+    const sellOrders = orders.filter((o) => o.type === ORDER_TYPES.SELL);
+    const buyOrders = orders.filter((o) => o.type === ORDER_TYPES.BUY);
 
     const sellSizes = allocateFundsByWeights(sellFunds, sellOrders.length, sellWeight, incrementFactor, false, minSellSize, precisionA);
     const buySizes = allocateFundsByWeights(buyFunds, buyOrders.length, buyWeight, incrementFactor, true, minBuySize, precisionB);
@@ -1316,7 +1350,7 @@ function calculateOrderSizes(orders: any, config: any, sellFunds: any, buyFunds:
     const sellState = { sizes: sellSizes, index: 0 };
     const buyState = { sizes: buySizes, index: 0 };
 
-    return orders.map((order: any) => {
+    return orders.map((order) => {
         let size = 0;
         if (order.type === ORDER_TYPES.SELL) {
             if (sellState.index >= sellState.sizes.length) throw new Error(`calculateOrderSizes: sell index ${sellState.index} out of bounds (len=${sellState.sizes.length})`);
@@ -1343,14 +1377,15 @@ function calculateOrderSizes(orders: any, config: any, sellFunds: any, buyFunds:
  * @param {number} [precision=null] - Asset precision for quantization
  * @returns {Array<number>} Array of order sizes
  */
-function calculateRotationOrderSizes(availableFunds: any, totalGridAllocation: any, orderCount: any, orderType: any, config: any, minSize: any = 0, precision: any = null) {
+function calculateRotationOrderSizes(availableFunds: number, totalGridAllocation: number, orderCount: number, orderType: string, config: GridConfig, minSize: number = 0, precision: number | null = null): number[] {
     if (orderCount <= 0) return [];
     const totalFunds = availableFunds + totalGridAllocation;
     if (!Number.isFinite(totalFunds) || totalFunds <= 0) return new Array(orderCount).fill(0);
 
-    const { incrementPercent, weightDistribution } = config;
+    const incrementPercent = config.incrementPercent ?? 0;
+    const weightDistribution = config.weightDistribution ?? {};
     const incrementFactor = incrementPercent / 100;
-    const weight = (orderType === ORDER_TYPES.SELL) ? weightDistribution.sell : weightDistribution.buy;
+    const weight = (orderType === ORDER_TYPES.SELL) ? (weightDistribution.sell ?? 0) : (weightDistribution.buy ?? 0);
     const reverse = (orderType === ORDER_TYPES.BUY);
 
     return allocateFundsByWeights(totalFunds, orderCount, weight, incrementFactor, reverse, minSize, precision);
@@ -1370,11 +1405,11 @@ function calculateRotationOrderSizes(availableFunds: any, totalGridAllocation: a
  * @param {string} [sideName='unknown'] - Side name for logging (buy/sell)
  * @returns {number} RMS divergence metric (0 = perfect match, higher = more divergence)
  */
-function calculateGridSideDivergenceMetric(calculatedOrders: any, persistedOrders: any, _sideName: any = 'unknown') {
+function calculateGridSideDivergenceMetric(calculatedOrders: ManagedOrder[], persistedOrders: ManagedOrder[], _sideName: string = 'unknown'): number {
     if (!Array.isArray(calculatedOrders) || !Array.isArray(persistedOrders)) return 0;
     if (calculatedOrders.length === 0 && persistedOrders.length === 0) return 0;
 
-    const persistedMap = new Map(persistedOrders.filter((o: any) => o.id).map((o: any) => [o.id, o]));
+    const persistedMap = new Map(persistedOrders.filter((o) => o.id).map((o) => [o.id, o]));
     let sumSquaredDiff = 0;
     let matchCount = 0;
     let unmatchedCount = 0;
@@ -1401,7 +1436,7 @@ function calculateGridSideDivergenceMetric(calculatedOrders: any, persistedOrder
     }
 
     for (const persOrder of persistedOrders) {
-        if (!calculatedOrders.some((c: any) => c.id === persOrder.id)) {
+        if (!calculatedOrders.some((c) => c.id === persOrder.id)) {
             sumSquaredDiff += 1.0;
             unmatchedCount++;
         }
@@ -1425,13 +1460,13 @@ function calculateGridSideDivergenceMetric(calculatedOrders: any, persistedOrder
  * @param {number} [feeMultiplier=BTS_RESERVATION_MULTIPLIER] - Multiplier for reservation (typically 5x)
  * @returns {number} Total fee amount (fallback BTS_FALLBACK_FEE if fee lookup fails; warning logged)
  */
-function calculateOrderCreationFees(assetA: any, assetB: any, totalOrders: any, feeMultiplier: any = FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER) {
+function calculateOrderCreationFees(assetA: string | undefined, assetB: string | undefined, totalOrders: number, feeMultiplier: number = FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER) {
     try {
         if (totalOrders > 0) {
-            const btsFeeData = getAssetFees('BTS');
-            return btsFeeData.createFee * totalOrders * feeMultiplier;
+            const btsFeeData = getAssetFees('BTS') as { createFee?: number };
+            return (btsFeeData.createFee ?? 0) * totalOrders * feeMultiplier;
         }
-    } catch (err: any) {
+    } catch (err) {
         const key = `${assetA}/${assetB}`;
         if (!warnedMissingFeeCachePairs.has(key)) {
             warnedMissingFeeCachePairs.add(key);
@@ -1458,7 +1493,7 @@ function calculateOrderCreationFees(assetA: any, assetB: any, totalOrders: any, 
  * @param {number} poolReserveIn - Pool reserve of input asset
  * @returns {number} Amount of input asset to sell
  */
-function calculateSwapInAmount(targetReceive: any, poolReserveOut: any, poolReserveIn: any) {
+function calculateSwapInAmount(targetReceive: number, poolReserveOut: number, poolReserveIn: number): number {
     if (targetReceive <= 0 || poolReserveOut <= 0 || poolReserveIn <= 0) return 0;
     let effectiveTarget = targetReceive;
     if (effectiveTarget >= poolReserveOut * 0.5) {
@@ -1480,12 +1515,12 @@ function calculateSwapInAmount(targetReceive: any, poolReserveOut: any, poolRese
  * @param {Object} GRID_LIMITS - Grid limits constants (optional, uses defaults)
  * @returns {number} Number of gap slots
  */
-function calculateGapSlots(incrementPercent: any, targetSpreadPercent: any, gridLimits: { MIN_SPREAD_FACTOR?: number; MIN_SPREAD_ORDERS?: number } = {}) {
+function calculateGapSlots(incrementPercent: number | undefined, targetSpreadPercent: number | undefined, gridLimits: GridLimitsLike = {}): number {
     const DEFAULT_INCREMENT = Number(DEFAULT_CONFIG.incrementPercent);
     const MIN_SPREAD_FACTOR = gridLimits.MIN_SPREAD_FACTOR ?? GRID_LIMITS.MIN_SPREAD_FACTOR;
     const MIN_SPREAD_ORDERS = gridLimits.MIN_SPREAD_ORDERS ?? GRID_LIMITS.MIN_SPREAD_ORDERS;
 
-    const safeIncrement = (Number.isFinite(incrementPercent) && incrementPercent > 0) ? incrementPercent : DEFAULT_INCREMENT;
+    const safeIncrement = (Number.isFinite(Number(incrementPercent)) && Number(incrementPercent) > 0) ? Number(incrementPercent) : DEFAULT_INCREMENT;
     const step = 1 + (safeIncrement / 100);
     const minSpreadPercent = safeIncrement * MIN_SPREAD_FACTOR;
     const effectiveTargetSpread = Math.max(targetSpreadPercent || 0, minSpreadPercent);
@@ -1497,7 +1532,7 @@ function calculateGapSlots(incrementPercent: any, targetSpreadPercent: any, grid
  * Calculate sell start index from boundary index and gap slots.
  * sellStartIdx = boundaryIdx + gapSlots + 1
  */
-function getSellStartIdx(boundaryIdx: any, gapSlots: any): number {
+function getSellStartIdx(boundaryIdx: number | null, gapSlots: number | null): number {
     return Number(boundaryIdx ?? 0) + Number(gapSlots) + 1;
 }
 
@@ -1507,7 +1542,7 @@ function getSellStartIdx(boundaryIdx: any, gapSlots: any): number {
  * pattern — used by resolveGapBand and the COW boundary-commit gate so the
  * two can never disagree on band width.
  */
-function resolveGapSlots(manager: { _gapSlots?: any; config?: any }): number {
+function resolveGapSlots(manager: { _gapSlots?: number | null; config?: GridConfig | null }): number {
     const configured = manager._gapSlots;
     if (configured != null && Number.isFinite(Number(configured))) {
         return Math.max(0, Math.floor(Number(configured)));
@@ -1531,7 +1566,7 @@ function resolveGapSlots(manager: { _gapSlots?: any; config?: any }): number {
  *   `sellStartIdx` are set to `null` — callers should treat this as "no
  *   boundary restored yet" and skip geometry-based filtering.
  */
-function resolveGapBand(manager: { _gapSlots?: any; boundaryIdx?: any; config?: any }): { gapSlots: number; boundaryIdx: number | null; sellStartIdx: number | null } {
+function resolveGapBand(manager: { _gapSlots?: number | null; boundaryIdx?: number | null; config?: GridConfig | null }): { gapSlots: number; boundaryIdx: number | null; sellStartIdx: number | null } {
     const gapSlots = resolveGapSlots(manager);
     // Explicit null/undefined guard: Number(null) === 0, which would silently
     // treat "no boundary" as boundary 0 — a valid index that biases all slots
@@ -1600,8 +1635,8 @@ const BOUNDARY_REJECT_PLACED_IN_BAND = 'placed_order_in_band';
  *   is a stable short code and `detail` carries indices/prices for logs.
  */
 function validateBoundaryCommit(
-    proposedBoundary: any,
-    orders: Iterable<any>,
+    proposedBoundary: number | null | undefined,
+    orders: Iterable<unknown>,
     gapSlots: number,
     options: { rejectInBandPlacements?: boolean } = {}
 ): { ok: boolean; reason?: string; detail?: string } {
@@ -1615,15 +1650,17 @@ function validateBoundaryCommit(
     }
 
     const sorted = Array.from(orders ?? [])
-        .filter((o: any) => o && o.price != null && Number.isFinite(Number(o.price)))
-        // Fork-kept deep-* dip-shelf entries are not rail positions: they
-        // persist inline (price-sorted) below the rail and would shift every
-        // rail index in this positional mapping — pushing legitimate rail
-        // slots into the band window (plus reading as in-band strands).
-        // Rail geometry validates rail only; the shelf is floor-anchored
-        // outside it by design and can never strand the spread.
-        .filter((o: any) => !isDeepShelfId(o?.id))
-        .sort((a: any, b: any) => Number(a.price) - Number(b.price));
+        .filter((raw: any): raw is { price: number; orderId?: string | null } => {
+            if (!raw || typeof raw !== 'object') return false;
+            // Fork-kept deep-* dip-shelf entries are not rail positions: they
+            // persist inline (price-sorted) below the rail and would shift every
+            // rail index in this positional mapping - pushing legitimate rail
+            // slots into the band window (plus reading as in-band strands).
+            if (isDeepShelfId((raw as { id?: unknown }).id)) return false;
+            const p = (raw as { price?: unknown }).price;
+            return p != null && Number.isFinite(Number(p));
+        })
+        .sort((a, b) => Number(a.price) - Number(b.price));
     const maxIdx = sorted.length - 1;
     if (raw > maxIdx) {
         return { ok: false, reason: 'boundary_out_of_range', detail: `proposed=${raw} maxIdx=${maxIdx}` };
@@ -1720,8 +1757,8 @@ function validateBoundaryCommit(
  *   falls through to the clean full-grid reset instead of re-ingesting damage.
  */
 function validatePersistedBoundary(
-    proposedBoundary: any,
-    orders: Iterable<any>,
+    proposedBoundary: number | null | undefined,
+    orders: Iterable<unknown>,
     gapSlots: number
 ): { ok: boolean; reason?: string; detail?: string } {
     return validateBoundaryCommit(proposedBoundary, orders, gapSlots, { rejectInBandPlacements: true });
@@ -1748,7 +1785,7 @@ function validatePersistedBoundary(
  * @param check - validatePersistedBoundary / validateBoundaryCommit result
  * @returns True when the check is pure in-band placement (transient).
  */
-function isTransientInBandRejection(check: any): boolean {
+function isTransientInBandRejection(check: { ok?: boolean; reason?: string; [key: string]: unknown } | null | undefined): boolean {
     return !!check && check.ok !== true && check.reason === BOUNDARY_REJECT_PLACED_IN_BAND;
 }
 
@@ -1767,10 +1804,10 @@ function isTransientInBandRejection(check: any): boolean {
  * @returns Count of SPREAD slots inside the gap band, or — when no usable
  *   boundary is restored — the total count of SPREAD-typed slots (fallback).
  */
-function countGapBandSpread(manager: any, orders: Iterable<any>, resolveIndex: (order: any, arrayIndex: number) => number | null): number {
+function countGapBandSpread(manager: OrderManagerLike, orders: Iterable<ManagedOrder>, resolveIndex: (order: ManagedOrder, arrayIndex: number) => number | null): number {
     const resolved = resolveGapBand(manager);
     if (resolved.boundaryIdx === null || resolved.sellStartIdx === null) {
-        return Array.from(orders).filter((o: any) => o?.type === ORDER_TYPES.SPREAD).length;
+        return Array.from(orders).filter((o) => o?.type === ORDER_TYPES.SPREAD).length;
     }
     let count = 0;
     let arrayIndex = 0;
@@ -1806,7 +1843,7 @@ function countGapBandSpread(manager: any, orders: Iterable<any>, resolveIndex: (
  * @param {number} gapSlots - Spread gap slot count.  A non-finite value means
  *   the SELL start cannot be derived, so the slot is not excluded.
  * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL.
- * @param {any} slot - Grid slot (or any object exposing an id like `slot-3`);
+ * @param {unknown} slot - Grid slot (or any object exposing an id like `slot-3`);
  *   slots with an unparseable id are admitted (returns true): geometry cannot
  *   identify the gap for legacy ids, so windowing falls back to the stored
  *   slot type exactly as pre-1.4.25 did (fail-open; consumers still reject
@@ -1815,7 +1852,7 @@ function countGapBandSpread(manager: any, orders: Iterable<any>, resolveIndex: (
  *   geometry cannot be determined (fail-open), false only when a parseable id
  *   sits provably outside the rail.
  */
-function isSlotInRail(boundaryIdx: any, gapSlots: any, orderType: any, slot: any): boolean {
+function isSlotInRail(boundaryIdx: number | null, gapSlots: number | null, orderType: string, slot: { id?: string } | null | undefined): boolean {
     if (boundaryIdx == null || !Number.isFinite(Number(boundaryIdx))) return true;
     const parsed = parseSlotIndex(slot?.id);
     if (parsed === null) return true;
@@ -1838,7 +1875,7 @@ function isSlotInRail(boundaryIdx: any, gapSlots: any, orderType: any, slot: any
  * @param {number} gapSlots - Spread gap slot count
  * @returns {boolean} True when the index is inside the gap band
  */
-function isSlotIndexInGapBand(idx: any, boundaryIdx: any, gapSlots: any): boolean {
+function isSlotIndexInGapBand(idx: number | string | null | undefined, boundaryIdx: number | string | null | undefined, gapSlots: number): boolean {
     // Explicit null guard: Number(null) === 0 must never read as slot 0.
     if (idx === null || idx === undefined || idx === '') return false;
     if (boundaryIdx === null || boundaryIdx === undefined || boundaryIdx === '') return false;
@@ -1871,7 +1908,7 @@ function isSlotIndexInGapBand(idx: any, boundaryIdx: any, gapSlots: any): boolea
  * @param {number} [precision] - Asset precision for bit-exact int compare
  * @returns {boolean} True when the planned size is still covered by the booking
  */
-function isEvacuationSizeStillValid(newSize: any, bookedRemaining: any, precision: any = null): boolean {
+function isEvacuationSizeStillValid(newSize: number, bookedRemaining: number, precision: number | null = null): boolean {
     const nS = Number(newSize);
     const bR = Number(bookedRemaining);
     if (!Number.isFinite(nS) || nS <= 0) return false;
@@ -1911,7 +1948,7 @@ function isEvacuationSizeStillValid(newSize: any, bookedRemaining: any, precisio
  * @param {number} [precision] - Asset precision for bit-exact int compare
  * @returns {{allowed: boolean, reason: string}}
  */
-function isEvacuationRotationAllowed(oldPrice: any, oldSize: any, newPrice: any, newSize: any, type: any, precision: any = null): { allowed: boolean; reason: string } {
+function isEvacuationRotationAllowed(oldPrice: unknown, oldSize: unknown, newPrice: unknown, newSize: unknown, type: string, precision: number | null = null): { allowed: boolean; reason: string } {
     if (type !== ORDER_TYPES.BUY && type !== ORDER_TYPES.SELL) {
         return { allowed: false, reason: `type ${String(type)} is not a rail type` };
     }
@@ -2027,22 +2064,23 @@ function isChainPriceOutOfGrid(price: number, genesis: GridGenesis, precision: n
     return false;
 }
 
-function assertSlotPriceInvariant(slot: any, genesis: GridGenesis): void {
-    // Deep shelf ids are outside the slot-N scheme — nothing to prove.
-    if (typeof slot?.id === 'string' && /^deep-\d+$/.test(slot.id)) return;
-    const idx = parseSlotIndex(slot?.id);
-    if (idx === null) throw new Error(`assertSlotPriceInvariant: unparseable slot id ${slot?.id}`);
+function assertSlotPriceInvariant(slot: unknown, genesis: GridGenesis): void {
+    const s = slot as { id?: string; price?: number } | null | undefined;
+    // Deep shelf ids are outside the slot-N scheme - nothing to prove.
+    if (typeof s?.id === 'string' && /^deep-\d+$/.test(s.id)) return;
+    const idx = parseSlotIndex(s?.id);
+    if (idx === null) throw new Error(`assertSlotPriceInvariant: unparseable slot id ${s?.id}`);
     const expected = priceForSlot(idx, genesis);
     // Use blockchain integer equality for single-epsilon check.
     // Need asset precision: fall back to generic epsilon if unknown.
     // For invariant we use absolute relative tolerance 1e-9 or integer check when precision known.
-    const price = Number(slot.price);
-    if (!Number.isFinite(price)) throw new Error(`assertSlotPriceInvariant: slot ${slot.id} has non-finite price`);
+    const price = Number(s?.price);
+    if (!Number.isFinite(price)) throw new Error(`assertSlotPriceInvariant: slot ${s?.id} has non-finite price`);
     // If slot has no asset context, use tight epsilon.
     const diff = Math.abs(price - expected);
     const rel = diff / Math.max(1e-12, Math.abs(expected));
     if (rel > 1e-9 && diff > 1e-12) {
-        throw new Error(`Slot price invariant violated for ${slot.id}: price ${price} != expected ${expected} (idx ${idx})`);
+        throw new Error(`Slot price invariant violated for ${s?.id}: price ${price} != expected ${expected} (idx ${idx})`);
     }
 }
 
@@ -2054,6 +2092,79 @@ function priceSlotEqual(a: number, b: number, precision: number): boolean {
     } catch {
         return a === b;
     }
+}
+
+/**
+ * Derive the geometric price ladder (the "rail") from a live config.
+ *
+ * SINGLE SOURCE OF TRUTH for rail geometry: `createOrderGrid` (fresh build)
+ * and `buildGenesisFromLiveRail` (legacy-snapshot migration) MUST agree
+ * exactly, or a migrated genesis would describe a different ladder than a
+ * freshly built grid of the same config -- making the migration cross-check
+ * reject a snapshot it should adopt, or adopt one that no longer matches a
+ * rebuild. Both callers go through here; neither re-implements the loop.
+ *
+ * Returns the ascending, deduped levels (dedupe uses `toFixed(12)` equality so
+ * `floatToBlockchainInt` collisions collapse and slot-N <-> index stays
+ * stable); throws if the loops cannot advance or produce nothing.
+ *
+ * Config validation (finiteness, price bounds, increment bounds) is deliberately
+ * left to the callers: `createOrderGrid` validates strictly, while the migration
+ * path builds a candidate ladder for a finite-but-out-of-bounds config so the
+ * slot cross-check — not an input error — rejects it. The only guard here is the
+ * one that prevents non-termination, which no caller could recover from.
+ */
+function derivePriceLevels(
+    startPrice: number,
+    minPrice: number,
+    maxPrice: number,
+    incrementPercent: number
+): number[] {
+    const stepUp = 1 + (incrementPercent / 100);
+    const stepDown = 1 - (incrementPercent / 100);
+    // Non-termination guard. For `stepUp === 1` (incrementPercent <= 0, or so
+    // small it underflows `1 + inc/100`) the ascending loop multiplies by
+    // exactly 1 and never ends; likewise `stepDown === 1` on the descending
+    // loop. Everything else (finiteness, bounds, increment bounds) is the
+    // CALLER's validation — kept there so the migration path can build a
+    // candidate ladder for an out-of-bounds-but-finite config and let the
+    // slot cross-check reject it, instead of failing as a config error.
+    if (!(stepUp > 1) || !(stepDown < 1)) {
+        throw new Error(
+            `Invalid incrementPercent: ${incrementPercent}. Must be large enough to advance the geometric rail.`
+        );
+    }
+    const priceLevels: number[] = [];
+
+    // Expand outward from startPrice so the grid is centered on the market price.
+    let upPrice = startPrice * Math.sqrt(stepUp);
+    while (upPrice <= maxPrice) {
+        priceLevels.push(upPrice);
+        upPrice *= stepUp;
+    }
+    let downPrice = startPrice * Math.sqrt(stepDown);
+    while (downPrice >= minPrice) {
+        priceLevels.push(downPrice);
+        downPrice *= stepDown;
+    }
+    priceLevels.sort((a, b) => a - b);
+
+    // Dedupe levels that collide at float precision.
+    const seen = new Set<string>();
+    const deduped: number[] = [];
+    for (const p of priceLevels) {
+        const key = Number(p).toFixed(12);
+        if (!seen.has(key)) { seen.add(key); deduped.push(p); }
+    }
+
+    if (deduped.length === 0) {
+        throw new Error(
+            `Grid generation produced no price levels for startPrice=${startPrice}, ` +
+            `bounds=[${minPrice}, ${maxPrice}], incrementPercent=${incrementPercent}. ` +
+            `Widen bounds or reduce incrementPercent.`
+        );
+    }
+    return deduped;
 }
 
 function buildGenesisFromPriceLevels(startPrice: number, incrementPercent: number, gapSlots: number, priceLevels: number[]): GridGenesis {
@@ -2068,7 +2179,9 @@ function buildGenesisFromPriceLevels(startPrice: number, incrementPercent: numbe
     };
 }
 
-export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, isSlotIndexInGapBand, isEvacuationRotationAllowed, isEvacuationSizeStillValid, validateBoundaryCommit, validatePersistedBoundary, isTransientInBandRejection, BOUNDARY_REJECT_PLACED_IN_BAND, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, resolveBuyDeepCount, resolveBuyDeepSizes, isDeepShelfId, deepShelfPrices, BUY_WINDOW_DEFAULTS, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals, priceLevelsForGenesis, priceForSlot, slotIndexForPrice, slotIdForPrice, assertSlotPriceInvariant, priceSlotEqual, buildGenesisFromPriceLevels, hashPriceLevels, isChainPriceOutOfGrid }
+export type { FeeCacheEntry };
+
+export { getBtsSide, getSellStartIdx, resolveGapBand, countGapBandSpread, calculateGapSlots, isSlotInRail, isSlotIndexInGapBand, isEvacuationRotationAllowed, isEvacuationSizeStillValid, validateBoundaryCommit, validatePersistedBoundary, isTransientInBandRejection, BOUNDARY_REJECT_PLACED_IN_BAND, resolveGapSlots, isPercentageString, isPositiveNumber, isPositiveNumberOrPercent, isPositiveInt, parsePercentageString, toDecimal, resolveRelativePrice, parseRelativeMultiplier, validateGridPriceBounds, isExplicitZeroAllocation, getPrecision, computeChainFundTotals, calculateAvailableFundsValue, computeBtsFeeImpact, adjustBudgetForBtsFees, getGridBestPrices, calculateSpreadFromOrders, resolveConfigValue, resolveConfigValueWithRegistry, resolveBuyFloorUsdt, resolveBuyDelayMs, resolveBuyWindowMode, resolveBuyDeepCount, resolveBuyDeepSizes, isDeepShelfId, deepShelfPrices, BUY_WINDOW_DEFAULTS, hasValidAccountTotals, blockchainToFloat, floatToBlockchainInt, quantizeFloat, normalizeInt, getPrecisionByOrderType, getPrecisionsForManager, getPrecisionSlack, quantumForPrecision, calculatePriceTolerance, findPriceCollision, findCrossedOrder, validateOrderAmountsWithinLimits, getMinOrderSize, getDustThresholdFactor, getSingleDustThreshold, getDoubleDustThreshold, validateOrderSize, getAssetFees, getAssetFeesSafe, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, calculateOrderCreationFees, calculateSwapInAmount, _setFeeCache, cloneWeightDistribution, clamp, roundTo, fixedTo, roundToDecimals, priceLevelsForGenesis, priceForSlot, slotIndexForPrice, slotIdForPrice, assertSlotPriceInvariant, priceSlotEqual, derivePriceLevels, buildGenesisFromPriceLevels, hashPriceLevels, isChainPriceOutOfGrid }
 
 /**
  * Round a value to a given factor.
@@ -2110,7 +2223,7 @@ function roundToDecimals(value: number, decimals: number): number {
  * @param {number} max - Upper bound
  * @returns {number}
  */
-function clamp(value: any, min: any, max: any) {
+function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value));
 }
 
@@ -2123,7 +2236,7 @@ function clamp(value: any, min: any, max: any) {
  * @param {Object|null} base - Fallback weights if primary is missing/invalid
  * @returns {{sell:number,buy:number}|null}
  */
-function cloneWeightDistribution(weightDistribution: any, base: any = null) {
+function cloneWeightDistribution(weightDistribution: WeightDistributionConfig | null | undefined, base: WeightDistributionConfig | null = null): { sell: number; buy: number } | null {
     const source = (weightDistribution && typeof weightDistribution === 'object')
         ? weightDistribution
         : (base && typeof base === 'object' ? base : null);

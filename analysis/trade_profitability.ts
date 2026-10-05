@@ -2,17 +2,25 @@
 'use strict';
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { resolveAccountRef } from './account_resolver.js';
 import {
     BTS_ID,
     assetPrec as getPrec,
     assetSymbol,
-    fetchAllFills,
     resolveAssetPrecisions,
     toReal,
     FillRecord,
 } from './fills_source.js';
+import { writePnlReport } from './pnl_report.js';
+import { fetchFillsCached } from './fills_cache.js';
+import { toFileUrl } from './chart_utils.js';
+import { PATHS } from '../modules/paths.js';
+import { sanitizeKey } from '../modules/utils/sanitize_key.js';
+import { monthsToHours } from '../modules/utils/time_range.js';
+import { muteChainLogs } from '../modules/utils/chain_logs.js';
+import { formatFundsValue } from '../modules/order/format.js';
 
 /**
  * TRADE PROFITABILITY ANALYZER
@@ -23,12 +31,12 @@ import {
  *
  * Usage:
  *   node dist/analysis/trade_profitability.js 1.2.3 --start 2025-01-01 --end 2025-06-01
- *   node dist/analysis/trade_profitability.js 1.2.3 --hours 720
+ *   node dist/analysis/trade_profitability.js 1.2.3 --month 3
  *   node dist/analysis/trade_profitability.js 1.2.3 --start 2025-01-01T00:00:00Z --end 2025-06-01T00:00:00Z
  *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --asset 1.3.113
  *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --csv trades.csv
  *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --json results.json
- *   node dist/analysis/trade_profitability.js "account-name" --hours 168
+ *   node dist/analysis/trade_profitability.js "account-name" --month 3
  *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --trades
  *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --match-mode fifo
  */
@@ -105,49 +113,74 @@ interface PairAnalysis {
 
 function printHelp() {
     console.log(`\
-Usage: node dist/analysis/trade_profitability.js <accountId> [options]
+Usage: node dist/analysis/trade_profitability.js <account|bot> [options]
 
 Analyzes filled orders for a BitShares account, computing realized PnL
 via FIFO or sequential (LIFO) inventory tracking.
 
 Arguments:
-  accountId              BitShares account ID (1.2.x) or name (auto-resolved in the background)
+  account|bot            Local bot profile name, BitShares account name, or 1.2.x id.
+                         Local profiles are checked first, then the chain.
 
 Options:
+  --month <n>            Lookback months (730 h each; default 3; alias --months).
   --start <iso>          Start time (ISO 8601, e.g. 2025-01-01 or 2025-01-01T00:00:00Z)
   --end <iso>            End time (ISO 8601)
-  --hours <n>            Lookback hours from now (alternative to --start/--end)
+  --hours <n>            Lookback hours from now (alternative to --month/--start/--end)
+  --pair <BASE/QUOTE>    Filter to one pair, by symbol or 1.3.x id (e.g. TOKENA/BTS)
   --asset <assetId>      Filter to one base asset (e.g. 1.3.113 for bitUSD)
-  --refresh-account      Force re-resolution and update the stored accountId
+  --refresh-account      Force re-resolution and bypass the fills cache (re-query the range)
+  --html                 Write a self-contained HTML report instead of terminal tables
+  --report <file>        Override the auto-named HTML report path (implies --html)
   --csv <file>           Export trade list as CSV
   --json <file>          Export full analysis as JSON
-  --trades               Show per-order PnL detail (hidden by default)
+  --trades               Show per-order PnL detail (terminal mode only)
   --match-mode <mode>    Matching mode: sequential (default, LIFO) or fifo
   --fee-per-order <bts>  Blockchain fee per limit_order_create op in BTS (default: 0.09652)
   --verbose              Print extra debug info
   --help, -h             Show this help
 
 Examples:
+  dexbot pnl my-bot --month 3
+  dexbot pnl 1.2.123456 --month 6 --pair TOKENA/BTS
   node dist/analysis/trade_profitability.js 1.2.123456 --hours 720
   node dist/analysis/trade_profitability.js 1.2.123456 --start 2025-01-01 --end 2025-06-01
-  node dist/analysis/trade_profitability.js "my-bot-account" --hours 168
-  node dist/analysis/trade_profitability.js 1.2.123456 --hours 720 --asset 1.3.113 --csv trades.csv
-  node dist/analysis/trade_profitability.js 1.2.123456 --hours 720 --match-mode sequential`);
+  node dist/analysis/trade_profitability.js 1.2.123456 --hours 720 --asset 1.3.113 --csv trades.csv`);
 }
 
-function parseArgs() {
-    const args = process.argv.slice(2);
-    if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
+interface TradeProfitabilityOptions {
+    accountId: string;
+    hours: number | null;
+    months: number | null;
+    start: string | null;
+    end: string | null;
+    asset: string | null;
+    pair: string | { base: string; quote: string } | null;
+    refreshAccount: boolean;
+    csv: string | null;
+    json: string | null;
+    matchMode: string;
+    showPnlDetail: boolean;
+    verbose: boolean;
+    feePerOrder: number | null;
+    html: boolean;
+    report: string | null;
+}
+
+function parseArgs(argv: string[] = process.argv.slice(2)) {
+    if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {
         printHelp();
         process.exit(0);
     }
 
-    const opts: any = {
-        accountId: args[0],
+    const opts: TradeProfitabilityOptions = {
+        accountId: argv[0],
         hours: null,
+        months: null as number | null,
         start: null,
         end: null,
         asset: null,
+        pair: null,
         refreshAccount: false,
         csv: null,
         json: null,
@@ -155,37 +188,79 @@ function parseArgs() {
         showPnlDetail: false,
         verbose: false,
         feePerOrder: null as number | null,
+        html: false,
+        report: null as string | null,
     };
 
-    for (let i = 1; i < args.length; i++) {
-        switch (args[i]) {
-            case '--hours':        opts.hours    = parseInt(args[++i], 10); break;
-            case '--start':        opts.start    = args[++i]; break;
-            case '--end':          opts.end      = args[++i]; break;
-            case '--asset':        opts.asset    = args[++i]; break;
+    // Reject a missing flag value explicitly (e.g. `--pair` at end of argv)
+    // instead of silently letting `undefined` disable the option.
+    const requireValue = (name: string, raw: string | undefined): string => {
+        const v = raw == null ? '' : String(raw);
+        if (!v || v.startsWith('--')) throw new Error(`${name}: missing value`);
+        return v;
+    };
+
+    const setMonths = (raw: string) => {
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n <= 0) throw new Error(`--month: invalid value "${raw}" (expected positive months, e.g. --month 6)`);
+        opts.months = n;
+    };
+    const setHours = (raw: string) => {
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n <= 0) throw new Error(`--hours: invalid value "${raw}" (expected positive hours)`);
+        opts.hours = n;
+    };
+
+    for (let i = 1; i < argv.length; i++) {
+        const arg = argv[i];
+        switch (arg) {
+            case '--hours':        setHours(requireValue('--hours', argv[++i])); break;
+            case '--month':
+            case '--months':       setMonths(requireValue('--month', argv[++i])); break;
+            case '--start':        opts.start    = requireValue('--start', argv[++i]); break;
+            case '--end':          opts.end      = requireValue('--end', argv[++i]); break;
+            case '--asset':        opts.asset    = requireValue('--asset', argv[++i]); break;
+            case '--pair':         opts.pair     = requireValue('--pair', argv[++i]); break;
             case '--refresh-account': opts.refreshAccount = true; break;
-            case '--csv':          opts.csv      = args[++i]; break;
-            case '--json':         opts.json     = args[++i]; break;
+            case '--csv':          opts.csv      = requireValue('--csv', argv[++i]); break;
+            case '--json':         opts.json     = requireValue('--json', argv[++i]); break;
             case '--trades':         opts.showPnlDetail  = true; break;
-            case '--fee-per-order':  opts.feePerOrder = parseFloat(args[++i]); break;
+            case '--html':           opts.html = true; break;
+            case '--report':         opts.report = requireValue('--report', argv[++i]); opts.html = true; break;
+            case '--fee-per-order':  opts.feePerOrder = parseFloat(requireValue('--fee-per-order', argv[++i])); break;
             case '--match-mode': {
-                const m = args[++i];
-                if (m !== 'sequential' && m !== 'fifo') {
-                    console.error(`Invalid --match-mode: ${m} (expected: sequential | fifo)`);
-                    process.exit(1);
-                }
+                const m = requireValue('--match-mode', argv[++i]);
+                if (m !== 'sequential' && m !== 'fifo') throw new Error(`Invalid --match-mode: ${m} (expected: sequential | fifo)`);
                 opts.matchMode = m;
                 break;
             }
             case '--verbose':        opts.verbose   = true; break;
-            default:
-                console.error(`Unknown option: ${args[i]}`);
-                process.exit(1);
+            default: {
+                // `--flag=value` spellings, same validation as the space form.
+                const eq = /^--(month|months|hours|start|end|asset|pair|csv|json|report)=(.*)$/.exec(arg);
+                if (eq) {
+                    const [, name, rawValue] = eq;
+                    if (name === 'month' || name === 'months') setMonths(rawValue);
+                    else if (name === 'hours') setHours(rawValue);
+                    else if (name === 'report') { opts.report = requireValue('--report', rawValue); opts.html = true; }
+                    else (opts as unknown as Record<string, unknown>)[name] = requireValue(`--${name}`, rawValue);
+                    break;
+                }
+                throw new Error(`Unknown option: ${arg}`);
+            }
         }
     }
 
-    if (!opts.hours && !opts.start) {
-        opts.hours = 168; // default: 7 days
+    if (!opts.hours && !opts.start && opts.months == null) {
+        opts.months = 3; // default: 3 months
+    }
+
+    if (opts.pair) {
+        const parts = String(opts.pair).split('/');
+        if (parts.length !== 2 || !parts[0].trim() || !parts[1].trim()) {
+            throw new Error(`--pair: expected BASE/QUOTE (e.g. --pair TOKENA/BTS), got "${opts.pair}"`);
+        }
+        opts.pair = { base: parts[0].trim(), quote: parts[1].trim() };
     }
 
     return opts;
@@ -203,7 +278,14 @@ function isValidFillAmounts(baseAmount: number, quoteAmount: number): boolean {
         && baseAmount > 0 && quoteAmount > 0;
 }
 
-function classifyFills(fills: FillRecord[], filterAsset: string | null): { trades: TradeFill[]; pairs: Set<string> } {
+/** Match a user-supplied pair leg against a chain asset id or its symbol. */
+function matchesAssetRef(ref: string, assetId: string): boolean {
+    const want = String(ref).trim().toUpperCase();
+    if (!want) return false;
+    return assetId.toUpperCase() === want || assetSymbol(assetId).toUpperCase() === want;
+}
+
+function classifyFills(fills: FillRecord[], filterAsset: string | null, pairFilter: { base: string; quote: string } | null = null): { trades: TradeFill[]; pairs: Set<string> } {
     const trades: TradeFill[] = [];
     const pairs = new Set<string>();
     let skipped = 0;
@@ -263,6 +345,7 @@ function classifyFills(fills: FillRecord[], filterAsset: string | null): { trade
         }
 
         if (filterAsset && baseAsset !== filterAsset) continue;
+        if (pairFilter && !(matchesAssetRef(pairFilter.base, baseAsset) && matchesAssetRef(pairFilter.quote, quoteAsset))) continue;
 
         // Validate market fee asset: fee is always deducted from receives
         // (base for buys, quote for sells). Warn if unexpected.
@@ -471,9 +554,10 @@ function analyzePair(trades: TradeFill[], matchMode: 'fifo' | 'sequential' = 'se
 
 // ─── Output Helpers ──────────────────────────────────────────────────────────
 
-function fmt(n: number, decimals = 4): string {
-    if (!Number.isFinite(n)) return 'NaN';
-    return n.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+function fmt(n: number, _decimals = 4): string {
+    // Shared 4-significant-figure formatter (see modules/order/format.ts) so
+    // terminal output matches the HTML report and `dexbot order`.
+    return Number.isFinite(n) ? formatFundsValue(n) : 'NaN';
 }
 
 function fmtPct(n: number): string {
@@ -498,8 +582,8 @@ function printSummary(pairs: PairAnalysis[], _accountId: string, _start: string,
         console.log(` ── ${pairLabel}`);
         console.log(`    Buys:        ${fmt(totalBought, 4)} @ ${fmt(avgBuy, 6)} = ${fmt(pair.totalBuyQuote, 4)} ${fmtAsset(pair.quoteAsset)}`);
         console.log(`    Sells:       ${fmt(totalSold, 4)} @ ${fmt(avgSell, 6)} = ${fmt(pair.totalSellQuote, 4)} ${fmtAsset(pair.quoteAsset)}`);
-        console.log(`    Net traded:  ${fmt(pair.netPosition, 4)} ${fmtAsset(pair.baseAsset)} (window flow)`);
-        console.log(`    Trades:      ${pair.realizedPnls.length} matched lots, ${pair.buys.length} buys, ${pair.sells.length} sells`);
+        console.log(`    Net inventory \u0394: ${fmt(pair.netPosition, 4)} ${fmtAsset(pair.baseAsset)} (bought \u2212 sold in window)`);
+        console.log(`    Trades:      ${pair.realizedPnls.length} realized lots, ${pair.buys.length} buys, ${pair.sells.length} sells`);
         if (pair.unmatchedSellBase > 0.0001) {
             console.log(`    Unmatched:   ${fmt(pair.unmatchedSellBase, 4)} ${fmtAsset(pair.baseAsset)} (sold without prior buy in window — expected if inventory predates window)`);
         }
@@ -553,7 +637,7 @@ function printSummary(pairs: PairAnalysis[], _accountId: string, _start: string,
     console.log(`        fees are converted to quote asset. Buy lots are entered at net`);
     console.log(`        receives (gross minus buy-side market fee) so inventory matching`);
     console.log(`        reflects what the account actually held. If inventory predates the`);
-    console.log(`        window or crosses asset pairs, the matched lots may not reflect`);
+    console.log(`        window or crosses asset pairs, the realized lots may not reflect`);
     console.log(`        true trade economics.`);
     console.log('');
 }
@@ -636,6 +720,8 @@ interface TradingMetrics {
     worstTradePct: number;
     mddPct: number;
     mddAbsBts: number;
+    /** Lowest cumulative equity before a stable peak formed (quote asset); 0 when a peak existed. */
+    prePeakMinEquity: number;
     mddHadStablePeak: boolean;
     isOngoingRecovery: boolean;
     currentDrawdownDays: number;
@@ -687,6 +773,7 @@ function computeMetrics(pair: PairAnalysis, window?: WindowRange): TradingMetric
             bestTradePct: 0, worstTradePct: 0,
             mddPct: 0,
             mddAbsBts: 0,
+            prePeakMinEquity: 0,
             mddHadStablePeak: false,
             isOngoingRecovery: false,
             currentDrawdownDays: 0,
@@ -948,9 +1035,11 @@ function computeMetrics(pair: PairAnalysis, window?: WindowRange): TradingMetric
 
     if (hadStablePeak) {
         mddPct *= 100;
+        prePeakMinEquity = 0;
     } else {
-        mddPct = hasPrePeakEquity ? prePeakMinEquity : 0;
+        mddPct = 0;
         mddAbsBts = 0;
+        prePeakMinEquity = hasPrePeakEquity ? prePeakMinEquity : 0;
     }
 
     // Payoff distribution stats
@@ -1001,6 +1090,7 @@ function computeMetrics(pair: PairAnalysis, window?: WindowRange): TradingMetric
         worstTradePct,
         mddPct,
         mddAbsBts,
+        prePeakMinEquity,
         mddHadStablePeak: hadStablePeak,
         isOngoingRecovery,
         currentDrawdownDays,
@@ -1074,7 +1164,7 @@ function printMetrics(pairs: PairAnalysis[], window?: WindowRange) {
         if (m.mddHadStablePeak) {
             console.log(`  Max Drawdown:         ${fmt(m.mddAbsBts, 4)} ${qSymbol} (${fmtPct(m.mddPct)} of peak cumulative profit)`);
         } else {
-            console.log(`  Min Equity:            ${fmt(m.mddPct, 4)} ${fmtAsset(pair.quoteAsset)}`);
+            console.log(`  Min Equity:            ${fmt(m.prePeakMinEquity, 4)} ${fmtAsset(pair.quoteAsset)}`);
         }
         const recLabel = m.maxRecoveryDays > 0 ? m.maxRecoveryDays.toFixed(1) + ' days' + (m.isOngoingRecovery ? ' (ongoing)' : '') : '—';
         console.log(`  Max Recovery Time:    ${recLabel}`);
@@ -1127,7 +1217,7 @@ function printMetrics(pairs: PairAnalysis[], window?: WindowRange) {
 // ─── CSV Export ──────────────────────────────────────────────────────────────
 
 function exportCsv(pairs: PairAnalysis[], filePath: string) {
-    const esc = (v: any) => { const s = String(v); return /[,"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    const esc = (v: unknown) => { const s = String(v); return /[,"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
     const lines = ['time,orderId,direction,baseAsset,quoteAsset,baseAmount,quoteAmount,price,isMaker,marketFeeReal,marketFeeAsset'];
 
     for (const pair of pairs) {
@@ -1210,22 +1300,37 @@ function normalizeTimeBound(raw: string, isEnd: boolean): string {
     return new Date(ms).toISOString();
 }
 
-async function run() {
-    const opts = parseArgs();
+/** Auto-named report file: bot/account + pair filter + requested range. */
+function reportFileName(opts: TradeProfitabilityOptions, accountRef: string, botName: string | null): string {
+    const slugBase = botName ? sanitizeKey(botName) : sanitizeKey(accountRef);
+    const pair = opts.pair as { base: string; quote: string } | null;
+    const pairSlug = pair ? `_${sanitizeKey(pair.base)}-${sanitizeKey(pair.quote)}` : '';
+    let rangeSlug: string;
+    if (opts.months != null) rangeSlug = `_${String(opts.months).replace('.', 'p')}m`;
+    else if (opts.start) rangeSlug = `_${String(opts.start).slice(0, 10)}${opts.end ? '_' + String(opts.end).slice(0, 10) : ''}`;
+    else rangeSlug = `_${opts.hours || 168}h`;
+    return `pnl_${slugBase}${pairSlug}${rangeSlug}.html`;
+}
+
+async function run(argv: string[] = process.argv.slice(2)) {
+    muteChainLogs();
+    const opts = parseArgs(argv);
     let accountId = opts.accountId;
+    let resolvedBotName: string | null = null;
 
     if (!/^1\.2\.\d+$/.test(String(accountId))) {
         // The Kibana query below filters on the 1.2.x account_id field, so a
         // name must always resolve first (a raw name would silently return
-        // zero fills). Shared resolver: reuses a stored accountId from
-        // profiles/bots.json when one matches the name and stamps the result
-        // back onto the bot entry on a fresh lookup.
+        // zero fills). Shared resolver: a local bot profile is checked first
+        // (no chain call), then a stored accountId, then a fresh lookup; the
+        // result is stamped back onto the bot entry.
         const resolved = await resolveAccountRef(accountId, { refresh: opts.refreshAccount });
         if (!resolved.accountId) {
             console.error(`  Could not resolve "${accountId}" to an account ID`);
             process.exit(1);
         }
         accountId = resolved.accountId;
+        resolvedBotName = (resolved.botMeta?.name as string) ?? null;
     }
 
     // Build time range
@@ -1239,7 +1344,7 @@ async function run() {
         gte = normalizeTimeBound(opts.start, false);
         lte = now.toISOString();
     } else {
-        const hours = opts.hours || 168;
+        const hours = opts.months != null ? monthsToHours(opts.months) : (opts.hours || 168);
         const start = new Date(now.getTime() - hours * 3600 * 1000);
         gte = start.toISOString();
         lte = now.toISOString();
@@ -1247,7 +1352,9 @@ async function run() {
 
     const KIBANA_CFG = { timeout: 60000 };
 
-    const fills = await fetchAllFills(KIBANA_CFG, accountId, gte, lte);
+    // Month-shard cache keyed by the resolved accountId; --refresh-account
+    // bypasses coverage trust and re-queries the requested range.
+    const fills = await fetchFillsCached(KIBANA_CFG, accountId, gte, lte, { refresh: opts.refreshAccount });
 
     if (fills.length === 0) {
         console.log('  No fills found in the specified time range.');
@@ -1258,14 +1365,14 @@ async function run() {
     await resolveAssetPrecisions(fills);
 
     // Classify fills
-    const { trades, pairs } = classifyFills(fills, opts.asset);
+    const { trades, pairs } = classifyFills(fills, opts.asset, opts.pair as { base: string; quote: string } | null | undefined);
 
     if (trades.length === 0) {
-        console.log('  No trades could be classified (check asset filter or time range).');
+        console.log('  No trades could be classified (check pair/asset filter or time range).');
         process.exit(0);
     }
 
-    console.log(`Account:  ${accountId}`);
+    console.log(`Account:  ${accountId}${resolvedBotName ? `  (bot: ${resolvedBotName})` : ''}`);
     console.log(`Period:   ${gte.slice(0, 10)}  →  ${lte.slice(0, 10)}`);
     console.log(`Pairs:    ${pairs.size}, ${trades.length} classified trades`);
     const hasCrossPair = [...pairs].some(p => p.split(':')[1] !== BTS_ID);
@@ -1294,26 +1401,48 @@ async function run() {
 
     const analyses: PairAnalysis[] = [];
     for (const [key, pairTrades] of pairMap) {
-        const analysis = analyzePair(pairTrades, opts.matchMode);
+        const analysis = analyzePair(pairTrades, opts.matchMode as 'sequential' | 'fifo');
         analyses.push(analysis);
 
         if (opts.verbose) {
             const [base, quote] = key.split(':');
-            console.log(`  ${fmtAsset(base)}/${fmtAsset(quote)}: ${pairTrades.filter(t => t.direction === 'buy').length} buys, ${pairTrades.filter(t => t.direction === 'sell').length} sells, ${analysis.realizedPnls.length} matched lots`);
+            console.log(`  ${fmtAsset(base)}/${fmtAsset(quote)}: ${pairTrades.filter(t => t.direction === 'buy').length} buys, ${pairTrades.filter(t => t.direction === 'sell').length} sells, ${analysis.realizedPnls.length} realized lots`);
         }
     }
 
     // Sort pairs by volume (total quote)
     analyses.sort((a, b) => (b.totalBuyQuote + b.totalSellQuote) - (a.totalBuyQuote + a.totalSellQuote));
 
-    // Output: summaries → grand total → per-match detail
-    printSummary(analyses, accountId, gte, lte, opts.matchMode);
+    const reportWindow = { startMs: Date.parse(gte), endMs: Date.parse(lte) };
 
-    if (opts.showPnlDetail) {
-        printPnlDetail(analyses);
+    if (opts.html) {
+        // HTML is the primary output of `dexbot pnl`: write the self-contained
+        // report and print the file link, skipping the terminal tables.
+        const reportPath = opts.report
+            ? path.resolve(String(opts.report))
+            : path.join(PATHS.ANALYSIS.CHARTS_DIR, reportFileName(opts, String(opts.accountId), resolvedBotName));
+        writePnlReport({
+            accountRef: String(opts.accountId),
+            accountId,
+            botName: resolvedBotName,
+            start: gte,
+            end: lte,
+            matchMode: opts.matchMode as 'sequential' | 'fifo',
+            pairFilter: opts.pair ? `${(opts.pair as { base: string; quote: string }).base}/${(opts.pair as { base: string; quote: string }).quote}` : null,
+            assetFilter: opts.asset,
+            pairs: analyses.map(pair => ({ pair, metrics: computeMetrics(pair, reportWindow) })),
+        }, reportPath);
+        console.log(`\n📄 PnL report saved. Open report: (${toFileUrl(reportPath)})`);
+    } else {
+        // Output: summaries → grand total → per-match detail
+        printSummary(analyses, accountId, gte, lte, opts.matchMode as 'sequential' | 'fifo');
+
+        if (opts.showPnlDetail) {
+            printPnlDetail(analyses);
+        }
+
+        printMetrics(analyses, reportWindow);
     }
-
-    printMetrics(analyses, { startMs: Date.parse(gte), endMs: Date.parse(lte) });
 
     if (opts.csv) {
         exportCsv(analyses, opts.csv);
@@ -1324,7 +1453,7 @@ async function run() {
     }
 }
 
-export { analyzePair, classifyFills, computeMetrics, TradeFill, FillRecord, RealizedPnl, PairAnalysis, TradingMetrics };
+export { analyzePair, classifyFills, computeMetrics, parseArgs, run, reportFileName, TradeFill, FillRecord, RealizedPnl, PairAnalysis, TradingMetrics, WindowRange };
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     run().then(() => process.exit(0)).catch(e => {

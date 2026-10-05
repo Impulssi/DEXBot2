@@ -3,11 +3,13 @@ const assert = require('assert');
 console.log('Running tradingview chart storage-key tests');
 
 const {
+    generateHTML,
     resolveChartStorageKey,
     sanitizeStorageComponent,
     TRADINGVIEW_PREFS_KEY_PREFIX,
     TRADINGVIEW_SYNC_KEY,
 } = require('../analysis/tradingview/tradingview_uplot_chart_generator');
+const { MARKET_ADAPTER } = require('../modules/constants');
 
 let passed = 0;
 let failed = 0;
@@ -104,6 +106,181 @@ check('key: object asset without id/symbol uses fallback, not "object_Object"', 
 
 check('key: empty meta produces a valid default key', () => {
     assert.strictEqual(resolveChartStorageKey(), 'dexbot2-tradingview-uplot-v3:nipool:assetA_assetB:base');
+});
+
+// ── Simulated band price-axis fit ─────────────────────────────────
+check('fit: simulated band extension tracks the upper edge with max', () => {
+    const html = generateHTML({
+        candles: [
+            [1710000000000, 1, 1.1, 0.9, 1.02, 10],
+            [1710003600000, 1.02, 1.2, 0.98, 1.08, 12],
+            [1710007200000, 1.08, 1.22, 1.01, 1.15, 9],
+        ],
+        meta: { assetA: { symbol: 'A' }, assetB: { symbol: 'B' } },
+        grid: { minPrice: '1.5x', maxPrice: '3x' },
+        gridSim: { enabled: true, priceDeltaThresholdPercent: 1, slopeDeltaThresholdPercent: 0.0072, slopeEnabled: true },
+    });
+    assert.ok(html.includes('if (su > simMax) simMax = su;'), 'simMax must track the band upper bound');
+    assert.ok(!html.includes('if (su < simMax) simMax = su;'), 'inverted simMax comparison must not return');
+    assert.ok(html.includes('SIM_FIT_MAX_STRETCH'), 'the stretch guard must stay wired');
+});
+
+// ── Shared AMA-slope lookback window ──────────────────────────────
+check('slope window: the band and the reset replay resolve one shared lookback', () => {
+    const html = generateHTML({
+        candles: [
+            [1710000000000, 1, 1.1, 0.9, 1.02, 10],
+            [1710003600000, 1.02, 1.2, 0.98, 1.08, 12],
+            [1710007200000, 1.08, 1.22, 1.01, 1.15, 9],
+        ],
+        meta: { assetA: { symbol: 'A' }, assetB: { symbol: 'B' } },
+        gridSim: { enabled: true, lookbackBars: 32 },
+    });
+    assert.ok(html.includes('function resolveSlopeLookbackBars()'), 'the shared resolver must exist');
+    assert.ok(
+        html.includes('const lookback = resolveSlopeLookbackBars();'),
+        'the range band must consume the shared resolver',
+    );
+    assert.ok(
+        !html.includes('slopeCfg.lookbackBars'),
+        'the band must not stay pinned to the constant while the replay uses the config',
+    );
+    assert.ok(
+        /Object\.assign\(\{\}, gridSimCfg, \{[\s\S]*?warmupBars: warmupBars,/.test(html),
+        'the replay must still derive warmupBars from gridSimCfg',
+    );
+    assert.ok(
+        !/Object\.assign\(\{\}, gridSimCfg, \{[^}]*lookbackBars:/.test(html),
+        'the replay must keep its own already-resolved lookbackBars, never an override',
+    );
+    assert.ok(
+        html.includes('slopeEstimator: resolveChartSlopeEstimator()'),
+        'the replay must average with the same model as the band',
+    );
+});
+
+check('slope window: a bot-configured lookback reaches the band through the payload', () => {
+    const html = generateHTML({
+        candles: [[1710000000000, 1, 1.1, 0.9, 1.02, 10]],
+        meta: { assetA: { symbol: 'A' }, assetB: { symbol: 'B' } },
+        gridSim: { enabled: true, lookbackBars: 32 },
+    });
+    const payload = JSON.parse(/<script id="payload"[^>]*>([\s\S]*?)<\/script>/.exec(html)![1]);
+    assert.strictEqual(payload.gridSim.lookbackBars, 32, 'the config-resolved window must reach the page');
+    assert.strictEqual(
+        payload.rangeSlope.lookbackBars,
+        MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS,
+        'the constant stays embedded as the fallback',
+    );
+});
+
+// ── Chart slope estimator (must match the runtime) ────────────────
+check('slope model: the page uses the canonical Huber estimator for both consumers', () => {
+    const html = generateHTML({
+        candles: [
+            [1710000000000, 1, 1.1, 0.9, 1.02, 10],
+            [1710003600000, 1.02, 1.2, 0.98, 1.08, 12],
+            [1710007200000, 1.08, 1.22, 1.01, 1.15, 9],
+        ],
+        meta: { assetA: { symbol: 'A' }, assetB: { symbol: 'B' } },
+    });
+    assert.ok(html.includes("const CHART_SLOPE_ESTIMATOR = 'canonical'"), 'the chart must default to the runtime estimator');
+    assert.ok(
+        html.includes(`const AMA_SLOPE_HUBER = ${JSON.stringify(MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER)};`),
+        'the centralized Huber params must be injected verbatim from constants',
+    );
+    assert.ok(
+        html.includes('function computeHuberWindowSlopePct'),
+        'the canonical estimator must be embedded (one definition, shared with the runtime)',
+    );
+    assert.ok(
+        html.includes('function resolveChartSlopeEstimator()'),
+        'one resolver must select the estimator for band and replay',
+    );
+    assert.ok(
+        html.includes('bandSlopeEstimator(baseAma, i, lookback)'),
+        'the band must read the shared estimator object',
+    );
+    assert.ok(
+        html.includes('return computeHuberWindowSlopePct;'),
+        'the default branch must be the canonical Huber estimator',
+    );
+    assert.ok(
+        !html.includes('function computeMedianSlopeClipThreshold'),
+        'the chart must not carry its own clip helper: the canonical clip now measures the estimator',
+    );
+    assert.ok(
+        html.includes('slopeEstimator: resolveChartSlopeEstimator()'),
+        'the replay must average with the same model as the band',
+    );
+});
+
+check('slope model: the embedded estimator executes against the injected constants', () => {
+    // Guards the one runtime coupling the string checks cannot see: the embedded
+    // computeHuberWindowSlopePct defaults `hub` to AMA_SLOPE_HUBER, so the page
+    // must declare that const or the estimator throws a ReferenceError.
+    const html = generateHTML({
+        candles: [
+            [1710000000000, 1, 1.1, 0.9, 1.02, 10],
+            [1710003600000, 1.02, 1.2, 0.98, 1.08, 12],
+            [1710007200000, 1.08, 1.22, 1.01, 1.15, 9],
+        ],
+        meta: { assetA: { symbol: 'A' }, assetB: { symbol: 'B' } },
+    });
+    const constMatch = /const AMA_SLOPE_HUBER = (\{[^;]*\});/.exec(html);
+    const fnMatch = /function computeHuberWindowSlopePct\([\s\S]*?\n\}/.exec(html);
+    assert.ok(constMatch && fnMatch, 'both the const and the estimator must be embedded');
+    const embedded = new Function(`const AMA_SLOPE_HUBER = ${constMatch![1]}; ${fnMatch![0]}; return computeHuberWindowSlopePct;`)();
+    const { computeHuberWindowSlopePct } = require('../market_adapter/core/strategies/dynamic_weight_series');
+    const ramp: number[] = [];
+    for (let i = 0; i < 60; i++) ramp.push(100 * Math.pow(1.003, i));
+    assert.strictEqual(embedded(ramp, 59, 20), computeHuberWindowSlopePct(ramp, 59, 20),
+        'the browser-embedded estimator must produce the same value as the Node module');
+});
+
+check('slope model: the sim default is the canonical estimator, and the hook still overrides', () => {
+    // The seam exists only so the chart can render the reference two-point
+    // definition for comparison; with no hook the replay must match the runtime.
+    const { computeAverageAmaSlopePct, computeHuberWindowSlopePct } = require('../market_adapter/core/strategies/dynamic_weight_series');
+    const { simulateGridResetSeries } = require('../analysis/tradingview/grid_reset_sim');
+    const ama: (number | null)[] = [];
+    for (let i = 0; i < 300; i++) {
+        ama.push(i % 37 === 0 ? null : 1 + 0.02 * Math.sin(i / 9) + 0.0003 * i);
+    }
+    const cfg = {
+        priceDeltaThresholdPercent: 0, slopeDeltaThresholdPercent: 0.0072, slopeEnabled: true,
+        erPeriod: 24, lookbackBars: 20, warmupBars: 44, maxSlopePct: 0.09,
+        neutralZonePct: 0, maxSlopeOffset: 0.5, clipPercentile: 10, clampMin: null, clampMax: null,
+    };
+    const plain = simulateGridResetSeries(ama, cfg);
+    const readyBars = Math.ceil(cfg.erPeriod) + cfg.lookbackBars;
+    // Mirror the replay's own guards (warmup floor + a usable current value);
+    // `Number(null) === 0`, so a pre-warmup hole must not be read as a price.
+    const hasAma = (i: number) => {
+        const v = Number(ama[i]);
+        return Number.isFinite(v) && v > 0;
+    };
+    const huberAt = (i: number) => (i < readyBars || !hasAma(i) ? null : computeHuberWindowSlopePct(ama, i, cfg.lookbackBars));
+    const endpointAt = (i: number) => {
+        const past = Number(ama[i - cfg.lookbackBars]);
+        if (i < readyBars || !hasAma(i) || !Number.isFinite(past) || past === 0) return null;
+        return computeAverageAmaSlopePct(Number(ama[i]), past, cfg.lookbackBars);
+    };
+
+    // No cfg.slopeEstimator must mean exactly what the live adapter computes.
+    assert.deepStrictEqual(plain.slopePct, ama.map((_, i) => huberAt(i)),
+        'the replay default must be the canonical Huber slope, bar for bar');
+    // An explicit hook still overrides, which is what the chart's 'endpoint'
+    // comparison mode relies on.
+    const viaHook = simulateGridResetSeries(ama, {
+        ...cfg,
+        slopeEstimator: (series: any, i: number, lb: number) =>
+            computeAverageAmaSlopePct(Number(series[i]), Number(series[i - lb]), lb),
+    });
+    assert.deepStrictEqual(viaHook.slopePct, ama.map((_, i) => endpointAt(i)),
+        'the endpoint hook must reproduce the reference definition');
+    assert.notDeepStrictEqual(viaHook.slopePct, plain.slopePct,
+        'the hook must actually change the estimator');
 });
 
 if (failed > 0) {

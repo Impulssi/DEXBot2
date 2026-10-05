@@ -13,6 +13,7 @@
  *   node dist/analysis/analyze_risk_profile.js --source market_adapter --bot-key <key> [options]
  *   node dist/analysis/analyze_risk_profile.js --file <path_to_json> [options]
  */
+import { getErrorMessage } from '../modules/utils/errors.js';
 import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
 import { MARKET_ADAPTER } from '../modules/constants.js';
 import { generateHTML } from '../market_adapter/lp_chart_core.js';
@@ -46,8 +47,8 @@ function quantileToSigma(q: number) {
     return normSInv((1 + q) / 2);
 }
 
-function getAmaDeltaStdDev(closes: number[], amaConfig: any, warmup: number) {
-    const amaValues = calculateAMA(closes, amaConfig);
+function getAmaDeltaStdDev(closes: number[], amaConfig: unknown, warmup: number) {
+    const amaValues = calculateAMA(closes, amaConfig as { erPeriod: number; fastPeriod: number; slowPeriod: number });
     const deltas: number[] = [];
     for (let i = warmup + 1; i < closes.length; i++) {
         const prev = amaValues[i - 1];
@@ -58,8 +59,8 @@ function getAmaDeltaStdDev(closes: number[], amaConfig: any, warmup: number) {
     return deltas.length ? calcStdDev(deltas) : null;
 }
 
-function getDivergenceDist(closes: number[], amaConfig: any) {
-    const amaValues = calculateAMA(closes, amaConfig);
+function getDivergenceDist(closes: number[], amaConfig: unknown) {
+    const amaValues = calculateAMA(closes, amaConfig as { erPeriod: number; fastPeriod: number; slowPeriod: number });
     const dists: number[] = [];
     for (let i = 1600; i < closes.length; i++) {
         const ama = amaValues[i];
@@ -181,7 +182,7 @@ async function main() {
                 pool: `${pairName} ${config.ama} Risk Analysis`,
                 assetA: { symbol: 'Base' },
                 assetB: { symbol: 'Quote' },
-                intervalSeconds: candles.length > 1 ? ((candles[1]?.timestamp ?? candles[1]?.[0] ?? 0) - (candles[0]?.timestamp ?? candles[0]?.[0] ?? 0)) / 1000 : 3600,
+                intervalSeconds: candles.length > 1 ? (Number(candles[1]?.timestamp ?? candles[1]?.[0] ?? 0) - Number(candles[0]?.timestamp ?? candles[0]?.[0] ?? 0)) / 1000 : 3600,
                 thresholds: thresholds,
                 sigmaAmaDelta: amaDeltaSigma !== null ? +((amaDeltaSigma * 100).toFixed(3)) : null
             };
@@ -190,8 +191,8 @@ async function main() {
             writeChartFile(config.output, html);
             console.log(`\n[RiskProfile] ✓ Risk report generated: ${config.output}`);
         }
-    } catch (err: any) {
-        console.error(`[RiskProfile] Error: ${err?.message ?? err}`);
+    } catch (err) {
+        console.error(`[RiskProfile] Error: ${getErrorMessage(err)}`);
         process.exit(1);
     }
 }

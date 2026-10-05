@@ -20,10 +20,11 @@
  */
 
 import { DEFAULT_CONFIG } from './constants.js';
+import type { UnknownRecord } from './types.js';
 
 export interface SeedOptions {
     /** Defaults source; omit to use the merged DEFAULT_CONFIG. */
-    defaults?: Record<string, any>;
+    defaults?: UnknownRecord;
 }
 
 /**
@@ -72,7 +73,7 @@ export const GRID_PRICE_UNSET_INPUTS = new Set(['none', 'null', 'start', 'startp
  * @param {*} value - Candidate grid-price value.
  * @returns {boolean}
  */
-export function isUnsetGridPrice(value: any): boolean {
+export function isUnsetGridPrice(value: unknown): boolean {
     if (value === null || value === undefined || value === false) return true;
     if (typeof value === 'string') {
         const text = value.trim().toLowerCase();
@@ -89,7 +90,7 @@ function clone<T>(value: T): T {
 /** Numbers migrate to `{ buy, sell: 0 }` (floored, clamped at 0); anything
  *  that is not a plain object becomes the default; plain objects — including
  *  partial ones — are kept verbatim. */
-function seedReserveOrders(value: any, def: any): any {
+function seedReserveOrders(value: unknown, def: unknown): unknown {
     if (typeof value === 'number') {
         return { buy: Math.max(0, Math.floor(value)), sell: 0 };
     }
@@ -113,9 +114,9 @@ function seedReserveOrders(value: any, def: any): any {
  *    was a hardcoded null that ignored DEFAULT_CONFIG.gridPrice overrides);
  *  * other scalars: filled only when `=== undefined` — explicit nulls survive.
  */
-export function seedBotDraft(base?: Record<string, any> | null, options: SeedOptions = {}): Record<string, any> {
-    const defaults: Record<string, any> = options.defaults ?? DEFAULT_CONFIG;
-    const data: Record<string, any> = JSON.parse(JSON.stringify(base ?? {}));
+export function seedBotDraft(base?: UnknownRecord | null, options: SeedOptions = {}): UnknownRecord {
+    const defaults: UnknownRecord = options.defaults ?? DEFAULT_CONFIG;
+    const data: UnknownRecord = JSON.parse(JSON.stringify(base ?? {}));
     for (const key of DRAFT_SEED_ORDER) {
         const def = defaults[key];
         if (key === 'reserveOrders') {
@@ -152,8 +153,8 @@ export function seedBotDraft(base?: Record<string, any> | null, options: SeedOpt
  * missing keys as mistakes (assetA/assetB must be genuinely absent when
  * unconfigured).
  */
-export function seedBotEntry<T extends Record<string, any>>(entry: T, options: SeedOptions = {}): T {
-    const defaults: Record<string, any> = options.defaults ?? DEFAULT_CONFIG;
+export function seedBotEntry<T extends UnknownRecord>(entry: T, options: SeedOptions = {}): T {
+    const defaults: UnknownRecord = options.defaults ?? DEFAULT_CONFIG;
     return { active: entry.active === undefined ? defaults.active : entry.active, ...entry } as T;
 }
 
@@ -165,10 +166,10 @@ export function seedBotEntry<T extends Record<string, any>>(entry: T, options: S
  * `manager.config.botFunds` can no longer corrupt the global DEFAULT_CONFIG
  * (the historical shallow spread aliased every nested default object).
  */
-export function seedBotRuntimeConfig(config: Record<string, any> = {}, options: SeedOptions = {}): Record<string, any> {
-    const defaults: Record<string, any> = options.defaults ?? DEFAULT_CONFIG;
+export function seedBotRuntimeConfig(config: UnknownRecord = {}, options: SeedOptions = {}): UnknownRecord {
+    const defaults: UnknownRecord = options.defaults ?? DEFAULT_CONFIG;
     const configKeys = new Set(Object.keys(config));
-    const out: Record<string, any> = {};
+    const out: UnknownRecord = {};
     for (const key of Object.keys(defaults)) {
         out[key] = configKeys.has(key) ? config[key] : clone(defaults[key]);
     }

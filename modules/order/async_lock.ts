@@ -93,8 +93,8 @@ import { hasProcess } from '../env.js';
 interface QueueItem<T = unknown> {
     callback: () => Promise<T>;
     cancelToken?: { isCancelled: boolean };
-    resolve: (value: T) => void;
-    reject: (reason: unknown) => void;
+    resolve(value: T): void;
+    reject(reason: unknown): void;
     timer?: ReturnType<typeof setTimeout>;
 }
 
@@ -109,7 +109,12 @@ interface AcquireOptions {
     onContention?: () => void;
 }
 
-let _AsyncLocalStorage: any;
+interface AsyncLocalStorageLike {
+    getStore(): Set<symbol> | undefined;
+    run<T>(store: Set<symbol>, fn: () => T): T;
+}
+type AsyncLocalStorageCtor = new () => AsyncLocalStorageLike;
+let _AsyncLocalStorage: AsyncLocalStorageCtor | null;
 const _nodeRequire = createRequire(import.meta.url);
 // Escape hatch (tests + browser-bundle shim verification): force the no-ALS
 // fallback so the mutual-exclusion path that cannot detect re-entrancy is
@@ -127,7 +132,7 @@ if (_nodeRequire && !_forceNoAls) {
 const _lockCtx = _AsyncLocalStorage ? new _AsyncLocalStorage() : null;
 
 class AsyncLock {
-    private _queue: QueueItem<any>[];
+    private _queue: QueueItem<unknown>[];
     private _locked: boolean;
     private _holding: boolean;
     private _syncPrologue: boolean;
@@ -283,7 +288,7 @@ class AsyncLock {
             // Execute the callback (guaranteed to be alone)
             const result = await callback();
             resolve(result);
-        } catch (err: any) {
+        } catch (err) {
             reject(err);
         } finally {
             this._holding = false;
@@ -436,12 +441,12 @@ class AsyncLock {
  * Centralizing the check-and-acquire keeps every future call site correct by
  * construction (no accidental lock bypass when the lock is present).
  *
- * @param {any} lock - AsyncLock (or lock-like { acquire, isReentrant }) to guard with
+ * @param {unknown} lock - AsyncLock (or lock-like { acquire, isReentrant }) to guard with
  * @param {() => Promise<T>} fn - Work to run exclusively; when the lock is held
  *   by the caller it runs directly (re-entrant)
  * @returns {Promise<T>}
  */
-export function acquireIfNotHeld<T>(lock: any, fn: () => Promise<T>): Promise<T> {
+export function acquireIfNotHeld<T>(lock: { acquire<T>(fn: () => Promise<T>): Promise<T>; isReentrant(): boolean } | null | undefined, fn: () => Promise<T>): Promise<T> {
     if (lock && typeof lock.acquire === 'function' && !lock.isReentrant()) {
         return lock.acquire(fn);
     }

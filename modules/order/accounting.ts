@@ -96,7 +96,26 @@ import {
     resolveProcessedFillPersistenceMode
 } from './processed_fill_store.js';
 import { getErrorMessage } from '../utils/errors.js';
+import type { OrderManagerLike, ManagedOrder, ChainOrder, FundDriftCheck } from '../types.js';
 const { toFiniteNumber } = Format;
+
+interface FillPaysReceives {
+    asset_id?: string;
+    amount: number | string;
+}
+
+interface FillOperation {
+    pays?: FillPaysReceives;
+    receives?: FillPaysReceives;
+    is_maker?: boolean;
+    order_id?: string;
+    [key: string]: unknown;
+}
+
+interface FillAccountingOptions {
+    persistenceMode?: string;
+    [key: string]: unknown;
+}
 
 // Warn once per asset instead of once per fill/operation when the fee cache is
 // missing, so a cold/absent fee cache does not flood the logs while the bot
@@ -118,19 +137,19 @@ class Accountant {
      * @param {Object} manager.funds - Fund tracking structure
      * @param {Logger} manager.logger - Logger instance
      */
-    manager: any;
+    manager: OrderManagerLike;
     _isVerifyingInvariants: boolean;
-    _pendingInvariantSnapshot: { chainFreeBuy: number; chainFreeSell: number; chainBuy: number; chainSell: number } | null;
+    _pendingInvariantSnapshot: { chainFreeBuy: number; chainFreeSell: number; chainBuy: number; chainSell: number; actualBuy?: number | null; actualSell?: number | null } | null;
     _logThrottleState: Map<string, { lastAt: number; suppressed: number }>;
 
-    constructor(manager: any) {
+    constructor(manager: OrderManagerLike) {
         this.manager = manager;
         this._isVerifyingInvariants = false;  // Prevents overlapping invariant checks
         this._pendingInvariantSnapshot = null;  // Coalesces latest request while one is running
         this._logThrottleState = new Map();
     }
 
-    _logThrottled(key: any, message: any, level: any = 'warn', intervalMs: any = TIMING.LOG_THROTTLE_INTERVAL_MS) {
+    _logThrottled(key: string, message: string, level: string = 'warn', intervalMs: number = TIMING.LOG_THROTTLE_INTERVAL_MS) {
         const now = Date.now();
         let state = this._logThrottleState.get(key);
 
@@ -151,7 +170,7 @@ class Accountant {
      * @param {Array<{orderType: string, delta: number, operation: string}>} balanceAdjustments
      * @returns {void}
      */
-    async _applyBalanceAdjustments(balanceAdjustments: any) {
+    async _applyBalanceAdjustments(balanceAdjustments: Array<{ orderType: string | null | undefined; delta: number; operation: string }>) {
         for (const adjustment of balanceAdjustments) {
             await this.adjustTotalBalance(adjustment.orderType, adjustment.delta, adjustment.operation);
         }
@@ -161,14 +180,14 @@ class Accountant {
         return getBtsSide(this.manager.config?.assetA, this.manager.config?.assetB);
     }
 
-    _normalizeBtsFeeState(order: any) {
+    _normalizeBtsFeeState(order: Partial<ManagedOrder> | null | undefined) {
         const deferredFee = toFiniteNumber(order?.btsFeeState?.deferredFee, 0);
         return {
             deferredFee: Math.max(0, deferredFee)
         };
     }
 
-    _getBtsFeeSchedule() {
+    _getBtsFeeSchedule(): { createFee: number; updateFee: number; cancelFee: number; makerFeeDiscountPercent: number } {
         try {
             const fees = getAssetFees('BTS');
             return {
@@ -177,10 +196,10 @@ class Accountant {
                 cancelFee: Math.max(0, toFiniteNumber(fees?.cancelFee, 0)),
                 makerFeeDiscountPercent: Math.max(0, toFiniteNumber(fees?.makerFeeDiscountPercent, this.manager?.config?.feeParams?.MAKER_REFUND_PERCENT ?? FEE_PARAMETERS.MAKER_REFUND_PERCENT))
             };
-        } catch (err: any) {
+        } catch (err) {
             if (!warnedBtsFeeScheduleFallback.has('BTS')) {
                 warnedBtsFeeScheduleFallback.add('BTS');
-                this.manager?.logger?.log?.(`[FEE] Failed to load BTS fee schedule: ${err?.message || err}; using fallback defaults`, 'warn');
+                this.manager?.logger?.log?.(`[FEE] Failed to load BTS fee schedule: ${getErrorMessage(err)}; using fallback defaults`, 'warn');
             }
             return {
                 createFee: 0,
@@ -191,7 +210,7 @@ class Accountant {
         }
     }
 
-    _calculateUpdateDeferredCharge(oldDeferredFee: any, feeSchedule: any) {
+    _calculateUpdateDeferredCharge(oldDeferredFee: number, feeSchedule: { cancelFee?: number; createFee?: number; updateFee?: number } | null) {
         const deferred = Math.max(0, toFiniteNumber(oldDeferredFee, 0));
         const cancelFee = Math.max(0, toFiniteNumber(feeSchedule?.cancelFee, 0));
         const createFee = Math.max(0, toFiniteNumber(feeSchedule?.createFee, 0));
@@ -209,7 +228,7 @@ class Accountant {
         return Math.min(deferred, Math.max(0, charge));
     }
 
-    _resolveBtsFeeLifecycle(oldOrder: any, newOrder: any, context: any, explicitFee: any) {
+    _resolveBtsFeeLifecycle(oldOrder: Partial<ManagedOrder> | null, newOrder: Partial<ManagedOrder> | null, context: string, explicitFee: number) {
         const fee = Math.max(0, toFiniteNumber(explicitFee, 0));
         const oldActive = !!(oldOrder && (oldOrder.state === ORDER_STATES.ACTIVE || oldOrder.state === ORDER_STATES.PARTIAL) && oldOrder.orderId);
         const newActive = !!(newOrder && (newOrder.state === ORDER_STATES.ACTIVE || newOrder.state === ORDER_STATES.PARTIAL) && newOrder.orderId);
@@ -269,11 +288,11 @@ class Accountant {
         return { balanceDelta, nextDeferred };
     }
 
-    _buildBtsDeferredRefundAdjustment(orderId: any, isMaker: any) {
+    _buildBtsDeferredRefundAdjustment(orderId: string | null | undefined, isMaker: boolean) {
         const btsOrderType = this._getBtsOrderType();
         if (!btsOrderType || !orderId) return null;
 
-        const order = (Array.from(this.manager.orders?.values?.() || []) as any[]).find((o: any) => o?.orderId === orderId);
+        const order = Array.from(this.manager.orders?.values?.() || []).find((o) => o?.orderId === orderId);
         const deferredFee = this._normalizeBtsFeeState(order).deferredFee;
         if (deferredFee <= 0) return null;
 
@@ -364,7 +383,7 @@ class Accountant {
          }
 
          // No lock needed for read-only access to frozen orders (COW pattern)
-         const orderSnapshot = Array.from(mgr.orders.values()) as any[];
+         const orderSnapshot = Array.from(mgr.orders.values());
 
          let gridBuy = 0, gridSell = 0;
          let chainBuy = 0, chainSell = 0;
@@ -375,7 +394,7 @@ class Accountant {
          // SPREAD-type count would include every empty slot on both rails.
          // countGapBandSpread requires both SPREAD type and band geometry —
          // matching initialSpreadCount (gapSlots) set at grid load/creation.
-         mgr.currentSpreadCount = countGapBandSpread(mgr, orderSnapshot, (o: any) => parseSlotIndex(o.id));
+         mgr.currentSpreadCount = countGapBandSpread(mgr, orderSnapshot, (o) => parseSlotIndex(o.id));
 
           // STEP 1-4: Iterate all orders, classify, and aggregate by state
           for (const order of orderSnapshot) {
@@ -389,9 +408,9 @@ class Accountant {
              // - SPREAD type: derive from price relation to startPrice (market midpoint)
              //   * price < startPrice → BUY side (lower prices are bids)
              //   * price >= startPrice → SELL side (higher prices are asks)
-              const genesis = (mgr as any)._genesis;
-              const boundaryIdx = (mgr as any).boundaryIdx;
-              const gapSlots = genesis?.gapSlots ?? (mgr as any)._gapSlots ?? 0;
+              const genesis = mgr._genesis;
+              const boundaryIdx = mgr.boundaryIdx;
+              const gapSlots = genesis?.gapSlots ?? mgr._gapSlots ?? 0;
               let spreadSide: string | null = null;
               if (order.type === ORDER_TYPES.SPREAD && genesis && boundaryIdx != null && Number.isFinite(Number(boundaryIdx))) {
                   if (isSlotInRail(boundaryIdx, gapSlots, ORDER_TYPES.BUY, order)) spreadSide = ORDER_TYPES.BUY;
@@ -442,6 +461,28 @@ class Accountant {
               }
           } catch { /* committed sums stay grid-only */ }
 
+         // Deferred-but-live chain orders: the last sync saw these on chain
+         // without a grid slot (out-of-grid, boundary-unknown deferrals).
+         // They lock REAL funds — a BUY size is already quote, a SELL size is
+         // already base, same conventions as the slot loop above — so they
+         // belong in the on-chain committed sums. Without them every invariant
+         // check reports drift equal to their value and triggers futile
+         // recovery resyncs. Never counted as grid or placeable: only the
+         // committed (locked) side. Staleness is bounded by the sync refresh
+         // (the list is replaced wholesale each sync); a fill between syncs
+         // over-counts until the next refresh, at most one transient recovery.
+         try {
+             const unmatched = mgr._lastUnmatchedChainOrders;
+             if (Array.isArray(unmatched)) {
+                 for (const u of unmatched) {
+                     const uSize = Number(u?.size);
+                     if (!Number.isFinite(uSize) || uSize <= 0) continue;
+                     if (u?.type === ORDER_TYPES.BUY) chainBuy += uSize;
+                     else if (u?.type === ORDER_TYPES.SELL) chainSell += uSize;
+                 }
+             }
+         } catch { /* committed sums stay grid-only */ }
+
          // STEP 5: Fetch blockchain free balances and compute totals
          const chainFreeBuy = mgr.accountTotals?.buyFree || 0;
          const chainFreeSell = mgr.accountTotals?.sellFree || 0;
@@ -481,8 +522,8 @@ class Accountant {
          }
 
           if (mgr.logger && mgr.logger.level === 'debug' && mgr._pauseFundRecalc === 0 && !mgr._pauseRecalcLogging) {
-              const buyPrecision = mgr.config?.assetB?.precision;
-              const sellPrecision = mgr.config?.assetA?.precision;
+              const buyPrecision = (mgr.config?.assetB as unknown as { precision?: number } | undefined)?.precision;
+              const sellPrecision = (mgr.config?.assetA as unknown as { precision?: number } | undefined)?.precision;
              if (Number.isFinite(buyPrecision) && Number.isFinite(sellPrecision)) {
                  mgr.logger.log(`[RECALC] BUY: Total=${Format.formatAmountByPrecision(chainTotalBuy, buyPrecision)} (Free=${Format.formatAmountByPrecision(chainFreeBuy, buyPrecision)}, Grid=${Format.formatAmountByPrecision(gridBuy, buyPrecision)})`, 'debug');
                  mgr.logger.log(`[RECALC] SELL: Total=${Format.formatAmountByPrecision(chainTotalSell, sellPrecision)} (Free=${Format.formatAmountByPrecision(chainFreeSell, sellPrecision)}, Grid=${Format.formatAmountByPrecision(gridSell, sellPrecision)})`, 'debug');
@@ -492,7 +533,7 @@ class Accountant {
         if (mgr._pauseFundRecalc === 0 && !mgr.isBootstrapping() && !mgr.isBroadcastingActive()) {
             const snapshot = { chainFreeBuy, chainFreeSell, chainBuy, chainSell, actualBuy: mgr.accountTotals?.buy, actualSell: mgr.accountTotals?.sell };
 
-            const runVerification = (nextSnapshot: any) => {
+            const runVerification = (nextSnapshot: { chainFreeBuy: number; chainFreeSell: number; chainBuy: number; chainSell: number; actualBuy?: number | null; actualSell?: number | null }) => {
                 this._isVerifyingInvariants = true;
                 this._verifyFundInvariants(
                     mgr,
@@ -503,7 +544,7 @@ class Accountant {
                     nextSnapshot.actualBuy,
                     nextSnapshot.actualSell
                 )
-                    .catch((err: any) => {
+                    .catch((err) => {
                         mgr.logger?.log?.(`[RECOVERY] Verification error: ${getErrorMessage(err)}`, 'error');
                     })
                     .finally(() => {
@@ -542,7 +583,7 @@ class Accountant {
       * @returns {void}
       * @private
       */
-      async _verifyFundInvariants(mgr: any, chainFreeBuy: any, chainFreeSell: any, chainBuy: any, chainSell: any, actualBuy: any, actualSell: any) {
+      async _verifyFundInvariants(mgr: OrderManagerLike, chainFreeBuy: number, chainFreeSell: number, chainBuy: number, chainSell: number, actualBuy: number | null | undefined, actualSell: number | null | undefined) {
           // Half-baked guard: while a fill batch is mid-accounting, the balance
           // snapshot may already reflect the just-filled orders on-chain while
           // the grid still counts them as committed (or the reverse during
@@ -563,7 +604,7 @@ class Accountant {
           }
           const precisionSlackBuy = getPrecisionSlack(buyPrecision);
          const precisionSlackSell = getPrecisionSlack(sellPrecision);
-          const PERCENT_TOLERANCE = (mgr.config?.gridLimits?.FUND_INVARIANT_PERCENT_TOLERANCE ?? GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE) / 100;
+          const PERCENT_TOLERANCE = toFiniteNumber(mgr.config?.gridLimits?.FUND_INVARIANT_PERCENT_TOLERANCE ?? GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE) / 100;
 
          // FIX 5: Widen tolerance when orphan fills were recently credited.
          // Orphan fill accounting adjusts mgr.accountTotals optimistically, but
@@ -664,7 +705,7 @@ class Accountant {
                         }
                     }
                 }
-            } catch (_err: any) {
+            } catch (_err) {
                 mgr.logger?.log?.(`[INVARIANT] Cross-bot registry check skipped: ${getErrorMessage(_err)}`, 'warn');
             }
         }
@@ -679,8 +720,8 @@ class Accountant {
             const sellBad = actualSell !== null && actualSell !== undefined && diffSell > allowedSellTolerance;
             const buyBad = actualBuy !== null && actualBuy !== undefined && diffBuy > allowedBuyTolerance;
             const side = (buyBad && !sellBad) ? 'buy' : (!buyBad && sellBad) ? 'sell' : 'both';
-            const direction = (side === 'buy') ? (actualBuy > expectedBuy ? 'tracked-low' : 'tracked-high')
-                : (side === 'sell') ? (actualSell > expectedSell ? 'tracked-low' : 'tracked-high')
+            const direction = (side === 'buy') ? ((actualBuy ?? 0) > expectedBuy ? 'tracked-low' : 'tracked-high')
+                : (side === 'sell') ? ((actualSell ?? 0) > expectedSell ? 'tracked-low' : 'tracked-high')
                 : null;
             const prev = mgr._fundDriftLedger;
             if (prev && side !== 'both' && direction && prev.side === side && prev.direction === direction) {
@@ -703,13 +744,13 @@ class Accountant {
             const doRecovery = async () => {
                 try {
                     await this._attemptFundRecovery(mgr, 'Fund invariant violation');
-                } catch (err: any) {
+                } catch (err) {
                     mgr.logger?.log?.(`[RECOVERY] Deferred recovery failed: ${getErrorMessage(err)}`, 'error');
                     mgr._recoveryState = { ...mgr._recoveryState, lastFailureAt: Date.now() };
                 }
             };
             if (mgr._gridLock?.isLocked?.()) {
-                doRecovery().catch((err: any) => {
+                doRecovery().catch((err) => {
                     mgr.logger?.log?.(`[RECOVERY] Deferred recovery scheduling failed: ${getErrorMessage(err)}`, 'error');
                 });
             } else {
@@ -725,7 +766,7 @@ class Accountant {
      * @param {Object} mgr - Manager instance
      * @returns {Promise<Object>} - Validation result from validateGridStateForPersistence()
      */
-    async _performStateRecovery(mgr: any) {
+    async _performStateRecovery(mgr: OrderManagerLike) {
         const accountRef = resolveAccountRef(mgr, '');
         if (!accountRef) {
             return {
@@ -764,7 +805,7 @@ class Accountant {
         // cycle re-creates them as duplicates. Skip the sync and defer to the
         // next reconcile cycle, mirroring the other recovery-read guards.
         const openOrders = await readOpenOrdersGuarded(chainOrders, accountRef, {
-            log: (message: string, level: any) => mgr.logger?.log?.(message, level),
+            log: (message: string, level?: string) => mgr.logger?.log?.(message, level),
             label: 'RECOVERY',
             detail: 'during state recovery',
             deferEmpty: true,
@@ -823,7 +864,7 @@ class Accountant {
                         if (typeof mgr.recalculateFunds === 'function') {
                             await mgr.recalculateFunds();
                         }
-                    } catch (recalcErr: any) {
+                    } catch (recalcErr) {
                         mgr.logger?.log?.(`[RECOVERY] Post-recalibration fund recalc failed: ${getErrorMessage(recalcErr)}`, 'warn');
                     }
                     driftValidation = mgr.checkFundDriftAfterFills();
@@ -847,7 +888,7 @@ class Accountant {
                         if (typeof mgr.recalculateFunds === 'function') {
                             await mgr.recalculateFunds();
                         }
-                    } catch (recalcErr: any) {
+                    } catch (recalcErr) {
                         mgr.logger?.log?.(`[RECOVERY] Post-heal fund recalc failed: ${getErrorMessage(recalcErr)}`, 'warn');
                     }
                     driftValidation = mgr.checkFundDriftAfterFills();
@@ -903,7 +944,7 @@ class Accountant {
      * @param {Array} openOrders - Fresh raw chain open orders (same read the sync used)
      * @returns {Promise<{attempted: number, resized: number, virtualized: number, rejected: number}>}
      */
-    async _recalibrateTrackedFundsFromChain(mgr: any, openOrders: any[]) {
+    async _recalibrateTrackedFundsFromChain(mgr: OrderManagerLike, openOrders: ChainOrder[]) {
         const result = { attempted: 0, resized: 0, virtualized: 0, rejected: 0 };
         if (!mgr?.orders || !Array.isArray(openOrders)) return result;
         // An empty read is meaningful (all-filled account): the absent
@@ -927,11 +968,11 @@ class Accountant {
             }
         }
 
-        const applyUpdate = async (nextOrder: any, context: string): Promise<boolean> => {
+        const applyUpdate = async (nextOrder: ManagedOrder, context: string): Promise<boolean> => {
             try {
                 const applied = await mgr._applyOrderUpdate(nextOrder, context, { skipAccounting: true, fee: 0 });
                 return applied !== false;
-            } catch (err: any) {
+            } catch (err) {
                 // _throwOnIllegalState mode throws instead of returning false —
                 // one rejected slot must not abort the whole sweep.
                 mgr.logger?.log?.(`[RECOVERY] Recalibration update rejected for ${nextOrder?.id}: ${getErrorMessage(err)}`, 'warn');
@@ -940,7 +981,7 @@ class Accountant {
         };
 
         const sweep = async () => {
-            for (const gridOrder of Array.from(mgr.orders.values() as any[])) {
+            for (const gridOrder of Array.from(mgr.orders.values())) {
                 if (!gridOrder?.orderId) continue;
                 if (gridOrder.state !== ORDER_STATES.ACTIVE && gridOrder.state !== ORDER_STATES.PARTIAL) continue;
                 const chainOrder = parsedChainOrders.get(gridOrder.orderId);
@@ -962,9 +1003,9 @@ class Accountant {
                         else result.rejected++;
                         continue;
                     }
-                    let updated: any = null;
+                    let updated: Partial<ManagedOrder> | null = null;
                     try { updated = await applyChainSizeToGridOrder(mgr, gridOrder, chainOrder.size); } catch { updated = null; }
-                    const next: any = { ...gridOrder, ...(updated || {}) };
+                    const next: ManagedOrder = { ...gridOrder, ...(updated || {}) };
                     if (chainInt < gridInt) next.state = ORDER_STATES.PARTIAL;
                     if (await applyUpdate(next, 'recovery-fund-recalibration')) result.resized++;
                     else result.rejected++;
@@ -994,7 +1035,7 @@ class Accountant {
         try {
             if (mgr._gridLock?.acquire) await mgr._gridLock.acquire(sweep);
             else await sweep();
-        } catch (err: any) {
+        } catch (err) {
             mgr.logger?.log?.(`[RECOVERY] Fund recalibration sweep failed: ${getErrorMessage(err)}`, 'warn');
         }
         return result;
@@ -1024,7 +1065,7 @@ class Accountant {
        * @param {Object} driftValidation - Result of checkFundDriftAfterFills()
        * @returns {Promise<{side: string, seededFree: number, committed: number, chainTotal: number}|null>}
        */
-    async _tryTrustChainFreeHeal(mgr: any, driftValidation: any) {
+    async _tryTrustChainFreeHeal(mgr: OrderManagerLike, driftValidation: FundDriftCheck) {
           const limits = mgr.config?.gridLimits || GRID_LIMITS;
           if (limits.FUND_INVARIANT_HEAL_ON_RECOVERY_FAIL !== true) return null;
           if (!mgr.accountTotals || !mgr.funds?.committed?.chain) return null;
@@ -1067,7 +1108,7 @@ class Accountant {
                       return null;
                   }
               }
-          } catch (err: any) {
+          } catch (err) {
               mgr.logger?.log?.(`[RECOVERY] Trust-chain heal shared-account check skipped: ${getErrorMessage(err)}`, 'warn');
           }
 
@@ -1117,15 +1158,15 @@ class Accountant {
        * @param {string} violationType - Description of the violation for logging
        * @returns {Promise<boolean>} - True if recovery succeeded, false otherwise
        */
-    async _attemptFundRecovery(mgr: any, violationType: any) {
+    async _attemptFundRecovery(mgr: OrderManagerLike, violationType: string) {
           if (!mgr._recoveryState || typeof mgr._recoveryState !== 'object') {
               mgr._recoveryState = { attemptCount: 0, lastAttemptAt: 0, inFlight: false, lastFailureAt: 0, structuralResyncRequested: false };
           }
 
-          const pt = mgr.config?.pipelineTiming || PIPELINE_TIMING;
-          const state = mgr._recoveryState;
+          const pt = (mgr.config?.pipelineTiming ?? PIPELINE_TIMING) as Record<string, unknown>;
+          const state = mgr._recoveryState as { phase?: string; attemptCount: number; lastAttemptAt: number; inFlight: boolean; lastFailureAt: number; structuralResyncRequested: boolean };
           const now = Date.now();
-          const retryIntervalMs = Math.max(0, Number(pt.RECOVERY_RETRY_INTERVAL_MS));
+          const retryIntervalMs = Math.max(0, toFiniteNumber(pt.RECOVERY_RETRY_INTERVAL_MS));
           const maxAttemptsRaw = Number(pt.MAX_RECOVERY_ATTEMPTS);
           const hasAttemptLimit = Number.isFinite(maxAttemptsRaw) && maxAttemptsRaw > 0;
 
@@ -1137,7 +1178,7 @@ class Accountant {
           // Decay: if enough time has passed since the last failure, treat this
           // as a fresh violation cycle to prevent stale counts from a previous
           // cycle permanently exhausting the attempt budget.
-          const decayMs = retryIntervalMs > 0 ? retryIntervalMs * 3 : (pt.RECOVERY_DECAY_FALLBACK_MS ?? PIPELINE_TIMING.RECOVERY_DECAY_FALLBACK_MS);
+          const decayMs = retryIntervalMs > 0 ? retryIntervalMs * 3 : toFiniteNumber(pt.RECOVERY_DECAY_FALLBACK_MS ?? PIPELINE_TIMING.RECOVERY_DECAY_FALLBACK_MS);
           if (state.attemptCount > 0 && state.lastFailureAt > 0 && (now - state.lastFailureAt) > decayMs) {
               // Log at 'info' level so operators can monitor for repeated decay patterns
               // which may indicate a persistent issue that self-corrects just long enough
@@ -1228,6 +1269,7 @@ class Accountant {
 
               state.lastFailureAt = Date.now();
               if (validation.structuralGridResyncRequired && typeof mgr.requestStructuralGridResync === 'function') {
+                  const requestStructuralGridResync = mgr.requestStructuralGridResync;
                   const unmatchedCount = Array.isArray(validation.unmatchedChainOrders)
                       ? validation.unmatchedChainOrders.length
                       : 0;
@@ -1239,7 +1281,7 @@ class Accountant {
                       );
                       Promise.resolve()
                           .then(async () => {
-                              const scheduleResult = await mgr.requestStructuralGridResync('fund invariant structural drift', {
+                              const scheduleResult = await requestStructuralGridResync('fund invariant structural drift', {
                                   unmatchedChainOrders: validation.unmatchedChainOrders || [],
                                   source: 'fund-invariant-recovery'
                               });
@@ -1251,7 +1293,7 @@ class Accountant {
                                   );
                               }
                           })
-                          .catch((err: any) => {
+                          .catch((err) => {
                               state.structuralResyncRequested = false;
                               mgr.logger?.log?.(`[RECOVERY] Structural grid resync scheduling failed: ${getErrorMessage(err)}`, 'error');
                           });
@@ -1263,10 +1305,10 @@ class Accountant {
                       );
                   }
               }
-              const level = validation.reason.includes('missing account context') ? 'warn' : 'error';
-              mgr.logger?.log?.(`[RECOVERY] State recovery failed: ${validation.reason}`, level);
+              const level = String(validation.reason).includes('missing account context') ? 'warn' : 'error';
+              mgr.logger?.log?.(`[RECOVERY] State recovery failed: ${String(validation.reason)}`, level);
               return false;
-          } catch (err: any) {
+          } catch (err) {
               state.lastFailureAt = Date.now();
               mgr.logger?.log?.(`[RECOVERY] State recovery error: ${getErrorMessage(err)}`, 'error');
               return false;
@@ -1308,7 +1350,7 @@ class Accountant {
      * @param {string} [operation='move'] - Label for logging
      * @returns {Promise<{ok: boolean, reason?: string}>} {ok: true} on success, {ok: false, reason} on failure
      */
-    async tryDeductFromChainFree(orderType: any, size: any, operation: any = 'move') {
+    async tryDeductFromChainFree(orderType: string | null | undefined, size: number, operation: string = 'move') {
          const mgr = this.manager;
          const isBuy = orderType === ORDER_TYPES.BUY;
          const key = isBuy ? 'buyFree' : 'sellFree';
@@ -1342,7 +1384,7 @@ class Accountant {
          mgr.accountTotals[key] = Math.max(0, current - size);
 
          if (mgr.logger && mgr.logger.level === 'debug') {
-             mgr.logger.log(`[ACCOUNTING] ${key} -${Format.formatAmount8(size)} (${operation}) -> ${Format.formatAmount8(mgr.accountTotals[key])} (was ${Format.formatAmount8(oldValue)})`, 'debug');
+             mgr.logger.log(`[ACCOUNTING] ${key} -${Format.formatAmount8(size)} (${operation}) -> ${Format.formatAmount8(toFiniteNumber(mgr.accountTotals[key]))} (was ${Format.formatAmount8(toFiniteNumber(oldValue))})`, 'debug');
          }
          return { ok: true };
     }
@@ -1355,7 +1397,7 @@ class Accountant {
      * @param {string} [operation='release'] - Label for logging
      * @returns {Promise<boolean>} true if addition succeeded
      */
-    async addToChainFree(orderType: any, size: any, operation: any = 'release') {
+    async addToChainFree(orderType: string | null | undefined, size: number, operation: string = 'release') {
          const mgr = this.manager;
          const isBuy = orderType === ORDER_TYPES.BUY;
          const key = isBuy ? 'buyFree' : 'sellFree';
@@ -1366,7 +1408,7 @@ class Accountant {
          mgr.accountTotals[key] = oldFree + size;
 
          if (mgr.logger && mgr.logger.level === 'debug') {
-             mgr.logger.log(`[ACCOUNTING] ${key} +${Format.formatAmount8(size)} (${operation}) -> ${Format.formatAmount8(mgr.accountTotals[key])} (was ${Format.formatAmount8(oldFree)})`, 'debug');
+             mgr.logger.log(`[ACCOUNTING] ${key} +${Format.formatAmount8(size)} (${operation}) -> ${Format.formatAmount8(toFiniteNumber(mgr.accountTotals[key]))} (was ${Format.formatAmount8(oldFree)})`, 'debug');
           }
           return true;
     }
@@ -1376,7 +1418,7 @@ class Accountant {
      * Body of adjustTotalBalance; takes the lock externally for clean
      * nesting in callers that already hold the lock.
      */
-    _adjustTotalBalanceLocked(orderType: any, delta: any, operation: any) {
+    _adjustTotalBalanceLocked(orderType: string | null | undefined, delta: number, operation: string) {
         const mgr = this.manager;
         const isBuy = (orderType === ORDER_TYPES.BUY);
         const freeKey = isBuy ? 'buyFree' : 'sellFree';
@@ -1396,7 +1438,7 @@ class Accountant {
         }
 
         if (mgr.logger && mgr.logger.level === 'debug') {
-            mgr.logger.log(`[ACCOUNTING] ${totalKey} ${delta >= 0 ? '+' : ''}${Format.formatAmount8(delta)} (${operation}) -> Total: ${Format.formatAmount8(mgr.accountTotals[totalKey])}, Free: ${Format.formatAmount8(mgr.accountTotals[freeKey])}`, 'debug');
+            mgr.logger.log(`[ACCOUNTING] ${totalKey} ${delta >= 0 ? '+' : ''}${Format.formatAmount8(delta)} (${operation}) -> Total: ${Format.formatAmount8(toFiniteNumber(mgr.accountTotals[totalKey]))}, Free: ${Format.formatAmount8(toFiniteNumber(mgr.accountTotals[freeKey]))}`, 'debug');
         }
     }
 
@@ -1405,7 +1447,7 @@ class Accountant {
      * Adjust both total and free balances (for fills, fees, deposits).
      * @returns {Promise<void>}
      */
-    async adjustTotalBalance(orderType: any, delta: any, operation: any) {
+    async adjustTotalBalance(orderType: string | null | undefined, delta: number, operation: string) {
         await this.manager._fundLock.acquire(async () => {
             this._adjustTotalBalanceLocked(orderType, delta, operation);
         });
@@ -1416,7 +1458,7 @@ class Accountant {
      * @param {string|null} sideHint - Side hint ('buy', 'sell', ORDER_TYPES.BUY, ORDER_TYPES.SELL, or null)
      * @returns {string|null} Normalized side or null if unrecognised
      */
-    _normalizeSideHint(sideHint: any) {
+    _normalizeSideHint(sideHint: string | null | undefined) {
         if (sideHint === ORDER_TYPES.BUY || sideHint === 'buy') return ORDER_TYPES.BUY;
         if (sideHint === ORDER_TYPES.SELL || sideHint === 'sell') return ORDER_TYPES.SELL;
         return null;
@@ -1429,7 +1471,7 @@ class Accountant {
      * @param {string|null} [explicitSideHint] - Explicit side override
      * @returns {string|null} Resolved side (ORDER_TYPES.BUY, ORDER_TYPES.SELL) or null
      */
-    _resolveOrderSide(order: any, fallbackOrder: any = null, explicitSideHint: any = null) {
+    _resolveOrderSide(order: Partial<ManagedOrder> | null | undefined, fallbackOrder: Partial<ManagedOrder> | null = null, explicitSideHint: string | null = null) {
         const fromHint = this._normalizeSideHint(explicitSideHint);
         if (fromHint) return fromHint;
 
@@ -1465,7 +1507,7 @@ class Accountant {
      * @param {number} fee - Blockchain fee to deduct
      * @param {boolean} skipAssetAccounting - If true, skip capital commitment changes (asset amounts) but still process fees
      */
-    async updateOptimisticFreeBalance(oldOrder: any, newOrder: any, context: any, fee: any = 0, skipAssetAccounting: any = false) {
+    async updateOptimisticFreeBalance(oldOrder: Partial<ManagedOrder> | null | undefined, newOrder: Partial<ManagedOrder>, context: string, fee: number = 0, skipAssetAccounting: boolean = false) {
         const mgr = this.manager;
         if (!oldOrder || !newOrder) return;
 
@@ -1484,7 +1526,7 @@ class Accountant {
                 try {
                     const pre = await mgr.refreshAccountTotalsIfStale();
                     preLockRefreshFailed = !pre.ok;
-                } catch (err: any) {
+                } catch (err) {
                     preLockRefreshFailed = true;
                     mgr.logger?.log?.(`[ACCOUNTING] pre-lock accountTotals refresh error: ${getErrorMessage(err)}`, 'warn');
                 }
@@ -1518,7 +1560,7 @@ class Accountant {
                     // unresolvable side (precision undefined). A debug line must
                     // never crash the accounting flow — fall back to raw numbers.
                     const sideIsResolvable = sideForPrecision === ORDER_TYPES.BUY || sideForPrecision === ORDER_TYPES.SELL;
-                    const fmtSize = (value: any) => sideIsResolvable
+                    const fmtSize = (value: number) => sideIsResolvable
                         ? Format.formatSizeByOrderType(value, sideForPrecision, mgr.assets)
                         : toFiniteNumber(value);
                     mgr.logger.log(
@@ -1602,7 +1644,7 @@ class Accountant {
                                 const err = new Error(
                                     `CRITICAL ACCOUNTING STATE: failed to lock ${Format.formatAmount8(commitmentDelta)} ${commitmentSide} during ${context}`
                                 );
-                                (err as any).code = 'ACCOUNTING_COMMITMENT_FAILED';
+                                (err as { code?: string }).code = 'ACCOUNTING_COMMITMENT_FAILED';
                                 throw err;
                             }
                         }
@@ -1612,7 +1654,7 @@ class Accountant {
                         // attempting new deductions, reducing redundant recovery cycles.
                         if (!mgr._pendingRecovery) {
                             mgr._pendingRecovery = this._attemptFundRecovery(mgr, 'Optimistic commitment deduction failure')
-                                .catch((err: any) => {
+                                .catch((err) => {
                                     mgr.logger?.log?.(`[RECOVERY] Immediate recovery scheduling failed: ${getErrorMessage(err)}`, 'error');
                                     mgr._recoveryState = { ...mgr._recoveryState, lastFailureAt: Date.now() };
                                 })
@@ -1658,7 +1700,7 @@ class Accountant {
      * @param {string|null} [requestedSide=null] - ORDER_TYPES.BUY or ORDER_TYPES.SELL to target a specific side
      * @returns {void}
      */
-    async deductBtsFees(requestedSide: any = null) {
+    async deductBtsFees(requestedSide: string | null = null) {
         const mgr = this.manager;
 
         // Early returns for no work needed (existence checks only — value reads
@@ -1727,7 +1769,7 @@ class Accountant {
      * @returns {number} Net proceeds after fees, or rawAmount if symbol not found
      * @private
      */
-    _deductFeesFromProceeds(assetSymbol: any, rawAmount: any, isMaker: any) {
+    _deductFeesFromProceeds(assetSymbol: string | null | undefined, rawAmount: number, isMaker: boolean) {
         if (!assetSymbol) return rawAmount;
 
         // BTS has no market fee. Deferred order-fee refunds are handled from
@@ -1746,7 +1788,7 @@ class Accountant {
                 throw new Error('netProceeds is not finite');
             }
             return netProceeds;
-        } catch (err: any) {
+        } catch (err) {
             if (!warnedFillFeeSymbols.has(assetSymbol)) {
                 warnedFillFeeSymbols.add(assetSymbol);
                 this.manager?.logger?.log?.(
@@ -1767,7 +1809,7 @@ class Accountant {
       * @param {Object} [options={}] - Persistence mode options
       * @returns {Promise<boolean>} true if fill was successfully processed
       */
-    async processFillAccounting(fillOp: any, fillKey: any = null, options: any = {}) {
+    async processFillAccounting(fillOp: FillOperation, fillKey: string | null = null, options: FillAccountingOptions = {}) {
          const mgr = this.manager;
          // Persistence is durable by default. Callers that process many fills under
          // the fill lock can opt into deferred persistence and close the window with
@@ -1800,7 +1842,7 @@ class Accountant {
 
          // Derive all numeric effects before recording the fill key.
          // This keeps retries safe if a later computation unexpectedly fails.
-         const balanceAdjustments: any[] = [];
+         const balanceAdjustments: Array<{ orderType: string | null | undefined; delta: number; operation: string }> = [];
          const assetASymbol = mgr.config?.assetA;
          const assetBSymbol = mgr.config?.assetB;
 
@@ -1828,7 +1870,7 @@ class Accountant {
          }
 
          let processedAt: number | null = null;
-          const tracker = fillKey ? this.manager.processedFillTracker : null;
+          const tracker = this.manager.processedFillTracker;
          if (fillKey) {
              processedAt = Date.now();
              const lastProcessed = tracker.get(fillKey);
@@ -1850,7 +1892,7 @@ class Accountant {
               try {
                   // Queue without flush — flush follows after balance adjustments succeed.
                   await processedFillStore.persist(fillKey, processedAt || Date.now(), { mode: PROCESSED_FILL_PERSISTENCE_MODES.MANUAL });
-              } catch (err: any) {
+              } catch (err) {
                   mgr.logger?.log?.(
                       `[FILL-DEDUP] Failed to queue fill ${fillKey}: ${getErrorMessage(err)}`,
                       'warn'
@@ -1869,7 +1911,7 @@ class Accountant {
                   if (persistenceMode === PROCESSED_FILL_PERSISTENCE_MODES.IMMEDIATE) {
                       await processedFillStore.flush('fill-persist', { throwOnError: true });
                   }
-              } catch (err: any) {
+              } catch (err) {
                   // Roll back balance adjustments since the dedup key was not persisted.
                   // This keeps the invariant: dedup key persisted ⇔ balance adjustments applied.
                   for (const adj of balanceAdjustments) {

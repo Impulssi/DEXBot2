@@ -36,30 +36,30 @@ class JsonFileSource {
         }
     }
 
-    async fetchCandles(): Promise<any[]> {
+    async fetchCandles(): Promise<Record<string, unknown>[]> {
         try {
             const { candles, meta } = loadCandleFile(this.filePath);
             if (!Array.isArray(candles) || candles.length === 0) {
                 throw new Error('Expected JSON array or object with .candles or .data property');
             }
 
-            const intervalSeconds = meta?.intervalSeconds || 3600;
-            const lookbackHours = meta?.lookbackHours;
+            const intervalSeconds = Number(meta?.intervalSeconds) || 3600;
+            const lookbackHours = Number(meta?.lookbackHours) || 0;
 
             if (lookbackHours && candles.length > 0) {
-                const nowMs = new Date(meta.fetchedAt || Date.now()).getTime();
+                const nowMs = new Date(Number(meta?.fetchedAt) || Date.now()).getTime();
                 const startTs = nowMs - (lookbackHours * 3600 * 1000);
-                return fillCandleGaps(candles, intervalSeconds, startTs, nowMs);
+                return fillCandleGaps(candles, intervalSeconds, startTs, nowMs) as unknown as Record<string, unknown>[];
             }
 
             return candles;
-        } catch (err: any) {
+        } catch (err) {
             throw new Error(`[JsonFileSource] Failed to read ${this.filePath}: ${getErrorMessage(err)}`);
         }
     }
 
-    extractMarketPrice(candle: any): { marketPrice: any; timestamp: any } {
-        return { marketPrice: getCandleClose(candle), timestamp: getCandleTimestamp(candle) };
+    extractMarketPrice(candle: unknown): { marketPrice: number; timestamp: number } {
+        return { marketPrice: getCandleClose(candle) as number, timestamp: getCandleTimestamp(candle) as number };
     }
 }
 
@@ -85,16 +85,17 @@ class MarketAdapterSource {
         this.name = `market_adapter:${this.botKey}`;
     }
 
-    async fetchCandles(): Promise<any[]> {
+    async fetchCandles(): Promise<Record<string, unknown>[]> {
         const centersFile = this.centersFile;
         if (!fs.existsSync(centersFile)) {
             throw new Error(`[MarketAdapterSource] Centers file not found: ${centersFile}`);
         }
 
         try {
-            const data = readJSON(centersFile);
+            type CentersBot = { history?: Array<Record<string, unknown>> };
+            const data = readJSON<{ bots?: Record<string, CentersBot>; [key: string]: unknown }>(centersFile);
 
-            let botData = data[this.botKey];
+            let botData = data[this.botKey] as CentersBot | undefined;
             if (!botData && data.bots && data.bots[this.botKey]) {
                 botData = data.bots[this.botKey];
             }
@@ -103,7 +104,7 @@ class MarketAdapterSource {
                 throw new Error(`Bot '${this.botKey}' not found in centers file`);
             }
 
-            return botData.history?.map((entry: any) => ({
+            return botData.history?.map((entry: Record<string, unknown>) => ({
                 timestamp: entry.timestamp,
                 open: entry.center,
                 high: entry.center,
@@ -111,13 +112,14 @@ class MarketAdapterSource {
                 close: entry.center,
                 volume: 0,
             })) || [];
-        } catch (err: any) {
+        } catch (err) {
             throw new Error(`[MarketAdapterSource] Failed to read: ${getErrorMessage(err)}`);
         }
     }
 
-    extractMarketPrice(candle: any): { marketPrice: any; timestamp: any } {
-        return { marketPrice: candle.close, timestamp: candle.timestamp };
+    extractMarketPrice(candle: unknown): { marketPrice: number; timestamp: number } {
+        const c = candle as { close?: number; timestamp?: number };
+        return { marketPrice: c.close as number, timestamp: c.timestamp as number };
     }
 }
 

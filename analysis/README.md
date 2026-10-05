@@ -21,6 +21,7 @@ Tools that inspect DEXBot trading behavior and the market data it operates on. O
 | Tool | Ask this when… | One-line command |
 |------|----------------|------------------|
 | [`trade_profitability.ts`](#trade-profitability-analyzer-trade_profitabilityts) | "Is my bot making money?" — PnL, R-multiples, drawdown | `npm run analysis:trade-pnl -- <account-id>` |
+| [`dexbot pnl`](#pnl-html-report-dexbot-pnl) | "Give me a readable PnL report" — self-contained HTML with a lot table | `dexbot pnl <bot\|account> --month 3` |
 | [`grid_correction_check.ts`](#last-fill-guard-check-grid_correction_checkts) | "Are fills respecting the pivot ± half-increment guard?" | `npm run analysis:grid-check -- --bot-key <bot-key>` |
 | [`analyze_risk_profile.ts`](#risk-profile-analyzer-analyze_risk_profilets) | "How wide should my Safe Range clamps be?" | `node dist/analysis/analyze_risk_profile.js --bot-key <bot-key>` |
 | [`analyze_trade_heatmap.ts`](#trade-heatmap-analyze_trade_heatmapts) | "Where did trade volume cluster vs the AMA?" | `node dist/analysis/analyze_trade_heatmap.js --bot-key <bot-key>` |
@@ -130,20 +131,28 @@ Metrics include:
 
 Fetches `fill_order` operations for a BitShares account from Kibana within a specified time range, then computes realized PnL via sequential (LIFO) or FIFO inventory tracking per asset pair.
 
-**Pipeline:** Kibana fill query → on-chain asset precision resolution → buy/sell classification → chronological matching (sequential LIFO by default) → per-pair summary + optional per-match detail.
+**Pipeline:** Kibana fill query → on-chain asset precision resolution → buy/sell classification → chronological matching (sequential LIFO by default) → per-pair summary + optional per-match detail, or a self-contained HTML report (`--html`).
 
-**Account resolution:** an account name (or a bare `1.2.x` ID) is resolved through the shared `account_resolver.ts` helper. When the name matches a bot in `profiles/bots.json`, the resolved ID is stamped onto that entry as `accountId`, so later runs resolve offline; `--refresh-account` forces a fresh lookup.
+**Account resolution:** a bot profile name, an account name, or a bare `1.2.x` ID is resolved through the shared `account_resolver.ts` helper. A local bot profile is checked **first** (no chain call), then a stored `accountId`, then the chain; the resolved ID is stamped onto the matching `profiles/bots.json` entry, so later runs resolve offline. `--refresh-account` forces a fresh lookup.
+
+`dexbot pnl` is the HTML front door (see [`scripts/README.md`](../scripts/README.md)); the raw analyzer below defaults to terminal tables.
 
 ```bash
-# Account by ID, last 7 days (default)
+# HTML report for a local bot, last 3 months (dexbot pnl wraps this)
+dexbot pnl my-bot --month 3
+
+# HTML report for a raw account, filtered to one pair
+dexbot pnl 1.2.123456 --month 6 --pair TOKENA/BTS
+
+# Terminal output: account by ID, last 3 months (default)
 node dist/analysis/trade_profitability.js 1.2.123456
 
-# Account by name (auto-resolved in the background)
-node dist/analysis/trade_profitability.js "my-account-name" --hours 720
+# Account by profile/account name (local profiles first)
+node dist/analysis/trade_profitability.js "my-account-name" --month 1
 
-# Absolute window with asset filter
+# Absolute window with pair filter
 node dist/analysis/trade_profitability.js 1.2.123456 \
-  --start 2026-07-01 --end 2026-07-07 --asset 1.3.3291
+  --start 2026-07-01 --end 2026-07-07 --pair TOKENA/BTS
 
 # Export trade log and full analysis
 node dist/analysis/trade_profitability.js 1.2.123456 \
@@ -158,25 +167,31 @@ node dist/analysis/trade_profitability.js 1.2.123456 \
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--month <n>` | `3` | Lookback months (730 h each; alias `--months`) |
 | `--start <iso>` | — | Start time (ISO 8601) |
 | `--end <iso>` | — | End time |
-| `--hours <n>` | `168` (7d) | Lookback hours (alternative to start/end) |
+| `--hours <n>` | — | Lookback hours (alternative to month/start/end) |
+| `--pair <BASE/QUOTE>` | all | Filter to one pair by symbol or `1.3.x` id |
 | `--asset <id>` | all | Filter to one base asset ID |
-| `--refresh-account` | off | Force re-resolution and update the stored `accountId` |
+| `--refresh-account` | off | Force re-resolution and bypass the fills cache (re-query the range) |
+| `--html` | off | Write a self-contained HTML report instead of terminal tables |
+| `--report <file>` | auto | Override the report path (implies `--html`) |
 | `--csv <file>` | — | Export chronologically sorted trade list |
 | `--json <file>` | — | Export full analysis with per-pair PnL data |
 | `--match-mode <mode>` | `sequential` | Matching mode: `sequential` (LIFO, default) or `fifo` |
-| `--trades` | off | Show per-order PnL detail (hidden by default) |
+| `--trades` | off | Show per-order PnL detail (terminal mode only) |
 | `--fee-per-order <bts>` | `0.09652` | Blockchain fee per limit_order_create op (BTS); approximate |
 | `--verbose` | off | Print per-pair trade counts during processing |
 
 </details>
 
+**Fill cache:** per-account `fill_order` fetches are cached in calendar-month shards under `<analysis>/cache/fills/<accountId>.shard_YYYY-MM.json` (see `fills_cache.ts`). A settled month is answered from disk with zero queries; only the still-unsettled tail (the last ~6 h before the previous query, where Kibana may still index late fills) is re-queried. `--refresh-account` ignores coverage and re-queries the requested range (merging, so it never drops fills outside that span). Delete the shard files to reset the cache.
+
 **Asset precision handling:**
 
 1. Assets listed in the static `ASSETS` table (BTS, TWENTIX, XBTSX.*, HONEST.*, IOB.*, etc.) resolve instantly.
 2. Unknown assets are resolved on-chain via `get_assets` against the built-in node pool, with results cached at runtime.
-3. If resolution fails or an asset is not found on chain, the affected fills are **skipped** with a warning (no abort).
+3. If resolution fails or an asset is not found on chain, the affected fills are **skipped** with a warning (no abort). Symbols learned on-chain are cached too, so `--pair SYMBOL/QUOTE` works even for assets absent from the static table.
 
 **PnL methodology:**
 
@@ -219,6 +234,27 @@ node dist/analysis/trade_profitability.js 1.2.123456 \
 | `Avg vol/day` | Average daily trading volume in the quote asset over that same scored window. |
 
 </details>
+
+### PnL HTML Report (`dexbot pnl`)
+
+`dexbot pnl` is the HTML front door: it resolves the account, fetches fills (through the fill cache), computes the same realized-lot PnL as the terminal analyzer, and renders a single self-contained HTML file via `analysis/pnl_report.ts`. No network, CDN, or sibling assets — it opens from a `file://` link anywhere. The file lands under the analysis `charts/` directory (or the path given to `--report`).
+
+```bash
+# Local bot profile, last 3 months
+dexbot pnl my-bot
+
+# Raw account, one pair, generated path printed on exit
+dexbot pnl 1.2.123456 --month 6 --pair TOKENA/BTS
+```
+
+Per pair the report shows:
+
+- **Hero** — account (bot name + `1.2.x` id), period, pair/lot counts, match mode, active filters.
+- **Card blocks (2x2 left + 2x2 right)** — left = money (Gross PnL, Net PnL, Volume, Fees); right = position/activity (Realized lots, Net inventory Δ, Avg buy/sell, Unmatched sold). When both market and blockchain fees exist they collapse into one `Fees` card so the block stays 2x2.
+- **Metrics grid** — Edge, Risk, Distribution, Behavior & activity: the same metric set as the terminal output (see the metrics glossary above).
+- **Realized lots table** — collapsible per-match detail (entry/exit time, prices, gross/net PnL, fees, maker/taker legs), capped at 2,000 rows — use `--csv` for the full list.
+
+All amounts use the shared 4-significant-figure formatter (compact `K`/`M`, significant trailing zeros kept) — the same one `dexbot order` uses. `--refresh-account` re-resolves the account and bypasses the fill cache (see [Fill cache](#trade-profitability-analyzer-trade_profitabilityts)).
 
 ### LAST-FILL-GUARD Check (`grid_correction_check.ts`)
 
@@ -306,7 +342,7 @@ node dist/analysis/analyze_trade_heatmap.js \
 
 ### TradingView Chart (`tradingview/analyze_tradingview.ts`)
 
-Generates a standalone TradingView-style HTML chart with candle OHLC, SMA, AMA, VWMA, and volume panel. See [tradingview/README.md](tradingview/README.md) for full documentation.
+Generates a standalone TradingView-style HTML chart with candle OHLC, SMA, AMA, VWMA, and volume panel. For AMA-grid bots it also replays the market adapter's grid resets (AMA-price Δ / AMA-slope Δ) using the thresholds resolved from `general.settings` / `market_adapter_settings` — see [tradingview/README.md](tradingview/README.md#grid-reset-simulation) and [docs/GRID_RECALCULATION.md](../docs/GRID_RECALCULATION.md). Indicator state is set in the chart toolbar, not on the command line (`SMA`, `AMA`, `VWMA`, `Range`, `Scale` checkboxes; `Range` / `Scale` opt into the AMA they are derived from), and the toolbar choice is remembered per chart in the browser. See [tradingview/README.md](tradingview/README.md) for full documentation.
 
 # Recommended one-step: bot, pool, or pair (fetches candles + renders, default 3 months)
 dexbot tv <bot-key>
@@ -411,8 +447,7 @@ Shared analyzers and chart renderers for the dynamic-weight signal path. Core en
 **Tests:**
 
 ```bash
-node dist/analysis/trend_detection/tests/test_kalman_trend.js
-node dist/analysis/trend_detection/tests/test_kalman_velocity_smoothing.js
+npm run test:legacy
 ```
 
 **Note:** `trend_detection/` has no external dependencies — runs directly from the compiled build (`node dist/...`).
@@ -493,6 +528,8 @@ Details: [bot_fitting/README.md](bot_fitting/README.md)
 | `account_resolver.ts` | Account resolution for all tools: `preferredAccount` / `--account` → `1.2.x`, stamping the result into `profiles/bots.json` |
 | `chain_pool.ts` | Ephemeral read-only chain client over the built-in node pool (account + asset lookups) |
 | `fills_source.ts` | Shared `fill_order` Kibana fetch/query and the static asset-precision table + on-chain cache |
+| `fills_cache.ts` | Per-account month-shard cache for `fill_order` fetches (settled months reused, unsettled tail refreshed) |
+| `pnl_report.ts` | Self-contained HTML PnL renderer: hero, card blocks, metrics grid, realized-lots table |
 
 On-chain account and asset lookups in the fill-based tools go through `account_resolver.ts` / `fills_source.ts` (both built on `chain_pool.ts`): tool scripts must not open their own read-only clients or carry their own node list. The batch backfill `resolve_bot_accounts.ts` is the exception — it reuses the production chain client over one connection.
 

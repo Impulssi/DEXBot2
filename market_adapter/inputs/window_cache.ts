@@ -11,8 +11,16 @@
  *
  * Each shard holds `{ meta, candles }` where `meta.queriedRanges` records the
  * spans actually queried to produce the data (monotonically unioned on every
- * write). Missing buckets are pruned only against recorded query coverage —
- * the absence of local buckets alone never certifies history as empty.
+ * write) together with `at`, the time each query ran. Missing buckets are
+ * pruned only against recorded query coverage — the absence of local buckets
+ * alone never certifies history as empty — and only once the span is older
+ * than GAP_SETTLE_HORIZON_MS, judged per gap rather than per window. `at` is
+ * what makes the newest window's late-indexing refresh incremental: buckets a
+ * previous query already saw TAIL_SETTLE_LAG_MS after they closed are settled
+ * and never re-queried (see settleCoverage). A run that re-verifies the tail
+ * therefore REWRITES that shard even when the candles come back identical —
+ * the moved verification time is the only news, and skipping the write would
+ * throw it away. Pure-reuse runs (no query at all) still write nothing.
  *
  * Callers supply:
  *   - `requestKey` — opaque identity object stored in each shard's meta,
@@ -28,41 +36,141 @@
 import { path } from '../../modules/path_api.js';
 import { getStorage } from '../../modules/storage/index.js';
 import { writeJsonAtomic } from '../utils/atomic_write.js';
-import { sleepMs } from '../../modules/utils/errors.js';
+import { sleepMs, getErrorName, getErrorMessage } from '../../modules/utils/errors.js';
 import { mergeCandles } from '../candle_utils.js';
 
 const storage = getStorage();
 const { readJSON } = storage;
 
-// Trailing overlap always re-fetched on the newest window. Kibana indexing
-// can lag minutes–hours, so buckets cached as zero-volume fills may gain
-// real trades after the fact. 48h bounds the extra query to a small range.
+type Candle = number[];
+
+interface FileCover {
+    gte: number | null;
+    lte: number | null;
+    count: number;
+    queried: QueriedRange[];
+}
+
+interface GapRange {
+    gte: number;
+    lte: number;
+    hours: number;
+}
+
+interface BucketCache {
+    byTs: Map<number, Candle>;
+    files: number;
+    fileCover: FileCover[];
+    shards: Array<{ file: string; shardKey: string; candles: Candle[]; queried: QueriedRange[] }>;
+}
+
+interface ShardMeta {
+    timeRange?: { gte?: unknown; lte?: unknown };
+    fetchedAt?: unknown;
+    queriedRanges?: unknown[];
+    [key: string]: unknown;
+}
+
+interface CacheChunk {
+    candles: Candle[];
+    fetchedAt: unknown;
+    file: string;
+    rangeGte: number | null;
+    rangeLte: number | null;
+    queried: QueriedRange[];
+}
+
+interface FetchRangeResult {
+    candles: Candle[];
+    complete?: boolean;
+}
+
+interface RunCachedWindowsOptions {
+    windows: Array<{ index: number; gte: string; lte: string }>;
+    outPath: string;
+    requestKey: unknown;
+    isMatch: (meta: unknown, requestKey: unknown) => boolean;
+    metaForWindow: (window: { index: number; gte: string; lte: string }) => Record<string, unknown>;
+    fetchRange: (gteIso: string, lteIso: string, window: unknown, signal?: AbortSignal) => Promise<Candle[] | FetchRangeResult>;
+    bucketMs: number;
+    allowSubFetch?: boolean;
+    nowMs?: number;
+    fetchAttempts?: number;
+    fetchBackoffBaseMs?: number;
+    fetchTimeoutMs?: number;
+    onFetchRetry?: (info: { attempt: number; attempts: number; backoffMs: number; error: unknown; gte: string; lte: string }) => void;
+}
+
+// Trailing overlap for the newest window. It is the refresh when the cache
+// records no query timestamps (pre-`at` shard files) AND the hard ceiling when
+// it does: Kibana indexing can lag minutes–hours, so buckets cached as
+// zero-volume fills may gain real trades after the fact, and 48h bounds the
+// extra query to a small range. Once coverage carries `at`, the refresh shrinks
+// to the still-unsettled tail instead (see TAIL_SETTLE_LAG_MS /
+// settleCoverage) — but never reaches back past this window. Without the
+// ceiling a single mid-window coverage hole (e.g. an old span dropped by
+// compactCoverage) would drag the boundary back weeks and re-query settled
+// history on every run.
 const TAIL_REFRESH_HOURS = 48;
 
-// Windows fully in the past are immutable: blockchain history does not change
-// and Kibana indexing lag (minutes–hours) is long past. Leading buckets with
-// no trades stay empty forever, so re-querying them every shifted rerun is
-// pure waste. Only the recent past is re-checked (see TAIL_REFRESH_HOURS).
-const IMMUTABLE_WINDOW_AGE_MS = 7 * 24 * 3600 * 1000;
+// How long after a bucket closes its last trade may still be indexed. A
+// bucket is settled once some query covering it ran at least this long after
+// the bucket closed — after that, re-querying it can only confirm what we
+// already have. Sized well above real Kibana indexing lag (minutes–hours)
+// while staying far below the 48h legacy fallback, so a rerun minutes after a
+// previous one costs a few hours of query instead of two days.
+const TAIL_SETTLE_LAG_MS = 6 * 3600 * 1000;
+
+// A missing bucket range that ended longer ago than this is immutable:
+// blockchain history does not change and Kibana indexing lag is long past.
+// Judged PER GAP, not per window: a month-old gap at the leading edge of the
+// newest window is just as settled as one in last year's window, and the
+// window-level test could never prune it. Inside the horizon nothing is
+// certified — recent buckets may still gain late-indexed trades.
+//
+// 7 days, i.e. the margin the window-level rule used before: the win here
+// comes from judging each gap by its OWN age, not from trusting the cache
+// sooner. Nothing in this repo measures how far behind Kibana indexing can
+// lag, so the horizon stays at the last value that was live-proven rather
+// than being tightened on a guess — the reported incident (a month-old,
+// already-queried gap re-fetched forever) is pruned either way.
+const GAP_SETTLE_HORIZON_MS = 7 * 24 * 3600 * 1000;
+
+// Sub-range fetch budget. Small gaps are queried individually; gaps closer
+// than this many buckets are merged first (one query instead of two) and the
+// run only takes the sub-range path while the merged spans stay under
+// MAX_SUBFETCH_SPAN_RATIO of the window. The cap is on merged SPAN HOURS, not
+// on the gap count: a count cap made a 4th tiny gap escalate to a full-month
+// fetch (~700x the query for one extra hour of data).
+const GAP_MERGE_TOLERANCE_BUCKETS = 2;
+const MAX_SUBFETCH_RANGES = 8;
+const MAX_SUBFETCH_SPAN_RATIO = 0.5;
+
+// Upper bound on the spans persisted in one shard. Spans merge only when they
+// agree on `at` (see unionQueriedRanges), so a shard that is re-verified often
+// gains one span per run and would otherwise grow without limit. Normal
+// operation stays far below this: coverage is clipped per shard, so only the
+// current month accumulates.
+const MAX_COVERAGE_SPANS = 64;
 
 // ─── Month-shard naming ───────────────────────────────────────────────────────
 // Shard key is the UTC calendar month; bounds are half-open [start, end) so
 // every bucket timestamp maps to exactly one shard (a bucket exactly at a
 // month boundary belongs to the new month).
 
-function shardKeyForTimestamp(tsMs: any) {
+function shardKeyForTimestamp(tsMs: unknown): string {
     const d = new Date(Number(tsMs));
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
-function shardBoundsForKey(key: any) {
+function shardBoundsForKey(key: unknown): { start: number; end: number } {
     const parts = String(key).split('-').map(Number);
     const start = Date.UTC(parts[0], parts[1] - 1, 1);
     const end = parts[1] === 12 ? Date.UTC(parts[0] + 1, 0, 1) : Date.UTC(parts[0], parts[1], 1);
     return { start, end };
 }
 
-function shardKeysForRange(gteMs: any, lteMs: any) {
+function shardKeysForRange(gteMs: unknown, lteMs: unknown): string[] {
     const keys: string[] = [];
     let cursor = new Date(Date.UTC(
         new Date(Number(gteMs)).getUTCFullYear(),
@@ -75,17 +183,17 @@ function shardKeysForRange(gteMs: any, lteMs: any) {
     return keys;
 }
 
-function shardRangeOverlaps(shardKey: any, gteMs: any, lteMs: any) {
+function shardRangeOverlaps(shardKey: unknown, gteMs: unknown, lteMs: unknown): boolean {
     const { start, end } = shardBoundsForKey(shardKey);
-    return start <= lteMs && end > gteMs;
+    return start <= Number(lteMs) && end > Number(gteMs);
 }
 
-function shardPathFor(outPath: any, shardKey: any) {
+function shardPathFor(outPath: string, shardKey: string): string {
     const parsed = path.parse(outPath);
     return path.join(parsed.dir, `${parsed.name}.shard_${shardKey}${parsed.ext}`);
 }
 
-function siblingCacheFiles(outPath: any) {
+function siblingCacheFiles(outPath: string): Array<{ file: string; shardKey: string }> {
     const resolved = path.resolve(outPath);
     const parsed = path.parse(resolved);
     if (!storage.exists(parsed.dir)) return [];
@@ -97,18 +205,18 @@ function siblingCacheFiles(outPath: any) {
         if (!/^\d{4}-\d{2}$/.test(key)) continue;
         out.push({ file: path.join(parsed.dir, name), shardKey: key });
     }
-    out.sort((a: any, b: any) => (a.file < b.file ? -1 : 1));
+    out.sort((a, b) => (a.file < b.file ? -1 : 1));
     return out;
 }
 
-function readCacheChunk(chunkFile: any, requestKey: any, isMatch: (meta: any, requestKey: any) => boolean) {
+function readCacheChunk(chunkFile: string, requestKey: unknown, isMatch: (meta: unknown, requestKey: unknown) => boolean): CacheChunk | null {
     // Same-identity check WITHOUT the timeRange match — any chunk for this
     // request can contribute buckets.
     try {
-        const parsed = readJSON(chunkFile);
+        const parsed = readJSON(chunkFile) as { meta?: ShardMeta; candles?: Candle[] } | null;
         const meta = parsed?.meta || {};
         if (!isMatch(meta, requestKey)) return null;
-        if (!Array.isArray(parsed.candles)) return null;
+        if (!parsed || !Array.isArray(parsed.candles)) return null;
         const rangeGte = Date.parse(String(meta.timeRange?.gte || ''));
         const rangeLte = Date.parse(String(meta.timeRange?.lte || ''));
         const gte = Number.isFinite(rangeGte) ? rangeGte : null;
@@ -116,11 +224,22 @@ function readCacheChunk(chunkFile: any, requestKey: any, isMatch: (meta: any, re
         // Ranges actually queried to produce these candles. Pre-fix files
         // predate sub-range fetches (full-window only), so their timeRange
         // claim is exact and serves as the fallback.
-        const queried = Array.isArray(meta.queriedRanges)
+        // `at` = when the covering query actually ran. Shards written before
+        // timestamps were recorded carry none, so the FILE's own write time
+        // stands in: `persistCacheChunk` stamps `fetchedAt` at flush time and
+        // the data in that file was queried in the same run, so the real query
+        // time is at most one run-duration earlier. That optimism is minutes
+        // against a 6h settle lag and only touches the run's own tail; the
+        // alternative — treating those spans as unverifiable — poisons the
+        // whole window (see planWindowReuse) and silently disables the
+        // late-indexing refresh on every cache that has one old shard.
+        const fileAt = timestampMs(meta?.fetchedAt);
+        const spanAt = (q: unknown) => verifiedAt(q) ?? fileAt;
+        const queried: QueriedRange[] = Array.isArray(meta.queriedRanges)
             ? meta.queriedRanges
-                .filter((q: any) => Number.isFinite(Number(q?.gte)) && Number.isFinite(Number(q?.lte)))
-                .map((q: any) => ({ gte: Number(q.gte), lte: Number(q.lte) }))
-            : (gte !== null && lte !== null ? [{ gte, lte }] : []);
+                .filter((q: unknown) => Number.isFinite(Number((q as { gte?: unknown })?.gte)) && Number.isFinite(Number((q as { lte?: unknown })?.lte)))
+                .map((q: unknown) => ({ gte: Number((q as { gte?: unknown }).gte), lte: Number((q as { lte?: unknown }).lte), at: spanAt(q) }))
+            : (gte !== null && lte !== null ? [{ gte, lte, at: fileAt }] : []);
         return {
             candles: parsed.candles,
             fetchedAt: meta.fetchedAt || null,
@@ -129,21 +248,21 @@ function readCacheChunk(chunkFile: any, requestKey: any, isMatch: (meta: any, re
             rangeLte: lte,
             queried,
         };
-    } catch (_: any) {
+    } catch (_) {
         return null;
     }
 }
 
-function loadBucketCache(outPath: any, requestKey: any, isMatch: (meta: any, requestKey: any) => boolean, range?: { gte: number; lte: number } | null) {
-    const byTs = new Map();
-    const fileCover: { gte: number | null; lte: number | null; count: number; queried: { gte: number; lte: number }[] }[] = [];
-    const shards: { file: string; shardKey: string; candles: any[]; queried: { gte: number; lte: number }[] }[] = [];
+function loadBucketCache(outPath: string, requestKey: unknown, isMatch: (meta: unknown, requestKey: unknown) => boolean, range?: { gte: number; lte: number } | null): BucketCache {
+    const byTs = new Map<number, Candle>();
+    const fileCover: FileCover[] = [];
+    const shards: Array<{ file: string; shardKey: string; candles: Candle[]; queried: QueriedRange[] }> = [];
     let files = 0;
     const scoped = range && Number.isFinite(range.gte) && Number.isFinite(range.lte);
     for (const entry of siblingCacheFiles(outPath)) {
         // Shards outside the requested range are never even opened —
         // a narrow run reads only the months it needs.
-        if (scoped && !shardRangeOverlaps(entry.shardKey, (range as any).gte, (range as any).lte)) continue;
+        if (scoped && !shardRangeOverlaps(entry.shardKey, (range as { gte: number }).gte, (range as { lte: number }).lte)) continue;
         const chunk = readCacheChunk(entry.file, requestKey, isMatch);
         if (!chunk) continue;
         files += 1;
@@ -155,37 +274,74 @@ function loadBucketCache(outPath: any, requestKey: any, isMatch: (meta: any, req
             const prev = byTs.get(ts);
             if (!prev || Number(c[5] || 0) > Number(prev[5] || 0)) byTs.set(ts, c);
         }
-        shards.push({ file: entry.file, shardKey: entry.shardKey, candles: chunk.candles.filter((c: any) => Array.isArray(c)), queried: chunk.queried });
+        shards.push({ file: entry.file, shardKey: entry.shardKey, candles: chunk.candles.filter((c): c is Candle => Array.isArray(c)), queried: chunk.queried });
     }
     return { byTs, files, fileCover, shards };
 }
 
-function cachedCandlesInRange(localCache: any, gteMs: number, lteMs: number) {
-    const out: any[] = [];
+function cachedCandlesInRange(localCache: BucketCache, gteMs: number, lteMs: number): Candle[] {
+    const out: Candle[] = [];
     for (const [ts, c] of localCache.byTs) {
         if (ts >= gteMs && ts <= lteMs) out.push(c);
     }
-    out.sort((a: any, b: any) => a[0] - b[0]);
+    out.sort((a, b) => Number(a[0]) - Number(b[0]));
     return out;
 }
 
 // ─── Queried-range set ops ────────────────────────────────────────────────────
 // Coverage provenance: normalize recorded spans (sort, merge overlapping or
 // bucket-adjacent) so growth checks and absorption decisions are exact.
+// A span also carries the time its covering query RAN (`at`), which is what
+// makes the tail refresh incremental: extent says "we asked", `at` says "and
+// the answer is still current".
 
-function unionQueriedRanges(ranges: { gte: number; lte: number }[], bucketMs: number) {
+/** Span of time actually queried, plus when the query ran (null = unknown). */
+type QueriedRange = { gte: number; lte: number; at: number | null };
+
+/** Parse a verification timestamp: epoch ms or ISO. Anything else is unknown. */
+function timestampMs(raw: unknown): number | null {
+    // `null`/`undefined`/`''` mean "not recorded". They must NOT fall through
+    // to Number(): Number(null) === 0 is finite, which would read an unknown
+    // verification time as "verified at the epoch" — i.e. as maximally stale,
+    // silently disabling the tail refresh on every pre-`at` shard.
+    if (raw == null || raw === '') return null;
+    if (typeof raw === 'string') {
+        const parsed = Date.parse(raw);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+    const at = Number(raw);
+    return Number.isFinite(at) ? at : null;
+}
+
+function verifiedAt(range: unknown): number | null {
+    return timestampMs((range as { at?: unknown } | null)?.at);
+}
+
+/**
+ * Normalize recorded spans: sort, then merge overlapping / bucket-adjacent
+ * ones — but ONLY when they assert the same verification time. Merging spans
+ * with different `at` would have to pick one verdict for the whole union, and
+ * either pick loses (min → the merged span vouches for buckets the older
+ * query never saw; max → buckets verified long ago look freshly verified).
+ * Keeping them separate preserves exact per-bucket freshness, which is the
+ * whole point of `at`. Spans therefore accumulate ~1 per tail run, each a few
+ * dozen bytes — negligible next to the candles in the same file, and the
+ * same-`at` case (bulk fetches, and every pre-`at` shard) still collapses to
+ * one span as before.
+ */
+function unionQueriedRanges(ranges: { gte: number; lte: number; at?: number | null }[], bucketMs: number): QueriedRange[] {
     const clean = (ranges || [])
-        .filter((q: any) => q && Number.isFinite(Number(q.gte)) && Number.isFinite(Number(q.lte)) && Number(q.lte) >= Number(q.gte))
-        .map((q: any) => ({ gte: Number(q.gte), lte: Number(q.lte) }))
-        .sort((a: any, b: any) => a.gte - b.gte || a.lte - b.lte);
-    const merged: { gte: number; lte: number }[] = [];
+        .filter((q) => q && Number.isFinite(Number(q.gte)) && Number.isFinite(Number(q.lte)) && Number(q.lte) >= Number(q.gte))
+        .map((q) => ({ gte: Number(q.gte), lte: Number(q.lte), at: verifiedAt(q) }))
+        .sort((a, b) => a.gte - b.gte || a.lte - b.lte);
+    const merged: QueriedRange[] = [];
     const gap = Number.isFinite(Number(bucketMs)) && Number(bucketMs) > 0 ? Number(bucketMs) : 0;
     for (const q of clean) {
         const top = merged[merged.length - 1];
-        if (top && q.gte <= top.lte + gap) {
+        if (top && q.gte <= top.lte + gap && top.at === q.at) {
             if (q.lte > top.lte) top.lte = q.lte;
         } else {
-            merged.push({ gte: q.gte, lte: q.lte });
+            merged.push({ gte: q.gte, lte: q.lte, at: q.at });
         }
     }
     return merged;
@@ -202,13 +358,96 @@ function rangesCoveredBy(have: { gte: number; lte: number }[], want: { gte: numb
     return true;
 }
 
-function clipRangeTo(q: { gte: number; lte: number }, gteMs: number, lteMs: number) {
-    const gte = Math.max(q.gte, gteMs);
-    const lte = Math.min(q.lte, lteMs);
-    return lte >= gte ? { gte, lte } : null;
+/**
+ * Change detection for shard writes: `have` already accounts for every span in
+ * `want`, in extent AND in verification time. Without the `at` half, a run
+ * whose only news is "these buckets were re-verified 1h later" would skip the
+ * write and the next run would fall back to the wide fixed refresh window.
+ * An unknown `at` on either side is never treated as fresh.
+ */
+function coverageSatisfied(have: QueriedRange[], want: QueriedRange[]) {
+    if (!rangesCoveredBy(have, want)) return false;
+    for (const w of want || []) {
+        const wAt = verifiedAt(w);
+        if (wAt == null) continue;
+        let fresh = false;
+        for (const h of have || []) {
+            if (h.gte > w.gte || h.lte < w.lte) continue;
+            const hAt = verifiedAt(h);
+            if (hAt != null && hAt >= wAt) { fresh = true; break; }
+        }
+        if (!fresh) return false;
+    }
+    return true;
 }
 
-function addUtcMonths(date: any, months: any) {
+/** Every recorded span across the loaded files, newest verification included. */
+function allQueriedRanges(fileCover: { queried?: QueriedRange[] | null }[]): QueriedRange[] {
+    const out: QueriedRange[] = [];
+    for (const f of fileCover || []) {
+        for (const q of f?.queried || []) {
+            if (q && Number.isFinite(Number(q.gte)) && Number.isFinite(Number(q.lte))) out.push(q);
+        }
+    }
+    return out;
+}
+
+/**
+ * How settled a window is, given the recorded coverage.
+ *
+ * A bucket is settled when some recorded query covering it ran at least
+ * `lagMs` after the bucket closed — late indexing has certainly landed by
+ * then, so re-querying it can only re-confirm cached data. Returns
+ * `hasTimestamps: false` when no coverage carries a verification time (all
+ * pre-`at` shards), which tells the caller to fall back to the fixed window.
+ * Otherwise `firstUnsettled` is the earliest bucket that still needs a query
+ * (null when the whole window is settled).
+ */
+function settleCoverage(opts: { gteMs: number; lteMs: number; bucketMs: number; queried: QueriedRange[]; lagMs: number }): { hasTimestamps: boolean; firstUnsettled: number | null } {
+    const { gteMs, lteMs, bucketMs, lagMs } = opts;
+    const spans = (opts.queried || []).filter((q) => q && Number.isFinite(Number(q.gte)) && Number.isFinite(Number(q.lte)));
+    const hasTimestamps = spans.some((q) => verifiedAt(q) != null);
+    if (!hasTimestamps) return { hasTimestamps: false, firstUnsettled: null };
+    const first = Math.floor(gteMs / bucketMs) * bucketMs;
+    const last = Math.floor(lteMs / bucketMs) * bucketMs;
+    for (let ts = first; ts <= last; ts += bucketMs) {
+        let settled = false;
+        for (const q of spans) {
+            if (q.gte > ts || q.lte < ts) continue;
+            const at = verifiedAt(q);
+            if (at != null && at >= ts + bucketMs + lagMs) { settled = true; break; }
+        }
+        if (!settled) return { hasTimestamps: true, firstUnsettled: ts };
+    }
+    return { hasTimestamps: true, firstUnsettled: null };
+}
+
+/**
+ * Bound the persisted span list. Because spans merge only when they assert
+ * the same `at`, a shard that is re-verified on every run gains one span per
+ * run and would grow without limit (and `settleCoverage` scans the list once
+ * per tail window). Dropping the OLDEST spans never invents emptiness, but it
+ * is not free: coverage is consulted by BOTH `pruneImmutableGaps` (to skip a
+ * query) and `settleCoverage` (to decide a bucket is fresh). A dropped span
+ * makes its buckets look unsettled, and the tail refresh would otherwise start
+ * at the earliest of them. That is why the refresh is capped at
+ * TAIL_REFRESH_HOURS: the worst a dropped span can cost is the legacy 48h
+ * overlap, never weeks. The input is already sorted by extent, so the tail of
+ * the list is the newest.
+ */
+function compactCoverage(spans: QueriedRange[], maxSpans: number): QueriedRange[] {
+    const list = spans || [];
+    const max = Number.isFinite(Number(maxSpans)) && Number(maxSpans) >= 1 ? Math.floor(Number(maxSpans)) : list.length;
+    return list.length <= max ? list : list.slice(list.length - max);
+}
+
+function clipRangeTo(q: QueriedRange, gteMs: number, lteMs: number): QueriedRange | null {
+    const gte = Math.max(q.gte, gteMs);
+    const lte = Math.min(q.lte, lteMs);
+    return lte >= gte ? { gte, lte, at: verifiedAt(q) } : null;
+}
+
+function addUtcMonths(date: Date, months: number): Date {
     const result = new Date(date.getTime());
     const day = result.getUTCDate();
     result.setUTCDate(1);
@@ -222,7 +461,7 @@ function addUtcMonths(date: any, months: any) {
     return result;
 }
 
-function normalizeDateInput(raw: any, label: any) {
+function normalizeDateInput(raw: unknown, label: unknown): Date {
     const ms = Date.parse(String(raw || ''));
     if (!Number.isFinite(ms)) {
         throw new Error(`Invalid ${label} date: ${raw}`);
@@ -230,7 +469,7 @@ function normalizeDateInput(raw: any, label: any) {
     return new Date(ms);
 }
 
-function buildFetchWindowsFromRange(timeRange: any, chunkMonths: any) {
+function buildFetchWindowsFromRange(timeRange: { gte?: unknown; lte?: unknown }, chunkMonths: number): Array<{ gte: string; lte: string }> {
     const start = normalizeDateInput(timeRange.gte, 'start');
     const end = normalizeDateInput(timeRange.lte, 'end');
 
@@ -238,7 +477,7 @@ function buildFetchWindowsFromRange(timeRange: any, chunkMonths: any) {
         throw new Error(`Invalid fetch range: ${start.toISOString()} must be earlier than ${end.toISOString()}`);
     }
 
-    const windows: any[] = [];
+    const windows: Array<{ gte: string; lte: string }> = [];
     let cursor = start;
     while (cursor < end) {
         const next = addUtcMonths(cursor, chunkMonths);
@@ -253,10 +492,10 @@ function buildFetchWindowsFromRange(timeRange: any, chunkMonths: any) {
     return windows;
 }
 
-function findMissingBucketRanges(gteMs: number, lteMs: number, bucketMs: number, haveTs: Set<number>) {
+function findMissingBucketRanges(gteMs: number, lteMs: number, bucketMs: number, haveTs: Set<number>): GapRange[] {
     const first = Math.floor(gteMs / bucketMs) * bucketMs;
     const last = Math.floor(lteMs / bucketMs) * bucketMs;
-    const missing: { gte: number; lte: number; hours: number }[] = [];
+    const missing: GapRange[] = [];
     let runStart: number | null = null;
     for (let ts = first; ts <= last; ts += bucketMs) {
         if (haveTs.has(ts)) {
@@ -274,47 +513,73 @@ function findMissingBucketRanges(gteMs: number, lteMs: number, bucketMs: number,
     return missing;
 }
 
-function pruneImmutableGaps(missing: { gte: number; lte: number; hours: number }[], lteMs: number, fileCover: { gte: number | null; lte: number | null; count: number; queried: { gte: number; lte: number }[] }[], nowMs: number = Date.now()) {
-    const windowOld = lteMs < nowMs - IMMUTABLE_WINDOW_AGE_MS;
-    return missing.filter((m: any) => {
+/**
+ * Merge gap ranges that sit closer together than `toleranceBuckets`, so a
+ * cluster of one-bucket holes costs one query instead of one per hole. Only
+ * the bounding span widens (the buckets in between get queried too — they are
+ * local anyway, so the over-claim is harmless), and input order is preserved.
+ */
+function mergeGapRanges(missing: GapRange[], bucketMs: number, toleranceBuckets: number): GapRange[] {
+    const tolMs = Number.isFinite(bucketMs) && bucketMs > 0 ? bucketMs * Math.max(0, toleranceBuckets || 0) : 0;
+    const out: GapRange[] = [];
+    for (const m of missing || []) {
+        if (!m) continue;
+        const prev = out[out.length - 1];
+        if (prev && m.gte <= prev.lte + tolMs) {
+            if (m.lte > prev.lte) {
+                prev.lte = m.lte;
+                prev.hours = Math.round((m.lte - prev.gte) / bucketMs) + 1;
+            }
+        } else {
+            out.push({ gte: m.gte, lte: m.lte, hours: m.hours });
+        }
+    }
+    return out;
+}
+
+function pruneImmutableGaps(missing: GapRange[], fileCover: FileCover[], nowMs: number = Date.now()): GapRange[] {
+    const settleBeforeMs = nowMs - GAP_SETTLE_HORIZON_MS;
+    return missing.filter((m) => {
         // Absence of local buckets is NEVER proof of emptiness: stray
         // buckets from a sibling window's file (e.g. boundary over-fetch)
-        // must not vouch for anything. Only queriedRanges count, and only
-        // for old windows — recent files may predate late-indexed trades.
+        // must not vouch for anything. Only queriedRanges count.
         // (A former "leading no-trade gap" heuristic pruned everything
         // before the first local bucket; it once certified a whole month
         // as empty from 5 stray boundary buckets of the next window.)
-        // Ranges an existing chunk file actually queried (only trusted for
-        // old windows — recent files may predate late-indexed trades).
         // Coverage comes from meta.queriedRanges, not the file's overall
         // timeRange: a chunk rewritten from reused buckets plus sub-range
         // fetches only proves its fetched sub-ranges empty, never the
         // ranges it merely copied forward.
-        if (windowOld) {
-            for (const f of fileCover) {
-                for (const q of f.queried || []) {
-                    if (q.gte <= m.gte && q.lte >= m.lte) return false;
-                }
+        // Immutability is judged per GAP, not per window: a month-old gap at
+        // the leading edge of the newest window is exactly as settled as one
+        // in a fully past window, and a window-level test could never prune it
+        // (that gap was re-queried on every single run). Gaps ending inside
+        // the horizon are always kept — recent buckets may still gain
+        // late-indexed trades.
+        if (m.lte >= settleBeforeMs) return true;
+        for (const f of fileCover) {
+            for (const q of f.queried || []) {
+                if (q.gte <= m.gte && q.lte >= m.lte) return false;
             }
         }
         return true;
     });
 }
 
-function persistCacheChunk(chunkFile: any, meta: any, candles: any) {
+function persistCacheChunk(chunkFile: string, meta: ShardMeta, candles: Candle[]): void {
     const payload = {
         meta: {
             ...meta,
             candleCount: candles.length,
-            firstTs: candles.length > 0 ? new Date(candles[0][0]).toISOString() : null,
-            lastTs: candles.length > 0 ? new Date(candles[candles.length - 1][0]).toISOString() : null,
+            firstTs: candles.length > 0 ? new Date(Number(candles[0][0])).toISOString() : null,
+            lastTs: candles.length > 0 ? new Date(Number(candles[candles.length - 1][0])).toISOString() : null,
         },
         candles,
     };
     writeJsonAtomic(chunkFile, payload);
 }
 
-function candlesEqual(a: any[], b: any[]) {
+function candlesEqual(a: Candle[], b: Candle[]): boolean {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
         const x = a[i];
@@ -333,7 +598,7 @@ function candlesEqual(a: any[], b: any[]) {
  * such as forward-filled crosses), the tail widening is skipped and the
  * caller must take full-window fetches — reuse (zero queries) still applies.
  */
-function planWindowReuse(localCache: any, opts: { gteMs: number; lteMs: number; bucketMs: number; isTail: boolean; allowSubFetch?: boolean; nowMs?: number }) {
+function planWindowReuse(localCache: BucketCache, opts: { gteMs: number; lteMs: number; bucketMs: number; isTail: boolean; allowSubFetch?: boolean; nowMs?: number }) {
     const { gteMs, lteMs, bucketMs, isTail } = opts;
     const allowSubFetch = opts.allowSubFetch !== false;
     const nowMs = opts.nowMs != null ? opts.nowMs : Date.now();
@@ -342,33 +607,61 @@ function planWindowReuse(localCache: any, opts: { gteMs: number; lteMs: number; 
         ? cachedCandlesInRange(localCache, gteMs, lteMs)
         : [];
     let missing = valid
-        ? findMissingBucketRanges(gteMs, lteMs, bucketMs, new Set(reusable.map((c: any) => Number(c[0]))))
+        ? findMissingBucketRanges(gteMs, lteMs, bucketMs, new Set(reusable.map((c) => Number(c[0]))))
         : [];
     // Immutable history (pruned again after the tail widening below, which
     // reintroduces the leading gap via its refresh set).
     const prune = () => {
-        missing = pruneImmutableGaps(missing, lteMs, localCache.fileCover, nowMs);
+        missing = pruneImmutableGaps(missing, localCache.fileCover, nowMs);
     };
     prune();
-    // Late-indexing guard: the newest window always re-fetches its
-    // trailing overlap so zero-volume fills can gain real trades.
+    // Late-indexing guard: the newest window re-fetches everything that is
+    // not yet SETTLED — a bucket closes at ts+bucket and may still gain
+    // late-indexed trades until a query has run TAIL_SETTLE_LAG_MS later.
+    // With verification times on record the refresh shrinks to exactly that
+    // unsettled tail, so a rerun an hour later queries ~lag+1h instead of a
+    // fixed 48h, and repeated reruns converge instead of repeating the same
+    // 48h query forever. Coverage without timestamps (pre-`at` shards) falls
+    // back to the fixed trailing window.
     if (allowSubFetch && isTail && reusable.length > 0) {
-        const refreshFromMs = lteMs - TAIL_REFRESH_HOURS * 3600 * 1000;
-        if (refreshFromMs > gteMs) {
+        const settle = settleCoverage({
+            gteMs, lteMs, bucketMs,
+            queried: allQueriedRanges(localCache.fileCover),
+            lagMs: TAIL_SETTLE_LAG_MS,
+        });
+        // Refresh start, widest case last:
+        //   no timestamps      -> the bounded 48h fallback,
+        //   everything settled -> no refresh at all,
+        //   unsettled tail     -> the earliest unsettled bucket, but never
+        //     earlier than 48h. An unsettled bucket older than the legacy
+        //     window is past any plausible indexing lag, and letting it pull
+        //     the boundary back (a coverage hole after span compaction, an
+        //     undatable span, a hand-written file) would re-query weeks of
+        //     settled history on every run. The clamp also covers the old
+        //     `firstUnsettled <= gte` fallback: when the window begins
+        //     unsettled, `max` lands on the 48h floor rather than switching
+        //     the late-indexing refresh off.
+        const fallbackFromMs = lteMs - TAIL_REFRESH_HOURS * 3600 * 1000;
+        const refreshFromMs = settle.hasTimestamps
+            ? (settle.firstUnsettled == null
+                ? lteMs + bucketMs
+                : Math.max(settle.firstUnsettled, fallbackFromMs))
+            : fallbackFromMs;
+        if (refreshFromMs > gteMs && refreshFromMs <= lteMs) {
             const refreshSet = new Set(
-                reusable.filter((c: any) => Number(c[0]) < refreshFromMs).map((c: any) => Number(c[0])),
+                reusable.filter((c) => Number(c[0]) < refreshFromMs).map((c) => Number(c[0])),
             );
             const refreshed = findMissingBucketRanges(gteMs, lteMs, bucketMs, refreshSet);
             // Only widen, never narrow: keep previously-missing buckets.
-            const seen = new Set(missing.map((m: any) => `${m.gte}-${m.lte}`));
+            const seen = new Set(missing.map((m) => `${m.gte}-${m.lte}`));
             for (const m of refreshed) {
                 if (!seen.has(`${m.gte}-${m.lte}`)) missing.push(m);
             }
-            missing.sort((a: any, b: any) => a.gte - b.gte);
+            missing.sort((a, b) => a.gte - b.gte);
             prune();
         }
     }
-    const missingHours = missing.reduce((sum: number, m: any) => sum + m.hours, 0);
+    const missingHours = missing.reduce((sum, m) => sum + m.hours, 0);
     const windowHours = valid ? Math.max(1, Math.round((lteMs - gteMs) / bucketMs)) : 1;
     return { reusable, missing, missingHours, windowHours, inputsValid: valid };
 }
@@ -389,22 +682,22 @@ function formatWindowLine(unit: string, index: number, total: number, gte: strin
  * Defaults (attempts 1, no timeout) preserve the old single-shot behavior.
  */
 async function fetchRangeWithRetry(
-    fetchRange: (gteIso: string, lteIso: string, window: any, signal?: AbortSignal) => Promise<any>,
+    fetchRange: (gteIso: string, lteIso: string, window: unknown, signal?: AbortSignal) => Promise<Candle[] | FetchRangeResult>,
     opts: {
         gte: string;
         lte: string;
-        window: any;
+        window: unknown;
         label: string;
         attempts?: number;
         backoffBaseMs?: number;
         timeoutMs?: number;
-        onRetry?: (info: { attempt: number; attempts: number; backoffMs: number; error: any; gte: string; lte: string }) => void;
+        onRetry?: (info: { attempt: number; attempts: number; backoffMs: number; error: unknown; gte: string; lte: string }) => void;
     }
-) {
+): Promise<{ candles: Candle[] | FetchRangeResult; attempts: number }> {
     const attempts = Number.isFinite(Number(opts.attempts)) && Number(opts.attempts) >= 1 ? Math.floor(Number(opts.attempts)) : 1;
     const backoffBaseMs = Number.isFinite(Number(opts.backoffBaseMs)) && Number(opts.backoffBaseMs) >= 0 ? Number(opts.backoffBaseMs) : 0;
     const timeoutMs = Number.isFinite(Number(opts.timeoutMs)) && Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 0;
-    let lastErr: any = null;
+    let lastErr: unknown = null;
     for (let attempt = 1; attempt <= attempts; attempt++) {
         let signal: AbortSignal | undefined;
         let timer: ReturnType<typeof setTimeout> | null = null;
@@ -421,8 +714,8 @@ async function fetchRangeWithRetry(
         try {
             const candles = await fetchRange(opts.gte, opts.lte, opts.window, signal);
             return { candles, attempts: attempt };
-        } catch (err: any) {
-            lastErr = timedOut && (err?.name === 'AbortError' || err?.message === timeoutMessage)
+        } catch (err) {
+            lastErr = timedOut && (getErrorName(err) === 'AbortError' || getErrorMessage(err) === timeoutMessage)
                 ? new Error(timeoutMessage)
                 : err;
             if (attempt < attempts) {
@@ -437,7 +730,7 @@ async function fetchRangeWithRetry(
     throw lastErr;
 }
 
-async function fetchRangeLogged(fetchRange: (gteIso: string, lteIso: string, window?: any, signal?: AbortSignal) => Promise<any[] | { candles: any[]; complete?: boolean }>, opts: { unit: string; index: number; total: number; gte: string; lte: string; note?: string; window?: any; retry?: { attempts?: number; backoffBaseMs?: number; timeoutMs?: number; onRetry?: (info: any) => void } }) {
+async function fetchRangeLogged(fetchRange: (gteIso: string, lteIso: string, window?: unknown, signal?: AbortSignal) => Promise<Candle[] | FetchRangeResult>, opts: { unit: string; index: number; total: number; gte: string; lte: string; note?: string; window?: unknown; retry?: { attempts?: number; backoffBaseMs?: number; timeoutMs?: number; onRetry?: (info: { attempt: number; attempts: number; backoffMs: number; error: unknown; gte: string; lte: string }) => void } }): Promise<{ candles: Candle[]; complete: boolean }> {
     const startMs = Date.now();
     const label = `${opts.unit} ${opts.index}/${opts.total}`;
     const { candles: raw, attempts } = await fetchRangeWithRetry(fetchRange, {
@@ -463,12 +756,12 @@ async function fetchRangeLogged(fetchRange: (gteIso: string, lteIso: string, win
     return { candles, complete };
 }
 
-function higherVolumeWins(existing: any, incoming: any) {
-    return incoming[5] > existing[5] ? incoming : existing;
+function higherVolumeWins(existing: unknown, incoming: unknown): unknown {
+    return (incoming as Candle)[5] > (existing as Candle)[5] ? incoming : existing;
 }
 
-function sortedCandles(byTs: Map<number, any>) {
-    return [...byTs.values()].sort((a: any, b: any) => Number(a[0]) - Number(b[0]));
+function sortedCandles(byTs: Map<number, Candle>): Candle[] {
+    return [...byTs.values()].sort((a, b) => Number(a[0]) - Number(b[0]));
 }
 
 /**
@@ -489,26 +782,7 @@ function sortedCandles(byTs: Map<number, any>) {
  * rewritten solely when it gains buckets or query coverage. Reuse-only runs
  * touch nothing on disk.
  */
-async function runCachedWindows(opts: {
-    windows: any[];
-    outPath: any;
-    requestKey: any;
-    isMatch: (meta: any, requestKey: any) => boolean;
-    metaForWindow: (window: any) => any;
-    // A fetch may return either a candle array (complete) or
-    // { candles, complete: false } for a partial result that must be merged
-    // but NOT persisted (see fetchRangeLogged).
-    fetchRange: (gteIso: string, lteIso: string, window: any, signal?: AbortSignal) => Promise<any[] | { candles: any[]; complete?: boolean }>;
-    bucketMs: number;
-    allowSubFetch?: boolean;
-    nowMs?: number;
-    // Shared per-range fetch budget (used by the LP fetcher; book/feed keep
-    // the single-shot default). See fetchRangeWithRetry.
-    fetchAttempts?: number;
-    fetchBackoffBaseMs?: number;
-    fetchTimeoutMs?: number;
-    onFetchRetry?: (info: { attempt: number; attempts: number; backoffMs: number; error: any; gte: string; lte: string }) => void;
-}) {
+async function runCachedWindows(opts: RunCachedWindowsOptions): Promise<Candle[]> {
     const { windows, outPath, requestKey, isMatch, metaForWindow, fetchRange, bucketMs } = opts;
     const allowSubFetch = opts.allowSubFetch !== false;
     const nowMs = opts.nowMs != null ? opts.nowMs : Date.now();
@@ -520,13 +794,13 @@ async function runCachedWindows(opts: {
         onRetry: opts.onFetchRetry,
     };
 
-    const bounds = windows.map((w: any) => ({
+    const bounds = windows.map((w) => ({
         gte: Date.parse(String(w.gte)),
         lte: Date.parse(String(w.lte)),
     }));
-    const finiteBounds = bounds.every((b: any) => Number.isFinite(b.gte) && Number.isFinite(b.lte));
+    const finiteBounds = bounds.every((b) => Number.isFinite(b.gte) && Number.isFinite(b.lte));
     const overall = finiteBounds && bounds.length > 0
-        ? { gte: Math.min(...bounds.map((b: any) => b.gte)), lte: Math.max(...bounds.map((b: any) => b.lte)) }
+        ? { gte: Math.min(...bounds.map((b) => b.gte)), lte: Math.max(...bounds.map((b) => b.lte)) }
         : null;
 
     // Scoped load: only shards overlapping the run are opened.
@@ -539,15 +813,15 @@ async function runCachedWindows(opts: {
     // whatever shard files already exist.
     const shardStates = new Map<string, {
         key: string; file: string;
-        candles: Map<number, any>;
-        queried: { gte: number; lte: number }[];
-        pendingQueried: { gte: number; lte: number }[];
+        candles: Map<number, Candle>;
+        queried: QueriedRange[];
+        pendingQueried: QueriedRange[];
     }>();
     if (overall) {
         for (const key of shardKeysForRange(overall.gte, overall.lte)) {
             const file = shardPathFor(outPath, key);
-            const existing = localCache.shards.find((s: any) => s.shardKey === key);
-            const candles = new Map<number, any>();
+            const existing = localCache.shards.find((s) => s.shardKey === key);
+            const candles = new Map<number, Candle>();
             if (existing) {
                 for (const c of existing.candles) {
                     const ts = Number(c[0]);
@@ -562,7 +836,7 @@ async function runCachedWindows(opts: {
         }
     }
 
-    const noteCompletedWindow = (gteMs: number, lteMs: number, candles: any[], queried: { gte: number; lte: number }[]) => {
+    const noteCompletedWindow = (gteMs: number, lteMs: number, candles: Candle[], queried: QueriedRange[]) => {
         // Later windows plan against what earlier windows proved: fresh
         // buckets join the pool and fresh coverage joins the cover, so a
         // re-query inside one run never fetches the same span twice.
@@ -594,7 +868,7 @@ async function runCachedWindows(opts: {
         }
     };
 
-    let merged: any[] = [];
+    let merged: Candle[] = [];
     for (const windowEntry of windows) {
         const tag = formatWindowLine('Window', windowEntry.index, total, windowEntry.gte, windowEntry.lte);
         const gteMs = Date.parse(String(windowEntry.gte));
@@ -605,7 +879,14 @@ async function runCachedWindows(opts: {
             isTail: windowEntry.index === total,
             allowSubFetch, nowMs,
         });
-        const { reusable, missing, missingHours, windowHours, inputsValid } = plan;
+        const { reusable, missing, windowHours, inputsValid } = plan;
+        // Gap clusters closer than GAP_MERGE_TOLERANCE_BUCKETS collapse into
+        // one query, and the sub-range budget is spent on merged SPAN HOURS
+        // rather than on the gap count: the old `missing.length <= 3` made one
+        // extra 1-hour hole escalate an otherwise 2-hour refresh into a full
+        // ~700-bucket window fetch.
+        const subRanges = mergeGapRanges(missing, bucketMs, GAP_MERGE_TOLERANCE_BUCKETS);
+        const subRangeHours = subRanges.reduce((sum, m) => sum + m.hours, 0);
         const reusableNote = reusable.length > 0 ? `, ${reusable.length} buckets local` : '';
         if (inputsValid && missing.length === 0 && (reusable.length > 0 || localCache.files > 0)) {
             console.log(`${tag} (reused ${reusable.length} local buckets, nothing missing)`);
@@ -613,21 +894,23 @@ async function runCachedWindows(opts: {
             // nothing is rewritten.
             merged = merged.length === 0
                 ? reusable
-                : mergeCandles(merged, reusable, { onCollision: higherVolumeWins });
+                : (mergeCandles(merged, reusable, { onCollision: higherVolumeWins }) as Candle[]);
             continue;
         }
 
-        let candles: any[];
-        let queriedRanges: { gte: number; lte: number }[];
+        let candles: Candle[];
+        let queriedRanges: QueriedRange[] = [];
         // A partial sub-range makes the whole window partial: gap-filled
         // buckets from the surviving side would otherwise claim coverage
         // the failed side never earned, baking the skew into the cache.
         let windowComplete = true;
-        if (allowSubFetch && reusable.length > 0 && missing.length > 0 && missingHours <= windowHours / 2 && missing.length <= 3) {
+        if (allowSubFetch && reusable.length > 0 && subRanges.length > 0
+            && subRangeHours <= windowHours * MAX_SUBFETCH_SPAN_RATIO
+            && subRanges.length <= MAX_SUBFETCH_RANGES) {
             // Small gaps: query only the missing sub-ranges, merge over local.
-            console.log(`${tag} (local cover${reusableNote}; fetching ${missingHours}h in ${missing.length} sub-range(s))`);
-            let mergedLocal: any[] = reusable.slice();
-            for (const m of missing) {
+            console.log(`${tag} (local cover${reusableNote}; fetching ${subRangeHours}h in ${subRanges.length} sub-range(s))`);
+            let mergedLocal: Candle[] = reusable.slice();
+            for (const m of subRanges) {
                 // Extend lte past the final bucket start: the ES range is
                 // inclusive and m.lte is a bucket *start*, so without this
                 // the bucket's real trades are cut off and the gap-filler
@@ -638,13 +921,16 @@ async function runCachedWindows(opts: {
                     { unit: 'Window', index: windowEntry.index, total, gte: new Date(m.gte).toISOString(), lte: new Date(m.lte + bucketMs).toISOString(), window: windowEntry, retry },
                 );
                 if (!part.complete) windowComplete = false;
-                mergedLocal = mergeCandles(mergedLocal, part.candles, { onCollision: higherVolumeWins });
+                mergedLocal = (mergeCandles(mergedLocal, part.candles, { onCollision: higherVolumeWins }) as Candle[]);
+                // Claimed coverage is the canonical missing range (a
+                // conservative subset of what was actually queried with the
+                // +1-bucket overlap), stamped per sub-range with the moment
+                // THAT query returned — one shared stamp would date the first
+                // sub-range to the end of the whole loop.
+                queriedRanges.push({ gte: m.gte, lte: m.lte, at: Date.now() });
             }
             // Clamp to the window (drops the one-bucket over-fetch above).
-            candles = mergedLocal.filter((c: any) => Number(c[0]) >= gteMs && Number(c[0]) <= lteMs);
-            // Claimed coverage is the canonical missing ranges (a conservative
-            // subset of what was actually queried with the +1-bucket overlap).
-            queriedRanges = missing.map((m: any) => ({ gte: m.gte, lte: m.lte }));
+            candles = mergedLocal.filter((c) => Number(c[0]) >= gteMs && Number(c[0]) <= lteMs);
         } else {
             if (reusable.length > 0) {
                 console.log(`${tag} (local cover${reusableNote}; gap too large — full window fetch)`);
@@ -655,9 +941,14 @@ async function runCachedWindows(opts: {
             );
             if (!fresh.complete) windowComplete = false;
             candles = reusable.length > 0
-                ? mergeCandles(reusable, fresh.candles, { onCollision: higherVolumeWins }).filter((c: any) => Number(c[0]) >= gteMs && Number(c[0]) <= lteMs).sort((a: any, b: any) => a[0] - b[0])
+                ? (mergeCandles(reusable, fresh.candles, { onCollision: higherVolumeWins }) as Candle[]).filter((c) => Number(c[0]) >= gteMs && Number(c[0]) <= lteMs).sort((a, b) => Number(a[0]) - Number(b[0]))
                 : fresh.candles;
-            queriedRanges = [{ gte: gteMs, lte: lteMs }];
+            // Full-window fetch. `at` is deliberately the WALL clock, never
+            // `nowMs`: `at` answers "when did this query run", so stamping a
+            // backdated test clock would certify old buckets as freshly
+            // verified. That also means a backdated-window test sees those
+            // buckets as already settled — a property tests must account for.
+            queriedRanges = [{ gte: gteMs, lte: lteMs, at: Date.now() }];
         }
         if (windowComplete) {
             noteCompletedWindow(gteMs, lteMs, candles, queriedRanges);
@@ -666,7 +957,7 @@ async function runCachedWindows(opts: {
         }
         merged = merged.length === 0
             ? candles
-            : mergeCandles(merged, candles, { onCollision: higherVolumeWins });
+            : (mergeCandles(merged, candles, { onCollision: higherVolumeWins }) as Candle[]);
     }
 
     // Flush: rewrite only shards that gained buckets or coverage. Everything
@@ -684,19 +975,23 @@ async function runCachedWindows(opts: {
                 if (!prev || Number(c[5] || 0) > Number(prev[5] || 0)) state.candles.set(ts, c);
             }
             const before = sortedCandles(new Map(
-                (localCache.shards.find((s: any) => s.shardKey === state.key)?.candles || [])
-                    .filter((c: any) => Array.isArray(c) && Number.isFinite(Number(c[0])))
-                    .map((c: any) => [Number(c[0]), c] as [number, any]),
+                (localCache.shards.find((s) => s.shardKey === state.key)?.candles || [])
+                    .filter((c) => Array.isArray(c) && Number.isFinite(Number(c[0])))
+                    .map((c) => [Number(c[0]), c] as [number, Candle]),
             ));
             const after = sortedCandles(state.candles);
-            const union = unionQueriedRanges(state.queried.concat(state.pendingQueried), bucketMs);
-            if (candlesEqual(before, after) && rangesCoveredBy(state.queried, union)) continue;
+            const union = compactCoverage(unionQueriedRanges(state.queried.concat(state.pendingQueried), bucketMs), MAX_COVERAGE_SPANS);
+            // Coverage counts as unchanged only when the recorded verification
+            // times are current too: a re-query that returned identical candles
+            // still moved the "verified as of" mark forward, and persisting
+            // that is what lets the next run shrink its tail refresh.
+            if (candlesEqual(before, after) && coverageSatisfied(state.queried, union)) continue;
             const synthWindow = {
                 index: 0,
                 gte: new Date(start).toISOString(),
                 lte: new Date(end).toISOString(),
             };
-            const meta = { ...metaForWindow(synthWindow), fetchedAt, queriedRanges: union };
+            const meta: ShardMeta = { ...metaForWindow(synthWindow), fetchedAt, queriedRanges: union };
             meta.timeRange = { gte: synthWindow.gte, lte: synthWindow.lte };
             meta.shard = state.key;
             delete meta.chunkIndex;
@@ -711,7 +1006,12 @@ async function runCachedWindows(opts: {
 
 export {
     TAIL_REFRESH_HOURS,
-    IMMUTABLE_WINDOW_AGE_MS,
+    TAIL_SETTLE_LAG_MS,
+    GAP_SETTLE_HORIZON_MS,
+    GAP_MERGE_TOLERANCE_BUCKETS,
+    MAX_SUBFETCH_RANGES,
+    MAX_SUBFETCH_SPAN_RATIO,
+    MAX_COVERAGE_SPANS,
     shardKeyForTimestamp,
     shardBoundsForKey,
     shardKeysForRange,
@@ -720,12 +1020,20 @@ export {
     loadBucketCache,
     cachedCandlesInRange,
     unionQueriedRanges,
+    compactCoverage,
     rangesCoveredBy,
+    coverageSatisfied,
+    verifiedAt,
+    timestampMs,
+    allQueriedRanges,
+    settleCoverage,
     buildFetchWindowsFromRange,
     findMissingBucketRanges,
+    mergeGapRanges,
     pruneImmutableGaps,
     persistCacheChunk,
     planWindowReuse,
     formatWindowLine,
     runCachedWindows,
 };
+export type { QueriedRange };

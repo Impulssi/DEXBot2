@@ -10,11 +10,10 @@ import { parseJsonWithComments, sleep, ensureDir } from '../modules/order/utils/
 import { readGeneralSettings } from '../modules/general_settings.js';
 import { DEFAULT_CONFIG, MARKET_ADAPTER, NATIVE_CLIENT, API_LIMITS, TIMING } from '../modules/constants.js';
 import { normalizeBotEntry } from '../modules/bot_settings.js';
-import { calculateAMA } from './core/strategies/ama.js';
 import * as kibanaSource from './inputs/kibana_source.js';
 import * as kibanaMarketSource from './core/kibana_market_candles.js';
 import { tradesToCandles, detectMissingCandleTimestamps, fillCandleGaps, detectStaleTail, pruneStaleTail, mergeCandles } from './candle_utils.js';
-import { toIntervalLabel } from './interval_utils.js';
+import { toIntervalLabel, bucketStartMs, latestClosedBucketStartMs } from './interval_utils.js';
 import { loadMarketProfiles } from '../analysis/tradingview/tradingview_uplot_chart_generator.js';
 import { candleFileForBot as candleFilePathForLabel } from '../analysis/bot_key_utils.js';
 import { writeJsonAtomic } from './utils/atomic_write.js';
@@ -22,7 +21,7 @@ import { acquireFileLockSync, releaseFileLockSync } from './utils/file_lock.js';
 import { updateDynamicGridSnapshotSync } from './utils/dynamic_grid_snapshot.js';
 import { PATHS, getRecalculateTriggerFile } from '../modules/paths.js';
 import Logger from '../modules/order/logger.js';
-import { fixedTo, roundTo } from '../modules/order/utils/math.js';
+import { roundTo } from '../modules/order/utils/math.js';
 import { usesAmaGridPrice } from '../modules/dexbot_maintenance_runtime.js';
 import {
     normalizeAtrPeriod,
@@ -122,7 +121,7 @@ const DEFAULTS = {
 
 // Cycle-scoped caches — reset once per runOnce() so each cycle reads files fresh
 // but all bots within that cycle share the same loaded data (N bots → 1 file read).
-let _marketAdapterSettingsCache: any = null;
+let _marketAdapterSettingsCache: Record<string, unknown> | null = null;
 
 function _resetCycleCache() {
     _marketAdapterSettingsCache = null;
@@ -135,21 +134,22 @@ function loadMarketAdapterSettings() {
     try {
         _marketAdapterSettingsCache = readJSON(MARKET_ADAPTER_SETTINGS_FILE);
         return _marketAdapterSettingsCache;
-    } catch (_: any) {
+    } catch (_) {
         console.warn(`[WARN] Failed to parse ${MARKET_ADAPTER_SETTINGS_FILE}: ${getErrorMessage(_)}. Using defaults.`);
-        _marketAdapterSettingsCache = false;
+        _marketAdapterSettingsCache = null;
         return null;
     }
 }
 
-function findPairForBot(bot: any, pairs: any[]) {
+function findPairForBot(bot: Record<string, unknown>, pairs: unknown[]) {
     if (!Array.isArray(pairs)) return null;
     const botAId = String(bot.assetAId || '');
     const botBId = String(bot.assetBId || '');
     const botA = normalizeAssetSymbol(bot.assetA);
     const botB = normalizeAssetSymbol(bot.assetB);
     let fallbackMatch = null;
-    for (const p of pairs) {
+    for (const rawPair of pairs) {
+        const p = rawPair as Record<string, unknown>;
         const parts = String(p.key || '').split('|');
         const pAId = parts[0];
         const pBId = parts[1];
@@ -174,14 +174,65 @@ function findPairForBot(bot: any, pairs: any[]) {
     return fallbackMatch;
 }
 
-function assignPresent(target: any, source: any, keys: string[]) {
+type CfgObj = Record<string, unknown>;
+
+interface AmaSlopeCfg {
+    maxSlopePct?: unknown;
+    neutralZonePct?: unknown;
+    lookbackBars?: unknown;
+    [key: string]: unknown;
+}
+
+interface AdapterTargetCfg {
+    quiet?: unknown;
+    dryRun?: unknown;
+    whitelistAll?: unknown;
+    onTrigger?: unknown;
+    pollSeconds?: unknown;
+    intervalSeconds?: unknown;
+    amaSlope?: AmaSlopeCfg;
+    amaSlopePercentMode?: unknown;
+    amaSlopeDeltaThresholdPercent?: unknown;
+    kalmanSlope?: CfgObj;
+    defaultAmaKey?: unknown;
+    [key: string]: unknown;
+}
+
+type NativeTradeRecord = { tsMs: number; sequence: number | null; sell: unknown; received: unknown };
+
+type AmaResolved = { enabled: boolean; name: string; erPeriod: number; fastPeriod: number; slowPeriod: number };
+
+interface BotRunResult {
+    botName?: unknown;
+    botKey?: unknown;
+    ok: boolean;
+    reason?: unknown;
+    triggered?: boolean;
+    staleData?: boolean;
+    kibanaGapRepairCount?: number;
+    kibanaBackfillCount?: number;
+    unresolvedGapCount?: number;
+    [key: string]: unknown;
+}
+
+interface AdapterOverrideCfg {
+    amaSlope?: AmaSlopeCfg;
+    amaSlopePercentMode?: unknown;
+    amaSlopeUnits?: unknown;
+    amaSlopeDeltaThresholdPercent?: unknown;
+    kalmanSlope?: CfgObj;
+    defaultAmaKey?: unknown;
+    [key: string]: unknown;
+}
+
+function assignPresent(target: Record<string, unknown>, source: Record<string, unknown>, keys: string[]) {
     for (const key of keys) {
         if (source?.[key] != null) target[key] = source[key];
     }
     return target;
 }
 
-function applyAmaSlopeOverrides(target: any, overrides: any) {
+function applyAmaSlopeOverrides(target: AdapterTargetCfg, overrides: AdapterOverrideCfg): AdapterTargetCfg {
     if (!overrides || typeof overrides !== 'object') return target;
     target.amaSlope = { ...(target.amaSlope || {}) };
     const previousLookbackBars = target.amaSlope.lookbackBars;
@@ -222,7 +273,7 @@ function applyAmaSlopeOverrides(target: any, overrides: any) {
     return target;
 }
 
-function applyKalmanSlopeOverrides(target: any, overrides: any) {
+function applyKalmanSlopeOverrides(target: AdapterTargetCfg, overrides: AdapterOverrideCfg): AdapterTargetCfg {
     if (!overrides || typeof overrides !== 'object') return target;
     target.kalmanSlope = { ...(target.kalmanSlope || {}) };
     if (overrides.kalmanSlope && typeof overrides.kalmanSlope === 'object') {
@@ -231,7 +282,7 @@ function applyKalmanSlopeOverrides(target: any, overrides: any) {
     return target;
 }
 
-function applyMarketAdapterOverrides(target: any, overrides: any, opts: { includeDefaultAmaKey?: boolean } = {}) {
+function applyMarketAdapterOverrides(target: AdapterTargetCfg, overrides: AdapterOverrideCfg, opts: { includeDefaultAmaKey?: boolean } = {}) {
     if (!overrides || typeof overrides !== 'object') return target;
     if (opts.includeDefaultAmaKey && overrides.defaultAmaKey) target.defaultAmaKey = overrides.defaultAmaKey;
     assignPresent(target, overrides, [
@@ -288,7 +339,7 @@ function applyMarketAdapterOverrides(target: any, overrides: any, opts: { includ
     return target;
 }
 
-function resolveBotCfg(bot: any, globalCfg: any) {
+function resolveBotCfg(bot: Record<string, unknown>, globalCfg: AdapterTargetCfg): AdapterTargetCfg {
     const settings = loadMarketAdapterSettings();
     if (!settings) return globalCfg;
 
@@ -301,18 +352,21 @@ function resolveBotCfg(bot: any, globalCfg: any) {
             : globalCfg.kalman,
     };
 
-    applyMarketAdapterOverrides(merged, settings.globals || {});
+    applyMarketAdapterOverrides(merged, (settings.globals || {}) as AdapterOverrideCfg);
 
     // Pair-level overrides
-    const pair = findPairForBot(bot, settings.pairs);
-    if (pair?.marketAdapterSettings) {
-        applyMarketAdapterOverrides(merged, pair.marketAdapterSettings);
+    const pair = findPairForBot(bot, Array.isArray(settings.pairs) ? settings.pairs : []);
+    if (pair && (pair as Record<string, unknown>).marketAdapterSettings) {
+        applyMarketAdapterOverrides(merged, (pair as Record<string, unknown>).marketAdapterSettings as Record<string, unknown>);
     }
 
     // Bot-level overrides
-    const botOverride = pair?.botOverrides?.[bot.name];
+    const pairObj = pair as Record<string, unknown> | null;
+    const botOverride = pairObj?.botOverrides
+        ? (pairObj.botOverrides as Record<string, unknown>)[String(bot.name)]
+        : undefined;
     if (botOverride) {
-        applyMarketAdapterOverrides(merged, botOverride, { includeDefaultAmaKey: true });
+        applyMarketAdapterOverrides(merged, botOverride as AdapterOverrideCfg, { includeDefaultAmaKey: true });
     }
 
     return merged;
@@ -322,40 +376,42 @@ const DEFAULT_AMA_KEY = String(MARKET_ADAPTER.DEFAULT_AMA_KEY).toUpperCase();
 const BUILTIN_AMAS = MARKET_ADAPTER.AMAS;
 const DEFAULT_AMA = MARKET_ADAPTER.AMAS.AMA3;
 const AMA_KEYWORDS = new Set(['ama', 'ama1', 'ama2', 'ama3', 'ama4']);
-const AMA_PRESET_KEYS = ['AMA1', 'AMA2', 'AMA3', 'AMA4'];
 
-function normalizeAmaPreset(raw: any) {
-    const erPeriod = Number(raw?.erPeriod);
-    const fastPeriod = Number(raw?.fastPeriod);
-    const slowPeriod = Number(raw?.slowPeriod);
+function normalizeAmaPreset(raw: unknown) {
+    const r = raw as { erPeriod?: unknown; fastPeriod?: unknown; slowPeriod?: unknown } | null | undefined;
+    const erPeriod = Number(r?.erPeriod);
+    const fastPeriod = Number(r?.fastPeriod);
+    const slowPeriod = Number(r?.slowPeriod);
     if (!Number.isFinite(erPeriod) || !Number.isFinite(fastPeriod) || !Number.isFinite(slowPeriod)) return null;
     return { erPeriod, fastPeriod, slowPeriod };
 }
 
-function normalizeAmaKey(raw: any) {
+function normalizeAmaKey(raw: unknown) {
     const s = String(raw || '').trim().toLowerCase();
     if (!AMA_KEYWORDS.has(s)) return DEFAULT_AMA_KEY;
     if (s === 'ama') return DEFAULT_AMA_KEY;
     return s.toUpperCase();
 }
 
-function isAmaKeyword(raw: any) {
+function isAmaKeyword(raw: unknown) {
     const s = String(raw || '').trim().toLowerCase();
     return AMA_KEYWORDS.has(s);
 }
 
-function findAmaProfileForBot(bot: any, ctx: any) {
+function findAmaProfileForBot(bot: Record<string, unknown>, ctx: Record<string, unknown> | null | undefined) {
     const profiles = loadMarketProfiles()?.profiles || [];
     if (profiles.length === 0) return null;
 
     const botAssetA = normalizeAssetSymbol(bot?.assetA);
     const botAssetB = normalizeAssetSymbol(bot?.assetB);
-    const ctxAssetAId = normalizeAssetSymbol(ctx?.assetA?.id);
-    const ctxAssetBId = normalizeAssetSymbol(ctx?.assetB?.id);
+    const ctxAssetA = ctx?.assetA as { id?: unknown } | undefined;
+    const ctxAssetB = ctx?.assetB as { id?: unknown } | undefined;
+    const ctxAssetAId = normalizeAssetSymbol(ctxAssetA?.id);
+    const ctxAssetBId = normalizeAssetSymbol(ctxAssetB?.id);
     if (!botAssetA && !ctxAssetAId) return null;
     if (!botAssetB && !ctxAssetBId) return null;
 
-    const matches = profiles.map((p: any) => {
+    const matches = profiles.map((p) => {
         const pA = p?.assetA;
         const pB = p?.assetB;
         const pAId = p?.assetAId;
@@ -372,64 +428,48 @@ function findAmaProfileForBot(bot: any, ctx: any) {
             ? 2
             : ((symmetricById || symmetricBySymbol) ? 1 : 0);
         return { profile: p, matchRank };
-    }).filter((entry: any) => entry.matchRank > 0);
+    }).filter((entry) => entry.matchRank > 0);
     if (matches.length === 0) return null;
 
-    const exactMatches = matches.filter((entry: any) => entry.matchRank === 2);
+    const exactMatches = matches.filter((entry) => entry.matchRank === 2);
     const matchedProfiles = (exactMatches.length > 0 ? exactMatches : matches)
-        .map((entry: any) => entry.profile);
+        .map((entry) => entry.profile);
 
-    const oneHour = matchedProfiles.filter((p: any) => Number(p?.intervalSeconds) === RUNTIME_DEFAULTS.intervalSeconds);
+    const oneHour = matchedProfiles.filter((p) => Number(p?.intervalSeconds) === RUNTIME_DEFAULTS.intervalSeconds);
     const candidates = oneHour.length > 0 ? oneHour : matchedProfiles;
-    return [...candidates].sort((a: any, b: any) => {
+    return [...candidates].sort((a, b) => {
         const aTs = Date.parse(String(a?.updatedAt || 0)) || 0;
         const bTs = Date.parse(String(b?.updatedAt || 0)) || 0;
         return bTs - aTs;
     })[0] || null;
 }
 
-function getAmaPresetForKey(key: string, profile: any) {
-    return normalizeAmaPreset(profile?.amas?.[key]) || normalizeAmaPreset((BUILTIN_AMAS as Record<string, any>)[key]) || null;
+function getAmaPresetForKey(key: string, profile: Record<string, unknown> | null) {
+    const amas = profile?.amas as Record<string, unknown> | undefined;
+    return normalizeAmaPreset(amas?.[key]) || normalizeAmaPreset((BUILTIN_AMAS as Record<string, unknown>)[key]) || null;
 }
 
-function normalizeErSmoothPeriod(raw: any, fallback: any = 0) {
-    const value = Number(raw);
-    if (value === 0) return 0;
-    if (Number.isFinite(value) && value >= 1) return value;
-
-    const fallbackValue = Number(fallback);
-    return Number.isFinite(fallbackValue) && fallbackValue >= 1 ? fallbackValue : 0;
+function getAmaFromProfilesForBot(bot: Record<string, unknown>, ctx: Record<string, unknown> | null, cfg: Record<string, unknown> | null) {
+    const selected = resolveAmaPresetForBot(bot, ctx, cfg);
+    if (!selected) return null;
+    return {
+        enabled: true,
+        name: selected.name,
+        erPeriod: selected.erPeriod,
+        fastPeriod: selected.fastPeriod,
+        slowPeriod: selected.slowPeriod,
+    };
 }
 
-function resolveErSmoothPeriodForBot(bot: any) {
-    const raw = (bot && typeof bot.ama === 'object' && bot.ama !== null) ? bot.ama : {};
-    const globalErSmoothPeriod = normalizeErSmoothPeriod(MARKET_ADAPTER.AMA_ER_SMOOTH_FAST_PERIOD, 0);
-    if (Object.prototype.hasOwnProperty.call(raw, 'erSmoothPeriod')) {
-        return normalizeErSmoothPeriod(raw.erSmoothPeriod, globalErSmoothPeriod);
-    }
-    return globalErSmoothPeriod;
-}
-
-function buildAmaComparisonPresets(bot: any, ctx: any) {
-    const profile = findAmaProfileForBot(bot, ctx);
-    const erSmoothPeriod = resolveErSmoothPeriodForBot(bot);
-    return AMA_PRESET_KEYS
-        .map((key: any) => {
-            const preset = getAmaPresetForKey(key, profile);
-            if (!preset) return null;
-            return {
-                name: key,
-                erPeriod: preset.erPeriod,
-                fastPeriod: preset.fastPeriod,
-                slowPeriod: preset.slowPeriod,
-                erSmoothPeriod,
-            };
-        })
-        .filter(Boolean);
-}
-
-function getAmaFromProfilesForBot(bot: any, ctx: any, cfg: any) {
-    const profile = findAmaProfileForBot(bot, ctx);
+/**
+ * Resolve which AMA preset key a bot actually trades on, and with what
+ * parameters. Returns null when no preset/profile entry applies.
+ *
+ * The chosen key rides along as `name` on the returned config so the cycle log
+ * and the state snapshot can say "this bot runs AMA2" without re-deriving it.
+ */
+function resolveAmaPresetForBot(bot: Record<string, unknown>, ctx: Record<string, unknown> | null, cfg: Record<string, unknown> | null) {
+    const profile = findAmaProfileForBot(bot, ctx) as { defaultAma?: string; amas?: Record<string, unknown> } | null;
     if (!profile) return null;
 
     const rawGridPrice = String(bot?.gridPrice || '').trim().toLowerCase();
@@ -439,42 +479,236 @@ function getAmaFromProfilesForBot(bot: any, ctx: any, cfg: any) {
         : (isAmaKeyword(rawGridPrice)
             ? normalizeAmaKey(rawGridPrice)
             : (overrideDefaultAmaKey || normalizeAmaKey(profile?.defaultAma)));
-    const selected = normalizeAmaPreset(profile?.amas?.[requestedKey])
-        || normalizeAmaPreset(profile?.amas?.[overrideDefaultAmaKey || DEFAULT_AMA_KEY])
-        || getAmaPresetForKey(requestedKey, profile)
-        || getAmaPresetForKey(overrideDefaultAmaKey || DEFAULT_AMA_KEY, profile);
+    // Keep the (key, preset) pair so the effective preset name is the one that
+    // actually won the fallback chain, not merely the one that was requested.
+    const selected =
+        pairAmaKey(requestedKey, normalizeAmaPreset(profile?.amas?.[requestedKey]))
+        || pairAmaKey(overrideDefaultAmaKey || DEFAULT_AMA_KEY, normalizeAmaPreset(profile?.amas?.[overrideDefaultAmaKey || DEFAULT_AMA_KEY]))
+        || pairAmaKey(requestedKey, getAmaPresetForKey(requestedKey, profile))
+        || pairAmaKey(overrideDefaultAmaKey || DEFAULT_AMA_KEY, getAmaPresetForKey(overrideDefaultAmaKey || DEFAULT_AMA_KEY, profile));
     if (!selected) return null;
 
     return {
         enabled: true,
-        erPeriod: selected.erPeriod,
-        fastPeriod: selected.fastPeriod,
-        slowPeriod: selected.slowPeriod,
+        name: selected.key,
+        erPeriod: selected.preset.erPeriod,
+        fastPeriod: selected.preset.fastPeriod,
+        slowPeriod: selected.preset.slowPeriod,
     };
 }
 
-function sleepUntilAlignedBoundary(pollSeconds: number, referenceNowMs: any = Date.now(), nowMs: any = Date.now()) {
-    const intervalMs = Math.max(1, Math.floor(Number(pollSeconds) || 0)) * 1000;
+function pairAmaKey(key: unknown, preset: { erPeriod: number; fastPeriod: number; slowPeriod: number } | null | undefined) {
+    if (!preset) return null;
+    return { key: String(key), preset };
+}
+
+function sleepUntilAlignedBoundary(pollSeconds: number, referenceNowMs: number = Date.now(), nowMs: number = Date.now()) {
+    const normalizedPollSeconds = Math.max(1, Math.floor(Number(pollSeconds) || 0));
+    const intervalMs = normalizedPollSeconds * 1000;
     const bufferMs = 1000;
-    const targetBoundaryMs = Math.floor(Number(referenceNowMs) / intervalMs) * intervalMs + intervalMs;
+    // The bucket containing the reference instant; its immediate successor is
+    // the boundary to align to. Shared bucket helper keeps this on the same
+    // grid as the closed-candle gate and the startup sleep.
+    const referenceBucketMs = bucketStartMs(referenceNowMs, normalizedPollSeconds);
+    // null (unusable reference clock/interval) means "do not wait": treat the
+    // reference as the first boundary, so the delay collapses to the buffer
+    // floor below. Never interpret it as an extra period, which would postpone
+    // a cycle instead of running it.
+    const targetBoundaryMs = (referenceBucketMs === null ? 0 : referenceBucketMs) + intervalMs;
     const delayMs = targetBoundaryMs - Number(nowMs) + bufferMs;
     return Math.max(bufferMs, delayMs);
 }
 
-function withRetries(fn: () => Promise<any>, attempts: number, baseDelayMs: number, label: string) {
+/**
+ * Sleep-first startup decision for the daemon.
+ *
+ * Returns `{ delayMs, veto }`: `delayMs` is how long to wait before the first
+ * cycle (0 = run a catch-up cycle now); `veto` is null when the adapter may
+ * sleep, otherwise `{ reason, botKeys }` saying why not. The wait uses the
+ * SAME poll boundary the loop aligns to (sleepUntilAlignedBoundary with
+ * cfg.pollSeconds, default 3600s), so the timing setting is honoured, not
+ * hardcoded.
+ *
+ * `veto` is non-null — and `delayMs` 0 — when:
+ * - state is fresh/empty (first run, cleared state — bootstrap lives in the
+ *   cycle),
+ * - no in-scope bot has a consumed closed-candle marker yet,
+ * - ANY in-scope bot's consumed marker is not exactly the newest closed bucket
+ *   (older = that bot still owes a cycle; newer = the clocks disagree, so do
+ *   not trust the marker). Evaluated per bot, never aggregated: one lagging
+ *   bot is invisible behind a max() over the others, and that bot is exactly
+ *   what a catch-up cycle is for.
+ * - the candle interval is not the poll cadence, or the clock cannot be
+ *   evaluated,
+ * - an active bot's last cycle left repair work still outstanding
+ *   (unresolved gaps, or a cache shorter than its own warmup target),
+ * - an active bot has never been processed (no state row, or no consumed
+ *   marker) — its bootstrap is still owed,
+ * - the active bot list cannot be read (then every state entry counts).
+ *
+ * The interval guard matters: the newest closed bucket is computed on the
+ * poll grid, while the markers in state are candle-bucket starts. With a
+ * mismatch (e.g. 2h candles polled hourly) the two grids only coincide by
+ * accident, and "coincide" here would delay a real cycle by up to one poll
+ * period. Refuse to sleep unless the grids are identical, i.e. unless one
+ * cycle per poll actually is one cycle per candle.
+ *
+ * One grid for every bot is correct because `intervalSeconds` is not in the
+ * per-pair/per-bot override whitelist, so all bots in a cycle share a bucket
+ * size. If that ever changes, the comparison has to become per bot.
+ *
+ * Otherwise it returns the wait until the next poll boundary. Mid-hour
+ * respawns (the common case: wrapper restart, crash recovery) therefore sleep
+ * instead of running a full cycle that the closed-candle gate would discard
+ * anyway. That wait is always shorter than one poll period, so at most one
+ * boundary is ever passed over: a candle that closes during the sleep is
+ * picked up by the very next cycle, never skipped.
+ *
+ * Only entries for bots the adapter would actually process are considered
+ * (activeBotKeys). A removed bot's leftover row, or a fixed-price bot, must
+ * not be able to defeat the sleep for everyone else — such an entry either
+ * has no marker at all or a marker that is months old. An active bot with NO
+ * row is treated exactly like an active bot with a row but no marker: both owe
+ * a bootstrap, so both veto the sleep and that bot goes live on the next cycle
+ * rather than up to a poll period later.
+ *
+ * Repair work is judged from the state entry, which records how the previous
+ * cycle ended. Two of its fields are deliberately distinguished:
+ *
+ * - `unresolvedGapCount` is a STANDING condition — it is measured on the final
+ *   candle set, so a non-zero value means gaps are still missing right now.
+ * - `candleCount < rawKeepCount` is standing too: the cache has not reached
+ *   the bot's own warmup target.
+ *
+ * `kibanaBackfillCount` is deliberately NOT consulted. It is an action count —
+ * how many candles the last completed cycle happened to fetch — and that cycle
+ * already applied them. A non-zero value means "repair was needed and was
+ * done", not "repair is owed". Because a skip carries the persisted entry
+ * forward, treating it as outstanding would keep vetoing the sleep after every
+ * backfill until some full cycle happened to rewrite the field with a zero.
+ * Cache shortness is the real signal, and it is checked directly above. The
+ * standing verdict is computed by evaluateStateRepairVeto in
+ * market_adapter_service.ts, immediately before the candle-file mirror
+ * (candleFileCoversClosedBucket), so a new standing signal is added once.
+ *
+ * None of this can see a config change made after that cycle (a grown AMA
+ * window, for instance): the backfill for that is then deferred to the next
+ * boundary, bounded by one poll period. Reading the state entry costs no extra
+ * I/O — no candle file is re-read and no connection is opened (the startup
+ * decision reads bots.json to build the active list, and each cycle reads it
+ * again).
+ *
+ * Known consequence of the "active bot with no row vetoes" rule: an active bot
+ * that can never reach a state write (unresolvable market, persistent
+ * pre-persist failure) keeps the sleep disabled for the whole daemon. That is
+ * intentional and fail-safe — healthy bots still take the in-cycle off-hour
+ * skip, so only the startup sleep is lost — and the veto is reported with its
+ * reason and bot keys so the situation is visible instead of silent.
+ */
+function evaluateStartupSleep(cfg: AdapterTargetCfg, state: { bots?: Record<string, unknown> }, nowMs: number = Date.now(), activeBotKeys: string[] | null = null) {
+    const vetoes: { [reason: string]: string[] } = {};
+    const veto = (reason: string, key?: string) => {
+        if (key == null) return;
+        if (!vetoes[reason]) vetoes[reason] = [];
+        vetoes[reason].push(key);
+    };
+    // Whole-fleet refusals: the condition is about the configuration or the
+    // inputs, not about a particular bot, so there is nothing to attribute and
+    // botKeys stays empty. Per-bot refusals are collected in `vetoes` by the
+    // loop below and returned with their bot list. Deliberately NOT reading
+    // `vetoes[reason]` here — that would silently return another bot's keys if
+    // a denied() call were ever made after the loop has populated it.
+    const denied = (reason: string) => ({ delayMs: 0, veto: { reason, botKeys: [] as string[] } });
+
+    // Deliberate normalization asymmetry: pollSeconds is clamped to >=1 because
+    // it is the grid the sleep aligns to, while intervalSeconds is left as a
+    // bare floor so an invalid interval (0, negative, NaN) can NEVER equal the
+    // clamped poll value and therefore always takes interval_mismatch below —
+    // i.e. runs a catch-up cycle. Do not "simplify" by clamping both: that
+    // would let an unconfigured interval match and authorize a sleep on a grid
+    // the persisted markers were not written on.
+    const pollSeconds = Math.max(1, Math.floor(Number(cfg?.pollSeconds) || 0));
+    const intervalSeconds = Math.floor(Number(cfg?.intervalSeconds) || 0);
+    if (intervalSeconds !== pollSeconds) return denied('interval_mismatch');
+    const now = Number(nowMs);
+    if (!Number.isFinite(now) || now <= 0) return denied('clock_unusable');
+    const bots = state?.bots;
+    if (!bots || typeof bots !== 'object') return denied('state_unusable');
+    // An empty active-bot list means the adapter has nothing to do; do not
+    // interpret it as "unknown scope" and fall back to scanning every row.
+    if (Array.isArray(activeBotKeys) && activeBotKeys.length === 0) return denied('no_active_bots');
+    // Newest fully closed bucket: its start. A cycle that consumed it has
+    // done all the work available until the next bucket closes. Shared helper
+    // so the startup sleep and the in-cycle gate agree by construction.
+    const latestClosed = latestClosedBucketStartMs(now, pollSeconds);
+    if (latestClosed === null) return denied('clock_unusable');
+    // With a known active set, every one of those bots is judged on its own.
+    // Unknown set (bot list unreadable) falls back to the state rows present.
+    const scope = Array.isArray(activeBotKeys) ? activeBotKeys : Object.keys(bots);
+    if (scope.length === 0) return denied('no_state_rows');
+
+    for (const key of scope) {
+        const entry = bots[key] as Record<string, unknown> | undefined;
+        // An active bot with no state row at all still owes its first cycle.
+        if (!entry || typeof entry !== 'object') {
+            veto('no_state_row', key);
+            continue;
+        }
+        const consumed = Number(entry.lastClosedCandleTs || 0);
+        // No consumed marker yet: this bot still owes a bootstrap/warmup cycle.
+        if (!Number.isFinite(consumed) || consumed <= 0) {
+            veto('no_consumed_marker', key);
+            continue;
+        }
+        // Per bot, never aggregated across bots: one lagging bot is exactly the
+        // reason a catch-up cycle is needed, and a max() would hide it.
+        if (consumed !== latestClosed) {
+            veto(consumed < latestClosed ? 'behind_latest_closed_candle' : 'marker_ahead_of_clock', key);
+            continue;
+        }
+        // Standing repair conditions, as measured by the previous cycle. Shared
+        // with candleFileCoversClosedBucket's state-side mirror so the two gates
+        // cannot drift apart.
+        const repairReason = evaluateStateRepairVeto(entry);
+        if (repairReason) {
+            veto(repairReason, key);
+            continue;
+        }
+    }
+
+    if (Object.keys(vetoes).length > 0) {
+        // Every distinct reason is reported, so a permanent veto (an active bot
+        // that can never be persisted) is diagnosable from the log alone.
+        const reason = Object.keys(vetoes).sort().join('+');
+        return { delayMs: 0, veto: { reason, botKeys: [...new Set(Object.values(vetoes).flat())] } };
+    }
+    return { delayMs: sleepUntilAlignedBoundary(pollSeconds, now, now), veto: null };
+}
+
+/**
+ * Numeric form of evaluateStartupSleep: the wait before the daemon's first
+ * cycle, or 0 to run a catch-up cycle now. The decision rules — and the reasons
+ * it can refuse — are documented there; this wrapper exists so callers that
+ * only need the wait do not have to unpack a verdict object.
+ */
+function computeStartupDelayMs(cfg: AdapterTargetCfg, state: { bots?: Record<string, unknown> }, nowMs: number = Date.now(), activeBotKeys: string[] | null = null) {
+    return evaluateStartupSleep(cfg, state, nowMs, activeBotKeys).delayMs;
+}
+
+function withRetries(fn: () => Promise<unknown>, attempts: number, baseDelayMs: number, label: string) {
     return (async () => {
         let lastErr;
         for (let i = 0; i < attempts; i++) {
             try {
                 return await fn();
-            } catch (err: any) {
+            } catch (err) {
                 lastErr = err;
                 if (i + 1 >= attempts) break;
                 const waitMs = Math.max(0, baseDelayMs) * (i + 1);
                 if (waitMs > 0) await sleep(waitMs);
             }
         }
-        const msg = label ? `${label}: ${lastErr?.message || 'unknown error'}` : (lastErr?.message || 'unknown error');
+        const msg = label ? `${label}: ${getErrorMessage(lastErr) || 'unknown error'}` : (getErrorMessage(lastErr) || 'unknown error');
         throw new Error(msg);
     })();
 }
@@ -558,7 +792,7 @@ function parseArgs() {
     return validateConfig(merged);
 }
 
-function validateConfig(input: any) {
+function validateConfig(input: Record<string, unknown>) {
     const cfg = { ...DEFAULTS, ...input };
 
     if (!Number.isFinite(cfg.pollSeconds) || cfg.pollSeconds <= 0) throw new Error('--pollSeconds must be > 0');
@@ -583,22 +817,40 @@ function validateConfig(input: any) {
     return cfg;
 }
 
-function resolveDeltaThresholdPercentFromGeneralSettings(settings: any) {
-    const explicit = Number(settings?.MARKET_ADAPTER?.AMA_DELTA_THRESHOLD_PERCENT);
+function resolveDeltaThresholdPercentFromGeneralSettings(settings: Record<string, unknown> | null) {
+    const explicit = Number((settings?.MARKET_ADAPTER as Record<string, unknown> | undefined)?.AMA_DELTA_THRESHOLD_PERCENT);
     if (Number.isFinite(explicit) && explicit > 0) return explicit;
     return null;
 }
 
-function applyRuntimeDefaultsFromGeneralSettings(cfg: any, provided: { deltaThresholdPercent?: boolean } = {}, settingsOverride?: any) {
+/**
+ * Slope-trigger factor from general settings (`(value/100) × maxSlopePct`).
+ * Mirrors the price resolver above; the bot editor writes this knob under
+ * `MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT`, so the runtime must read
+ * it back or the user-facing `AMA-Slope Δ` setting would be inert.
+ */
+function resolveAmaSlopeDeltaThresholdPercentFromGeneralSettings(settings: Record<string, unknown> | null) {
+    const explicit = Number((settings?.MARKET_ADAPTER as Record<string, unknown> | undefined)?.AMA_SLOPE_DELTA_THRESHOLD_PERCENT);
+    if (Number.isFinite(explicit) && explicit > 0) return explicit;
+    return null;
+}
+
+function applyRuntimeDefaultsFromGeneralSettings(cfg: AdapterTargetCfg, provided: { deltaThresholdPercent?: boolean } = {}, settingsOverride?: Record<string, unknown>) {
     const out = { ...cfg };
+    const settings = settingsOverride === undefined
+        ? readGeneralSettings({ fallback: null })
+        : settingsOverride;
     if (!provided?.deltaThresholdPercent) {
-        const settings = settingsOverride === undefined
-            ? readGeneralSettings({ fallback: null })
-            : settingsOverride;
         const fromSettings = resolveDeltaThresholdPercentFromGeneralSettings(settings);
         if (fromSettings != null) {
             out.deltaThresholdPercent = fromSettings;
         }
+    }
+    const slopeFromSettings = resolveAmaSlopeDeltaThresholdPercentFromGeneralSettings(settings);
+    if (slopeFromSettings != null) {
+        // Rebuild amaSlope instead of mutating it: `cfg` may be the shared
+        // DEFAULTS object and must not be poisoned for later calls.
+        out.amaSlope = { ...(out.amaSlope || {}), deltaThresholdPct: slopeFromSettings };
     }
     return out;
 }
@@ -606,12 +858,12 @@ function applyRuntimeDefaultsFromGeneralSettings(cfg: any, provided: { deltaThre
 const marketAdapterLogFile = path.join(PATHS.LOGS_DIR, 'market_adapter.log');
 const logger = new Logger('MarketAdapter', { quiet: DEFAULTS.quiet, logFile: marketAdapterLogFile });
 
-function log(cfg: any, ...args: any[]) {
+function log(cfg: { quiet?: unknown } | null | undefined, ...args: unknown[]) {
     logger.quiet = !!cfg?.quiet;
-    (logger.info as any)(...args);
+    (logger.info as (...a: unknown[]) => void)(...args);
 }
 
-function write(cfg: any, text: string) {
+function write(cfg: { quiet?: unknown } | null | undefined, text: string) {
     logger.quiet = !!cfg?.quiet;
     logger.raw(text);
 }
@@ -646,78 +898,113 @@ function loadActiveBots() {
     const raw = parseJsonWithComments(storage.readFile(BOTS_FILE));
     const bots = Array.isArray(raw?.bots) ? raw.bots : (Array.isArray(raw) ? raw : []);
     return bots
-        .map((b: any, i: number) => normalizeBotEntry(b, i))
-        .filter((b: any) => b.active);
+        .map((b, i: number) => normalizeBotEntry(b, i))
+        .filter((b) => b.active);
 }
 
-function loadJson(filePath: string, defaultValue: any) {
+function loadJson<T extends Record<string, unknown>>(filePath: string, defaultValue: T): T {
     try {
         if (!storage.exists(filePath)) return defaultValue;
-        return readJSON(filePath);
-    } catch (_: any) {
+        return readJSON<T>(filePath);
+    } catch (_) {
         return defaultValue;
     }
 }
 
-function saveJson(filePath: any, data: any) {
+function saveJson(filePath: string, data: Record<string, unknown>) {
     writeJsonAtomic(filePath, data);
 }
 
-function parseChainTimeToMs(timeStr: any) {
+function parseChainTimeToMs(timeStr: unknown) {
     if (!timeStr) return Number.NaN;
     const s = String(timeStr);
     return Date.parse(s.endsWith('Z') ? s : `${s}Z`);
 }
 
-function candleFileForBot(botKey: any, intervalSeconds: any = RUNTIME_DEFAULTS.intervalSeconds) {
+function candleFileForBot(botKey: string, intervalSeconds: number = RUNTIME_DEFAULTS.intervalSeconds) {
     const label = intervalSeconds === RUNTIME_DEFAULTS.intervalSeconds
         ? RUNTIME_DEFAULTS.intervalLabel
         : toIntervalLabel(intervalSeconds);
     return candleFilePathForLabel(botKey, label, DATA_DIR);
 }
 
-function calculateBotThreshold(cfg: any) {
+function calculateBotThreshold(cfg: Record<string, unknown>) {
     const value = Number(cfg?.deltaThresholdPercent);
     return Number.isFinite(value) && value > 0 ? value : null;
 }
 
-function computeCandleStaleness(lastCandleTs: any, maxStaleHours: any) {
-    const staleAgeMs = Number.isFinite(lastCandleTs) ? (Date.now() - lastCandleTs) : Number.POSITIVE_INFINITY;
-    const staleData = staleAgeMs > (maxStaleHours * 3600 * 1000);
+function computeCandleStaleness(lastCandleTs: unknown, maxStaleHours: unknown) {
+    const lastTs = Number(lastCandleTs);
+    const maxHours = Number(maxStaleHours);
+    const staleAgeMs = Number.isFinite(lastCandleTs) ? (Date.now() - lastTs) : Number.POSITIVE_INFINITY;
+    const staleData = staleAgeMs > (maxHours * 3600 * 1000);
     const staleAgeHours = Number.isFinite(staleAgeMs) ? (staleAgeMs / 3600000) : null;
     return { staleData, staleAgeHours };
 }
 
-function resolveAmaForBot(bot: any, ctx: any = null, cfg: any = null) {
-    const raw = (bot && typeof bot.ama === 'object' && bot.ama !== null) ? bot.ama : {};
-    const erSmoothPeriod = resolveErSmoothPeriodForBot(bot);
+/**
+ * Resolve the AMA configuration a bot trades on.
+ *
+ * Precedence, as implemented: when a market profile applies for the pair, the
+ * preset is chosen from the profile by the bot's `gridPrice` keyword, else the
+ * profile/`AMA3` default (a profile entry always wins over the bot's numeric
+ * `ama` block). Without a profile, the bot's own `ama` numbers are used, with
+ * the `gridPrice` keyword preset filling any missing period and AMA3 as the last
+ * resort.
+ *
+ * The winning preset key — or 'custom' when the numbers came from the bot's own
+ * `ama` block — rides along as `name`, so the cycle log and the state snapshot
+ * can state which AMA this bot runs without re-deriving it.
+ *
+ * `enabled` is a derived invariant, always true here. `gridPrice` is the single
+ * switch that decides whether a bot is AMA-driven — `usesAmaGridPrice()` reads
+ * it in the bot runtime, the maintenance runtime and the launcher — so an
+ * `ama.enabled` flag could only ever disagree with them. It used to: this
+ * function honoured it on the profile-less path and hardcoded `true` on the
+ * profile path, and because the bot side ignores the flag, honouring it froze
+ * the published center while the bot kept trading on it. Callers must gate AMA
+ * work on `usesAmaGridPrice(bot)`.
+ */
+function resolveAmaForBot(bot: Record<string, unknown>, ctx: Record<string, unknown> | null = null, cfg: Record<string, unknown> | null = null) {
+    const raw = (bot && typeof bot.ama === 'object' && bot.ama !== null)
+        ? bot.ama as { erPeriod?: unknown; fastPeriod?: unknown; slowPeriod?: unknown; [key: string]: unknown }
+        : {};
 
-    const fromProfiles: any = getAmaFromProfilesForBot(bot, ctx, cfg);
-    if (fromProfiles) {
-        fromProfiles.erSmoothPeriod = erSmoothPeriod;
-        return fromProfiles;
-    }
+    const fromProfiles: AmaResolved | null = getAmaFromProfilesForBot(bot, ctx, cfg);
+    if (fromProfiles) return fromProfiles;
 
-    const amaCfg = {
+    const amaCfg: AmaResolved = {
         erPeriod: Number(raw.erPeriod),
         fastPeriod: Number(raw.fastPeriod),
         slowPeriod: Number(raw.slowPeriod),
-        erSmoothPeriod,
-        enabled: raw.enabled !== false,
+        enabled: true,
+        name: 'custom',
     };
+    // Which preset the periods came from — tracked so the reported name
+    // describes the SOURCE, not merely the values (a bot that hand-writes the
+    // AMA3 numbers is still its own configuration, not "AMA3").
+    const botSuppliedPeriod = Number.isFinite(Number(raw.erPeriod))
+        || Number.isFinite(Number(raw.fastPeriod))
+        || Number.isFinite(Number(raw.slowPeriod));
+    let presetKey: string | null = null;
 
     if (isAmaKeyword(bot?.gridPrice)) {
-        const preset = getAmaPresetForKey(normalizeAmaKey(bot.gridPrice), null);
+        const key = normalizeAmaKey(bot.gridPrice);
+        const preset = getAmaPresetForKey(key, null);
         if (preset) {
             if (!Number.isFinite(amaCfg.erPeriod)) amaCfg.erPeriod = preset.erPeriod;
             if (!Number.isFinite(amaCfg.fastPeriod)) amaCfg.fastPeriod = preset.fastPeriod;
             if (!Number.isFinite(amaCfg.slowPeriod)) amaCfg.slowPeriod = preset.slowPeriod;
+            presetKey = key;
         }
     }
 
     if (!Number.isFinite(amaCfg.erPeriod) || amaCfg.erPeriod < 1) amaCfg.erPeriod = DEFAULT_AMA.erPeriod;
     if (!Number.isFinite(amaCfg.fastPeriod) || amaCfg.fastPeriod < 1) amaCfg.fastPeriod = DEFAULT_AMA.fastPeriod;
     if (!Number.isFinite(amaCfg.slowPeriod) || amaCfg.slowPeriod < 1) amaCfg.slowPeriod = DEFAULT_AMA.slowPeriod;
+    // Periods the bot supplied itself win, so the config is 'custom'; otherwise
+    // the name is the preset the periods came from (keyword, else the default).
+    amaCfg.name = botSuppliedPeriod ? 'custom' : (presetKey || DEFAULT_AMA_KEY);
     if (amaCfg.fastPeriod > amaCfg.slowPeriod) {
         const t = amaCfg.fastPeriod;
         amaCfg.fastPeriod = amaCfg.slowPeriod;
@@ -726,39 +1013,49 @@ function resolveAmaForBot(bot: any, ctx: any = null, cfg: any = null) {
     return amaCfg;
 }
 
-function pruneCandles(candles: any, keepCount: any) {
+function pruneCandles(candles: unknown[], keepCount: number) {
     if (!Array.isArray(candles)) return [];
     if (candles.length <= keepCount) return candles;
     return candles.slice(candles.length - keepCount);
 }
 
-function calcAmaComparison(candles: any, bot: any = null, ctx: any = null) {
-    const closes = (candles || []).map((c: any) => Number(c?.[4])).filter((v: any) => Number.isFinite(v) && v > 0);
-    const out: any[] = [];
-    const presets: any[] = buildAmaComparisonPresets(bot, ctx);
-
-    for (const p of presets) {
-        const minNeeded = p.erPeriod + 1;
-        if (closes.length < minNeeded) {
-            out.push({ ...p, value: null, ok: false });
-            continue;
-        }
-        const values = calculateAMA(closes, {
-            erPeriod: p.erPeriod,
-            fastPeriod: p.fastPeriod,
-            slowPeriod: p.slowPeriod,
-            erSmoothPeriod: p.erSmoothPeriod,
-        });
-        const value = values[values.length - 1];
-        out.push({ ...p, value: Number.isFinite(value) ? value : null, ok: Number.isFinite(value) });
+/**
+ * Build the per-bot AMA record that is logged and persisted in the state file.
+ *
+ * It reports the ONE AMA the bot actually trades on — the value the cycle has
+ * already computed as `amaValues` — instead of re-running `calculateAMA` for the
+ * AMA1..AMA4 preset sweep. Those four extra passes cost ~0.3 ms each per bot per
+ * hour and fed nothing but the old "AMA compare:" log line: the presets are
+ * research knobs, not a signal, and the bot's price always came from its own
+ * configured parameters. So the comparison was 4 duplications of work whose
+ * result no decision, log consumer or dashboard ever read.
+ *
+ * The array shape (one entry, same fields) is kept so the state schema and the
+ * cycle log stay stable; the field is still called `amaComparison` in the
+ * persisted state for backwards compatibility with existing snapshots.
+ */
+function buildAmaRecord(botAma: unknown, amaPrice: number) {
+    const a = botAma as { erPeriod?: unknown; fastPeriod?: unknown; slowPeriod?: unknown; name?: unknown } | null | undefined;
+    const erPeriod = Number(a?.erPeriod);
+    const fastPeriod = Number(a?.fastPeriod);
+    const slowPeriod = Number(a?.slowPeriod);
+    if (!Number.isFinite(erPeriod) || !Number.isFinite(fastPeriod) || !Number.isFinite(slowPeriod)) {
+        return [];
     }
-
-    return out;
+    const value = Number(amaPrice);
+    return [{
+        name: String(a?.name || 'active'),
+        erPeriod,
+        fastPeriod,
+        slowPeriod,
+        value: Number.isFinite(value) ? value : null,
+        ok: Number.isFinite(value),
+    }];
 }
 
-async function fetchNativeTradesSince(poolId: any, sinceMs: any, pageLimit: any, maxPages: any) {
+async function fetchNativeTradesSince(poolId: string, sinceMs: number, pageLimit: number, maxPages: number) {
     const { BitShares } = getBitsharesClient();
-    const trades: any[] = [];
+    const trades: NativeTradeRecord[] = [];
     const seenSequences = new Set();
     let pages = 0;
     let startSeq: number | null = null;
@@ -795,7 +1092,7 @@ async function fetchNativeTradesSince(poolId: any, sinceMs: any, pageLimit: any,
             trades.push(trade);
         }
 
-        const last: any = page[page.length - 1];
+        const last = page[page.length - 1];
         const lastSeq: number = Number(last?.sequence);
         if (!Number.isFinite(lastSeq) || lastSeq <= 1) break;
         if (hitOld) break;
@@ -809,18 +1106,24 @@ async function fetchNativeTradesSince(poolId: any, sinceMs: any, pageLimit: any,
     };
 }
 
-function nativeHistoryRowToTrade(row: any) {
-    const tsMs = parseChainTimeToMs(row?.time || row?.op?.block_time);
+function nativeHistoryRowToTrade(row: unknown) {
+    interface RowShape {
+        time?: unknown;
+        sequence?: unknown;
+        op?: { op?: unknown; result?: unknown; block_time?: unknown };
+    }
+    const r = row as RowShape | null | undefined;
+    const tsMs = parseChainTimeToMs(r?.time || r?.op?.block_time);
     if (!Number.isFinite(tsMs)) return null;
-    const opPayload = Array.isArray(row?.op?.op) ? row.op.op[1] : null;
-    const resultPayload = Array.isArray(row?.op?.result) ? row.op.result[1] : null;
+    const opPayload = (Array.isArray(r?.op?.op) ? (r.op.op as unknown[])[1] : null) as { amount_to_sell?: unknown } | null;
+    const resultPayload = (Array.isArray(r?.op?.result) ? (r.op.result as unknown[])[1] : null) as { received?: unknown } | null;
     const received = Array.isArray(resultPayload?.received)
-        ? resultPayload.received[0]
+        ? (resultPayload!.received as unknown[])[0]
         : (resultPayload?.received || null);
 
     if (!opPayload?.amount_to_sell || !received) return null;
 
-    const sequence = Number(row?.sequence);
+    const sequence = Number(r?.sequence);
     return {
         tsMs,
         sequence: Number.isFinite(sequence) ? sequence : null,
@@ -829,12 +1132,12 @@ function nativeHistoryRowToTrade(row: any) {
     };
 }
 
-async function fetchNativeTradesUntilOverlap(poolId: any, overlapSequences: any, minOverlap: any, pageLimit: any, maxPages: any) {
+async function fetchNativeTradesUntilOverlap(poolId: string, overlapSequences: unknown, minOverlap: number, pageLimit: number, maxPages: number) {
     const { BitShares } = getBitsharesClient();
     const overlapSet = new Set((Array.isArray(overlapSequences) ? overlapSequences : [])
-        .map((v: any) => String(v))
-        .filter((v: any) => v !== ''));
-    const trades: any[] = [];
+        .map((v) => String(v))
+        .filter((v) => v !== ''));
+    const trades: NativeTradeRecord[] = [];
     const seenSequences = new Set();
     let pages = 0;
     let startSeq: number | null = null;
@@ -845,7 +1148,7 @@ async function fetchNativeTradesUntilOverlap(poolId: any, overlapSequences: any,
     }
 
     while (pages < maxPages) {
-        const page: any = startSeq == null
+        const page = startSeq == null
             ? await BitShares.history.get_liquidity_pool_history(poolId, null, null, pageLimit, LP_OP_TYPE)
             : await BitShares.history.get_liquidity_pool_history_by_sequence(poolId, startSeq, null, pageLimit, LP_OP_TYPE);
 
@@ -877,7 +1180,7 @@ async function fetchNativeTradesUntilOverlap(poolId: any, overlapSequences: any,
             }
         }
 
-        const last: any = page[page.length - 1];
+        const last = page[page.length - 1];
         const lastSeq: number = Number(last?.sequence);
         if (!Number.isFinite(lastSeq) || lastSeq <= 1) break;
         startSeq = lastSeq - 1;
@@ -891,7 +1194,9 @@ async function fetchNativeTradesUntilOverlap(poolId: any, overlapSequences: any,
     };
 }
 
-async function fetchNativeMarketHistorySince(assetA: any, assetB: any, sinceMs: any, untilMs: any, intervalSeconds: any, options: { fillCandleGaps?: Function } = {}) {
+async function fetchNativeMarketHistorySince(assetA: unknown, assetB: unknown, sinceMs: number, untilMs: number, intervalSeconds: number, options: { fillCandleGaps?: (...args: unknown[]) => unknown } = {}) {
+    const a = assetA as { id?: unknown; symbol?: unknown };
+    const b = assetB as { id?: unknown; symbol?: unknown };
     const { BitShares } = getBitsharesClient();
     if (!BitShares) {
         throw new Error('BitShares client unavailable');
@@ -903,16 +1208,16 @@ async function fetchNativeMarketHistorySince(assetA: any, assetB: any, sinceMs: 
 
     if (typeof BitShares.history?.getMarketHistory === 'function') {
         history = await BitShares.history.getMarketHistory(
-            assetB.id,
-            assetA.id,
+            b.id,
+            a.id,
             intervalSeconds,
             startDate.toISOString().slice(0, -5),
             stopDate.toISOString().slice(0, -5)
         );
     } else if (typeof BitShares.tradeHistory === 'function') {
         history = await BitShares.tradeHistory(
-            assetB.symbol || assetB.id,
-            assetA.symbol || assetA.id,
+            b.symbol || b.id,
+            a.symbol || a.id,
             startDate,
             stopDate,
             intervalSeconds
@@ -921,15 +1226,15 @@ async function fetchNativeMarketHistorySince(assetA: any, assetB: any, sinceMs: 
         throw new Error('native market history source unavailable');
     }
 
-    let candles = normalizeNativeMarketHistoryCandles(history, assetA, assetB, intervalSeconds);
+    let candles = normalizeNativeMarketHistoryCandles(history, a as Parameters<typeof normalizeNativeMarketHistoryCandles>[1], b as Parameters<typeof normalizeNativeMarketHistoryCandles>[2], intervalSeconds);
     if (candles.length > 0 && typeof options.fillCandleGaps === 'function') {
-        candles = options.fillCandleGaps(candles, intervalSeconds);
+        candles = options.fillCandleGaps(candles, intervalSeconds) as typeof candles;
     }
     return candles;
 }
 
-function writeGridResetTrigger(bot: any, payload: any) {
-    const triggerPath = getRecalculateTriggerFile(bot.botKey);
+function writeGridResetTrigger(bot: Record<string, unknown>, payload: Record<string, unknown>): string {
+    const triggerPath = getRecalculateTriggerFile(String(bot.botKey));
     const content = {
         createdAt: new Date().toISOString(),
         source: MARKET_ADAPTER_SOURCE,
@@ -951,18 +1256,18 @@ const ORDERS_DIR = PATHS.ORDERS_DIR;
  */
 function writeBotDynamicGrid(botKey: string, gridCenterPrice: number, options: {
     amaCenterPrice?: number;
-    amaSlope?: any;
-    gridRangeScalingAmaSlope?: any;
+    amaSlope?: Record<string, unknown>;
+    gridRangeScalingAmaSlope?: Record<string, unknown>;
     amaSlopeDeltaPercent?: number;
     amaSlopeThresholdPercent?: number;
     gridPriceOffsetPct?: number;
-    dynamicWeights?: any;
+    dynamicWeights?: Record<string, unknown>;
     observedLastGridResetAt?: string;
     asymmetricBounds?: { rawAsymmetryFactor: number | null; appliedAsymmetryFactor: number; trend: string };
 } = {}) {
     try {
         const filePath = path.join(ORDERS_DIR, `${botKey}.dynamicgrid.json`);
-        const preserveGridResetMetadata = (target: any, snapshot: any) => {
+        const preserveGridResetMetadata = (target: Record<string, unknown>, snapshot: Record<string, unknown>) => {
             if (!snapshot?.lastGridResetAt) return target;
             const incomingResetMs = Date.parse(String(snapshot.lastGridResetAt));
             const currentResetMs = Date.parse(String(target.lastGridResetAt || ''));
@@ -987,12 +1292,13 @@ function writeBotDynamicGrid(botKey: string, gridCenterPrice: number, options: {
             }
             return target;
         };
-        const result = updateDynamicGridSnapshotSync(filePath, (previousSnapshot: any) => {
+        const result = updateDynamicGridSnapshotSync(filePath, (previousSnapshot: unknown) => {
+            const previous = previousSnapshot as Record<string, unknown>;
             const amaCenterPrice = Number(options.amaCenterPrice);
             const resolvedGridCenterPrice = Number.isFinite(Number(gridCenterPrice))
                 ? roundTo(Number(gridCenterPrice), 1e8)
                 : null;
-            const payload: Record<string, any> = {
+            const payload: Record<string, unknown> = {
                 gridCenterPrice: resolvedGridCenterPrice,
                 centerPrice: resolvedGridCenterPrice,
                 amaCenterPrice: Number.isFinite(amaCenterPrice) && amaCenterPrice > 0 ? amaCenterPrice : resolvedGridCenterPrice,
@@ -1015,7 +1321,7 @@ function writeBotDynamicGrid(botKey: string, gridCenterPrice: number, options: {
             if (Number.isFinite(Number(options.amaSlopeThresholdPercent))) {
                 payload.amaSlopeThresholdPercent = Number(options.amaSlopeThresholdPercent);
             }
-            preserveGridResetMetadata(payload, previousSnapshot);
+            preserveGridResetMetadata(payload, previous);
             if (options.dynamicWeights && typeof options.dynamicWeights === 'object') {
                 payload.dynamicWeights = options.dynamicWeights;
             }
@@ -1028,17 +1334,19 @@ function writeBotDynamicGrid(botKey: string, gridCenterPrice: number, options: {
             return payload;
         });
         return result.ok && result.written;
-    } catch (err: any) {
+    } catch (err) {
         logger.warn(`[writeBotDynamicGrid] Failed to write dynamic grid for ${botKey}: ${getErrorMessage(err)}`);
         return false;
     }
 }
 
+import type { ServiceDeps, ContextCacheEntry } from './core/market_adapter_service.js';
 import {
     MarketAdapterService,
     AMA_SLOPE_PERCENT_MODE_PER_BAR,
     normalizeAmaSlopePercentMode,
     convertSlopePercentToPerBar,
+    evaluateStateRepairVeto,
 } from './core/market_adapter_service.js';
 import { getErrorMessage } from '../modules/utils/errors.js';
 const adapterService = new MarketAdapterService({
@@ -1062,7 +1370,7 @@ const adapterService = new MarketAdapterService({
     pruneStaleTail,
     mergeCandles,
     pruneCandles,
-    calcAmaComparison,
+    buildAmaRecord,
     writeGridResetTrigger,
     writeBotDynamicGrid,
     isBotWhitelisted,
@@ -1072,18 +1380,18 @@ const adapterService = new MarketAdapterService({
     root: ROOT,
     ordersDir: ORDERS_DIR,
     path,
-});
+} as unknown as ServiceDeps);
 
-async function processBot(bot: any, state: any, cfg: any, contextCache: any, hooks: any = {}) {
+async function processBot(bot: Record<string, unknown>, state: Record<string, unknown>, cfg: AdapterTargetCfg, contextCache: Map<string, ContextCacheEntry>, hooks: Record<string, unknown> = {}) {
     return adapterService.processBot(bot, state, cfg, contextCache, hooks);
 }
 
-function writeCenterSnapshot(state: any) {
-    const centers: Record<string, any> = {
+function writeCenterSnapshot(state: { bots?: Record<string, Record<string, unknown>> }) {
+    const centers: { updatedAt: string; bots: Record<string, Record<string, unknown>> } = {
         updatedAt: new Date().toISOString(),
         bots: {},
     };
-    const bots: Record<string, any> = state?.bots || {};
+    const bots: Record<string, Record<string, unknown>> = state?.bots || {};
     for (const [botKey, v] of Object.entries(bots)) {
         const gridCenterPrice = v.gridCenterPrice ?? v.centerPrice;
         centers.bots[botKey] = {
@@ -1109,19 +1417,20 @@ function writeCenterSnapshot(state: any) {
     saveJson(CENTER_FILE, centers);
 }
 
-function mergeGridResetMetadataFromDynamicGrid(state: any) {
+function mergeGridResetMetadataFromDynamicGrid(state: Record<string, unknown>) {
     if (!state || typeof state !== 'object' || !state.bots || typeof state.bots !== 'object') {
         return state;
     }
 
-    const bots: Record<string, any> = state.bots;
-    for (const [botKey, botState] of Object.entries(bots)) {
-        if (!botState || typeof botState !== 'object') continue;
+    const bots = state.bots as Record<string, unknown>;
+    for (const [botKey, rawBotState] of Object.entries(bots)) {
+        if (!rawBotState || typeof rawBotState !== 'object') continue;
+        const botState = rawBotState as Record<string, unknown>;
         const snapshotPath = path.join(ORDERS_DIR, `${botKey}.dynamicgrid.json`);
         let snapshot;
         try {
             snapshot = readJSON(snapshotPath);
-        } catch (_: any) {
+        } catch (_) {
             continue;
         }
 
@@ -1147,17 +1456,17 @@ function mergeGridResetMetadataFromDynamicGrid(state: any) {
     return state;
 }
 
-async function runOnce(cfg: any, state: any, contextCache: any) {
+async function runOnce(cfg: AdapterTargetCfg, state: Record<string, unknown>, contextCache: Map<string, ContextCacheEntry>) {
     _resetCycleCache(); // reload settings and cached file-backed config once per cycle
     const startedAtMs = Date.now();
     const allBots = loadActiveBots();
-    const bots = allBots.filter((bot: any) => usesAmaGridPrice(bot));
+    const bots = allBots.filter((bot) => usesAmaGridPrice(bot));
     log(cfg, `Active bots: ${allBots.length} | AMA-grid bots: ${bots.length}`);
 
-    const results: any[] = [];
+    const results: BotRunResult[] = [];
 
     for (const bot of bots) {
-        const isDryRun = cfg.dryRun || (!cfg.whitelistAll && !isBotWhitelisted(bot.botKey));
+        const isDryRun = cfg.dryRun || (!cfg.whitelistAll && !isBotWhitelisted(bot.botKey as string));
         write(cfg, `- ${bot.name} (${bot.botKey})${isDryRun ? ' [DRY RUN]' : ''}: `);
         try {
             const botCfg = resolveBotCfg(bot, cfg);
@@ -1177,19 +1486,32 @@ async function runOnce(cfg: any, state: any, contextCache: any) {
                 continue;
             }
 
-            const amaText = Number.isFinite(r.amaPrice) ? r.amaPrice.toFixed(8) : 'n/a';
-            const prevCenterText = Number.isFinite(r.previousCenterPrice) ? r.previousCenterPrice.toFixed(8) : 'n/a';
-            const deltaText = Number.isFinite(r.deltaPercent) ? `${r.deltaPercent.toFixed(3)}%` : 'n/a';
-            const thresholdText = Number.isFinite(r.thresholdPercent) ? `${r.thresholdPercent.toFixed(3)}%` : 'n/a';
+            // Off-hour skip: nothing to compute, so log one compact line
+            // instead of the full signal block (which would print n/a for
+            // every field and bury the hourly cycle in noise).
+            if (r.source === 'off-hour-skip') {
+                log(cfg, `skip (no new closed candle, last processed ${Number.isFinite(r.lastClosedCandleTs) ? new Date(Number(r.lastClosedCandleTs)).toISOString() : 'n/a'})`);
+                results.push({
+                    botName: bot.name,
+                    botKey: bot.botKey,
+                    ...r,
+                });
+                continue;
+            }
+
+            const amaText = Number.isFinite(r.amaPrice) ? Number(r.amaPrice).toFixed(8) : 'n/a';
+            const prevCenterText = Number.isFinite(r.previousCenterPrice) ? Number(r.previousCenterPrice).toFixed(8) : 'n/a';
+            const deltaText = Number.isFinite(r.deltaPercent) ? `${Number(r.deltaPercent).toFixed(3)}%` : 'n/a';
+            const thresholdText = Number.isFinite(r.thresholdPercent) ? `${Number(r.thresholdPercent).toFixed(3)}%` : 'n/a';
             const offText = r.weights?.meta?.finalOffset != null ? ` off=${r.weights.meta.finalOffset.toFixed(3)}` : '';
             const amaOffText = r.amaSlope?.amaSlopeGated != null ? ` (amaOff=${r.amaSlope.amaSlopeGated.toFixed(3)})` : '';
             const regimeText = r.amaSlope?.regimeMultiplier != null ? ` regime=${r.amaSlope.regimeMultiplier.toFixed(2)}` : '';
 
             const staleText = r.staleData ? ` STALE` : '';
-            const patchText = Number.isFinite(r.kibanaGapRepairCount) && r.kibanaGapRepairCount > 0 ? ` KIBANA_PATCH(${r.kibanaGapRepairCount})` : '';
-            const backfillText = Number.isFinite(r.kibanaBackfillCount) && r.kibanaBackfillCount > 0 ? ` BACKFILL(${r.kibanaBackfillCount})` : '';
-            const gapText = Number.isFinite(r.unresolvedGapCount) && r.unresolvedGapCount > 0 ? ` GAPS(${r.unresolvedGapCount})` : '';
-            const trigText = r.triggered ? ` TRIGGERED -> ${r.triggerPath ? path.relative(ROOT, r.triggerPath) : '[suppressed, dry-run]'}` : '';
+            const patchText = Number(r.kibanaGapRepairCount) > 0 ? ` KIBANA_PATCH(${r.kibanaGapRepairCount})` : '';
+            const backfillText = Number(r.kibanaBackfillCount) > 0 ? ` BACKFILL(${r.kibanaBackfillCount})` : '';
+            const gapText = Number(r.unresolvedGapCount) > 0 ? ` GAPS(${r.unresolvedGapCount})` : '';
+            const trigText = r.triggered ? ` TRIGGERED -> ${r.triggerPath ? path.relative(ROOT, String(r.triggerPath)) : '[suppressed, dry-run]'}` : '';
             const pendingText = r.pendingClosedCandle ? ' WAITING_FOR_CLOSED_CANDLE' : '';
             const weightText = buildWeightSummary(r.weights);
             const trendText = r.amaSlope?.trend ? ` trend=${r.amaSlope.trend}` : '';
@@ -1197,9 +1519,9 @@ async function runOnce(cfg: any, state: any, contextCache: any) {
                 ? ` WARMUP_INSUFFICIENT(used=${r.analysisCandleCount}${Number.isFinite(r.analysisKeepCount) ? `/${r.analysisKeepCount}` : ''})`
                 : '';
             const isOneHourResult = Number(r.intervalSeconds) === RUNTIME_DEFAULTS.intervalSeconds;
-            const closedTsText = isOneHourResult && Number.isFinite(r.lastClosedCandleTs) ? ` closed=${new Date(r.lastClosedCandleTs).toISOString()}` : '';
-            const rawTsText = isOneHourResult && Number.isFinite(r.rawLastCandleTs) ? ` rawLast=${new Date(r.rawLastCandleTs).toISOString()}` : '';
-            const closeText = isOneHourResult && Number.isFinite(r.lastClosedCandleClose) ? ` close=${r.lastClosedCandleClose.toFixed(8)}` : '';
+            const closedTsText = isOneHourResult && Number.isFinite(r.lastClosedCandleTs) ? ` closed=${new Date(Number(r.lastClosedCandleTs)).toISOString()}` : '';
+            const rawTsText = isOneHourResult && Number.isFinite(r.rawLastCandleTs) ? ` rawLast=${new Date(Number(r.rawLastCandleTs)).toISOString()}` : '';
+            const closeText = isOneHourResult && Number.isFinite(r.lastClosedCandleClose) ? ` close=${Number(r.lastClosedCandleClose).toFixed(8)}` : '';
             const rawCountText = Number.isFinite(r.candleCount)
                 ? ` raw=${r.candleCount}${Number.isFinite(r.rawKeepCount) ? `/${r.rawKeepCount}` : ''}`
                 : '';
@@ -1223,7 +1545,7 @@ async function runOnce(cfg: any, state: any, contextCache: any) {
                 log(cfg, '  No write pass: numeric startPrice disables market adapter fetch.');
             }
             if (Array.isArray(r.dryRunMessages)) {
-                r.dryRunMessages.forEach((msg: any) => log(cfg, `  ${msg}`));
+                r.dryRunMessages.forEach((msg: unknown) => log(cfg, `  ${msg}`));
             }
             if (isOneHourResult && r.weights?.meta) {
                 const m = r.weights.meta;
@@ -1237,19 +1559,18 @@ async function runOnce(cfg: any, state: any, contextCache: any) {
                 log(cfg, `  Asymmetric bounds: ${buildAsymmetricBoundsLog(asymSource)}`);
             }
             if (Array.isArray(r.amaComparison) && r.amaComparison.length > 0) {
-                const parts = r.amaComparison.map((a: any) => {
+                const parts = r.amaComparison.map((a: { value: number; name: string; erPeriod: number; fastPeriod: number; slowPeriod: number }) => {
                     const val = Number.isFinite(a.value) ? a.value.toFixed(8) : 'n/a';
-                    const erSmoothText = Number.isFinite(Number(a.erSmoothPeriod)) ? `/es${fixedTo(a.erSmoothPeriod, 0)}` : '';
-                    return `${a.name}[${a.erPeriod}/${a.fastPeriod}/${a.slowPeriod}${erSmoothText}]=${val}`;
+                    return `${a.name}[${a.erPeriod}/${a.fastPeriod}/${a.slowPeriod}]=${val}`;
                 });
-                log(cfg, `  AMA compare: ${parts.join(' | ')}`);
+                log(cfg, `  AMA active: ${parts.join(' | ')}`);
             }
             results.push({
                 botName: bot.name,
                 botKey: bot.botKey,
                 ...r,
             });
-        } catch (err: any) {
+        } catch (err) {
             log(cfg, `error (${getErrorMessage(err)})`);
             results.push({
                 botName: bot.name,
@@ -1277,18 +1598,18 @@ async function runOnce(cfg: any, state: any, contextCache: any) {
         durationMs: Date.now() - startedAtMs,
         totalActiveBots: allBots.length,
         processedBots: bots.length,
-        successBots: results.filter((r: any) => r.ok).length,
-        failedBots: results.filter((r: any) => !r.ok).length,
-        triggeredBots: results.filter((r: any) => r.ok && r.triggered).length,
-        staleBots: results.filter((r: any) => r.ok && r.staleData).length,
-        kibanaPatchedBots: results.filter((r: any) => r.ok && Number(r.kibanaGapRepairCount) > 0).length,
-        kibanaPatchedCandles: results.reduce((sum: any, r: any) => sum + (r.ok && Number.isFinite(r.kibanaGapRepairCount) ? r.kibanaGapRepairCount : 0), 0),
-        kibanaBackfilledBots: results.filter((r: any) => r.ok && Number(r.kibanaBackfillCount) > 0).length,
-        kibanaBackfilledCandles: results.reduce((sum: any, r: any) => sum + (r.ok && Number.isFinite(r.kibanaBackfillCount) ? r.kibanaBackfillCount : 0), 0),
-        unresolvedGapBots: results.filter((r: any) => r.ok && Number(r.unresolvedGapCount) > 0).length,
-        unresolvedGapCandles: results.reduce((sum: any, r: any) => sum + (r.ok && Number.isFinite(r.unresolvedGapCount) ? r.unresolvedGapCount : 0), 0),
+        successBots: results.filter((r) => r.ok).length,
+        failedBots: results.filter((r) => !r.ok).length,
+        triggeredBots: results.filter((r) => r.ok && r.triggered).length,
+        staleBots: results.filter((r) => r.ok && r.staleData).length,
+        kibanaPatchedBots: results.filter((r) => r.ok && Number(r.kibanaGapRepairCount) > 0).length,
+        kibanaPatchedCandles: results.reduce((sum, r) => sum + (r.ok && Number.isFinite(r.kibanaGapRepairCount) ? Number(r.kibanaGapRepairCount) : 0), 0),
+        kibanaBackfilledBots: results.filter((r) => r.ok && Number(r.kibanaBackfillCount) > 0).length,
+        kibanaBackfilledCandles: results.reduce((sum, r) => sum + (r.ok && Number.isFinite(r.kibanaBackfillCount) ? Number(r.kibanaBackfillCount) : 0), 0),
+        unresolvedGapBots: results.filter((r) => r.ok && Number(r.unresolvedGapCount) > 0).length,
+        unresolvedGapCandles: results.reduce((sum, r) => sum + (r.ok && Number.isFinite(r.unresolvedGapCount) ? Number(r.unresolvedGapCount) : 0), 0),
     };
-    state.meta.metrics = metrics;
+    (state.meta as Record<string, unknown>).metrics = metrics;
 
     mergeGridResetMetadataFromDynamicGrid(state);
     saveJson(STATE_FILE, state);
@@ -1299,7 +1620,7 @@ async function runOnce(cfg: any, state: any, contextCache: any) {
     return { results, metrics };
 }
 
-async function runOnceForAma(overrides: any = {}) {
+async function runOnceForAma(overrides: object = {}) {
     const provided = {
         deltaThresholdPercent: Object.prototype.hasOwnProperty.call(overrides, 'deltaThresholdPercent'),
     };
@@ -1322,11 +1643,11 @@ async function runOnceForAma(overrides: any = {}) {
         const { connectClient } = getBitsharesClient();
         await connectClient();
         const state = loadJson(STATE_FILE, { meta: {}, bots: {} });
-        const contextCache = new Map();
+        const contextCache = new Map<string, ContextCacheEntry>();
         const run = await runOnce(cfg, state, contextCache);
 
         return {
-            updatedAt: state?.meta?.updatedAt || new Date().toISOString(),
+            updatedAt: (state?.meta as { updatedAt?: string } | undefined)?.updatedAt || new Date().toISOString(),
             ...run,
             state,
         };
@@ -1361,6 +1682,54 @@ async function main() {
             return 0;
         }
 
+        // Read state before the sleep: the lock guarantees no other adapter can
+        // rewrite it in the meantime, and the same object is then used by the
+        // first cycle, so the file is parsed exactly once per start.
+        const state = loadJson(STATE_FILE, { meta: {}, bots: {} });
+        const contextCache = new Map<string, ContextCacheEntry>();
+
+        // Sleep-first startup, decided BEFORE the first connection: a respawned
+        // daemon (wrapper restart, crash recovery, manual start) must not run a
+        // full cycle immediately — mid-hour that cycle can only hit the
+        // closed-candle gate after paying the chain handshake + per-bot native
+        // fetch. Instead, align to the SAME boundary the loop uses
+        // (pollSeconds, default 3600s) and only run early when some active bot
+        // still owes a cycle.
+        //
+        // Ordering matters: connecting first and sleeping afterwards would hold
+        // an idle socket for the whole hour, which is exactly what the
+        // per-cycle connect/disconnect below exists to avoid. The lock is
+        // already held (and its heartbeat is unref'd but armed), so a sleeping
+        // adapter still looks alive to the watchdog, which decides staleness by
+        // holder liveness rather than by lock age.
+        if (!cfg.once) {
+            // Only bots the adapter would actually process may veto the sleep:
+            // a removed bot's leftover state row (or a fixed-price bot) must
+            // not force a full cycle on every restart. If the bot list cannot be
+            // read, every state row is judged instead (conservative).
+            let activeAmaBotKeys = null;
+            try {
+                activeAmaBotKeys = loadActiveBots()
+                    .filter((bot) => usesAmaGridPrice(bot))
+                    .map((bot) => bot.botKey)
+                    .filter((k): k is string => typeof k === 'string');
+            } catch (_) {
+                activeAmaBotKeys = null;
+            }
+            const verdict = evaluateStartupSleep(cfg, state, Date.now(), activeAmaBotKeys);
+            if (verdict.delayMs > 0) {
+                log(cfg, `Startup: every active bot consumed the newest closed candle and no repair is outstanding — sleeping ${(verdict.delayMs / 1000).toFixed(0)}s until the next ${cfg.pollSeconds}s boundary (no connection held).`);
+                await sleep(verdict.delayMs);
+            } else {
+                // Name the reason and the bots: a veto caused by one
+                // unprocessable bot would otherwise look like "the adapter just
+                // never sleeps" with nothing in the log to explain it.
+                const v = verdict.veto || { reason: 'unknown', botKeys: [] };
+                const who = v.botKeys.length > 0 ? ` [${v.botKeys.join(', ')}]` : '';
+                log(cfg, `Startup: running a catch-up cycle now — ${v.reason}${who}.`);
+            }
+        }
+
         {
             const maxRetries = 5;
             let lastErr = null;
@@ -1370,7 +1739,7 @@ async function main() {
                     await connectClient();
                     lastErr = null;
                     break;
-                } catch (err: any) {
+                } catch (err) {
                     lastErr = err;
                     if (attempt < maxRetries) {
                         const delay = Math.min(1000 * Math.pow(2, attempt - 1), TIMING.RETRY_BACKOFF_CAP_MS);
@@ -1380,14 +1749,11 @@ async function main() {
                 }
             }
             if (lastErr) {
-                logger.error(`Fatal: BitShares connection failed after ${maxRetries} attempts: ${(lastErr as any).message}`);
+                logger.error(`Fatal: BitShares connection failed after ${maxRetries} attempts: ${getErrorMessage(lastErr)}`);
                 return 1;
             }
         }
         log(cfg, 'Connected to BitShares');
-
-        const state = loadJson(STATE_FILE, { meta: {}, bots: {} });
-        const contextCache = new Map();
 
         if (cfg.once) {
             const run = await runOnce(cfg, state, contextCache);
@@ -1398,13 +1764,17 @@ async function main() {
         while (true) {
             const started = Date.now();
             log(cfg, `\n[cycle ${new Date(started).toISOString()}]`);
-            
-            // Connect for this cycle using the lightweight native read-only client.
-            // Tear down after runOnce so the connection never sits idle.
+
+            // Connect for this cycle using the lightweight native read-only
+            // client, and tear it down after runOnce so the connection never
+            // sits idle. A socket that outlives its cycle can be half-open when
+            // the next one starts (the peer drops it with no close frame, so
+            // readyState stays 1 and nothing notices); the per-cycle handshake
+            // re-validates chain id and api id before any RPC goes out on it.
             try {
                 const { connectClient } = getBitsharesClient();
                 await connectClient();
-            } catch (err: any) {
+            } catch (err) {
                 logger.error(`Connection failed before cycle: ${getErrorMessage(err)}`);
                 // Fall through and let runOnce attempt to handle its own retries/failures
             }
@@ -1414,7 +1784,18 @@ async function main() {
             try {
                 const { disconnectClient } = getBitsharesClient();
                 disconnectClient();
-            } catch (_: any) {}
+            } catch (_) {}
+
+            const cycleMs = Date.now() - started;
+            const pollMs = Math.max(1, Number(cfg.pollSeconds) || 0) * 1000;
+            if (cycleMs >= pollMs) {
+                // The cadence is slipping: this cycle alone consumed a full
+                // period, so the next one starts immediately (1000ms floor) and
+                // the backlog drains one cycle at a time. Surfaced explicitly,
+                // because a silent backlog is indistinguishable from an adapter
+                // that "runs every hour" in the log.
+                logger.warn(`Cycle took ${(cycleMs / 1000).toFixed(0)}s, at or beyond the ${cfg.pollSeconds}s poll period — running the next cycle immediately to catch up.`);
+            }
 
             const sleepMs = sleepUntilAlignedBoundary(cfg.pollSeconds, started, Date.now());
             await sleep(sleepMs);
@@ -1426,12 +1807,12 @@ async function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     main()
-        .then((exitCode: any) => process.exit(Number.isInteger(exitCode) ? exitCode : 0))
-        .catch((err: any) => {
+        .then((exitCode) => process.exit(Number.isInteger(exitCode) ? exitCode : 0))
+        .catch((err) => {
             logger.error(`Fatal: ${getErrorMessage(err)}`);
             process.exit(1);
         });
 }
 
-export { main, runOnceForAma, DEFAULT_AMA, DEFAULTS, calculateBotThreshold, calcAmaComparison, computeCandleStaleness, normalizeMarketSource, sleepUntilAlignedBoundary, resolveAmaForBot, resolveDeltaThresholdPercentFromGeneralSettings, applyRuntimeDefaultsFromGeneralSettings, resolveBotCfg, usesAmaGridPrice, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, _resetCycleCache, writeCenterSnapshot, writeBotDynamicGrid, writeGridResetTrigger, mergeGridResetMetadataFromDynamicGrid, normalizeNativeMarketHistoryCandles, fetchNativeMarketHistorySince, setBitsharesClientForTests as _setBitsharesClientForTests, loadMarketAdapterSettings, findPairForBot }
+export { main, runOnceForAma, DEFAULT_AMA, DEFAULTS, calculateBotThreshold, buildAmaRecord, computeCandleStaleness, normalizeMarketSource, sleepUntilAlignedBoundary, computeStartupDelayMs, evaluateStartupSleep, resolveAmaForBot, resolveDeltaThresholdPercentFromGeneralSettings, resolveAmaSlopeDeltaThresholdPercentFromGeneralSettings, applyRuntimeDefaultsFromGeneralSettings, resolveBotCfg, usesAmaGridPrice, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, _resetCycleCache, writeCenterSnapshot, writeBotDynamicGrid, writeGridResetTrigger, mergeGridResetMetadataFromDynamicGrid, normalizeNativeMarketHistoryCandles, fetchNativeMarketHistorySince, setBitsharesClientForTests as _setBitsharesClientForTests, loadMarketAdapterSettings, findPairForBot }
 

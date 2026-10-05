@@ -12,9 +12,11 @@ The live signal layer for AMA-priced bots. It reads candles, computes the AMA ce
 - [Symmetric Weight Shift](#symmetric-weight-shift)
 - [Trigger Threshold](#trigger-threshold)
 - [Settings and Overrides](#settings-and-overrides)
+- [Off-Hour Idle Behavior](#off-hour-idle-behavior)
 - [Live Writes and Dry-Run](#live-writes-and-dry-run)
 - [Useful Commands](#useful-commands)
 - [Troubleshooting](#troubleshooting)
+- [Related Tools](#related-tools)
 - [Technical Reference](#technical-reference)
 
 ## Which section do I need?
@@ -94,12 +96,6 @@ the pair's `defaultAma` from
 `profiles/market_profiles.json`. `gridPrice: "ama1"` through
 `gridPrice: "ama4"` force a specific preset. If no pair profile matches, the
 bot's `ama` block is used as the fallback.
-
-Bots can optionally add `ama.erSmoothPeriod` to smooth Kaufman's raw Efficiency
-Ratio before it enters the AMA smoothing-constant formula. The default is `0`,
-which disables this DEXBot2 extension and preserves raw Kaufman behavior. Useful
-values start around `3` to `5` when a faster AMA is desired but raw ER spikes
-cause abrupt grid-center changes.
 
 ### Empirical Divergence Risk Management
 
@@ -292,6 +288,33 @@ Pair-specific AMA profiles live in `profiles/market_profiles.json`:
 }
 ```
 
+## Off-Hour Idle Behavior
+
+The adapter only has work once per closed candle, so it stays quiet in between:
+
+| Phase | Behavior |
+|-------|----------|
+| Startup | **Sleep-first, before any connection.** A respawned daemon checks whether every active AMA bot already consumed the newest closed candle; if so it sleeps to the next `pollSeconds` boundary (default 3600) without opening a socket, otherwise a catch-up cycle runs immediately. |
+| Per bot, per cycle | **Closed-bucket gate before any fetch.** If the bot already consumed the newest closed bucket and its candle cache covers it (right source, no unresolved gaps, warmup target met), the bot is skipped before the native overlap fetch, the Kibana stale-tail check, and the candle re-serialize. |
+| Between cycles | The BitShares socket is torn down after every cycle; the process sleeps with only an unref'd lock heartbeat. |
+
+Both gates fail **open**: any input they cannot evaluate — fresh or unusable state, an interval that differs from the poll cadence (e.g. 2h candles polled hourly), a marker ahead of the clock (clock skew), an active bot with no row or no consumed marker (bootstrap owed), a bot whose last cycle left repair outstanding (`unresolvedGapCount > 0`, or `candleCount < rawKeepCount`, including an unknown count next to a known target) — runs the full cycle instead. Per-bot verdicts are never aggregated, so one lagging bot triggers a catch-up for everyone, and the veto is logged with its reason and bot keys:
+
+```
+Startup: running a catch-up cycle now — no_state_row [broken-bot].
+```
+
+Only bots the adapter would actually process are in scope, so a removed bot's leftover state row cannot keep the daemon awake. `kibanaBackfillCount`/`kibanaGapRepairCount` are deliberately ignored: they are action counts from a cycle that already applied its repair, not owed work.
+
+Two deliberate trade-offs:
+
+- An active bot that can *never* write state (unresolvable market, persistent pre-persist failure) disables the startup sleep for the whole daemon indefinitely — fail-safe by design, since healthy bots still take the per-bot skip; fixing or deactivating the bot restores the sleep.
+- A config change made *after* the last cycle (e.g. a grown AMA window) waits for the next boundary. That backfill is bounded by one poll period, and no candle can close while the adapter sleeps, so no market value is ever late.
+
+One-shot entry points (`--once`, and `runOnceForAma` behind `ama_signal_runner`) always run a full cycle — they exist to produce a computed AMA on demand, not a state-only "skipped" record with null prices.
+
+Skipped work is visible in state: skipped bots record `lastCycleSource: "off-hour-skip"` with a fresh `lastCycleAt`, so monitoring can tell an idle-by-design adapter from a dead process. A skip record is a last-known snapshot, not an epoch reset: `amaPrice`, `amaCenterPrice`, `lastCandleTs` and the other data fields keep the values from the last full cycle, and only `lastCycleSource`/`lastCycleAt`/`pendingClosedCandle`/`lastTriggerSuppressedReason` are refreshed. Between-cycle consumers therefore read the most recent computed values rather than a hole.
+
 ## Live Writes and Dry-Run
 
 The whitelist controls what the adapter may write. Non-whitelisted bots are
@@ -387,6 +410,7 @@ node dist/analysis/ama_fitting/calibrate_convergence_er.js --data market_adapter
 
 More tools:
 
+- [`dexbot tv`](../analysis/tradingview/README.md) — one-step candle fetch + chart, with the grid range and AMA recentering overlaid (handy for tuning `minPrice` / `maxPrice`)
 - [Analysis](../analysis/README.md)
 - [Scripts](../scripts/README.md)
 
@@ -661,7 +685,7 @@ This uses `dynamicWeights.trend`, `dynamicWeights.slopeOffset`, and
 weight shift. The whitelist flag is `asymmetricBounds`.
 
 ```
-slope = average AMA slope percent per bar over the lookback window
+slope = Huber-robust regression of ln(AMA) over the lookback window, in percent per bar
 slopeOffset = slope normalized to the configured dynamic-weight slope cap
 asymmetry = min(|slopeOffset| / maxSlopeOffset, 1) × maxAsymmetryFactor
 
@@ -778,8 +802,9 @@ Main override knobs live in `profiles/market_adapter_settings.json`:
 | `alpha` | AMA vs Kalman blend |
 | `dw` | Kalman displacement weighting |
 | `gain` | Output amplitude |
-| `amaSlopePercentMode` | Slope override units: `perBar` for average percent per bar, or `window`/unset for legacy cumulative percent over the lookback |
-| `amaSlope.lookbackBars` | AMA slope lookback; slope is averaged per bar over this window |
+| `amaSlopePercentMode` | Slope override units: `perBar` for percent per bar, or `window`/unset for legacy cumulative percent over the lookback |
+| `amaSlope.lookbackBars` | AMA slope lookback; slope is averaged per bar over this window (default 16) |
+| `amaSlope.persistBars` | Slope-delta persistence gate: consecutive confirming bars required before the slope reset fires (default 3; `1` = legacy fire-on-first-crossing). Values `< 1` fall through to the global default, so use `1` (or `persistEnabled: false`) to disable, not `0`. Global default in `MARKET_ADAPTER.AMA_SLOPE_PERSIST_*` |
 | `amaSlope.neutralZonePct` | Dead band around flat average AMA slope |
 | `amaSlope.maxSlopePct` | Average AMA slope saturation |
 | `amaSlopeDeltaThresholdPercent` | Average AMA slope delta threshold for slope-based resets |
@@ -834,7 +859,7 @@ closed 1h candles.
 
 #### Shared Month-Shard Cache and Fetch Robustness
 
-Pool, book, and feed candle fetches share one cache entry point (`runCachedWindows` in `market_adapter/inputs/window_cache.ts`): candles live in fixed calendar-month shards (`<base>.shard_YYYY-MM.json`, UTC) whose names never shift, so a run loads only the shards overlapping its requested range, queries only genuinely missing buckets plus a bounded 48h tail refresh, and rewrites only shards that gained buckets or query coverage — pure-reuse runs perform zero writes and zero deletes. Shard metas record the ranges actually queried (`meta.queriedRanges`, monotonically unioned). A missing range is pruned only when recorded query coverage genuinely covers it — the absence of local buckets alone never certifies history as empty. Partial windows merge into the run output but are never persisted. Stable month shards are the only supported cache format; obsolete run-relative cache files are ignored. Every range fetch runs through `fetchRangeWithRetry` (per-range attempts + linear backoff + abort-signal timeout; the LP path keeps a 4-attempt budget), one-shot Kibana queries retry transient errors (3 attempts), paged fetchers cap at `kibanaMaxPages` (500), and bidirectional fetches tolerate a one-direction failure.
+Pool, book, and feed candle fetches share one cache entry point (`runCachedWindows` in `market_adapter/inputs/window_cache.ts`): candles live in fixed calendar-month shards (`<base>.shard_YYYY-MM.json`, UTC) whose names never shift, so a run loads only the shards overlapping its requested range, queries only genuinely missing buckets plus a bounded tail refresh, and rewrites only shards that gained buckets or query coverage — pure-reuse runs perform zero writes and zero deletes. Shard metas record the ranges actually queried (`meta.queriedRanges`, monotonically unioned) together with `at`, the time each query ran; spans merge only when they assert the same verification time, so per-bucket freshness stays exact. A missing range is pruned only when recorded query coverage genuinely covers it — the absence of local buckets alone never certifies history as empty — and only once the range ended more than `GAP_SETTLE_HORIZON_MS` ago, judged per gap rather than per window (a month-old gap at the leading edge of the newest window is as settled as one in a fully past window). The tail window re-queries only buckets that no query has seen `TAIL_SETTLE_LAG_MS` after they closed (`settleCoverage`), so a rerun costs ~lag+elapsed hours instead of a fixed 48h, and the refresh never reaches back past `TAIL_REFRESH_HOURS` (an unsettled bucket must be refreshed because index lag is still open, but a coverage hole older than 48h is past any plausible lag and must not drag the boundary back weeks); caches without `at` fall back to that fixed window. Clusters of gaps within `GAP_MERGE_TOLERANCE_BUCKETS` collapse into one query, and the sub-range path is bounded by merged span hours rather than gap count, so one extra small hole can no longer escalate a run to a full-window fetch. Because spans merge only on an identical `at`, a shard gains one span per re-verifying run; the persisted list is capped at `MAX_COVERAGE_SPANS` by dropping the oldest spans, which can never invent emptiness (it can only make those buckets look unsettled, bounded by the same 48h ceiling). A run that re-verifies the tail therefore rewrites that shard even when the candles come back identical — the moved verification time is the news, and skipping the write would throw it away; pure-reuse runs still write nothing. Partial windows merge into the run output but are never persisted. Stable month shards are the only supported cache format; obsolete run-relative cache files are ignored. Every range fetch runs through `fetchRangeWithRetry` (per-range attempts + linear backoff + abort-signal timeout; the LP path keeps a 4-attempt budget), one-shot Kibana queries retry transient errors (3 attempts), paged fetchers cap at `kibanaMaxPages` (500), and bidirectional fetches tolerate a one-direction failure.
 
 #### AMA Warmup Window — Why Candle Length Matters
 
@@ -849,27 +874,11 @@ bias_remaining(K) ≈ bias_initial × ∏ (1 − SC_i)      for i = 1..K
 Kaufman's smoothing constant is the ER-scaled value, squared:
 
 ```
-SC_i = [ER_effective_i × (fastSC − slowSC) + slowSC]²
+SC_i = [ER_i × (fastSC − slowSC) + slowSC]²
 
 where  fastSC = 2 / (fastPeriod + 1)
       slowSC = 2 / (slowPeriod + 1)
 ```
-
-By default, `ER_effective_i` is Kaufman's raw `ER_i`. If `ama.erSmoothPeriod`
-or `MARKET_ADAPTER.AMA_ER_SMOOTH_FAST_PERIOD` is set to `1` or higher, DEXBot2
-first applies EMA smoothing to the ER stream:
-
-```
-ER_effective_i = ER_effective_(i-1) + erSmoothAlpha × (ER_i − ER_effective_(i-1))
-
-where  erSmoothAlpha = 2 / (erSmoothPeriod + 1)
-```
-
-This ER smoothing is not part of canonical Kaufman AMA/KAMA. It is an optional
-DEXBot2 stabilizer for fast AMAs: it can reduce false or jerky re-centering
-caused by one-window ER spikes, at the cost of slower recognition when the
-market genuinely changes regime. `erSmoothPeriod = 0` disables it; `1` is
-effectively no extra smoothing; `3` to `5` are typical light/moderate values.
 
 Because `ER_i` varies bar-by-bar, a **typical-market ER** (`ER_avg`) is used to
 estimate an average decay rate:
@@ -888,14 +897,13 @@ The adapter keeps the **full warmup window** in candle history so the AMA seed
 and convergence bias are retained for downstream calculations:
 
 ```
-amaWarmupBars = erPeriod + convergenceBars + erSmoothConvergenceBars + lookbackBars
+amaWarmupBars = erPeriod + convergenceBars + lookbackBars
 ```
 
 | Component | Role |
 |-----------|------|
 | `erPeriod` | Bars for the first Efficiency Ratio value to become available |
 | `convergenceBars` | Bars to decay 99 % of the cold-start initialisation bias |
-| `erSmoothConvergenceBars` | Extra ER EMA convergence bars when `erSmoothPeriod >= 1`; `0` when ER smoothing is disabled |
 | `lookbackBars` | Extra lookback for slope/trend analysis (AMA slope, ATR) |
 
 For **AMA slope readiness and percentile clipping**, the earlier gate is:
@@ -980,6 +988,7 @@ Important fields in `market_adapter/state/market_adapter_state.json`:
 | Field | Meaning |
 |-------|---------|
 | `meta.updatedAt` | Last completed adapter cycle (ISO timestamp) |
+| `lastCycleSource` | How the last cycle ended the bot: a fetch source (`native-incremental-overlap`, `kibana-backfill`, …) or `off-hour-skip` when the closed-candle gate skipped the work |
 | `meta.metrics.processedBots` | Number of bots evaluated this cycle |
 | `meta.metrics.durationMs` | Cycle wall-clock duration in milliseconds |
 | `lastCycleAt` | Last cycle timestamp for a bot |

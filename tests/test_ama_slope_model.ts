@@ -5,10 +5,23 @@ const { getErrorMessage } = require('../modules/utils/errors');
 
 console.log('Running ama_slope_model tests');
 
-const { computeAmaSlopeWeights, computeAmaSlopeClipThreshold, createAmaSlopeClipTracker } = require('../market_adapter/core/strategies/ama_slope_model');
-const { calculateAMA, getAmaWarmupBars } = require('../market_adapter/core/strategies/ama');
+const { computeAmaSlopeWeights, computeAmaSlopeClipThreshold, createAmaSlopeClipTracker, computeAverageAmaSlopePct, computeHuberWindowSlopePct } = require('../market_adapter/core/strategies/ama_slope_model');
+const { calculateAMA } = require('../market_adapter/core/strategies/ama');
 
 // Generate a series of N values with a given pattern
+// A constant per-bar ramp. The canonical slope is the Huber-robust regression
+// of ln(AMA) (computeHuberWindowSlopePct), so a single-bar impulse (a flat
+// series with only the last bar moved) is heavily discounted by the bounded
+// influence function — it reads near 0%/bar but not exactly, because the fit is
+// continuous rather than an order statistic. A geometric ramp yields the
+// intended log-return per bar, so these fixtures exercise the neutral-zone and
+// saturation logic with a slope the estimator reports exactly.
+function rampSeries(n, base, perBarPct) {
+    const out = [];
+    for (let i = 0; i < n; i++) out.push(base * Math.pow(1 + perBarPct / 100, i));
+    return out;
+}
+
 function flatSeries(n, value) {
     return new Array(n).fill(value);
 }
@@ -90,18 +103,16 @@ function testNeutralZoneZeroSlope() {
 }
 
 function testNeutralZoneJustBelow() {
-    // Average slopePct = 0.14% per bar < neutralZonePct=0.15% → still NEUTRAL
-    const values = flatSeries(MIN_LEN, 100);
-    values[MIN_LEN - 1] = 101.4;
+    // slopePct = 0.14%/bar < neutralZonePct=0.15% → still NEUTRAL
+    const values = rampSeries(MIN_LEN, 100, 0.14);
     const result = computeAmaSlopeWeights(values, 0, { ...SMALL_OPTS, neutralZonePct: 0.15 });
     assert.strictEqual(result.trend, 'NEUTRAL');
     assert.strictEqual(result.slopeOffset, 0);
 }
 
 function testTrendJustAboveNeutralZone() {
-    // Average slopePct = 0.16% per bar > neutralZonePct=0.15% → UP
-    const values = flatSeries(MIN_LEN, 100);
-    values[MIN_LEN - 1] = 101.6;
+    // slopePct = 0.16%/bar > neutralZonePct=0.15% → UP
+    const values = rampSeries(MIN_LEN, 100, 0.16);
     const result = computeAmaSlopeWeights(values, 0, { ...SMALL_OPTS, neutralZonePct: 0.15 });
     assert.strictEqual(result.trend, 'UP');
     assert.ok(result.slopeOffset > 0, 'positive slopeOffset for UP trend');
@@ -110,9 +121,8 @@ function testTrendJustAboveNeutralZone() {
 // ─── Positive slope (up trend) ──────────────────────────────────────────────
 
 function testPositiveSlopePartialSaturation() {
-    // Average slopePct = 1.5% per bar, maxSlopePct = 3.0 → slopeOffset = (1.5/3.0)*0.5 = 0.25
-    const values = flatSeries(MIN_LEN, 100);
-    values[MIN_LEN - 1] = 115;
+    // slopePct = 1.5%/bar, maxSlopePct = 3.0 → slopeOffset = (1.5/3.0)*0.5 = 0.25
+    const values = rampSeries(MIN_LEN, 100, 1.5);
     const opts = { ...SMALL_OPTS, maxSlopePct: 3.0, neutralZonePct: 0.15 };
     const result = computeAmaSlopeWeights(values, 0, opts);
     assert.strictEqual(result.isReady, true);
@@ -122,9 +132,8 @@ function testPositiveSlopePartialSaturation() {
 }
 
 function testPositiveSlopeFullSaturation() {
-    // Average slopePct = 6% per bar > maxSlopePct=3.0 → clamped to 1 → slopeOffset=0.5
-    const values = flatSeries(MIN_LEN, 100);
-    values[MIN_LEN - 1] = 160;
+    // slopePct = 6%/bar > maxSlopePct=3.0 → clamped to 1 → slopeOffset=0.5
+    const values = rampSeries(MIN_LEN, 100, 6);
     const opts = { ...SMALL_OPTS, maxSlopePct: 3.0, neutralZonePct: 0.15 };
     const result = computeAmaSlopeWeights(values, 0, opts);
     assert.strictEqual(result.trend, 'UP');
@@ -135,9 +144,8 @@ function testPositiveSlopeFullSaturation() {
 // ─── Negative slope (down trend) ────────────────────────────────────────────
 
 function testNegativeSlopePartialSaturation() {
-    // Average slopePct = -1.5% per bar, maxSlopePct=3.0 → slopeOffset = -0.25
-    const values = flatSeries(MIN_LEN, 100);
-    values[MIN_LEN - 1] = 85;
+    // slopePct = -1.5%/bar, maxSlopePct=3.0 → slopeOffset = -0.25
+    const values = rampSeries(MIN_LEN, 100, -1.5);
     const opts = { ...SMALL_OPTS, maxSlopePct: 3.0, neutralZonePct: 0.15 };
     const result = computeAmaSlopeWeights(values, 0, opts);
     assert.strictEqual(result.trend, 'DOWN');
@@ -146,8 +154,7 @@ function testNegativeSlopePartialSaturation() {
 }
 
 function testNegativeSlopeFullSaturation() {
-    const values = flatSeries(MIN_LEN, 100);
-    values[MIN_LEN - 1] = 40;
+    const values = rampSeries(MIN_LEN, 100, -6);
     const opts = { ...SMALL_OPTS, maxSlopePct: 3.0, neutralZonePct: 0.15 };
     const result = computeAmaSlopeWeights(values, 0, opts);
     assert.strictEqual(result.trend, 'DOWN');
@@ -264,8 +271,7 @@ function testInvalidMaxVolatilityOffsetFallsBackToDefaultClamp() {
 
 function testCombinedUptrendZeroVol() {
     // slopeOffset=+0.25 (partial UP), symmetricDelta=0 (no penalty at zero ATR)
-    const values = flatSeries(MIN_LEN, 100);
-    values[MIN_LEN - 1] = 115;
+    const values = rampSeries(MIN_LEN, 100, 1.5);
     const opts = { ...HALF_POWER_SLOPE_VOL_OPTS };
     const result = computeAmaSlopeWeights(values, 0, opts);
     assert.deepStrictEqual(derivedWeights(result), { sellW: 0.25, buyW: 0.75 });
@@ -273,8 +279,7 @@ function testCombinedUptrendZeroVol() {
 
 function testCombinedUptrendHighVol() {
     // slopeOffset=+0.5 (full UP), weightVariance=0.04, exponent=0.5, scaleX=1.0 → delta=-0.2
-    const values = flatSeries(MIN_LEN, 100);
-    values[MIN_LEN - 1] = 160;
+    const values = rampSeries(MIN_LEN, 100, 6);
     const opts = { ...HALF_POWER_SLOPE_VOL_OPTS };
     const result = computeAmaSlopeWeights(values, 0.04, opts);
     assert.deepStrictEqual(derivedWeights(result), { sellW: -0.2, buyW: 0.8 });
@@ -282,8 +287,7 @@ function testCombinedUptrendHighVol() {
 
 function testClampAtMaxPenalty() {
     // Full UP slope (slopeOffset=0.5) + max penalty (symmetricDelta=-0.5)
-    const values = flatSeries(MIN_LEN, 100);
-    values[MIN_LEN - 1] = 160;
+    const values = rampSeries(MIN_LEN, 100, 6);
     const opts = { ...HALF_POWER_SLOPE_VOL_OPTS };
     const result = computeAmaSlopeWeights(values, 1.0, opts);
     assert.deepStrictEqual(derivedWeights(result), { sellW: -0.5, buyW: 0.5 });
@@ -297,21 +301,18 @@ function testConfidenceDerivation() {
     assert.strictEqual(r1.confidence, 0);
 
     // slopeOffset=0.5 (full) → confidence=100
-    const values = flatSeries(MIN_LEN, 100);
-    values[MIN_LEN - 1] = 160;
+    const values = rampSeries(MIN_LEN, 100, 6);
     const r2 = computeAmaSlopeWeights(values, 0.015, { ...SMALL_OPTS, maxSlopePct: 3.0, neutralZonePct: 0.15 });
     assert.strictEqual(r2.confidence, 100);
 
     // slopeOffset=0.25 (half) → confidence=50
-    const values2 = flatSeries(MIN_LEN, 100);
-    values2[MIN_LEN - 1] = 115;
+    const values2 = rampSeries(MIN_LEN, 100, 1.5);
     const r3 = computeAmaSlopeWeights(values2, 0.015, { ...SMALL_OPTS, maxSlopePct: 3.0, neutralZonePct: 0.15 });
     assert.strictEqual(r3.confidence, 50);
 }
 
 function testZeroMaxSlopeOffsetKeepsConfidenceFinite() {
-    const values = flatSeries(MIN_LEN, 100);
-    values[MIN_LEN - 1] = 160;
+    const values = rampSeries(MIN_LEN, 100, 6);
     const result = computeAmaSlopeWeights(values, 0, {
         ...SMALL_OPTS,
         maxSlopePct: 3.0,
@@ -357,15 +358,15 @@ function testNeutralSlopeVolatilityTable() {
 }
 
 function testUptrendSlopeOffsetTable() {
-    // slopeOffset ≈ +0.33: average slopePct = 2% per bar → slopeOffset = (2/3)*0.5 = 0.333... → 0.33 rounded
+    // slopeOffset ≈ +0.33: slopePct = 2%/bar → slopeOffset = (2/3)*0.5 = 0.333... → 0.33 rounded
     const opts = { ...HALF_POWER_SLOPE_VOL_OPTS };
-    const values = flatSeries(MIN_LEN, 100);
-    values[MIN_LEN - 1] = 120;
+    const values = rampSeries(MIN_LEN, 100, 2);
 
     // ATR/price = 0.00 → delta=0 → derived weights reflect the 0.5 neutral center
     let r = computeAmaSlopeWeights(values, 0.00, opts);
     assert.strictEqual(r.slopeOffset, 0.33);
-    assert.ok(Math.abs(r.rawSlopeOffset - (1 / 3)) < 1e-12);
+    // Huber reports the geometric per-bar rate: ln(1.02), not the arithmetic 2%.
+    assert.ok(Math.abs(r.rawSlopeOffset - (Math.log(1.02) * 100 / 3) * 0.5) < 1e-12);
     assert.deepStrictEqual(derivedWeights(r), { sellW: 0.17, buyW: 0.83 });
 
     // ATR/price = 0.0025 → suppressed → same as zero vol
@@ -384,37 +385,6 @@ function testUptrendSlopeOffsetTable() {
     // ATR/price = 0.25 → delta=-0.5
     r = computeAmaSlopeWeights(values, 0.25, opts);
     assert.deepStrictEqual(derivedWeights(r), { sellW: -0.33, buyW: 0.33 });
-}
-
-// ─── ER Smoothing ────────────────────────────────────────────────────────────
-
-function testERaSmoothingDisabledByDefault() {
-    const closes = [100, 101, 99, 102, 98, 103, 97, 104, 96, 105];
-    const raw = calculateAMA(closes, { erPeriod: 5, fastPeriod: 2, slowPeriod: 30 });
-    const smooth = calculateAMA(closes, { erPeriod: 5, fastPeriod: 2, slowPeriod: 30, erSmoothPeriod: 0 });
-    assert.deepStrictEqual(raw, smooth, 'erSmoothPeriod=0 should match no smoothing');
-}
-
-function testERaSmoothingRejectsSubUnitPeriods() {
-    const closes = [100, 101, 99, 102, 98, 103, 97, 104, 96, 105];
-    const raw = calculateAMA(closes, { erPeriod: 5, fastPeriod: 2, slowPeriod: 30 });
-    const invalid = calculateAMA(closes, { erPeriod: 5, fastPeriod: 2, slowPeriod: 30, erSmoothPeriod: 0.5 });
-    assert.deepStrictEqual(invalid, raw, 'erSmoothPeriod < 1 should fall back to disabled smoothing');
-}
-
-function testERaSmoothingProducesDifferentOutput() {
-    const closes = [100, 102, 98, 103, 96, 104, 95, 105, 93, 106, 92, 107, 90, 108, 89, 109, 87, 110, 86, 111];
-    const raw = calculateAMA(closes, { erPeriod: 5, fastPeriod: 2, slowPeriod: 30 });
-    const smooth = calculateAMA(closes, { erPeriod: 5, fastPeriod: 2, slowPeriod: 30, erSmoothPeriod: 3 });
-    const lastDiff = Math.abs(raw[raw.length - 1] - smooth[smooth.length - 1]);
-    assert.ok(lastDiff > 0, 'erSmoothPeriod=3 should produce different output than raw in choppy data');
-    assert.ok(raw.some((v, i) => v !== smooth[i]), 'some values should differ');
-}
-
-function testAmaWarmupBarsIncludeERSmoothingConvergence() {
-    const unsmoothed = getAmaWarmupBars(10, 30, 5, 2);
-    const smoothed = getAmaWarmupBars(10, 30, 5, 2, 50);
-    assert.strictEqual(smoothed - unsmoothed, 116, 'ER smoothing warmup should include its own EMA convergence bars');
 }
 
 // ─── AMA slope clip threshold (computeAmaSlopeClipThreshold / createAmaSlopeClipTracker) ──
@@ -445,22 +415,23 @@ function testClipThresholdDisabledOrShortHistoryReturnsInfinity() {
 }
 
 function testClipThresholdExactPercentile() {
-    // erPeriod=1, lookbackBars=1 → readyBars=2, slopes are per-bar % changes.
-    //   i=2: |(99-110)/110|*100      = 10
-    //   i=3: |(121-99)/99|*100       = 22.2222...
-    //   i=4: |(110-121)/121|*100     = 9.0909...
-    //   i=5: |(132-110)/110|*100     = 20
-    // sorted |slopes| = [9.0909..., 10, 20, 22.2222...]
+    // erPeriod=1, lookbackBars=1 → a 2-point window, so the canonical Huber
+    // slope is the geometric (log) per-bar change ln(cur/prev)*100.
+    //   i=2: |ln(99/110)|*100  = 10.5360...
+    //   i=3:  ln(121/99)*100   = 20.0671...
+    //   i=4: |ln(110/121)|*100 = 9.5310...
+    //   i=5:  ln(132/110)*100  = 18.2322...
+    // sorted |slopes| = [9.5310..., 10.5360..., 18.2322..., 20.0671...]
     const values = [100, 110, 99, 121, 110, 132];
 
     const t90 = computeAmaSlopeClipThreshold(values, 1, 1, 90); // idx floor(0.1*4)=0
-    assert.ok(Math.abs(t90 - (11 / 121 * 100)) < 1e-9, `90th pct expected 9.0909%, got ${t90}`);
+    assert.ok(Math.abs(t90 - Math.abs(Math.log(110 / 121) * 100)) < 1e-9, `90th pct expected ${Math.abs(Math.log(110 / 121) * 100)}%, got ${t90}`);
 
     const t40 = computeAmaSlopeClipThreshold(values, 1, 1, 40); // idx floor(0.6*4)=2
-    assert.ok(Math.abs(t40 - 20) < 1e-9, `40th pct expected 20%, got ${t40}`);
+    assert.ok(Math.abs(t40 - Math.log(132 / 110) * 100) < 1e-9, `40th pct expected ${Math.log(132 / 110) * 100}%, got ${t40}`);
 
     const t20 = computeAmaSlopeClipThreshold(values, 1, 1, 20); // idx floor(0.8*4)=3
-    assert.ok(Math.abs(t20 - (22 / 99 * 100)) < 1e-9, `20th pct expected 22.2222%, got ${t20}`);
+    assert.ok(Math.abs(t20 - Math.log(121 / 99) * 100) < 1e-9, `20th pct expected ${Math.log(121 / 99) * 100}%, got ${t20}`);
 }
 
 function testTrackerMatchesBatchAcrossPrefixes() {
@@ -520,6 +491,75 @@ function testRollingWindowWeightsMatchFullPrefix() {
     }
 }
 
+// ─── Huber-robust windowed slope (canonical estimator) ──────────────────────
+
+function testHuberRampRecoversLogPerBarRate() {
+    // A geometric ramp's log-return per bar is ln(1 + pct/100); the Huber
+    // regression reports that x100, so it must match to machine precision.
+    const up = rampSeries(60, 100, 0.5);
+    const hu = computeHuberWindowSlopePct(up, up.length - 1, 20);
+    assert.ok(hu != null && Math.abs(hu - Math.log(1.005) * 100) < 1e-6, `up ramp: ${hu}`);
+    const down = rampSeries(60, 100, -0.5);
+    const hd = computeHuberWindowSlopePct(down, down.length - 1, 20);
+    assert.ok(hd != null && Math.abs(hd - Math.log(0.995) * 100) < 1e-6, `down ramp: ${hd}`);
+}
+
+function testHuberFlatSeriesZero() {
+    const flat = computeHuberWindowSlopePct(flatSeries(60, 100), 59, 20);
+    assert.ok(flat != null && Math.abs(flat) < 1e-9, `flat series slope must be ~0, got ${flat}`);
+}
+
+function testHuberSubduesSingleBarSpike() {
+    // One +5% edge spike on an otherwise flat series: the two-point endpoint
+    // reads ~0.25 %/bar, while Huber must stay far below it (bounded influence,
+    // not full edge weight).
+    const spike = flatSeries(60, 100);
+    spike[59] = 105;
+    const hu = computeHuberWindowSlopePct(spike, 59, 20);
+    const endpoint = computeAverageAmaSlopePct(spike[59], spike[59 - 20], 20);
+    assert.ok(hu != null, 'huber must return a value');
+    assert.ok(hu >= 0, `spike up must not go negative: ${hu}`);
+    assert.ok(Math.abs(hu) < Math.abs(endpoint) / 3, `huber ${hu} should be well below endpoint ${endpoint}`);
+}
+
+function testHuberTracksGeometricRateOnShallowRamp() {
+    // A smooth ramp's log-return per bar is ln(1 + pct/100); the fit reports
+    // that x100 once the whole window sits on the ramp.
+    const ramp = rampSeries(60, 100, 0.3);
+    const idx = ramp.length - 1;
+    const hu = computeHuberWindowSlopePct(ramp, idx, 20);
+    assert.ok(hu != null && Math.abs(hu - Math.log(1.003) * 100) < 1e-6, `huber ${hu}`);
+}
+
+function testHuberParamsAreCentralizedInConstants() {
+    // The estimator defaults to MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER (injected
+    // as AMA_SLOPE_HUBER in generated charts). Prove that block is the one in
+    // use: the explicit constant matches the default, and an override is honored.
+    const { MARKET_ADAPTER } = require('../modules/constants');
+    const hub = MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER;
+    assert.ok(hub && Number.isFinite(hub.C) && Number.isFinite(hub.ITERATIONS)
+        && Number.isFinite(hub.SCALE_FLOOR) && Number.isFinite(hub.ZERO_EPSILON),
+        'DYNAMIC_WEIGHT_AMA_HUBER must expose C/ITERATIONS/SCALE_FLOOR/ZERO_EPSILON');
+
+    const ramp = rampSeries(60, 100, 0.3);
+    const withDefault = computeHuberWindowSlopePct(ramp, 59, 20);
+    assert.strictEqual(computeHuberWindowSlopePct(ramp, 59, 20, hub), withDefault,
+        'passing the centralized constant explicitly must match the default');
+    assert.strictEqual(computeHuberWindowSlopePct(ramp, 59, 20, { C: hub.C }),
+        withDefault, 'a partial hub must fill the missing fields from the constant');
+    assert.strictEqual(computeHuberWindowSlopePct(ramp, 59, 20, { ...hub, ZERO_EPSILON: 1e9 }), 0,
+        'overriding a centralized param must change the fit');
+}
+
+function testHuberRejectsUnusableWindow() {
+    const hole = flatSeries(60, 100);
+    hole[50] = 0; // non-positive inside the window
+    assert.strictEqual(computeHuberWindowSlopePct(hole, 59, 20), null, 'non-positive value rejects');
+    assert.strictEqual(computeHuberWindowSlopePct([], 0, 20), null, 'empty series rejects');
+    assert.strictEqual(computeHuberWindowSlopePct(flatSeries(5, 100), 4, 20), null, 'index < bars rejects');
+    assert.strictEqual(computeHuberWindowSlopePct(flatSeries(60, 100), 59, 0), null, 'bars < 1 rejects');
+}
+
 function testClipThresholdBindsSlopeOffset() {
     // slopePct ≈ 100% per bar; without a clip it saturates at maxSlopeOffset.
     const values = [100, 100, 100, 100, 100, 300];
@@ -567,16 +607,18 @@ async function run() {
     testZeroMaxSlopeOffsetKeepsConfidenceFinite();
     testNeutralSlopeVolatilityTable();
     testUptrendSlopeOffsetTable();
-    testERaSmoothingDisabledByDefault();
-    testERaSmoothingRejectsSubUnitPeriods();
-    testERaSmoothingProducesDifferentOutput();
-    testAmaWarmupBarsIncludeERSmoothingConvergence();
     testClipThresholdDisabledOrShortHistoryReturnsInfinity();
     testClipThresholdExactPercentile();
     testTrackerMatchesBatchAcrossPrefixes();
     testTrackerDisabledReturnsInfinity();
     testRollingWindowWeightsMatchFullPrefix();
     testClipThresholdBindsSlopeOffset();
+    testHuberRampRecoversLogPerBarRate();
+    testHuberFlatSeriesZero();
+    testHuberSubduesSingleBarSpike();
+    testHuberTracksGeometricRateOnShallowRamp();
+    testHuberRejectsUnusableWindow();
+    testHuberParamsAreCentralizedInConstants();
 }
 
 run()

@@ -10,7 +10,34 @@ import { Y_AXIS_SIZE, makeCursorConfig, bindHoverStateFn, wireChartEvents, zoomR
 const EMBEDDED_SHARED_FUNCS = embedFunctionSources([computeATRSeries, computeVolatilityShift]);
 
 
-function generateHTML(data: any, title = 'ATR Volatility Research') {
+interface VolatilityRow {
+    timestamp: string | number;
+    price: number;
+    ama3Price?: number | null;
+    atr?: number;
+    weightVariance?: number | null;
+    rawSymmetricDelta?: number;
+    symmetricDelta?: number;
+    effectiveWeight?: number;
+    sellW?: number;
+    buyW?: number;
+}
+
+interface VolatilityChartInput {
+    allResults?: VolatilityRow[];
+    volatilityConfig?: { volatilityThreshold?: number; atrPeriod?: number; volatilityExponent?: number; volatilityScaleX?: number; volatilityClamp?: number };
+    volatilityThreshold?: number;
+    atrPeriod?: number;
+    volatilityExponent?: number;
+    volatilityScaleX?: number;
+    volatilityClamp?: number;
+    minWeight?: number;
+    maxWeight?: number;
+    candles?: unknown[];
+    [key: string]: unknown;
+}
+
+function generateHTML(data: VolatilityChartInput, title = 'ATR Volatility Research') {
     const results = data.allResults || [];
     if (results.length === 0) throw new Error('No analysis results in input');
 
@@ -27,10 +54,10 @@ function generateHTML(data: any, title = 'ATR Volatility Research') {
         ? (new Date(results[1].timestamp).getTime() - new Date(results[0].timestamp).getTime()) / 1000
         : 3600;
 
-    const dates = results.map((r: any, i: number) => toEpochSeconds(r.timestamp || Date.now(), i));
-    const prices = results.map((r: any) => r.price);
-    const ama3Prices = results.map((r: any) => r.ama3Price ?? null);
-    const baseVarianceSeries = results.map((r: any) => r.weightVariance ?? null);
+    const dates = results.map((r: VolatilityRow, i: number) => toEpochSeconds(r.timestamp || Date.now(), i));
+    const prices: (number | null)[] = results.map((r: VolatilityRow) => r.price);
+    const ama3Prices = results.map((r: VolatilityRow) => r.ama3Price ?? null);
+    const baseVarianceSeries = results.map((r: VolatilityRow) => r.weightVariance ?? null);
     const candleRows = Array.isArray(data.candles) ? data.candles : [];
 
     const realBarCount = results.length;
@@ -650,5 +677,6 @@ function generateHTML(data: any, title = 'ATR Volatility Research') {
 </html>`;
 }
 
-export { generateHTML }
+export { generateHTML };
+export type { VolatilityRow };
 

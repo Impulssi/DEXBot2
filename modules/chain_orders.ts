@@ -116,6 +116,34 @@ import { BroadcastUncertainError } from './dexbot_credential_client.js';
 import { classifyBroadcastFailure } from './broadcast_failure.js';
 import Logger from './order/logger.js';
 import { getErrorMessage } from './utils/errors.js';
+import { normalizeAssetRef } from './utils/asset_symbols.js';
+import type { ChainOrder } from './types.js';
+import type { BtsdexTx } from './bitshares-native/signing_client.js';
+
+/** A broadcastable operation envelope. */
+interface OperationLike {
+    op_name?: string;
+    op_data?: Record<string, unknown>;
+}
+
+interface AccountSubscription {
+    userCallbacks: Set<(updates: unknown[]) => unknown>;
+    bsCallback: (updates: unknown) => Promise<void>;
+}
+
+interface ChainOrdersModuleLike {
+    readOpenOrdersWithMeta?(accountId: string | null, timeoutMs?: number, suppressLog?: boolean): Promise<{ orders: ChainOrder[]; truncated: boolean }>;
+    readOpenOrders(accountId?: string | null, ...args: unknown[]): Promise<unknown>;
+}
+
+/** Parameters accepted by buildUpdateOrderOp / updateOrder. */
+interface UpdateOrderParams {
+    amountToSell?: number | null;
+    minToReceive?: number | null;
+    newPrice?: number | null;
+    orderType?: string;
+    expiration?: string;
+}
 function getNodeManager() { return require('./bitshares_client').getNodeManager(); }
 const { toFiniteNumber } = Format;
 
@@ -128,9 +156,9 @@ const { ORDER_EVENTS } = NATIVE_CLIENT;
 // expire after RECENT_OWN_CANCEL_TTL_MS so the buffer self-cleans.
 const RECENT_OWN_CANCEL_TTL_MS = ORDER_EVENTS.RECENT_OWN_CANCEL_TTL_MS;
 const RECENT_OWN_CANCEL_MAX_ENTRIES = ORDER_EVENTS.RECENT_OWN_CANCEL_MAX_ENTRIES;
-const _recentOwnCancels = new Map();
+const _recentOwnCancels = new Map<string, number>();
 
-function recordOwnCancel(orderId: any) {
+function recordOwnCancel(orderId: string | null | undefined) {
     if (!orderId) return;
     const now = Date.now();
     _recentOwnCancels.set(String(orderId), now);
@@ -142,15 +170,15 @@ function recordOwnCancel(orderId: any) {
     }
 }
 
-function recordOwnCancelOps(operations: any) {
-    for (const op of operations || []) {
+function recordOwnCancelOps(operations: unknown) {
+    for (const op of (operations as OperationLike[]) || []) {
         if (op?.op_name === 'limit_order_cancel' && op.op_data?.order) {
-            recordOwnCancel(op.op_data.order);
+            recordOwnCancel(op.op_data.order as string);
         }
     }
 }
 
-function wasRecentlyOwnCancelled(orderId: any) {
+function wasRecentlyOwnCancelled(orderId: string | null | undefined) {
     if (!orderId) return false;
     const ts = _recentOwnCancels.get(String(orderId));
     if (ts == null) return false;
@@ -244,7 +272,7 @@ const _preferredAccountLock = new AsyncLock();
 const _resolutionLock = new AsyncLock();
 
 // Cache for account resolutions (name -> id and id -> name)
-const _accountResolutionCache = new Map();
+const _accountResolutionCache = new Map<string, string>();
 
 /**
  * Resolve asset precision from ID or symbol via BitShares DB.
@@ -253,7 +281,7 @@ const _accountResolutionCache = new Map();
  * @throws {Error} If precision cannot be resolved.
  * @private
  */
-async function _getAssetPrecision(assetRef: any) {
+async function _getAssetPrecision(assetRef: string) {
     if (!assetRef) throw new Error("Asset reference required for _getAssetPrecision");
     const asset = await resolveAssetByRef(BitShares, assetRef);
     if (asset && typeof asset.precision === 'number') return asset.precision;
@@ -262,8 +290,8 @@ async function _getAssetPrecision(assetRef: any) {
 
 // Preferred account ID and name for operations (can be changed)
 // Access MUST be protected by _preferredAccountLock to prevent race conditions
-let preferredAccountId: any = null;
-let preferredAccountName: any = null;
+let preferredAccountId: string | null = null;
+let preferredAccountName: string | null = null;
 const _multiBotWarnings = new Set<string>();
 
 function _warnOnce(key: string, message: string) {
@@ -280,7 +308,7 @@ function _warnOnce(key: string, message: string) {
  * @param {string} accountId - BitShares account ID (e.g., '1.2.12345')
  * @param {string} accountName - Human-readable account name
  */
-async function setPreferredAccount(accountId: any, accountName: any) {
+async function setPreferredAccount(accountId: string | null, accountName: string | null) {
     await _preferredAccountLock.acquire(async () => {
         if (preferredAccountName && accountName && preferredAccountName !== accountName) {
             _warnOnce(
@@ -310,7 +338,7 @@ async function getPreferredAccount() {
  * @param {string} accountRef - Account ID (e.g., '1.2.12345') or name
  * @returns {Promise<string|null>} Account name or null if not found
  */
-async function resolveAccountName(accountRef: any) {
+async function resolveAccountName(accountRef: string | null | undefined) {
     if (!accountRef) return null;
     if (typeof accountRef !== 'string') return null;
     if (!/^1\.2\./.test(accountRef)) return accountRef;
@@ -319,12 +347,12 @@ async function resolveAccountName(accountRef: any) {
         // Check cache first
         const cacheKey = `id->${accountRef}`;
         if (_accountResolutionCache.has(cacheKey)) {
-            return _accountResolutionCache.get(cacheKey);
+            return _accountResolutionCache.get(cacheKey) ?? null;
         }
 
         try {
             await waitForConnected();
-            const full = await BitShares.db.get_full_accounts([accountRef], false);
+            const full = await BitShares.db.get_full_accounts([accountRef], false) as Array<[unknown, { account?: { name?: string; id?: string } }]>;
             if (full && full[0] && full[0][1] && full[0][1].account && full[0][1].account.name) {
                 const name = full[0][1].account.name;
                 _accountResolutionCache.set(cacheKey, name);
@@ -332,7 +360,7 @@ async function resolveAccountName(accountRef: any) {
                 _accountResolutionCache.set(`name->${name}`, accountRef);
                 return name;
             }
-        } catch (err: any) {
+        } catch (err) {
             // ignore resolution failures
         }
         return null;
@@ -345,7 +373,7 @@ async function resolveAccountName(accountRef: any) {
  * @param {string} accountName - Human-readable account name
  * @returns {Promise<string|null>} Account ID or null if not found
  */
-async function resolveAccountId(accountName: any) {
+async function resolveAccountId(accountName: string | null | undefined) {
     if (!accountName) return null;
     if (typeof accountName !== 'string') return null;
     // If already in ID format, return as-is
@@ -355,12 +383,12 @@ async function resolveAccountId(accountName: any) {
         // Check cache first
         const cacheKey = `name->${accountName}`;
         if (_accountResolutionCache.has(cacheKey)) {
-            return _accountResolutionCache.get(cacheKey);
+            return _accountResolutionCache.get(cacheKey) ?? null;
         }
 
         try {
             await waitForConnected();
-            const full = await BitShares.db.get_full_accounts([accountName], false);
+            const full = await BitShares.db.get_full_accounts([accountName], false) as Array<[unknown, { account?: { name?: string; id?: string } }]>;
             // full[0][0] is the account name (key), full[0][1] contains account data
             if (full && full[0] && full[0][1] && full[0][1].account && full[0][1].account.id) {
                 const id = full[0][1].account.id;
@@ -369,7 +397,7 @@ async function resolveAccountId(accountName: any) {
                 _accountResolutionCache.set(`id->${id}`, accountName);
                 return id;
             }
-        } catch (err: any) {
+        } catch (err) {
             // ignore resolution failures
         }
         return null;
@@ -379,7 +407,7 @@ async function resolveAccountId(accountName: any) {
 // Track active account subscriptions so we avoid duplicate listeners per account
 // Map accountName -> { userCallbacks: Set<Function>, bsCallback: Function }
 // Access MUST be protected by _subscriptionLock to prevent TOCTOU races (fixes Issue #1)
-const accountSubscriptions = new Map();
+const accountSubscriptions = new Map<string, AccountSubscription>();
 
 /**
  * Ensure a per-account BitShares subscription exists so we only subscribe once.
@@ -389,39 +417,39 @@ const accountSubscriptions = new Map();
  * @returns {Promise<Object>} The subscription entry { userCallbacks, bsCallback }.
  * @private
  */
-async function _ensureAccountSubscriber(accountName: any, userCallback: any = null) {
+async function _ensureAccountSubscriber(accountName: string, userCallback: ((updates: unknown[]) => unknown) | null = null) {
     return await _subscriptionLock.acquire(async () => {
         // Check again inside lock to prevent duplicate subscriptions
         if (accountSubscriptions.has(accountName)) {
             return accountSubscriptions.get(accountName);
         }
 
-        const userCallbacks = new Set<(updates: any[]) => any>();
+        const userCallbacks = new Set<(updates: unknown[]) => unknown>();
         if (typeof userCallback === 'function') {
             userCallbacks.add(userCallback);
         }
 
         // BitShares callback that receives raw updates and dispatches to user callbacks
-        const bsCallback = async (updates: any) => {
+        const bsCallback = async (updates: unknown) => {
             // Filter for fill-related operations
-            const fills = updates.filter((update: any) => {
+            const fills = (updates as Array<{ op?: unknown[] }>).filter((update) => {
                 const op = update.op;
                 return op && op[0] === FILL_PROCESSING.OPERATION_TYPE; // operation type for fill_order
             });
 
             if (fills.length > 0) {
                 // Call each registered user callback with the fills array
-                const failures: any[] = [];
+                const failures: unknown[] = [];
                 for (const c of [...userCallbacks]) {
                     try {
                         await Promise.resolve(c(fills));
-                    } catch (e: any) {
+                    } catch (e) {
                         failures.push(e);
                         chainOrdersLogger.error(`chain_orders listener error ${getErrorMessage(e)}`);
                     }
                 }
                 if (failures.length > 0) {
-                    const err: any = new Error(`Fill listener delivery failed for ${failures.length} callback(s): ${failures.map((e: any) => getErrorMessage(e) || String(e)).join('; ')}`);
+                    const err: Error & { causes?: unknown[] } = new Error(`Fill listener delivery failed for ${failures.length} callback(s): ${failures.map((e: unknown) => getErrorMessage(e) || String(e)).join('; ')}`);
                     err.causes = failures;
                     throw err;
                 }
@@ -434,7 +462,7 @@ async function _ensureAccountSubscriber(accountName: any, userCallback: any = nu
                 NATIVE_CLIENT.SUBSCRIPTIONS.SUBSCRIBE_TIMEOUT_MS,
                 { label: 'BitShares.subscribe' }
             );
-        } catch (subscribeErr: any) {
+        } catch (subscribeErr) {
             // Roll back any partial native-subscription state set up before the
             // timeout or hard failure. BitShares.subscribe registers the entry
             // in the native subscriptions map and adds bsCallback to
@@ -444,7 +472,7 @@ async function _ensureAccountSubscriber(accountName: any, userCallback: any = nu
             if (typeof BitShares.unsubscribe === 'function') {
                 try {
                     await BitShares.unsubscribe('account', bsCallback, accountName);
-                } catch (rollbackErr: any) {
+                } catch (rollbackErr) {
                     chainOrdersLogger.warn(
                         `Failed to roll back partial subscription for ${accountName} after error: ` +
                         `${getErrorMessage(rollbackErr)}`
@@ -476,7 +504,7 @@ async function selectAccount() {
     }
 
     console.log('Available accounts:');
-    accountNames.forEach((name: any, index: any) => {
+    accountNames.forEach((name, index) => {
         console.log(`${index + 1}. ${name}`);
     });
 
@@ -489,15 +517,15 @@ async function selectAccount() {
     const selectedAccount = accountNames[choice];
     const privateKey = chainKeys.getPrivateKey(selectedAccount, masterPassword);
 
-    let selectedId = null;
+    let selectedId: string | null = null;
     try {
-        const full = await BitShares.db.get_full_accounts([selectedAccount], false);
+        const full = await BitShares.db.get_full_accounts([selectedAccount], false) as Array<[unknown, { account?: { id?: string } }]>;
         if (full && full[0]) {
             const candidateId = full[0][0];
-            if (candidateId && String(candidateId).startsWith('1.2.')) selectedId = candidateId;
+            if (candidateId && String(candidateId).startsWith('1.2.')) selectedId = String(candidateId);
             else if (full[0][1] && full[0][1].account && full[0][1].account.id) selectedId = full[0][1].account.id;
         }
-    } catch (e: any) {
+    } catch (e) {
         console.error(`Failed to resolve account ID for ${selectedAccount}: ${getErrorMessage(e)}`);
     }
 
@@ -515,7 +543,7 @@ async function selectAccount() {
  * @param {*} value - Value to check
  * @returns {boolean} True if value is a daemon signing token
  */
-function isDaemonSigningToken(value: any) {
+function isDaemonSigningToken(value: unknown) {
     return getKeyStore().isDaemonSigningKey(value);
 }
 
@@ -526,17 +554,17 @@ function isDaemonSigningToken(value: any) {
  * @param {Array<any>} operations - Array of operation objects
  * @returns {Promise<any>} Broadcast result
  */
-async function executeViaDaemonToken(accountName: any, signingToken: any, operations: any, extraOptions: any = {}) {
+async function executeViaDaemonToken(accountName: string | null | undefined, signingToken: unknown, operations: unknown[], extraOptions: Record<string, unknown> = {}) {
     const nodeManager = getNodeManager();
     const healthyNodes = nodeManager?.getHealthyNodes() ?? [];
     const fallbackNodes = healthyNodes.length > 1 ? healthyNodes.slice(1) : undefined;
-    const opts: Record<string, any> = extraOptions;
+    const opts: Record<string, unknown> = extraOptions;
     if (healthyNodes.length > 0 && nodeManager && !opts.fallbackNodes && !opts.nodeUrl) {
         opts.nodeUrl = healthyNodes[0];
         opts.fallbackNodes = fallbackNodes;
         opts.onNodeFailed = (nodeUrl: string) => nodeManager.reportNodeFailure(nodeUrl, DAEMON_CODES.BROADCAST_DEADLINE, 'broadcast');
     }
-    return getKeyStore().executeOperations(accountName, operations, signingToken, opts);
+    return getKeyStore().executeOperations(accountName as string, operations as Parameters<ReturnType<typeof getKeyStore>['executeOperations']>[1], signingToken, opts);
 }
 
 /**
@@ -564,7 +592,7 @@ async function executeViaDaemonToken(accountName: any, signingToken: any, operat
  * @returns {Promise<Object|null>} Raw chain order object, or null if not found
  * @throws {Error} On connection or RPC failure
  */
-async function readSingleOrder(orderId: any, timeoutMs: any = TIMING.CONNECTION_TIMEOUT_MS) {
+async function readSingleOrder(orderId: string, timeoutMs: number = TIMING.CONNECTION_TIMEOUT_MS): Promise<ChainOrder | null> {
     if (!orderId || typeof orderId !== 'string') return null;
     await waitForConnected(timeoutMs);
     if (!BitShares || !BitShares.db || typeof BitShares.db.get_objects !== 'function') {
@@ -591,9 +619,9 @@ async function readSingleOrder(orderId: any, timeoutMs: any = TIMING.CONNECTION_
  * @param {number} [timeoutMs] - Connection timeout in milliseconds
  * @returns {Promise<Map<string, Object|null>>} Map of orderId → raw order or null
  */
-async function batchReadOrders(orderIds: any, timeoutMs: any = TIMING.CONNECTION_TIMEOUT_MS) {
+async function batchReadOrders(orderIds: string[], timeoutMs: number = TIMING.CONNECTION_TIMEOUT_MS) {
     if (!Array.isArray(orderIds) || orderIds.length === 0) return new Map();
-    const uniqueIds = [...new Set(orderIds.filter((id: any) => id && typeof id === 'string'))];
+    const uniqueIds = [...new Set(orderIds.filter((id: unknown) => id && typeof id === 'string'))];
     if (uniqueIds.length === 0) return new Map();
 
     await waitForConnected(timeoutMs);
@@ -602,7 +630,7 @@ async function batchReadOrders(orderIds: any, timeoutMs: any = TIMING.CONNECTION
     }
 
     const results = await BitShares.db.get_objects(uniqueIds);
-    const resultMap = new Map();
+    const resultMap = new Map<string, ChainOrder | null>();
     if (Array.isArray(results)) {
         for (let i = 0; i < uniqueIds.length; i++) {
             const id = uniqueIds[i];
@@ -625,7 +653,7 @@ async function batchReadOrders(orderIds: any, timeoutMs: any = TIMING.CONNECTION
  * @param {boolean} suppress_log - Whether to suppress the log
  * @returns {Promise<Array>} Array of raw order objects from chain
  */
-async function readOpenOrders(accountId: string | null = null, timeoutMs: any = TIMING.CONNECTION_TIMEOUT_MS, suppress_log: any = true) {
+async function readOpenOrders(accountId: string | null = null, timeoutMs: number = TIMING.CONNECTION_TIMEOUT_MS, suppress_log: boolean = true): Promise<ChainOrder[]> {
     const { orders } = await readOpenOrdersWithMeta(accountId, timeoutMs, suppress_log);
     return orders;
 }
@@ -641,11 +669,11 @@ async function readOpenOrders(accountId: string | null = null, timeoutMs: any = 
  * @param {boolean} [suppress_log] - Whether to suppress the log
  * @returns {Promise<{orders: Array, truncated: boolean}>} Raw order objects plus truncation flag
  */
-async function readOpenOrdersWithMetaSafe(chainOrdersModule: any, accountId: string | null = null, timeoutMs: any = TIMING.CONNECTION_TIMEOUT_MS, suppress_log: any = true) {
+async function readOpenOrdersWithMetaSafe(chainOrdersModule: ChainOrdersModuleLike, accountId: string | null = null, timeoutMs: number = TIMING.CONNECTION_TIMEOUT_MS, suppress_log: boolean = true) {
     if (chainOrdersModule && typeof chainOrdersModule.readOpenOrdersWithMeta === 'function') {
         return await chainOrdersModule.readOpenOrdersWithMeta(accountId, timeoutMs, suppress_log);
     }
-    return { orders: await chainOrdersModule.readOpenOrders(accountId, timeoutMs, suppress_log), truncated: false };
+    return { orders: (await chainOrdersModule.readOpenOrders(accountId, timeoutMs, suppress_log)) as ChainOrder[], truncated: false };
 }
 
 /**
@@ -669,7 +697,7 @@ async function readOpenOrdersWithMetaSafe(chainOrdersModule: any, accountId: str
  *   a function receives the kind ('TRUNCATED'|'EMPTY') to build a site-specific message
  * @returns {Promise<Array|null>} Open orders, or null when the read is ambiguous
  */
-async function readOpenOrdersGuarded(chainOrdersModule: any, accountId: string | null = null, options: {
+async function readOpenOrdersGuarded(chainOrdersModule: ChainOrdersModuleLike, accountId: string | null = null, options: {
     log?: (message: string, level?: string) => void;
     label?: string;
     detail?: string;
@@ -710,7 +738,7 @@ async function readOpenOrdersGuarded(chainOrdersModule: any, accountId: string |
  * @param {boolean} suppress_log - Whether to suppress the log
  * @returns {Promise<{orders: Array, truncated: boolean}>} Raw order objects plus truncation flag
  */
-async function readOpenOrdersWithMeta(accountId: string | null = null, timeoutMs: any = TIMING.CONNECTION_TIMEOUT_MS, suppress_log: any = true) {
+async function readOpenOrdersWithMeta(accountId: string | null = null, timeoutMs: number = TIMING.CONNECTION_TIMEOUT_MS, suppress_log: boolean = true): Promise<{ orders: ChainOrder[]; truncated: boolean }> {
     await waitForConnected(timeoutMs);
     try {
         let accId = accountId;
@@ -726,16 +754,16 @@ async function readOpenOrdersWithMeta(accountId: string | null = null, timeoutMs
                 `Pass accountId explicitly in multi-bot mode.`
             );
         }
-        const fullAccount = await BitShares.db.get_full_accounts([accId], false);
+        const fullAccount = await BitShares.db.get_full_accounts([accId], false) as Array<[unknown, { limit_orders?: ChainOrder[]; more_data_available?: { limit_orders?: boolean } }]>;
         const accountObj = fullAccount[0][1];
-        const orders = accountObj.limit_orders || [];
+        const orders = (accountObj.limit_orders || []) as ChainOrder[];
         const truncated = Boolean(accountObj.more_data_available?.limit_orders);
 
         if (!suppress_log) {
             chainOrdersLogger.info(`Found ${orders.length} open orders for account ${accId}${truncated ? ' (TRUNCATED)' : ''}`);
         }
         return { orders, truncated };
-    } catch (error: any) {
+    } catch (error) {
         const msg = getErrorMessage(error);
         // Missing account is a caller-configuration error, not a chain failure;
         // downgrade to warn so intentional negative-path tests don't pollute
@@ -758,14 +786,14 @@ async function readOpenOrdersWithMeta(accountId: string | null = null, timeoutMs
  * @param {Function} [callback] - Function called with array of fill operations (when accountRef is a string)
  * @returns {Function} Unsubscribe function to stop listening
  */
-async function listenForFills(accountRef: any, callback: any) {
-    let userCallback = null;
-    let accountToken = null;
+async function listenForFills(accountRef: unknown, callback?: unknown) {
+    let userCallback: ((updates: unknown[]) => unknown) | null = null;
+    let accountToken: unknown = null;
     if (typeof accountRef === 'function' && arguments.length === 1) {
-        userCallback = accountRef;
+        userCallback = accountRef as (updates: unknown[]) => unknown;
     } else {
         accountToken = accountRef;
-        userCallback = callback;
+        userCallback = callback as (updates: unknown[]) => unknown;
     }
 
     if (typeof userCallback !== 'function') {
@@ -775,7 +803,7 @@ async function listenForFills(accountRef: any, callback: any) {
 
     // Safely access preferredAccount using getPreferredAccount (fixes Issue #2, #5)
     const pref = await getPreferredAccount();
-    let accountName = accountToken || pref.name;
+    let accountName: string | null = (typeof accountToken === 'string' ? accountToken : null) || pref.name;
     if (!accountName && pref.id) {
         accountName = await resolveAccountName(pref.id);
     }
@@ -785,10 +813,10 @@ async function listenForFills(accountRef: any, callback: any) {
         return () => { };
     }
 
-    let accountId = null;
-    if (/^1\.2\./.test(accountToken || '')) {
-        accountId = accountToken;
-    } else if (/^1\.2\./.test(accountName || '')) {
+    let accountId: string | null = null;
+    if (/^1\.2\./.test(String(accountToken || ''))) {
+        accountId = String(accountToken);
+    } else if (/^1\.2\./.test(String(accountName || ''))) {
         accountId = accountName;
     } else if (!accountToken && pref.id) {
         accountId = pref.id;
@@ -798,7 +826,7 @@ async function listenForFills(accountRef: any, callback: any) {
     }
 
     if (accountId) {
-        readOpenOrders(accountId, TIMING.CONNECTION_TIMEOUT_MS, true).catch((error: any) => chainOrdersLogger.error(`Error loading account for listening: ${getErrorMessage(error)}`));
+        readOpenOrders(accountId, TIMING.CONNECTION_TIMEOUT_MS, true).catch((error: unknown) => chainOrdersLogger.error(`Error loading account for listening: ${getErrorMessage(error)}`));
     } else {
         chainOrdersLogger.warn('Unable to derive account id before listening for fills; skipping open-order prefetch.');
     }
@@ -807,6 +835,9 @@ async function listenForFills(accountRef: any, callback: any) {
     // initial catch-up fills are dispatched to the caller (not lost).
     // If the subscription already exists, the callback is added below instead.
     const entry = await _ensureAccountSubscriber(accountName, userCallback);
+    if (!entry) {
+        return () => { };
+    }
 
     // Add callback inside lock to prevent race with concurrent listenForFills calls.
     // If _ensureAccountSubscriber already added it (new subscription), this is a no-op
@@ -828,11 +859,11 @@ async function listenForFills(accountRef: any, callback: any) {
                         if (typeof BitShares.unsubscribe === 'function') {
                             await BitShares.unsubscribe('account', entry.bsCallback, accountName);
                         }
-                    } catch (e: any) { chainOrdersLogger.warn(`Unsubscribe failed: ${getErrorMessage(e)}`); }
+                    } catch (e) { chainOrdersLogger.warn(`Unsubscribe failed: ${getErrorMessage(e)}`); }
                     accountSubscriptions.delete(accountName);
                 }
             });
-        } catch (e: any) {
+        } catch (e) {
             chainOrdersLogger.error(`Error unsubscribing listenForFills ${getErrorMessage(e)}`);
         }
     };
@@ -852,7 +883,7 @@ async function listenForFills(accountRef: any, callback: any) {
  * @returns {Promise<Object|null>} Operation object or null if no change.
  * @throws {Error} If account or order not found, or if amounts exceed limits.
  */
-async function buildUpdateOrderOp(accountName: any, orderId: any, newParams: any, cachedOrder: any = null) {
+async function buildUpdateOrderOp(accountName: string | null | undefined, orderId: string, newParams: UpdateOrderParams, cachedOrder: ChainOrder | Record<string, unknown> | null = null) {
     const accId = await resolveAccountId(accountName);
     if (!accId) throw new Error(`Account ${accountName} not found`);
 
@@ -867,14 +898,14 @@ async function buildUpdateOrderOp(accountName: any, orderId: any, newParams: any
     // change) carry no delta_amount_to_sell, so staleness cannot over-deduct and
     // the cached order remains safe to use.
     const wantsSizeChange = newParams?.amountToSell !== undefined && newParams?.amountToSell !== null;
-    let order: any = null;
+    let order: ChainOrder | null = null;
     if (cachedOrder && !wantsSizeChange) {
-        order = cachedOrder;
+        order = cachedOrder as ChainOrder;
     } else {
         order = await readSingleOrder(orderId);
         if (!order) {
             const orders = await readOpenOrders(accId);
-            order = orders.find((o: any) => o.id === orderId);
+            order = orders.find((o) => o.id === orderId) ?? null;
         }
     }
 
@@ -888,8 +919,8 @@ async function buildUpdateOrderOp(accountName: any, orderId: any, newParams: any
     const currentSellInt = toFiniteNumber(order.for_sale);
     const currentSellFloat = blockchainToFloat(currentSellInt, sellPrecision);
 
-    const priceRatioBase = order.sell_price.base.amount;
-    const priceRatioQuote = order.sell_price.quote.amount;
+    const priceRatioBase = toFiniteNumber(order.sell_price.base.amount);
+    const priceRatioQuote = toFiniteNumber(order.sell_price.quote.amount);
     const currentReceiveInt = Math.round((currentSellInt * priceRatioQuote) / priceRatioBase);
     // Determine target sell amount first.
     // IMPORTANT: When amountToSell is undefined, use currentSellInt directly to avoid
@@ -1054,10 +1085,10 @@ async function buildUpdateOrderOp(accountName: any, orderId: any, newParams: any
  * @returns {Promise<Object>} Broadcast result.
  * @throws {BroadcastUncertainError} When the outcome may have reached the chain.
  */
-async function broadcastTxWithClassification(tx: any, accountName: string, operations: any[] = []): Promise<any> {
+async function broadcastTxWithClassification(tx: BtsdexTx, accountName: string | null | undefined, operations: unknown[] = []): Promise<unknown> {
     try {
         return await tx.broadcast();
-    } catch (err: any) {
+    } catch (err) {
         if (classifyBroadcastFailure(err) === 'uncertain') {
             throw new BroadcastUncertainError(
                 `Direct-key broadcast uncertain for ${accountName}: ${getErrorMessage(err)}`,
@@ -1077,7 +1108,7 @@ async function broadcastTxWithClassification(tx: any, accountName: string, opera
  * @returns {Promise<Object|null>} Success object or null if skipped.
  * @throws {Error} If update fails.
  */
-async function updateOrder(accountName: any, privateKey: any, orderId: any, newParams: any, extraOptions: any = {}) {
+async function updateOrder(accountName: string | null | undefined, privateKey: unknown, orderId: string, newParams: UpdateOrderParams, extraOptions: Record<string, unknown> = {}) {
     try {
         const buildResult = await buildUpdateOrderOp(accountName, orderId, newParams);
         if (!buildResult) {
@@ -1106,7 +1137,7 @@ async function updateOrder(accountName: any, privateKey: any, orderId: any, newP
 
         chainOrdersLogger.info(`Order ${orderId} updated successfully`);
         return { success: true, orderId };
-    } catch (error: any) {
+    } catch (error) {
         chainOrdersLogger.error(`Error updating order: ${getErrorMessage(error)}`);
         throw error;
     }
@@ -1123,7 +1154,7 @@ async function updateOrder(accountName: any, privateKey: any, orderId: any, newP
  * @returns {Promise<Object|null>} The operation object, or null if amounts would round to 0.
  * @throws {Error} If account not found.
  */
-async function buildCreateOrderOp(accountName: any, amountToSell: any, sellAssetId: any, minToReceive: any, receiveAssetId: any, expiration: any) {
+async function buildCreateOrderOp(accountName: string | null | undefined, amountToSell: number, sellAssetId: string, minToReceive: number, receiveAssetId: string, expiration: string | null | undefined) {
     const accId = await resolveAccountId(accountName);
     if (!accId) throw new Error(`Account ${accountName} not found`);
 
@@ -1183,7 +1214,7 @@ async function buildCreateOrderOp(accountName: any, amountToSell: any, sellAsset
  * @returns {Promise<Object>} The transaction result or dry run info.
  * @throws {Error} If account not found or creation fails.
  */
-async function createOrder(accountName: any, privateKey: any, amountToSell: any, sellAssetId: any, minToReceive: any, receiveAssetId: any, expiration: any, dryRun: any = false, extraOptions: any = {}) {
+async function createOrder(accountName: string | null | undefined, privateKey: unknown, amountToSell: number, sellAssetId: string, minToReceive: number, receiveAssetId: string, expiration: string | null | undefined, dryRun: boolean = false, extraOptions: Record<string, unknown> = {}) {
     try {
         const buildResult = await buildCreateOrderOp(accountName, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration);
         if (!buildResult) return { skipped: true };
@@ -1208,7 +1239,7 @@ async function createOrder(accountName: any, privateKey: any, amountToSell: any,
         const result = await broadcastTxWithClassification(tx, accountName, [op]);
         chainOrdersLogger.info(`Limit order created successfully for account ${accountName}`);
         return result;
-    } catch (error: any) {
+    } catch (error) {
         chainOrdersLogger.error(`Error creating limit order: ${getErrorMessage(error)}`);
         throw error;
     }
@@ -1221,7 +1252,7 @@ async function createOrder(accountName: any, privateKey: any, amountToSell: any,
  * @returns {Promise<Object>} The operation object.
  * @throws {Error} If account not found.
  */
-async function buildCancelOrderOp(accountName: any, orderId: any) {
+async function buildCancelOrderOp(accountName: string | null | undefined, orderId: string) {
     const accId = await resolveAccountId(accountName);
     if (!accId) throw new Error(`Account ${accountName} not found`);
 
@@ -1247,8 +1278,8 @@ async function buildCancelOrderOp(accountName: any, orderId: any) {
  * @returns {Promise<Object>} Success object with order ID and verification metadata.
  * @throws {Error} If cancellation fails.
  */
-async function cancelOrder(accountName: any, privateKey: any, orderId: any, extraOptions: any = {}) {
-    let accountId = null;
+async function cancelOrder(accountName: string | null | undefined, privateKey: unknown, orderId: string, extraOptions: Record<string, unknown> = {}) {
+    let accountId: string | null = null;
     try {
         const op = await buildCancelOrderOp(accountName, orderId);
         accountId = op.op_data.fee_paying_account;
@@ -1270,7 +1301,7 @@ async function cancelOrder(accountName: any, privateKey: any, orderId: any, extr
         recordOwnCancel(orderId);
         chainOrdersLogger.info(`Order ${orderId} cancelled successfully`);
         return { success: true, orderId, verified: true };
-    } catch (error: any) {
+    } catch (error) {
         if (accountId) {
             try {
                 const { orders: openOrders, truncated } = await readOpenOrdersWithMeta(accountId, TIMING.CONNECTION_TIMEOUT_MS, true);
@@ -1283,7 +1314,7 @@ async function cancelOrder(accountName: any, privateKey: any, orderId: any, extr
                 // the limit_orders window; fresh orders sort last and are the
                 // first entries omitted) may omit the order without it being
                 // cancelled, so absence is not authoritative there either.
-                const stillPresent = Array.isArray(openOrders) && openOrders.some((order: any) => String(order?.id ?? '') === String(orderId));
+                const stillPresent = Array.isArray(openOrders) && openOrders.some((order) => String(order?.id ?? '') === String(orderId));
                 let confirmedAbsent = !stillPresent && !truncated && Array.isArray(openOrders) && openOrders.length > 0;
                 if (!confirmedAbsent && !truncated && !stillPresent && Array.isArray(openOrders) && openOrders.length === 0) {
                     // An EMPTY account snapshot is ambiguous by itself (the node
@@ -1296,7 +1327,7 @@ async function cancelOrder(accountName: any, privateKey: any, orderId: any, extr
                     try {
                         const probe = await readSingleOrder(String(orderId), TIMING.CONNECTION_TIMEOUT_MS);
                         if (probe === null) confirmedAbsent = true;
-                    } catch (_: any) {
+                    } catch (_) {
                         // Probe failed — the snapshot remains ambiguous; fall
                         // through to the original error.
                     }
@@ -1312,7 +1343,7 @@ async function cancelOrder(accountName: any, privateKey: any, orderId: any, extr
                     chainOrdersLogger.info(`Order ${orderId} cancellation confirmed after broadcast failure`);
                     return { success: true, orderId, verified: true, verifiedAfterFailure: true };
                 }
-            } catch (_: any) {
+            } catch (_) {
                 // Fall through to the original error.
             }
         }
@@ -1336,18 +1367,20 @@ async function cancelOrder(accountName: any, privateKey: any, orderId: any, extr
  * @param {Array} operations - Ops to verify (limit_order_update only).
  * @returns {Promise<Error|null>}
  */
-async function findOverReducingUpdateOpError(operations: any): Promise<Error | null> {
+async function findOverReducingUpdateOpError(operations: unknown): Promise<Error | null> {
     // Aggregate negative deltas per order: the chain applies a batch's update
     // ops sequentially, so a second reduction of the same order is validated
     // against the already-decremented for_sale, not the pre-batch value.
     // Checking each op independently against the original for_sale would miss
     // a cumulative over-reduction that the chain still rejects.
-    const orderDeltas = new Map();
-    for (const op of operations || []) {
+    const orderDeltas = new Map<string, number>();
+    for (const op of (operations as OperationLike[]) || []) {
         if (op?.op_name === 'limit_order_update' && op?.op_data?.delta_amount_to_sell) {
-            const delta = toFiniteNumber(op.op_data.delta_amount_to_sell.amount);
+            const deltaData = op.op_data.delta_amount_to_sell as { amount?: unknown };
+            const delta = toFiniteNumber(deltaData.amount);
             if (delta < 0) {
-                orderDeltas.set(op.op_data.order, (orderDeltas.get(op.op_data.order) || 0) + delta);
+                const orderKey = String(op.op_data.order);
+                orderDeltas.set(orderKey, (orderDeltas.get(orderKey) || 0) + delta);
             }
         }
     }
@@ -1383,7 +1416,7 @@ async function findOverReducingUpdateOpError(operations: any): Promise<Error | n
  * @param {Object} [extraOptions] - Optional parameters (fallbackNodes, etc.)
  * @returns {Promise<Object>} Transaction result
  */
-async function executeBatch(accountName: any, privateKey: any, operations: any, extraOptions: any = {}) {
+async function executeBatch(accountName: string | null | undefined, privateKey: unknown, operations: OperationLike[], extraOptions: Record<string, unknown> = {}) {
     if (!operations || operations.length === 0) return { success: true, operations: 0 };
 
     // Pre-broadcast size-drift guard: a limit_order_update's negative delta is
@@ -1396,10 +1429,10 @@ async function executeBatch(accountName: any, privateKey: any, operations: any, 
     // caller's repair path (recoverBatchSizeDrift) re-reads the chain and
     // resizes the affected slots. Best-effort: a failed pre-read proceeds with
     // the broadcast — the chain's own rejection then routes to the same repair.
-    let driftError: any = null;
+    let driftError: Error | null = null;
     try {
         driftError = await findOverReducingUpdateOpError(operations);
-    } catch (preReadErr: any) {
+    } catch (preReadErr) {
         chainOrdersLogger.debug(
             `executeBatch: pre-broadcast size-drift read failed (proceeding with broadcast): ${getErrorMessage(preReadErr)}`
         );
@@ -1418,11 +1451,13 @@ async function executeBatch(accountName: any, privateKey: any, operations: any, 
         const tx = acc.newTx();
 
         for (const op of operations) {
-            if (typeof tx[op.op_name] === 'function') {
-                tx[op.op_name](op.op_data);
+            const opName = op.op_name ?? '';
+            const txMethod = tx[opName];
+            if (typeof txMethod === 'function') {
+                (txMethod as (data: unknown) => unknown)(op.op_data);
             } else {
-                chainOrdersLogger.warn(`Transaction builder missing method for ${op.op_name}`);
-                throw new Error(`Transaction builder does not support ${op.op_name}`);
+                chainOrdersLogger.warn(`Transaction builder missing method for ${opName}`);
+                throw new Error(`Transaction builder does not support ${opName}`);
             }
         }
 
@@ -1436,9 +1471,10 @@ async function executeBatch(accountName: any, privateKey: any, operations: any, 
         recordOwnCancelOps(operations);
 
         // Normalize broadcast response shape across node variants.
+        const reply = result as { operation_results?: unknown[]; trx?: { operation_results?: unknown[] } } | null | undefined;
         const operationResults =
-            (result && Array.isArray(result.operation_results) && result.operation_results.length > 0 && result.operation_results) ||
-            (result && result.trx && Array.isArray(result.trx.operation_results) && result.trx.operation_results.length > 0 && result.trx.operation_results) ||
+            (reply && !Array.isArray(reply) && Array.isArray(reply.operation_results) && reply.operation_results.length > 0 && reply.operation_results) ||
+            (reply && !Array.isArray(reply) && reply.trx && Array.isArray(reply.trx.operation_results) && reply.trx.operation_results.length > 0 && reply.trx.operation_results) ||
             (Array.isArray(result) && result[0] && result[0].trx && Array.isArray(result[0].trx.operation_results) && result[0].trx.operation_results.length > 0 && result[0].trx.operation_results) ||
             [];
 
@@ -1447,7 +1483,7 @@ async function executeBatch(accountName: any, privateKey: any, operations: any, 
             raw: result,
             operation_results: operationResults
         };
-    } catch (error: any) {
+    } catch (error) {
         const msg = getErrorMessage(error);
         // Simulated / intentional negative-path failures (contain "simulated" or
         // the credential-daemon uncertain marker BROADCAST_DEADLINE) are expected
@@ -1474,7 +1510,7 @@ async function executeBatch(accountName: any, privateKey: any, operations: any, 
  *        deal collateral and subtract it from free balances for each asset.
  * @returns {Object} mapping assetRef -> { assetId, symbol, precision, freeRaw, lockedRaw, free, locked, total }
  */
-async function getOnChainAssetBalances(accountRef: any, assets: any, options: Record<string, any> = {}) {
+async function getOnChainAssetBalances(accountRef: unknown, assets: unknown, options: Record<string, unknown> = {}) {
     if (!accountRef) return {};
     try {
         await waitForConnected();
@@ -1527,8 +1563,8 @@ async function getOnChainAssetBalances(accountRef: any, assets: any, options: Re
         }
 
         // If assets omitted, build list from balances and limit_orders
-        let assetList = assets;
-        if (!assetList || !Array.isArray(assetList) || assetList.length === 0) {
+        let assetList: unknown[] = Array.isArray(assets) ? assets : [];
+        if (assetList.length === 0) {
             assetList = [];
             for (const b of balances) assetList.push(String(b.asset_type || b.asset_id || b.asset));
             for (const o of limitOrders) {
@@ -1539,17 +1575,17 @@ async function getOnChainAssetBalances(accountRef: any, assets: any, options: Re
             assetList = Array.from(new Set(assetList));
         }
 
-        const out: Record<string, any> = {};
+        const out: Record<string, { assetId: string; symbol: string; precision: number; freeRaw: number; lockedRaw: number; free: number; locked: number; total: number }> = {};
         for (const a of assetList) {
             // resolve asset id and precision
-            let aid = a;
+            let aid: string = String(a);
             try {
                 if (!/^1\.3\./.test(String(a))) {
                     // symbol -> asset
-                    const res = await BitShares.db.lookup_asset_symbols([String(a)]).catch(() => null);
+                    const res = await BitShares.db.lookup_asset_symbols([normalizeAssetRef(a)]).catch(() => null) as Array<{ id?: string }> | null;
                     if (res && res[0] && res[0].id) aid = res[0].id;
                 }
-            } catch (e: any) {
+            } catch (e) {
                 chainOrdersLogger.warn(`lookup_asset_symbols failed for ${a}: ${getErrorMessage(e)}`);
             }
 
@@ -1561,7 +1597,7 @@ async function getOnChainAssetBalances(accountRef: any, assets: any, options: Re
                     precision = typeof am[0].precision === 'number' ? am[0].precision : null;
                     symbol = am[0].symbol || symbol;
                 }
-            } catch (e: any) { 
+            } catch (e) { 
                 chainOrdersLogger.warn(`Failed to fetch asset data for ${aid}: ${getErrorMessage(e)}`);
             }
 
@@ -1578,7 +1614,7 @@ async function getOnChainAssetBalances(accountRef: any, assets: any, options: Re
         }
 
         return out;
-    } catch (err: any) {
+    } catch (err) {
         chainOrdersLogger.error(`getOnChainAssetBalances failed: ${getErrorMessage(err)}`);
         return {};
     }
@@ -1594,7 +1630,7 @@ async function getOnChainAssetBalances(accountRef: any, assets: any, options: Re
  * @param {string} receiveAssetId - Asset ID to receive
  * @returns {Object} The operation object with op_name and op_data
  */
-function buildLiquidityPoolExchangeOp(accountId: any, poolId: any, sellAmountInt: any, sellAssetId: any, minReceiveInt: any, receiveAssetId: any) {
+function buildLiquidityPoolExchangeOp(accountId: string | null | undefined, poolId: string, sellAmountInt: number, sellAssetId: string, minReceiveInt: number, receiveAssetId: string) {
     return {
         op_name: 'liquidity_pool_exchange',
         op_data: {

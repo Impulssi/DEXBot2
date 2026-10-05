@@ -5,6 +5,30 @@ export function getErrorMessage(err: unknown): string {
 }
 
 /**
+ * Read a field from an unknown thrown value without resorting to `any`.
+ * Returns `undefined` when the value is not an object or the field is absent.
+ */
+export function getErrorField<T = unknown>(err: unknown, key: string): T | undefined {
+  if (typeof err === 'object' && err !== null && key in err) {
+    return (err as Record<string, unknown>)[key] as T | undefined;
+  }
+  return undefined;
+}
+
+/** String error code (`err.code`) if present, else `undefined`. */
+export function getErrorCode(err: unknown): string | undefined {
+  const code = getErrorField(err, 'code');
+  return code === undefined || code === null ? undefined : String(code);
+}
+
+/** Error name (`err.name`) if present, else `undefined`. */
+export function getErrorName(err: unknown): string | undefined {
+  if (err instanceof Error) return err.name;
+  const name = getErrorField(err, 'name');
+  return name === undefined || name === null ? undefined : String(name);
+}
+
+/**
  * Resolve an optional millisecond override (a test seam on a production code
  * path) to a concrete delay.
  *
@@ -55,7 +79,7 @@ export function sleepMs(ms: number): Promise<void> {
  * kibana_client.ts / kibana_candles.ts / kibana_feed_source.ts.
  */
 export function isTransientNetworkError(err: unknown): boolean {
-  const msg = String((err as any)?.message || err || '');
+  const msg = String(getErrorMessage(err) || '');
   return (
     msg.includes('aborted') ||
     msg.includes('connection reset') ||

@@ -5,6 +5,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { generateHTML } from './tradingview_uplot_chart_generator.js';
+import { resolveGridResetSimConfig, toGridSimPayload } from './grid_reset_config.js';
+import { resolveAmaConfig } from '../bot_key_utils.js';
 import { MARKET_ADAPTER } from '../../modules/constants.js';
 import { loadCandleFile } from '../math_utils.js';
 import { getErrorMessage } from '../../modules/utils/errors.js';
@@ -21,10 +23,16 @@ const DEFAULT_CHART_FILE = path.join(DEFAULT_CHART_DIR, 'tradingview_chart.html'
 const DEFAULT_AMA = MARKET_ADAPTER.AMAS.AMA3;
 const AMA_KEYWORDS = new Set(['ama', 'ama1', 'ama2', 'ama3', 'ama4']);
 
+interface GridSlotToggle {
+    price?: unknown;
+    state?: unknown;
+    type?: unknown;
+}
+
 function parseArgs() {
     const args = process.argv.slice(2);
     const config: {
-        source: { type: string; config: { filePath: any; botKey?: any } };
+        source: { type: string; config: { filePath?: string; botKey?: string } };
         chartFile: string;
         title: string | null;
         priceScale: string;
@@ -33,21 +41,22 @@ function parseArgs() {
         amaFastPeriod: number | undefined;
         amaSlowPeriod: number | undefined;
         smaEnabled: boolean;
-        amaEnabled: boolean;
         vwapEnabled: boolean;
         vwapBars: number;
-        rangeEnabled: boolean;
-        rangeScaleEnabled: boolean;
         rangeSpan: number | undefined;
         ordersFile: string | null;
         noOrders: boolean;
+        gridResetEnabled: boolean;
+        gridDeltaPct: number | undefined;
+        gridSlopeDeltaPct: number | undefined;
+        gridWarmupBars: number | undefined;
         noUpdateMarker: boolean;
         updateMarkerTsSec: number | null;
         updateMarkerNewBars: number | null;
         quiet: boolean;
         listBots: boolean;
     } = {
-        source: { type: 'market_adapter', config: { botKey: '', filePath: undefined as any } },
+        source: { type: 'market_adapter', config: { botKey: '', filePath: undefined } },
         chartFile: DEFAULT_CHART_FILE,
         title: null,
         priceScale: 'log',
@@ -56,14 +65,15 @@ function parseArgs() {
         amaFastPeriod: undefined,
         amaSlowPeriod: undefined,
         smaEnabled: false,
-        amaEnabled: true,
         vwapEnabled: false,
         vwapBars: 500,
-        rangeEnabled: false,
-        rangeScaleEnabled: false,
         rangeSpan: undefined,
         ordersFile: null,
         noOrders: false,
+        gridResetEnabled: true,
+        gridDeltaPct: undefined,
+        gridSlopeDeltaPct: undefined,
+        gridWarmupBars: undefined,
         noUpdateMarker: false,
         updateMarkerTsSec: null,
         updateMarkerNewBars: null,
@@ -87,15 +97,28 @@ function parseArgs() {
         else if (arg === '--ama-fast-period') config.amaFastPeriod = Math.max(0.1, parseFloat(args[++i]) || DEFAULT_AMA.fastPeriod);
         else if (arg === '--ama-slow-period') config.amaSlowPeriod = Math.max(0.1, parseFloat(args[++i]) || DEFAULT_AMA.slowPeriod);
         else if (arg === '--no-sma') config.smaEnabled = false;
-        else if (arg === '--no-ama') config.amaEnabled = false;
         else if (arg === '--no-vwap') config.vwapEnabled = false;
         else if (arg === '--vwap-bars') config.vwapBars = Math.max(5, parseInt(args[++i], 10) || 500);
-        else if (arg === '--range') config.rangeEnabled = true;
-        else if (arg === '--no-range') config.rangeEnabled = false;
-        else if (arg === '--range-scale') config.rangeScaleEnabled = true;
         else if (arg === '--range-span') config.rangeSpan = parseFloat(args[++i]);
         else if (arg === '--orders-file') config.ordersFile = String(args[++i] || '');
         else if (arg === '--no-orders') config.noOrders = true;
+        else if (arg === '--grid-reset') config.gridResetEnabled = true;
+        else if (arg === '--no-grid-reset') config.gridResetEnabled = false;
+        else if (arg === '--grid-delta-pct') {
+            const v = parseFloat(args[++i]);
+            if (Number.isFinite(v) && v > 0) config.gridDeltaPct = Math.max(0.01, v);
+            else console.warn('[TradingView] --grid-delta-pct requires a positive number; ignoring.');
+        }
+        else if (arg === '--grid-slope-delta-pct') {
+            const v = parseFloat(args[++i]);
+            if (Number.isFinite(v) && v > 0) config.gridSlopeDeltaPct = Math.max(0.0001, v);
+            else console.warn('[TradingView] --grid-slope-delta-pct requires a positive number; ignoring.');
+        }
+        else if (arg === '--grid-warmup') {
+            const v = parseFloat(args[++i]);
+            if (Number.isFinite(v) && v >= 0) config.gridWarmupBars = Math.max(0, Math.round(v));
+            else console.warn('[TradingView] --grid-warmup requires a non-negative bar count; ignoring.');
+        }
         else if (arg === '--no-update-marker') config.noUpdateMarker = true;
         else if (arg === '--update-marker-ts') config.updateMarkerTsSec = Math.max(0, parseInt(args[++i], 10) || 0) || null;
         else if (arg === '--update-marker-bars') config.updateMarkerNewBars = Math.max(0, parseInt(args[++i], 10) || 0) || null;
@@ -106,7 +129,7 @@ function parseArgs() {
     return config;
 }
 
-function loadJsonMeta(filePath: any) {
+function loadJsonMeta(filePath: string | null | undefined) {
     if (!filePath || !fs.existsSync(filePath)) return { meta: null, candles: null };
     return loadCandleFile(filePath);
 }
@@ -125,7 +148,7 @@ function resolveOrdersFile(botKey: string | null | undefined, explicit: string |
     }
     if (!botKey) return null;
     try {
-        const ordersDir = (PATHS as any).ORDERS_DIR || path.join(path.dirname(PATHS.PROFILES.BOTS_JSON), 'orders');
+        const ordersDir = (PATHS as { ORDERS_DIR?: string }).ORDERS_DIR || path.join(path.dirname(PATHS.PROFILES.BOTS_JSON), 'orders');
         const direct = path.join(ordersDir, `${botKey}.json`);
         if (fs.existsSync(direct)) return direct;
     } catch { /* silent when absent */ }
@@ -149,19 +172,17 @@ function loadOrdersData(filePath: string | null): { buys: number[]; sells: numbe
         let low: number | null = null;
         let high: number | null = null;
         for (const s of grid) {
-            const price = Number((s as any)?.price);
+            const price = Number((s as GridSlotToggle)?.price);
             if (!Number.isFinite(price) || price <= 0) continue;
-            const st = (s as any)?.state;
+            const st = (s as GridSlotToggle)?.state;
             if (st !== 'active' && st !== 'partial' && st !== 'virtual') continue;
-            if ((s as any)?.type === 'buy') {
+            if ((s as GridSlotToggle)?.type === 'buy') {
                 if (low == null || price < low) low = price;
-                if (st === 'virtual') continue;
-                buys.push(price);
+                if (st !== 'virtual') buys.push(price);
                 // Fork deep shelf (dip-insurance buys): canonical predicate
                 // shared with the runtime so the chart MKT panel can show
                 // its own DEEP row.
                 if (isDeepShelfId((s as any)?.id)) deepBuys.push(price);
-            } else if ((s as any)?.type === 'sell') {
                 if (high == null || price > high) high = price;
                 if (st !== 'virtual') sells.push(price);
             }
@@ -173,13 +194,13 @@ function loadOrdersData(filePath: string | null): { buys: number[]; sells: numbe
     } catch { return { buys: [], sells: [], deepBuys: [], low: null, high: null }; }
 }
 
-function inferTitle(meta: any, fallback: string) {
+function inferTitle(meta: { pool?: unknown; intervalSeconds?: unknown; assetA?: { symbol?: unknown; id?: unknown }; assetB?: { symbol?: unknown; id?: unknown } } | null | undefined, fallback: string) {
     const pool = meta?.pool ? `Pool ${String(meta.pool).replace(/^1\.19\./, '')}` : null;
     const a = meta?.assetA?.symbol || meta?.assetA?.id || null;
     const b = meta?.assetB?.symbol || meta?.assetB?.id || null;
     const pair = a && b ? `${a}/${b}` : fallback;
     const label = pool || pair;
-    const interval = Number(meta?.intervalSeconds) > 0 ? toIntervalLabel(meta.intervalSeconds) : '1h';
+    const interval = Number(meta?.intervalSeconds) > 0 ? toIntervalLabel(Number(meta?.intervalSeconds)) : '1h';
     return `${label} · ${interval} · TradingView`;
 }
 
@@ -213,20 +234,23 @@ async function main() {
         } : null);
         const title = config.title || inferTitle(jsonMeta, path.basename(filePath || 'tradingview'));
         const hasAmaGridPrice = AMA_KEYWORDS.has(String(botMeta?.gridPrice || '').trim().toLowerCase());
-        const amaEnabled = hasAmaGridPrice ? config.amaEnabled : false;
+        // AMA is auto-enabled for gridPrice "ama"/"ama1-4" bots; there is no
+        // CLI switch any more (the in-chart AMA toggle owns that choice).
+        const amaEnabled = hasAmaGridPrice;
 
         // Bot grid bounds for the range highlight: mirrors the runtime grid
         // (center = AMA, min "Nx" = center/N, max "Nx" = center*N) with the
         // live asymmetric tilt. Null when no bot key (width% fallback in-page).
+        const asym = botMeta?.asymmetricBounds as { maxAsymmetryFactor?: unknown; minScaleSlots?: unknown } | null | undefined;
         const grid = botMeta?.minPrice != null && botMeta?.maxPrice != null ? {
             minPrice: botMeta.minPrice,
             maxPrice: botMeta.maxPrice,
             incrementPercent: Number(botMeta.incrementPercent) > 0 ? Number(botMeta.incrementPercent) : null,
-            maxAsymmetryFactor: Number.isFinite(Number(botMeta?.asymmetricBounds?.maxAsymmetryFactor))
-                ? Number(botMeta.asymmetricBounds.maxAsymmetryFactor)
+            maxAsymmetryFactor: Number.isFinite(Number(asym?.maxAsymmetryFactor))
+                ? Number(asym?.maxAsymmetryFactor)
                 : null,
-            minScaleSlots: Number.isFinite(Number(botMeta?.asymmetricBounds?.minScaleSlots))
-                ? Number(botMeta.asymmetricBounds.minScaleSlots)
+            minScaleSlots: Number.isFinite(Number(asym?.minScaleSlots))
+                ? Number(asym?.minScaleSlots)
                 : null,
         } : null;
         // Order overlay (canonical profiles/orders/<botKey>.json; silent when absent)
@@ -237,6 +261,30 @@ async function main() {
         const orderDeepBuys = ordersData.deepBuys;
         const gridBounds = { low: ordersData.low, high: ordersData.high };
         if (!config.quiet && ordersFile) console.log(`[TradingView] Order overlay: ${orderBuys.length} buys + ${orderSells.length} sells + ${orderDeepBuys.length} deep from ${ordersFile}`);
+        // Grid-reset simulation (docs/GRID_RECALCULATION.md §3/§4): resolve the
+        // AMA-price and AMA-slope delta thresholds exactly like the running
+        // adapter does (constants → general.settings → market_adapter_settings
+        // globals/pair/bot), so the chart replays the real recentering points.
+        const simOverrides = {
+            priceDeltaThresholdPercent: config.gridDeltaPct,
+            slopeDeltaThresholdPercent: config.gridSlopeDeltaPct,
+            warmupBars: config.gridWarmupBars,
+        };
+        const gridSim = botKey
+            ? toGridSimPayload(resolveGridResetSimConfig({
+                botKey,
+                bot: botMeta,
+                ama: resolveAmaConfig(botKey),
+                overrides: simOverrides,
+            }))
+            : null;
+        if (!config.quiet && gridSim) {
+            console.log(
+                `[TradingView] Grid resets: AMA Δ ${gridSim.priceDeltaThresholdPercent}% (${gridSim.priceSource})`
+                + ` | AMA-Slope Δ ${gridSim.slopeDeltaThresholdPercent}%/bar (${gridSim.slopeSource})`
+                + ` | slope trigger ${gridSim.slopeEnabled ? 'on' : 'off'}`,
+            );
+        }
         const html = generateHTML({
             candles,
             meta: jsonMeta || {
@@ -245,11 +293,9 @@ async function main() {
             },
             smaPeriod: config.smaPeriod,
             amaDefaults: {
-                // Intentionally the 3-param AMA (er/fast/slow) only: the in-page
-                // recomputation has no erSmoothPeriod input by decision — `dexbot tv`
-                // stays a plain candle chart. The dw research chart and the live
-                // adapter are the mirrors of the full bot AMA config (incl.
-                // ama.erSmoothPeriod); the knob is inert by default (global 0).
+                // Canonical 3-param AMA (er/fast/slow). The in-page AMA
+                // recomputation mirrors the live adapter exactly; `dexbot tv`
+                // stays a plain candle chart.
                 erPeriod: config.amaErPeriod ?? amaConfig.erPeriod,
                 fastPeriod: config.amaFastPeriod ?? amaConfig.fastPeriod,
                 slowPeriod: config.amaSlowPeriod ?? amaConfig.slowPeriod,
@@ -258,10 +304,10 @@ async function main() {
             amaEnabled,
             vwapEnabled: config.vwapEnabled,
             vwapBars: config.vwapBars,
-            rangeEnabled: config.rangeEnabled,
-            rangeScaleEnabled: config.rangeScaleEnabled,
             rangeSpan: config.rangeSpan,
             grid,
+            gridSim,
+            gridSimEnabled: config.gridResetEnabled,
             priceScale: config.priceScale === 'linear' ? 'linear' : 'log',
             defaultTimeframe: '1h',
             marketAdapter: MARKET_ADAPTER,
@@ -270,15 +316,15 @@ async function main() {
             // Update marker ("updated from here" line): explicit CLI flags win,
             // otherwise fall back to stamped data-file meta when present.
             updateMarkerTsSec: config.noUpdateMarker ? null : (config.updateMarkerTsSec
-                ?? (Number((jsonMeta as any)?.prevUpdateLastCandleSec) > 0 ? Number((jsonMeta as any).prevUpdateLastCandleSec) : null)),
+                ?? (Number((jsonMeta as { prevUpdateLastCandleSec?: unknown } | null | undefined)?.prevUpdateLastCandleSec) > 0 ? Number((jsonMeta as { prevUpdateLastCandleSec?: unknown }).prevUpdateLastCandleSec) : null)),
             updateMarkerNewBars: config.noUpdateMarker ? null : (config.updateMarkerNewBars
-                ?? (Number((jsonMeta as any)?.prevUpdateNewBars) || null)),
+                ?? (Number((jsonMeta as { prevUpdateNewBars?: unknown } | null | undefined)?.prevUpdateNewBars) || null)),
         }, title);
 
         writeChartFile(config.chartFile, html);
 
         if (!config.quiet) console.log(`\n[TradingView] ✓ Chart saved. Open chart: (${toFileUrl(config.chartFile)})`);
-    } catch (err: any) {
+    } catch (err) {
         console.error(`[TradingView] Error: ${getErrorMessage(err)}`);
         process.exit(1);
     }

@@ -8,10 +8,47 @@ import { isSameBotName } from './utils/sanitize_key.js';
 import { isPositiveNumber, isPositiveNumberOrPercent, toDecimal } from './order/utils/math.js';
 import { resolveMinCollateralIncreaseThreshold } from './cr_planner.js';
 import { getErrorMessage } from './utils/errors.js';
+import { canonicalizeBotAssetSymbols } from './utils/asset_symbols.js';
+import type { UnknownRecord } from './types.js';
+import { isUnknownRecord } from './types.js';
 const storage = getStorage();
 const { writeJSON } = storage;
 
-function loadSettingsFile(filePath: string, { silent = false, exitOnError = true }: { silent?: boolean; exitOnError?: boolean } = {}): { config: any; filePath: string } {
+/** A single `debtPolicy.lending[]` entry (loosely typed: validated at runtime). */
+export interface BotLendingEntry extends UnknownRecord {
+    asset?: unknown;
+    collateralAsset?: unknown;
+    type?: unknown;
+}
+
+/** `debtPolicy` block of a bot entry. */
+export interface BotDebtPolicy extends UnknownRecord {
+    lending?: BotLendingEntry[];
+    maxCollateralAmount?: unknown;
+}
+
+/** A loosely-typed bot entry as read from bots.json / user input. */
+export interface BotEntry extends UnknownRecord {
+    name?: string;
+    active?: boolean;
+    creditOnly?: boolean;
+    assetA?: string;
+    assetB?: string;
+    botKey?: string;
+    botIndex?: number;
+    preferredAccount?: string;
+    activeOrders?: UnknownRecord;
+    reserveOrders?: number | UnknownRecord;
+    botFunds?: { buy?: unknown; sell?: unknown };
+    debtPolicy?: BotDebtPolicy;
+}
+
+/** The top-level bots.json document. */
+export interface BotSettingsFile extends UnknownRecord {
+    bots?: BotEntry[];
+}
+
+function loadSettingsFile(filePath: string, { silent = false, exitOnError = true }: { silent?: boolean; exitOnError?: boolean } = {}): { config: BotSettingsFile; filePath: string } {
     if (!storage.exists(filePath)) {
         if (!silent) {
             console.error(`${filePath} not found. Run: dexbot bot`);
@@ -22,7 +59,7 @@ function loadSettingsFile(filePath: string, { silent = false, exitOnError = true
     try {
         const { config } = readBotsFileSync(filePath, parseJsonWithComments);
         return { config, filePath };
-    } catch (err: any) {
+    } catch (err) {
         console.error('Failed to parse bot settings from', filePath);
         console.error('Error:', getErrorMessage(err));
         console.error('Please fix the JSON syntax and try again.');
@@ -33,46 +70,57 @@ function loadSettingsFile(filePath: string, { silent = false, exitOnError = true
     }
 }
 
-function saveSettingsFile(config: any, filePath: string): void {
+function saveSettingsFile(config: UnknownRecord, filePath: string): void {
     try {
         writeJSON(filePath, config);
-    } catch (err: any) {
+    } catch (err) {
         console.error('Failed to save bot settings to', filePath, '-', getErrorMessage(err));
         throw err;
     }
 }
 
-function resolveRawBotEntries(settings: any): any[] {
-    if (!settings || typeof settings !== 'object') return [];
-    if (Array.isArray(settings.bots)) return settings.bots;
-    if (Object.keys(settings).length > 0) return [settings];
+function resolveRawBotEntries(settings: unknown): BotEntry[] {
+    if (!isUnknownRecord(settings)) return [];
+    if (Array.isArray(settings.bots)) return settings.bots as BotEntry[];
+    if (Object.keys(settings).length > 0) return [settings as BotEntry];
     return [];
 }
 
-function normalizeBotEntry(entry: any, index: number = 0): any {
+function normalizeBotEntry(entry: BotEntry, index: number = 0): BotEntry {
     // active default + raw passthrough live in modules/bot_defaults.ts
     // (shared with the claw copy — one semantics for both).
     const normalized = seedBotEntry(entry);
-    return { ...normalized, botIndex: index, botKey: createBotKey(normalized, index) };
+    // Asset symbols are canonical UPPERCASE on BitShares. A hand-edited
+    // lowercase "assetA": "tokena" is accepted by the chain without error but
+    // breaks every strict symbol comparison downstream (e.g. the core-asset
+    // side check that reads `assetA === 'CORE'`,
+    // getBtsSide, fee/pool cache keys), so canonicalize at this single read
+    // funnel — which key names hold a symbol is defined once, in
+    // modules/utils/asset_symbols.canonicalizeBotAssetSymbols, shared with
+    // analysis/bot_key_utils.loadBotMeta. botKey is unaffected: createBotKey
+    // runs the pair through sanitizeKey, which is case-insensitive.
+    const out: BotEntry = canonicalizeBotAssetSymbols({ ...normalized, botIndex: index });
+    out.botKey = createBotKey(out, index);
+    return out;
 }
 
-function normalizeBotEntries(rawEntries: any[]): any[] {
-    return rawEntries.map((entry: any, index: number) => normalizeBotEntry(entry, index));
+function normalizeBotEntries(rawEntries: unknown[]): BotEntry[] {
+    return rawEntries.map((entry, index) => normalizeBotEntry(entry as BotEntry, index));
 }
 
-function selectBotEntry(settings: any, botName: string): any {
+function selectBotEntry(settings: unknown, botName: string): BotEntry | null {
     const entries = resolveRawBotEntries(settings);
     if (!botName) return null;
-    return entries.find((b: any) => b && isSameBotName(b.name, botName)) || null;
+    return entries.find((b) => b && isSameBotName(b.name, botName)) || null;
 }
 
-function selectActiveBotEntries(settings: any): any[] {
-    return resolveRawBotEntries(settings).filter((entry: any) => entry && entry.active !== false);
+function selectActiveBotEntries(settings: unknown): BotEntry[] {
+    return resolveRawBotEntries(settings).filter((entry) => entry && entry.active !== false);
 }
 
 
 
-function validateBotEntry(b: any, i: number, src: string): string | null {
+function validateBotEntry(b: BotEntry, i: number, src: string): string | null {
     const problems: string[] = [];
     const isCreditOnly = b.creditOnly === true;
     const required = isCreditOnly ? [] : ['assetA', 'assetB', 'activeOrders', 'botFunds'];
@@ -122,10 +170,18 @@ function validateBotEntry(b: any, i: number, src: string): string | null {
         }
     }
     if ('reserveOrders' in b && b.reserveOrders !== undefined && b.reserveOrders !== null) {
-        if (typeof b.reserveOrders !== 'object' || Array.isArray(b.reserveOrders)) problems.push("'reserveOrders' must be an object {buy, sell}");
-        else {
-            for (const side of ['buy', 'sell']) {
-                const v = (b.reserveOrders as any)[side];
+        if (typeof b.reserveOrders === 'number') {
+            // Legacy numeric form migrates at read time (resolveReserveCount):
+            // { buy: n, sell: 0 }. Accept it here so a hand-edited bots.json
+            // that bypassed the editor is not rejected for a form the runtime
+            // still understands.
+            if (!Number.isInteger(b.reserveOrders) || b.reserveOrders < 0) problems.push("'reserveOrders' numeric form must be a non-negative integer");
+        } else if (typeof b.reserveOrders !== 'object' || Array.isArray(b.reserveOrders)) {
+            problems.push("'reserveOrders' must be an object {buy, sell}");
+        } else {
+            for (const side of ['buy', 'sell'] as const) {
+                const reserveOrders = b.reserveOrders as UnknownRecord;
+                const v = reserveOrders[side];
                 if (v !== undefined && (!Number.isInteger(Number(v)) || Number(v) < 0)) problems.push(`'reserveOrders.${side}' must be a non-negative integer`);
             }
         }
@@ -148,7 +204,7 @@ function validateBotEntry(b: any, i: number, src: string): string | null {
             if (!Array.isArray(dp.lending) || dp.lending.length === 0) {
                 problems.push("debtPolicy.lending must be a non-empty array");
             } else {
-                dp.lending.forEach((item: any, idx: number) => {
+                dp.lending.forEach((item: BotLendingEntry, idx: number) => {
                     if (typeof item !== 'object' || item === null) {
                         problems.push(`debtPolicy.lending[${idx}] must be an object`);
                         return;
@@ -159,7 +215,7 @@ function validateBotEntry(b: any, i: number, src: string): string | null {
                     if (!item.asset || typeof item.asset !== 'string') {
                         problems.push(`debtPolicy.lending[${idx}].asset must be a non-empty string`);
                     }
-                    if (!['mpa', 'creditOffer'].includes(item.type)) {
+                    if (!['mpa', 'creditOffer'].includes(String(item.type))) {
                         problems.push(`debtPolicy.lending[${idx}].type must be 'mpa' or 'creditOffer'`);
                     }
 
@@ -170,7 +226,7 @@ function validateBotEntry(b: any, i: number, src: string): string | null {
 
                     if ('outputWeight' in item) {
                         const weightVal = item.outputWeight;
-                        if (!Number.isFinite(weightVal) || weightVal < 0) {
+                        if (typeof weightVal !== 'number' || !Number.isFinite(weightVal) || weightVal < 0) {
                             problems.push(`debtPolicy.lending[${idx}].outputWeight must be a non-negative number`);
                         }
                     }
@@ -286,10 +342,10 @@ function validateBotEntry(b: any, i: number, src: string): string | null {
     return null;
 }
 
-function collectValidationIssues(entries: any[], sourceName: string): { errors: string[]; warnings: string[] } {
+function collectValidationIssues(entries: BotEntry[], sourceName: string): { errors: string[]; warnings: string[] } {
     const errors: string[] = [];
     const warnings: string[] = [];
-    entries.forEach((entry: any, index: number) => {
+    entries.forEach((entry, index) => {
         const issue = validateBotEntry(entry, index, sourceName);
         if (issue) {
             if (entry.active) errors.push(issue);
@@ -369,11 +425,12 @@ function collectValidationIssues(entries: any[], sourceName: string): { errors: 
     // Cross-bot validation: check if botFunds percentages sum > 100% per account
     const accountFunds: Record<string, { buy: number; sell: number; botNames: string[] }> = {};
     for (const entry of entries) {
-        if (!entry.active || !entry.preferredAccount || !entry.botFunds) continue;
-        if (!accountFunds[entry.preferredAccount]) {
-            accountFunds[entry.preferredAccount] = { buy: 0, sell: 0, botNames: [] };
+        const account = entry.preferredAccount;
+        if (!entry.active || !account || !entry.botFunds) continue;
+        if (!accountFunds[account]) {
+            accountFunds[account] = { buy: 0, sell: 0, botNames: [] };
         }
-        const acc = accountFunds[entry.preferredAccount];
+        const acc = accountFunds[account];
         acc.buy += toDecimal(entry.botFunds.buy);
         acc.sell += toDecimal(entry.botFunds.sell);
         acc.botNames.push(entry.name || entry.botKey || `bot-${entries.indexOf(entry)}`);
@@ -400,10 +457,10 @@ function collectValidationIssues(entries: any[], sourceName: string): { errors: 
     return { errors, warnings };
 }
 
-function findDuplicateBotKeyIssues(entries: any[]): string[] {
+function findDuplicateBotKeyIssues(entries: BotEntry[]): string[] {
     const seenKeys = new Map<string, number>();
     const duplicates: string[] = [];
-    entries.forEach((entry: any, index: number) => {
+    entries.forEach((entry, index) => {
         if (!entry.name) return;
         const key = createBotKey(entry, index);
         const existing = seenKeys.get(key);
@@ -419,7 +476,7 @@ function findDuplicateBotKeyIssues(entries: any[]): string[] {
     return duplicates;
 }
 
-function assertNoDuplicateBotKeys(entries: any[], sourceName: string): void {
+function assertNoDuplicateBotKeys(entries: BotEntry[], sourceName: string): void {
     const duplicates = findDuplicateBotKeyIssues(entries);
     if (duplicates.length > 0) {
         throw new Error(`Duplicate bot name(s) in ${sourceName}:\n${duplicates.map((e) => `  - ${e}`).join('\n')}`);

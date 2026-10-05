@@ -287,6 +287,8 @@ The only things worth tuning later:
   `{ "sell": 1.0, "buy": 1.0 }` for your first bot.
 - `minPrice` / `maxPrice` — grid bounds. Once AMA is active, tighten them
   around the market's maximum expected volatility instead of a wide range.
+  Use `dexbot tv <bot>` to see the grid range and AMA recentering against
+  real candles.
 
 See the "Recommended Bot Setup" section of the
 [README](../README.md#recommended-bot-setup).
@@ -492,9 +494,16 @@ overrides the location entirely.
 | `dexbot-adapter.log` / `dexbot-adapter-error.log` | Market adapter managed by the runtime |
 | `market_adapter.log` | Standalone adapter mode |
 | `dexbot-update.log` / `dexbot-update-error.log` | Auto-updater |
+| `daemon-audit.jsonl` | Credential daemon audit trail (`sign_denied` and friends) |
 
 See [LOGGING.md](LOGGING.md) for log levels, rotation, and JSON output.
-`dexbot clear` empties the logs directory wherever it resolves.
+`dexbot clear` empties the logs directory wherever it resolves: every `*.log`, rotated
+`*.log.N` and `*.jsonl*` — so the credential-daemon audit trail
+(`daemon-audit.jsonl` and its rotated siblings) goes too; the preview names it.
+Stop the runtime first (`dexbot stop`): a running daemon keeps writing to the
+unlinked files, so the space is only freed on restart, and the scripts warn you
+when they detect a live runtime. Siblings: `clear-orders`, `clear-market-adapter`,
+`clear-all`.
 
 ### "I forgot the master password"
 

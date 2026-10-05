@@ -3,7 +3,7 @@
 import { DEFAULT_CONFIG, MARKET_ADAPTER } from '../../modules/constants.js';
 import { getAmaWarmupBars } from '../../market_adapter/core/strategies/ama.js';
 import { bilinearInterpolate } from '../../market_adapter/core/strategies/regime_interp.js';
-import { computeDynamicWeightSeries, computeAverageAmaSlopePct, computeAmaSlopeClipThreshold, echoLatchSeries, roundToN } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
+import { computeDynamicWeightSeries, computeHuberWindowSlopePct, computeAmaSlopeClipThreshold, echoLatchSeries, roundToN } from '../../market_adapter/core/strategies/dynamic_weight_series.js';
 import {
     buildKalmanVelocitySeries,
     computeAbsolutePercentileThreshold,
@@ -17,7 +17,7 @@ import { Y_AXIS_SIZE, makeCursorConfig, bindHoverStateFn, wireChartEvents, zoomR
 // Browser-embedded shared functions — the interactive chart runs the exact same
 // pure logic as the live market adapter service instead of a hand-copied copy.
 const EMBEDDED_SHARED_FUNCS = embedFunctionSources([
-    computeAverageAmaSlopePct,
+    computeHuberWindowSlopePct,
     computeAmaSlopeClipThreshold,
     bilinearInterpolate,
     echoLatchSeries,
@@ -29,18 +29,78 @@ const EMBEDDED_SHARED_FUNCS = embedFunctionSources([
     roundToN,
 ]);
 
-function generateHTML(data: any, title = 'Dynamic Weight Research') {
+interface DynamicWeightRow {
+    timestamp: string | number;
+    price: number;
+    hurst?: number | null;
+    pe?: number | null;
+    hurstSegment?: number | null;
+    peSegment?: number | null;
+    amaSlopePct?: number | null;
+    velocityRawPct?: number | null;
+    velocityPct?: number | null;
+    displacementRawPct?: number | null;
+    displacementPct?: number | null;
+    isReady?: boolean;
+    signal?: string | null;
+    ama3Price?: number | null;
+}
+
+interface DynWeightCfg {
+    alpha?: number;
+    gain?: number;
+    dispWeight?: number;
+    neutralZonePct?: number;
+    amaNeutralZonePct?: number;
+    lookbackBars?: number;
+    amaLookbackBars?: number;
+    amaMaxSlopePct?: number;
+    kalmanMaxSlopePct?: number;
+    clipPercentile?: number;
+    minOutputThreshold?: number;
+    outputClamp?: number;
+    dispScaleMinPct?: number;
+    regimeSensitivity?: number;
+    absoluteThreshold?: number;
+}
+
+interface DynamicWeightChartInput {
+    allResults?: DynamicWeightRow[];
+    marketAdapter?: DynWeightCfg;
+    amaWeightConfig?: DynWeightCfg;
+    amaConfig?: { erPeriod?: number; fastPeriod?: number; slowPeriod?: number };
+    alpha?: number;
+    gain?: number;
+    dispWeight?: number;
+    clipPct?: number;
+    minOutputThreshold?: number;
+    outputClamp?: number;
+    absoluteThreshold?: number;
+    lookbackBars?: number;
+    neutralZonePct?: number;
+    amaMaxSlopePct?: number;
+    kalmanMaxSlopePct?: number;
+    dispScaleMinPct?: number;
+    regimeSensitivity?: number;
+    signalConfirmBars?: number;
+    kalmanSmoothPct?: number;
+    kalmanDispScaleMult?: number;
+    kalmanDispThresholdMult?: number;
+    kalmanSmoothSpanPct?: number;
+    [key: string]: unknown;
+}
+
+function generateHTML(data: DynamicWeightChartInput, title = 'Dynamic Weight Research') {
     const results = data.allResults || [];
     if (results.length === 0) throw new Error('No analysis results in input');
 
     // Slider ranges — single source of truth for HTML attrs, tooltips,
     // payload transport, and client paste-clamp bounds.
-    const LB_MIN = 1,         LB_MAX = 32;
+    const LB_MIN = 4,         LB_MAX = 32;
     const GAIN_MIN = 0.5,     GAIN_MAX = 2.0;
     const AMA_MS_MIN = 0.06,  AMA_MS_MAX = 0.12;
-    const KAL_MS_MIN = 0.5,   KAL_MS_MAX = 1.5;
+    const KAL_MS_MIN = 0.75,  KAL_MS_MAX = 1.5;
     const CLIP_PCT_MAX = 20;
-    const EMA_MIN = 0,          EMA_MAX = 32;
     const TH_MIN = 0,         TH_MAX = 0.5;
     const KF_MIN = 0,         KF_MAX = 200;
     const KFD_MIN = 1.0,      KFD_MAX = 3.0;
@@ -54,7 +114,6 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         dispWeight:             [0, 1],
         neutralZonePct:         [0, 1],
         lookbackBars:           [LB_MIN, LB_MAX],
-        amaEmaSpan:             [EMA_MIN, EMA_MAX],
         amaMaxSlopePct:         [AMA_MS_MIN, AMA_MS_MAX],
         kalmanMaxSlopePct:      [KAL_MS_MIN, KAL_MS_MAX],
         clipPct:                [0, CLIP_PCT_MAX],
@@ -119,26 +178,22 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
     const defaultKalmanDispThresholdMult = data.kalmanDispThresholdMult ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_DISP_THRESHOLD_MULT_DEFAULT;
     const defaultKalmanSmoothSpanPct = data.kalmanSmoothSpanPct ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_KALMAN_SMOOTH_SPAN_PCT_DEFAULT;
     const defaultSignalConfirmBars = data.signalConfirmBars ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_SIGNAL_CONFIRM_BARS_DEFAULT;
-    // Research-only `ema` knob: EMA span in bars over the AMA input before the
-    // slope is taken. 0 (default) = off, keeps the raw AMA input.
-    const defaultAmaEmaSpanRaw = data.amaEmaSpan ?? ma.amaEmaSpan ?? 0;
-    const defaultAmaEmaSpan = Math.round(Math.min(EMA_MAX, Math.max(EMA_MIN, Number.isFinite(defaultAmaEmaSpanRaw) ? defaultAmaEmaSpanRaw : EMA_MIN)));
     const regimeInitSlider = Math.round(defaultRegimeSensitivity * 100);
 
     const interval = results.length > 1 ?
         (new Date(results[1].timestamp).getTime() - new Date(results[0].timestamp).getTime()) / 1000 : 3600;
 
-    const dates              = results.map((r: any, idx: number) => toEpochSeconds(r.timestamp || Date.now(), idx));
-    const prices             = results.map((r: any) => r.price);
-    const hurstArr           = results.map((r: any) => r.hurst ?? null);
-    const peArr             = results.map((r: any) => r.pe ?? null);
-    const hurstSegments     = results.map((r: any) => r.hurstSegment ?? null);
-    const peSegments        = results.map((r: any) => r.peSegment ?? null);
-    const amaSlopePct       = results.map((r: any) => r.amaSlopePct ?? null);
-    const kalmanVelocityPctRaw = results.map((r: any) => r.velocityRawPct ?? r.velocityPct ?? null);
-    const kalmanDisplacementPct = results.map((r: any) => r.displacementRawPct ?? r.displacementPct ?? null);
+    const dates              = results.map((r: DynamicWeightRow, idx: number) => toEpochSeconds(r.timestamp || Date.now(), idx));
+    const prices: (number | null)[] = results.map((r: DynamicWeightRow) => r.price);
+    const hurstArr           = results.map((r: DynamicWeightRow) => r.hurst ?? null);
+    const peArr             = results.map((r: DynamicWeightRow) => r.pe ?? null);
+    const hurstSegments     = results.map((r: DynamicWeightRow) => r.hurstSegment ?? null);
+    const peSegments        = results.map((r: DynamicWeightRow) => r.peSegment ?? null);
+    const amaSlopePct       = results.map((r: DynamicWeightRow) => r.amaSlopePct ?? null);
+    const kalmanVelocityPctRaw = results.map((r: DynamicWeightRow) => r.velocityRawPct ?? r.velocityPct ?? null);
+    const kalmanDisplacementPct = results.map((r: DynamicWeightRow) => r.displacementRawPct ?? r.displacementPct ?? null);
     const kalmanVelocityPct = buildKalmanVelocitySeries(
-        results.map((r: any) => ({ velocityPct: r.velocityRawPct ?? r.velocityPct ?? null, displacementPct: r.displacementRawPct ?? r.displacementPct ?? null })),
+        results.map((r: DynamicWeightRow) => ({ velocityPct: r.velocityRawPct ?? r.velocityPct ?? null, displacementPct: r.displacementRawPct ?? r.displacementPct ?? null })),
         {
             kalmanSmoothPct: defaultKalmanSmoothPct,
             kalmanDispScaleMult: defaultKalmanDispScaleMult,
@@ -146,16 +201,15 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             kalmanSmoothSpanPct: defaultKalmanSmoothSpanPct,
         }
     );
-    const kalmanIsReady      = results.map((r: any) => r.isReady ?? false);
-    const signals            = results.map((r: any) => r.signal);
+    const kalmanIsReady: (boolean | null)[] = results.map((r: DynamicWeightRow) => r.isReady ?? false);
+    const signals            = results.map((r: DynamicWeightRow) => r.signal);
     const amaLabel           = data.amaKey || 'AMA3';
-    const ama3Prices         = results.map((r: any) => r.ama3Price ?? null);
+    const ama3Prices         = results.map((r: DynamicWeightRow) => r.ama3Price ?? null);
     const defaultAmaKey = MARKET_ADAPTER.DEFAULT_AMA_KEY as keyof typeof MARKET_ADAPTER.AMAS;
     const amaErPeriod        = data.amaConfig?.erPeriod ?? MARKET_ADAPTER.AMAS[defaultAmaKey].erPeriod;
     const amaSlowPeriod      = data.amaConfig?.slowPeriod ?? MARKET_ADAPTER.AMAS[defaultAmaKey].slowPeriod;
     const amaFastPeriod      = data.amaConfig?.fastPeriod ?? MARKET_ADAPTER.AMAS[defaultAmaKey].fastPeriod;
-    const amaErSmoothPeriod  = data.amaConfig?.erSmoothPeriod ?? 0;
-    const amaWarmupBars      = getAmaWarmupBars(amaErPeriod, amaSlowPeriod, lookbackBars, amaFastPeriod, amaErSmoothPeriod);
+    const amaWarmupBars      = getAmaWarmupBars(amaErPeriod, amaSlowPeriod, lookbackBars, amaFastPeriod);
     const amaSlopeReadyBars  = Math.ceil(amaErPeriod) + lookbackBars;
     const amaSeedSmaLine     = new Array(results.length).fill(null);
     const amaSeedWindowEnd   = Math.min(results.length - 1, Math.ceil(amaErPeriod));
@@ -164,7 +218,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         let seedCount = 0;
         for (let i = 0; i <= amaSeedWindowEnd; i++) {
             if (Number.isFinite(prices[i])) {
-                seedSum += prices[i];
+                seedSum += prices[i] as number;
                 seedCount++;
             }
         }
@@ -196,20 +250,10 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
 
     const realBarCount = results.length;
 
-    function maxAbsPct(arr: any[]) {
-        let m = 0;
-        for (let i = 0; i < realBarCount; i++) {
-            if (arr[i] != null && Math.abs(arr[i]) > m) m = Math.abs(arr[i]);
-        }
-        return m || 4;
-    }
-    const amaPctMax = Math.ceil(maxAbsPct(amaSlopePct) * 1.15) || 5;
-    const kalPctMax = Math.ceil(Math.max(maxAbsPct(kalmanVelocityPct), maxAbsPct(kalmanDisplacementPct)) * 1.15) || 5;
-
-    function buildPercentiles(arr: any[], startIndex = 0) {
+    function buildPercentiles(arr: Array<number | null>, startIndex = 0) {
         const safeStartIndex = Math.max(0, Math.min(realBarCount, Math.ceil(startIndex)));
         const sorted: number[] = [];
-        for (let i = safeStartIndex; i < realBarCount; i++) { if (arr[i] != null) sorted.push(Math.abs(arr[i])); }
+        for (let i = safeStartIndex; i < realBarCount; i++) { const v = arr[i]; if (v != null) sorted.push(Math.abs(v)); }
         sorted.sort((a, b) => a - b);
         // Empty pool → Infinity: the live percentile lookup treats an empty
         // history as "no clipping" (percentileFromSorted returns Infinity);
@@ -224,7 +268,6 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
     }
     const amaPercentiles = buildPercentiles(amaSlopePct, amaSlopeReadyBars);
     const kalPercentiles = buildPercentiles(kalmanVelocityPct);
-    const maxDispPct = Math.ceil(maxAbsPct(kalmanDisplacementPct) * 1.15) || 5;
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -241,7 +284,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         .legend-item { gap: 3px; }
         .legend-val { font-family: monospace; display: inline-block; text-align: right; min-width: 45px; }
         #l-price, #l-ama3 { min-width: 62px; }
-        #l-ama-slope, #l-ama-slope-raw, #l-kal-vel, #l-kal-disp { min-width: 54px; }
+        #l-ama-slope, #l-kal-vel, #l-kal-disp { min-width: 54px; }
         #l-signal, #l-signal-latched { min-width: 70px; text-align: left; }
         #l-combined-raw, #l-combined-echo { min-width: 42px; }
         #l-mult { min-width: 38px; }
@@ -286,9 +329,6 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         .ctrl.lb label { min-width: 20px; }
         .ctrl.lb input[type="range"] { accent-color: #39d0d8; width: 80px; }
         .ctrl.lb .val { color: #39d0d8; }
-        .ctrl.ema label { min-width: 20px; }
-        .ctrl.ema input[type="range"] { accent-color: #f0a000; width: 80px; }
-        .ctrl.ema .val { color: #f0a000; }
         .ctrl.off input[type="range"] { accent-color: #3fb950; }
         .ctrl.off .val { color: #3fb950; }
         .ctrl.nz input[type="range"] { accent-color: #8b949e; }
@@ -334,7 +374,6 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             <div class="section-label">AMA SLOPE INPUT</div>
             <div class="legend">
                 <div class="legend-item"><div class="dot" style="background:#f0a000;"></div>Slope‰: <span id="l-ama-slope" class="legend-val" style="font-weight:bold;">-</span></div>
-                <div class="legend-item"><div class="dot" style="background:#8b949e;"></div>Raw‰: <span id="l-ama-slope-raw" class="legend-val">-</span></div>
             </div>
             <div id="ama-chart"></div>
         </div>
@@ -365,7 +404,6 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
                 <div class="group-sep"></div>
                 <div class="ctrl nz"><label for="nz-slider">nz%</label><input type="range" id="nz-slider" min="0" max="100" value="${Math.round(defaultNeutralZone * 100)}" title="Neutral Zone %"><span class="val" id="nz-value">${defaultNeutralZone.toFixed(2)}</span></div>
                 <div class="ctrl lb"><label for="lb-slider">lb</label><input type="range" id="lb-slider" min="0" max="1000" value="${lbInitSlider}" title="Lookback Bars (${LB_MIN}-${LB_MAX})"><span class="val" id="lb-value">${lookbackBars}</span></div>
-                <div class="ctrl ema"><label for="ema-slider">ema</label><input type="range" id="ema-slider" min="${EMA_MIN}" max="${EMA_MAX}" value="${defaultAmaEmaSpan}" title="AMA input EMA span in bars (${EMA_MIN} = off; noise std ~ 1/sqrt(span), lag ~ (span-1)/2 bars; span ~ lb is the balance point)"><span class="val" id="ema-value">${defaultAmaEmaSpan}</span></div>
                 <div class="ctrl ms-ama"><label for="ama-ms-slider">amaS%</label><input type="range" id="ama-ms-slider" min="0" max="1000" value="${amaMsInitSlider}" title="AMA Max Slope % per bar (${AMA_MS_MIN}-${AMA_MS_MAX})"><span class="val" id="ama-ms-value">${defaultAmaMaxSlopePct.toFixed(4)}</span></div>
                 <div class="ctrl clip"><label for="clip-slider">clip%</label><input type="range" id="clip-slider" min="0" max="${CLIP_PCT_MAX}" value="${Math.min(defaultClipPct, CLIP_PCT_MAX)}" title="Outlier Clip %"><span class="val" id="clip-value">${Math.min(defaultClipPct, CLIP_PCT_MAX)}%</span></div>
 
@@ -399,10 +437,14 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         </div>
     </div>
 
-    <script id="payload" type="application/json">${serializeJsonForScript({ dates, prices, hurstArr, peArr, hurstSegments, peSegments, ama3Prices, amaSeedSmaLine, amaSlopePct, kalmanVelocityPctRaw, kalmanVelocityPct, kalmanDisplacementPct, kalmanIsReady, signals, alpha: defaultAlpha, gain: defaultGain, kalmanSmoothPct: defaultKalmanSmoothPct, kalmanDispScaleMult: defaultKalmanDispScaleMult, kalmanDispThresholdMult: defaultKalmanDispThresholdMult, kalmanSmoothSpanPct: defaultKalmanSmoothSpanPct, signalConfirmBars: defaultSignalConfirmBars, neutralZonePct: defaultNeutralZone, dispWeight: defaultDispWeight, amaMaxSlopePct: defaultAmaMaxSlopePct, kalmanMaxSlopePct: defaultKalmanMaxSlopePct, maxDispPct, clipPct: defaultClipPct, minOutputThreshold: defaultMinOutputThreshold, outputClamp: defaultOutputClamp, regimeSensitivity: defaultRegimeSensitivity, absoluteThreshold: defaultAbsoluteThreshold, lookbackBars, amaErPeriod, amaSlowPeriod, amaWarmupBars, amaSlopeReadyBars, realBarCount, amaPctMax, kalPctMax, amaPercentiles, kalPercentiles, amaSlopeLogMin: AMA_MS_LOG_MIN_N, amaSlopeLogMax: AMA_MS_LOG_MAX_N, kalSlopeLogMin: KAL_MS_LOG_MIN_N, kalSlopeLogMax: KAL_MS_LOG_MAX_N, lbLogMin: LB_LOG_MIN_N, lbLogMax: LB_LOG_MAX_N, amaEmaSpan: defaultAmaEmaSpan, gainLogMin: GAIN_LOG_MIN_N, gainLogMax: GAIN_LOG_MAX_N, sliderRanges: SLIDER_RANGES, dispScaleMinPct: defaultDispScaleMinPct, weightMin: MARKET_ADAPTER.DYNAMIC_WEIGHT_MIN_WEIGHT, weightMax: MARKET_ADAPTER.DYNAMIC_WEIGHT_MAX_WEIGHT, marketAdapter: ma, amaWeightConfig, hNodes: [0.5 + MARKET_ADAPTER.HURST_ZONE_BAND, 0.5, 0.5 - MARKET_ADAPTER.HURST_ZONE_BAND], pNodes: MARKET_ADAPTER.PE_NODES, regimeTable: MARKET_ADAPTER.REGIME_TABLE })}</script>
+    <script id="payload" type="application/json">${serializeJsonForScript({ dates, prices, hurstArr, peArr, hurstSegments, peSegments, ama3Prices, amaSeedSmaLine, kalmanVelocityPctRaw, kalmanVelocityPct, kalmanDisplacementPct, kalmanIsReady, signals, alpha: defaultAlpha, gain: defaultGain, kalmanSmoothPct: defaultKalmanSmoothPct, kalmanDispScaleMult: defaultKalmanDispScaleMult, kalmanDispThresholdMult: defaultKalmanDispThresholdMult, kalmanSmoothSpanPct: defaultKalmanSmoothSpanPct, signalConfirmBars: defaultSignalConfirmBars, neutralZonePct: defaultNeutralZone, dispWeight: defaultDispWeight, amaMaxSlopePct: defaultAmaMaxSlopePct, kalmanMaxSlopePct: defaultKalmanMaxSlopePct, clipPct: defaultClipPct, minOutputThreshold: defaultMinOutputThreshold, outputClamp: defaultOutputClamp, regimeSensitivity: defaultRegimeSensitivity, absoluteThreshold: defaultAbsoluteThreshold, lookbackBars, amaErPeriod, amaSlowPeriod, amaWarmupBars, amaSlopeReadyBars, realBarCount, amaPercentiles, kalPercentiles, amaSlopeLogMin: AMA_MS_LOG_MIN_N, amaSlopeLogMax: AMA_MS_LOG_MAX_N, kalSlopeLogMin: KAL_MS_LOG_MIN_N, kalSlopeLogMax: KAL_MS_LOG_MAX_N, lbLogMin: LB_LOG_MIN_N, lbLogMax: LB_LOG_MAX_N, gainLogMin: GAIN_LOG_MIN_N, gainLogMax: GAIN_LOG_MAX_N, sliderRanges: SLIDER_RANGES, dispScaleMinPct: defaultDispScaleMinPct, weightMin: MARKET_ADAPTER.DYNAMIC_WEIGHT_MIN_WEIGHT, weightMax: MARKET_ADAPTER.DYNAMIC_WEIGHT_MAX_WEIGHT, marketAdapter: ma, amaWeightConfig, hNodes: [0.5 + MARKET_ADAPTER.HURST_ZONE_BAND, 0.5, 0.5 - MARKET_ADAPTER.HURST_ZONE_BAND], pNodes: MARKET_ADAPTER.PE_NODES, regimeTable: MARKET_ADAPTER.REGIME_TABLE })}</script>
 
     <script>
         const data = JSON.parse(document.getElementById('payload').textContent);
+
+        // Canonical Huber-slope parameters, injected from MARKET_ADAPTER so the
+        // embedded estimator runs the same values as the live adapter.
+        const AMA_SLOPE_HUBER = ${serializeJsonForScript(MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER)};
 
         ${EMBEDDED_SHARED_FUNCS}
 
@@ -441,8 +483,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         const kalMsSliderToVal = (pos) => Math.exp(KAL_MS_LOG_MIN + (pos / 1000) * (KAL_MS_LOG_MAX - KAL_MS_LOG_MIN));
 
         let currentLookbackBars = data.lookbackBars ?? ${JSON.stringify(lookbackBars)};
-        let currentAmaEmaSpan = Math.max(SR.amaEmaSpan[0], Math.min(SR.amaEmaSpan[1], Math.round(data.amaEmaSpan ?? 0)));
-        let currentAmaSource = data.ama3Prices;
+        const currentAmaSource = data.ama3Prices;
         const LB_LOG_MIN = data.lbLogMin;
         const LB_LOG_MAX = data.lbLogMax;
         const lbSliderToVal = (pos) => Math.round(Math.exp(LB_LOG_MIN + (pos / 1000) * (LB_LOG_MAX - LB_LOG_MIN)));
@@ -454,11 +495,10 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         const gainValToSlider = (val) => Math.round((Math.log(Math.max(Math.exp(GAIN_LOG_MIN), val)) - GAIN_LOG_MIN) / (GAIN_LOG_MAX - GAIN_LOG_MIN) * 1000);
 
         let currentClipPct = data.clipPct ?? ${JSON.stringify(defaultClipPct)};
-        // Only the clipPct===0 branch value is ever read (recalcWeights reads
-        // currentAmaClipThreshold solely when clipping is disabled; otherwise
-        // it uses the canonical dynamicClipThreshold from computeAmaSlopeClipThreshold).
-        const maxAmaSlope = data.amaPercentiles[data.amaPercentiles.length - 1];
-        let currentAmaClipThreshold = currentClipPct === 0 ? maxAmaSlope : Infinity;
+        // The AMA clip threshold always comes from dynamicClipThreshold, which
+        // recalcInputs() recomputes via the canonical
+        // computeAmaSlopeClipThreshold (Infinity when clipping is disabled,
+        // matching the live adapter). No separate clipPct==0 branch is needed.
         let currentKalClipThreshold = currentClipPct === 0 ? Infinity : data.kalPercentiles[100 - currentClipPct];
 
         // Regime table and axis nodes from payload — sourced from MARKET_ADAPTER in constants.ts
@@ -472,7 +512,10 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
          */
         function getRegimeMultiplier(H, PE) {
             if (H == null || PE == null) return 1.0;
-            return bilinearInterpolate(H, PE, REGIME_TABLE, { hNodes: H_NODES, pNodes: P_NODES });
+            // NOTE: peNodes is the canonical option name read by
+            // bilinearInterpolate; a pNodes key silently falls back to the
+            // inline defaults.
+            return bilinearInterpolate(H, PE, REGIME_TABLE, { hNodes: H_NODES, peNodes: P_NODES });
         }
 
         let currentRegimeSensitivity = data.regimeSensitivity ?? ma.regimeSensitivity;
@@ -481,7 +524,6 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
         const currentLatchedSignals = new Array(data.dates.length).fill(null);
         const dynamicAmaOff      = new Array(data.dates.length).fill(null);
         const dynamicAmaSlopePct = new Array(data.dates.length).fill(null);
-        const dynamicAmaSlopePctRaw = new Array(data.dates.length).fill(null);
         const dynamicKalOff      = new Array(data.dates.length).fill(null);
         const combinedOff     = new Array(data.dates.length).fill(null);
         const combinedSell    = new Array(data.dates.length).fill(null);
@@ -596,40 +638,9 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             }
         }
 
-        /**
-         * Research-only ema knob — EMA low-pass over the AMA input before the
-         * slope is taken (EMA-then-difference == difference-then-EMA, both are
-         * linear filters). span bars, alpha = 2/(span+1): noise std shrinks ~
-         * 1/sqrt(span), lag grows ~ (span-1)/2 bars. Seeded with an SMA over the
-         * first 'span' finite values (mirrors the AMA seed SMA) so the transient
-         * is gone before any slope bar can go ready. Nulls (warmup / trailing
-         * padding) stay null so no fabricated values reach the clip-percentile
-         * pool or the offset pipeline. span <= 0 returns the input untouched.
-         */
-        function buildEmaSeries(values, span) {
-            if (!(span > 0) || !Array.isArray(values)) return values;
-            const n = values.length;
-            const out = new Array(n);
-            const alpha = 2 / (span + 1);
-            let seedSum = 0, seedCount = 0;
-            for (let i = 0; i < n && seedCount < span; i++) {
-                const v = values[i];
-                if (v == null || !Number.isFinite(v)) continue;
-                seedSum += v; seedCount++;
-            }
-            let prev = seedCount > 0 ? seedSum / seedCount : null;
-            for (let i = 0; i < n; i++) {
-                const v = values[i];
-                if (v == null || !Number.isFinite(v)) { out[i] = null; continue; }
-                prev = prev == null ? v : alpha * v + (1 - alpha) * prev;
-                out[i] = prev;
-            }
-            return out;
-        }
-
         function computeSlopeAtIndex(idx, lb, values) {
-            // Canonical AMA slope % (computeAverageAmaSlopePct injected above).
-            const sp = computeAverageAmaSlopePct(values[idx], values[idx - lb], lb);
+            // Canonical AMA slope % (computeHuberWindowSlopePct injected above).
+            const sp = computeHuberWindowSlopePct(values, idx, lb);
             return sp == null ? 0 : sp;
         }
 
@@ -637,7 +648,6 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             recalcKalmanVelocity();
             recalcKalmanClipThreshold();
             recalcLatchedSignals();
-            currentAmaSource = buildEmaSeries(data.ama3Prices, currentAmaEmaSpan);
             const lb = currentLookbackBars;
             const amaErWarmup = Math.max(0, Number.isFinite(data.amaErPeriod) ? Math.ceil(data.amaErPeriod) : ${JSON.stringify(MARKET_ADAPTER.AMAS[MARKET_ADAPTER.DEFAULT_AMA_KEY as keyof typeof MARKET_ADAPTER.AMAS].erPeriod)});
             const amaReadyBar = Math.max(lb, amaErWarmup + lb);
@@ -646,20 +656,13 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             // implementation (computeAmaSlopeClipThreshold injected above),
             // shared with the live market adapter service. Trailing padded
             // nulls beyond realBarCount are skipped by its finiteness guards.
-            // Clip pool follows the (possibly EMA-filtered) AMA input so the
-            // percentile threshold matches the series the offsets derive from.
             dynamicClipThreshold = computeAmaSlopeClipThreshold(currentAmaSource, amaErWarmup, lb, currentClipPct);
 
             for (let i = 0; i < data.realBarCount; i++) {
-                // AMA slope % for the display panel (offsets computed in
-                // recalcWeights): the raw reference line from the unfiltered AMA
-                // input, the plotted series from the EMA-filtered input.
-                dynamicAmaSlopePctRaw[i] = i < amaReadyBar ? null : computeSlopeAtIndex(i, lb, data.ama3Prices);
-                dynamicAmaSlopePct[i]    = i < amaReadyBar ? null : computeSlopeAtIndex(i, lb, currentAmaSource);
+                dynamicAmaSlopePct[i] = i < amaReadyBar ? null : computeSlopeAtIndex(i, lb, currentAmaSource);
             }
             for (let i = data.realBarCount; i < data.dates.length; i++) {
                 dynamicAmaSlopePct[i] = null;
-                dynamicAmaSlopePctRaw[i] = null;
             }
         }
 
@@ -667,7 +670,6 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             // Normalize each channel by the configured clamp so alpha remains a pure ratio knob.
             // Gain then scales the blended output linearly after the dead-band decision.
             currentOutputAxisMax = Math.max(0.5, OUTPUT_CLAMP);
-            const channelNorm = Math.max(Math.abs(OUTPUT_CLAMP), 1e-9);
             const outputThreshold = currentMinOutputThreshold;
             const n = data.realBarCount;
 
@@ -675,11 +677,11 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             for (let i = 0; i < data.dates.length; i++) {
                 if (i >= n) { currentMults[i] = null; continue; }
                 const baseMult = getRegimeMultiplier(data.hurstArr[i], data.peArr[i]);
-                // Use power for sensitivity: pushes away from 1.0 in both directions without flipping sign
-                const rawMult = Math.pow(baseMult, currentRegimeSensitivity);
-                // Dead-band: only apply regime multiplier when |mult - 1.0| >= absoluteThreshold
-                // Clamp to 1.0 max: regime only dampens, never amplifies
-                currentMults[i] = Math.abs(rawMult - 1.0) >= ABSOLUTE_THRESHOLD ? Math.min(rawMult, 1.0) : 1.0;
+                // Match the live regime gate exactly: apply the sensitivity
+                // exponent, clamp to 1.0 (dampen-only), round the per-bar series
+                // to 3 decimals, then apply the absolute-threshold dead-band.
+                const rawMult = roundToN(Math.min(Math.pow(baseMult, currentRegimeSensitivity), 1.0), 1000);
+                currentMults[i] = Math.abs(rawMult - 1.0) >= ABSOLUTE_THRESHOLD ? rawMult : 1.0;
             }
 
             // Per-bar offset pipeline — canonical implementation (computeDynamicWeightSeries
@@ -692,7 +694,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
                 regimeMultipliers: currentMults,
                 lookbackBars: currentLookbackBars,
                 amaErPeriod: data.amaErPeriod,
-                amaClipThreshold: currentClipPct > 0 ? dynamicClipThreshold : currentAmaClipThreshold,
+                amaClipThreshold: dynamicClipThreshold,
                 kalClipThreshold: currentKalClipThreshold,
                 neutralZonePct: currentNz,
                 amaMaxSlopePct: currentAmaMaxSlopePct,
@@ -769,7 +771,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
                 max: Number.isFinite(xs.max) ? xs.max : xMax,
             } : null;
 
-            amaChart.setData([data.dates, dynamicAmaSlopePctRaw, dynamicAmaSlopePct], false);
+            amaChart.setData([data.dates, dynamicAmaSlopePct], false);
             kalmanChart.setData([data.dates, currentKalmanVelocityPct, data.kalmanDisplacementPct], false);
             outputChart.setData([data.dates, combinedOff, echoCombinedOff], false);
 
@@ -803,11 +805,6 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             const spEl = document.getElementById('l-ama-slope');
             if (sp == null) { spEl.textContent = '-'; spEl.style.color = '#8b949e'; }
             else { spEl.textContent = (sp >= 0 ? '+' : '') + (sp * 10).toFixed(3) + '‰'; spEl.style.color = sp > 0.01 ? '#2ea043' : sp < -0.01 ? '#f85149' : '#8b949e'; }
-
-            const spRaw = dynamicAmaSlopePctRaw[idx];
-            const spRawEl = document.getElementById('l-ama-slope-raw');
-            if (spRaw == null) { spRawEl.textContent = '-'; spRawEl.style.color = '#8b949e'; }
-            else { spRawEl.textContent = (spRaw >= 0 ? '+' : '') + (spRaw * 10).toFixed(3) + '‰'; spRawEl.style.color = '#8b949e'; }
 
             const vp = currentKalmanVelocityPct[idx];
             const vpEl = document.getElementById('l-kal-vel');
@@ -1032,7 +1029,6 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             document.getElementById('clip-slider').value = currentClipPct;
             document.getElementById('nz-slider').value = Math.round(currentNz * 100);
             document.getElementById('lb-slider').value = lbValToSlider(currentLookbackBars);
-            document.getElementById('ema-slider').value = currentAmaEmaSpan;
 
             const priceEl  = document.getElementById('price-panel');
             const amaEl    = document.getElementById('ama-panel');
@@ -1068,7 +1064,6 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
                 scales: { x: { time: true }, p: { auto: true } },
                 series: [
                     { label: 'Time' },
-                    { label: 'Raw‰', stroke: '#8b949e', width: 1, dash: [3, 3], scale: 'p', points: { show: false } },
                     { label: 'Slope‰', stroke: '#f0a000', width: 2, scale: 'p', points: { show: false } },
                 ],
                 axes: [
@@ -1078,7 +1073,7 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
                 ],
                 cursor: cursorCfg,
                 hooks: { draw: [makePctFillHook(dynamicAmaSlopePct, 'p', 'rgba(46,160,67,0.20)', 'rgba(248,81,73,0.20)'), makeSignalBgHook('p')] }
-            }, [data.dates, dynamicAmaSlopePctRaw, dynamicAmaSlopePct], document.getElementById('ama-chart'));
+            }, [data.dates, dynamicAmaSlopePct], document.getElementById('ama-chart'));
 
             kalmanChart = new uPlot({
                 width: kalmanEl.offsetWidth, height: kalmanEl.offsetHeight,
@@ -1215,7 +1210,6 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             document.getElementById('clip-slider').addEventListener('input', (e) => {
                 currentClipPct = parseInt(e.target.value, 10);
                 if (currentClipPct === 0) {
-                    currentAmaClipThreshold = data.amaPercentiles[data.amaPercentiles.length - 1];
                     currentKalClipThreshold = Infinity;
                 } else {
                     // AMA clip threshold for clipPct>0 comes from the canonical
@@ -1237,12 +1231,6 @@ function generateHTML(data: any, title = 'Dynamic Weight Research') {
             document.getElementById('lb-slider').addEventListener('input', (e) => {
                 currentLookbackBars = lbSliderToVal(parseInt(e.target.value, 10));
                 document.getElementById('lb-value').textContent = currentLookbackBars;
-                onSliderChange();
-            });
-
-            document.getElementById('ema-slider').addEventListener('input', (e) => {
-                currentAmaEmaSpan = parseInt(e.target.value, 10);
-                document.getElementById('ema-value').textContent = currentAmaEmaSpan;
                 onSliderChange();
             });
 
@@ -1320,7 +1308,6 @@ function applyParams(p, btn) {
                     document.getElementById('clip-slider').value = currentClipPct;
                     document.getElementById('clip-value').textContent = currentClipPct + '%';
                     if (currentClipPct === 0) {
-                        currentAmaClipThreshold = data.amaPercentiles[data.amaPercentiles.length - 1];
                         currentKalClipThreshold = Infinity;
                     } else {
                         recalcKalmanClipThreshold();
@@ -1340,11 +1327,6 @@ function applyParams(p, btn) {
                     currentLookbackBars = Math.max(SR.lookbackBars[0], Math.min(SR.lookbackBars[1], Math.round(p.lookbackBars)));
                     document.getElementById('lb-slider').value = lbValToSlider(currentLookbackBars);
                     document.getElementById('lb-value').textContent = currentLookbackBars;
-                }
-                if (p.amaEmaSpan != null) {
-                    currentAmaEmaSpan = Math.max(SR.amaEmaSpan[0], Math.min(SR.amaEmaSpan[1], Math.round(p.amaEmaSpan)));
-                    document.getElementById('ema-slider').value = currentAmaEmaSpan;
-                    document.getElementById('ema-value').textContent = currentAmaEmaSpan;
                 }
                 recalcInputs();
                 recalcWeights();
@@ -1372,7 +1354,6 @@ function applyParams(p, btn) {
                     regimeSensitivity: 'regime',
                     dispWeight: 'dw',
                     lookbackBars: 'lb',
-                    amaEmaSpan: 'ema',
                 };
                 document.getElementById('paste-confirm-vals').innerHTML = Object.entries(labels)
                     .filter(([k]) => p[k] != null)
@@ -1426,7 +1407,6 @@ function applyParams(p, btn) {
                     regimeSensitivity: +currentRegimeSensitivity.toFixed(2),
                     dispWeight:        +currentDw.toFixed(2),
                     lookbackBars:      currentLookbackBars,
-                    amaEmaSpan:        currentAmaEmaSpan,
                 };
                 const json = JSON.stringify(params, null, 2);
                 localStorage.setItem(LS_KEY, json);

@@ -209,7 +209,7 @@ DEXBot2 runs as a **monolithic daemon** (`dexbot start`). This is the production
 recommended mode:
 
 - **Single process** — no PM2, no separate credential daemon management
-- **Auto-update** — detects new releases, builds, and restarts cleanly
+- **Optional auto-update** — `dexbot update` (or `UPDATER.ACTIVE` in general settings, **default off**) pulls, builds and restarts cleanly; by default the bot only *reports* that a newer release exists
 - **Crash restart** — background mode re-spawns on failure
 - **Per-bot log files** — each bot logs to `<profiles>/logs/<bot>.log` (`~/.config/dexbot2/profiles/logs` by default)
 - **Built-in daemon** — the credential daemon is managed internally
@@ -254,17 +254,29 @@ the canonical name is preferred in scripts and docs.
 | `dexbot credit` | — | Live summed MPA + borrowed-credit positions per asset per bot (`[<bot>]`) |
 | `dexbot tv <target>` | — | TradingView 1h chart for `<bot|pool-id|AssetA/AssetB>` over `--month N` (default 3) |
 | `dexbot dw <target>` | — | Dynamic-weight research chart: same targets/flags as `tv` |
+| `dexbot pnl <account>` | — | HTML PnL report for a bot/account over `--month N`, optional `--pair BASE/QUOTE` filter |
 | `dexbot status` | `stat`, `stats` | Unified runtime health — daemon, adapter, bots |
 | `dexbot start` | `unlock` | Run credential daemon + bot (equivalent to running the `unlock` runtime, `dist/unlock.js`) |
 | `dexbot stop` | `stp`, `stopall` | Stop the monolithic runtime (unlock mode) |
 | `dexbot reload` | `reloadall` | Reload the monolithic runtime without touching the credential daemon (unlock mode) |
 | `dexbot restart` | `restartall` | Restart the monolithic runtime (unlock mode, re-unlocks credential daemon) |
 | `dexbot delete` | — | Shut down and clean up the monolithic runtime (unlock mode) |
-| `dexbot clear` | — | Remove all log files from the logs directory (`<profiles>/logs`) |
-| `dexbot clear-orders` | — | Remove all persisted order files (`<profiles>/orders`) |
-| `dexbot clear-market-adapter` | — | Remove market adapter data, state, and logs |
-| `dexbot clear-all` | — | Remove orders, logs, market adapter, and claw files (all of the above) |
+| `dexbot clear` | — | Delete `*.log`, rotated `*.log.*` and `*.jsonl*` from the logs directory (`<profiles>/logs`) |
+| `dexbot clear-orders` | — | Delete all persisted order files (`<profiles>/orders`); grids regenerate on next start |
+| `dexbot clear-market-adapter` | — | Delete market adapter data, state (incl. `market_adapter.lock`), and adapter logs |
+| `dexbot clear-all` | — | Delete orders, logs, market adapter, and claw data (all of the above) |
 | `dexbot help` | — | Print the full CLI reference (grouped by Runtime/Trading/Config/Analysis/Files) |
+
+> ⚠️ **The `clear*` commands are offline-only** — stop the runtime first
+> (`dexbot stop` / `dexbot pm2 stop all`). They detect a live runtime (pid files
+> + this install's online PM2 apps) and warn, but the warning is advisory: the
+> deletion still runs, a live bot re-creates the state within seconds, and open
+> log FDs keep the disk space until it restarts.
+>
+> `clear*` never touches config — `bots.json`, `keys.json`, the settings files and
+> `credit_runtime/` survive. `clear` / `clear-all` do delete the credential audit
+> trail `logs/daemon-audit.jsonl` (and its rotated siblings) along with the rest
+> of the logs; the preview names it explicitly.
 
 ## NPM Scripts for Branch Synchronization
 

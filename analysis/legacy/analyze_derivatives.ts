@@ -21,10 +21,14 @@
  */
 
 
+import { getErrorMessage } from '../../modules/utils/errors.js';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DerivativeAnalyzer } from './derivative_analyzer.js';
 import { generateHTML } from './derivative_chart_generator.js';
+import type { DerivativeAnalyzer as DerivativeAnalyzerType } from './derivative_analyzer.js';
+
+type DerivativeRow = ReturnType<DerivativeAnalyzerType['update']>;
 import { writeChartFile } from '../chart_utils.js';
 import { PATHS } from '../../modules/paths.js';
 import { resolveSource, listAvailableBots, type SourceConfig } from '../resolve_source.js';
@@ -59,8 +63,8 @@ interface CliConfig {
 
 interface PriceSource {
     name: string;
-    fetchCandles(): Promise<any[]>;
-    extractMarketPrice(candle: any): { marketPrice: any; timestamp: any };
+    fetchCandles(): Promise<unknown[]>;
+    extractMarketPrice(candle: unknown): { marketPrice: number; timestamp: number };
 }
 
 function parseArgs(): CliConfig {
@@ -205,8 +209,8 @@ async function analyze(source: PriceSource, config: CliConfig): Promise<{
         rsiExtreme: number;
         minBarsForConfirmation: number;
     };
-    allResults: any[];
-    lastAnalysis: any;
+    allResults: DerivativeRow[];
+    lastAnalysis: DerivativeRow | null;
 }> {
     if (!config.quiet) console.log(`[Derivatives] Loading candles from ${source.name}...`);
 
@@ -241,23 +245,23 @@ async function analyze(source: PriceSource, config: CliConfig): Promise<{
         minBarsForConfirmation: config.minBarsForConfirmation,
     });
 
-    const allResults: any[] = [];
+    const allResults: DerivativeRow[] = [];
     for (let i = 0; i < candles.length; i++) {
         const { marketPrice, timestamp } = source.extractMarketPrice(candles[i]);
         try {
             allResults.push(analyzer.update(marketPrice, timestamp));
         } catch (err: unknown) {
-            throw new Error(`Failed at candle ${i}: ${(err as any)?.message ?? err}`);
+            throw new Error(`Failed at candle ${i}: ${getErrorMessage(err)}`);
         }
     }
 
-    const last = allResults[allResults.length - 1];
+    const last = allResults[allResults.length - 1]!;
     if (!config.quiet) {
         const parts: string[] = [];
         if (config.slowSmaPeriod)    parts.push(`SMA(${config.slowSmaPeriod}): ${last.smaRawTrend} (${last.smaBarsInTrend} bars)`);
         if (config.fastSmaPeriod)    parts.push(`fastSMA(${config.fastSmaPeriod}): ${last.fastSmaRawTrend} (${last.fastSmaBarsInTrend} bars)`);
         parts.push(`MACD: ${last.macdTrend} hist=${last.macdHistogram}`);
-        parts.push(`RSI(${config.rsiPeriod}): ${last.rsi !== null ? last.rsi.toFixed(1) : 'n/a'} [${last.rsiZone}]`);
+        parts.push(`RSI(${config.rsiPeriod}): ${last.rsi != null ? last.rsi.toFixed(1) : 'n/a'} [${last.rsiZone}]`);
         console.log(`[Derivatives] Done — ${last.isReady ? '' : '(warming up) '}${parts.join('  ')}`);
     }
 
@@ -302,12 +306,12 @@ async function main(): Promise<void> {
         const { source } = resolveSource({ ...config.source.config, type: config.source.type }, { quiet: config.quiet });
         const report = await analyze(source, config);
 
-        const html = generateHTML(report, 'Derivative Trend Analysis');
+        const html = generateHTML(report as unknown as Parameters<typeof generateHTML>[0], 'Derivative Trend Analysis');
         writeChartFile(config.chartFile, html);
 
         if (!config.quiet) console.log(`[Derivatives] ✓ Chart saved to ${config.chartFile}`);
     } catch (err: unknown) {
-        console.error(`[Derivatives] Error: ${(err as any)?.message ?? err}`);
+        console.error(`[Derivatives] Error: ${getErrorMessage(err)}`);
         process.exit(1);
     }
 }

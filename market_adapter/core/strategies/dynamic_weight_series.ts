@@ -1,5 +1,7 @@
 'use strict';
 
+import { MARKET_ADAPTER } from '../../../modules/constants.js';
+
 /**
  * Dynamic weight per-bar series — canonical implementation shared by the live
  * market adapter service, the research test harness, and the browser-embedded
@@ -10,16 +12,49 @@
  * confirmation latch — the exact shape both the live `_computeDynamicWeights`
  * and the interactive research chart render.
  *
- * This module is intentionally fully self-contained (no imports): the chart
- * generator embeds its exact source into generated HTML via fn.toString(), so
- * every consumer runs one logic path. The pure helper computeAverageAmaSlopePct
- * is re-exported by strategies/ama_slope_model.ts so Node callers keep their
- * existing import path.
+ * The pure functions below stay self-contained so the chart generators can embed
+ * their exact source via fn.toString(). The one shared config they read — the
+ * canonical Huber-slope parameters — is centralised in
+ * MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER and aliased here as AMA_SLOPE_HUBER;
+ * generated HTML declares the same const from the same constant. Node callers
+ * keep their existing import path through strategies/ama_slope_model.ts.
  */
 
-function computeAverageAmaSlopePct(current: any, past: any, lookbackBars: any) {
-    const safeLookbackBars = Number.isFinite(lookbackBars) && lookbackBars > 0
-        ? Math.ceil(lookbackBars)
+const AMA_SLOPE_HUBER = MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER;
+
+interface HuberParams {
+    C: number;
+    ITERATIONS: number;
+    SCALE_FLOOR: number;
+    ZERO_EPSILON: number;
+}
+
+interface DynamicWeightSeriesInputs {
+    amaValues: unknown[] | null | undefined;
+    kalmanVelocityPct?: Array<number | null> | null;
+    kalmanDisplacementPct?: Array<number | null> | null;
+    kalmanIsReady?: Array<boolean | null> | null;
+    regimeMultipliers?: Array<number | null> | null;
+    lookbackBars: number;
+    amaErPeriod: number;
+    amaClipThreshold: number;
+    kalClipThreshold: number;
+    neutralZonePct: number;
+    amaMaxSlopePct: number;
+    kalmanMaxSlopePct: number;
+    offsetClamp: number;
+    dispScaleMinPct: number;
+    alpha: number;
+    dw: number;
+    gain: number;
+    minOutputThreshold: number;
+    signalConfirmBars: number;
+    clampFinalOutput?: boolean;
+}
+
+function computeAverageAmaSlopePct(current: number, past: number, lookbackBars: unknown): number | null {
+    const safeLookbackBars = Number.isFinite(Number(lookbackBars)) && Number(lookbackBars) > 0
+        ? Math.ceil(Number(lookbackBars))
         : 1;
     if (!Number.isFinite(current) || !Number.isFinite(past) || past === 0) {
         return null;
@@ -27,12 +62,123 @@ function computeAverageAmaSlopePct(current: any, past: any, lookbackBars: any) {
     return ((current - past) / past * 100) / safeLookbackBars;
 }
 
-function echoLatchSeries(appliedSeries: any[], preGainSeries: any[], confirmBars: any) {
+/**
+ * Per-bar AMA trend in %/bar over `lookbackBars`, fitted as a Huber-robust
+ * linear regression of ln(AMA) against bar index (uniform weights, no kernel).
+ *
+ * This is the canonical slope used by the live adapter (dynamic weight series,
+ * AMA slope model, both clip paths), the grid-reset replay and the research
+ * charts, which embed this exact source via `embedFunctionSources`. One
+ * definition, one set of numbers — do not re-implement it per caller. Selected
+ * experimentally on a real 1h pool: it is the smoothest robust option measured
+ * (second-difference energy ~25x lower than the median's, max |dSlope|
+ * comparable to the two-point endpoint), because its influence function is
+ * continuous and bounded rather than an order statistic.
+ *
+ * The fit is local linear over `lookbackBars` intervals (bars+1 points, the same
+ * 16h span the endpoint uses), so a window-wide regime change tilts the line
+ * continuously instead of waiting for a majority, and a lone off-trend spike is
+ * bounded rather than given full endpoint weight. Output is the log-return per
+ * bar x 100. That differs from the arithmetic per-bar return by ~beta^2/2,
+ * which is negligible at the sub-0.1 %/bar magnitudes the defaults use (order
+ * 1e-9 at 0.1 %/bar) but grows quadratically with the reading — ln(1.06)*100 =
+ * 5.83, ~3% below a 6%/bar arithmetic rate. A pre-existing user override of
+ * maxSlopePct / neutralZonePct was tuned against the arithmetic reading, so a
+ * saturated override now clamps a hair tighter than before.
+ *
+ * Persistence note: `slopePct` is a different quantity from any pre-Huber
+ * reading (log-return regression vs the old median/endpoint). The first cycle
+ * after deploying compares a Huber reading against the still-persisted old
+ * baseline (botState.gridRangeScalingAmaSlope); the two magnitudes agree
+ * closely, so that delta sits below the reset gate on ~98% of bars (p50
+ * 0.00043, p90 0.00277 %/bar) — roughly one whitelisted bot in fifty costs one
+ * extra recenter, once. No version marker is persisted to suppress it.
+ *
+ * Parameters come from MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER (aliased as
+ * AMA_SLOPE_HUBER; injected into generated charts). `hub` is overridable only so
+ * tests can prove the values are threaded through — production never passes it.
+ *
+ * @param amaValues Full AMA series (index-addressable).
+ * @param index     Bar to measure at (evaluated at the window edge).
+ * @param lookbackBars Window length in bars (fixed at 16 for every estimator).
+ * @param hub       Parameter block; defaults to the centralized constant.
+ * @returns %/bar, or null when the window is unusable.
+ */
+function computeHuberWindowSlopePct(amaValues: unknown[] | null | undefined, index: number, lookbackBars: unknown, hub: Partial<HuberParams> = AMA_SLOPE_HUBER): number | null {
+    const bars = Number.isFinite(lookbackBars) && Number(lookbackBars) > 0
+        ? Math.ceil(Number(lookbackBars))
+        : 0;
+    if (!Array.isArray(amaValues) || bars < 1) return null;
+    if (!Number.isFinite(index) || index < bars || index >= amaValues.length) return null;
+
+    // Local linear fit needs the full window at both ends; reject non-positive
+    // values anywhere in the window (Number(null) is 0) before fitting.
+    const y: number[] = [];
+    for (let k = index - bars; k <= index; k++) {
+        const v = Number(amaValues[k]);
+        if (!Number.isFinite(v) || v <= 0) return null;
+        y.push(Math.log(v));
+    }
+    const n = y.length;
+    // Fill any missing field from the canonical constant. Production never passes
+    // `hub` (the default is the constant), so this only guards a partial override
+    // from silently skipping the IRLS loop or injecting NaN weights.
+    const hubC = Number.isFinite(hub?.C) ? (hub?.C as number) : AMA_SLOPE_HUBER.C;
+    const hubIterations = Number.isFinite(hub?.ITERATIONS) ? (hub?.ITERATIONS as number) : AMA_SLOPE_HUBER.ITERATIONS;
+    const hubScaleFloor = Number.isFinite(hub?.SCALE_FLOOR) ? (hub?.SCALE_FLOOR as number) : AMA_SLOPE_HUBER.SCALE_FLOOR;
+    const hubZeroEpsilon = Number.isFinite(hub?.ZERO_EPSILON) ? (hub?.ZERO_EPSILON as number) : AMA_SLOPE_HUBER.ZERO_EPSILON;
+
+    // Weighted least squares of y on the CENTERED index x_i = i - (n-1)/2. The
+    // x-centering keeps the normal equations well-conditioned, but the FULL
+    // two-variable solution is required: with non-uniform Huber weights the
+    // cross term Sx != 0, so b = Sxy/Sxx alone is not the minimiser (it would
+    // not decrease the objective). Kept inline (and therefore self-contained
+    // for chart embedding): { a, b } with b the log-slope.
+    const xMean = (n - 1) / 2;
+    const wls = (w: number[]) => {
+        let sw = 0, swx = 0, swy = 0, swxx = 0, swxy = 0;
+        for (let i = 0; i < n; i++) {
+            const xi = i - xMean;
+            sw += w[i]; swx += w[i] * xi; swy += w[i] * y[i];
+            swxx += w[i] * xi * xi; swxy += w[i] * xi * y[i];
+        }
+        const den = sw * swxx - swx * swx;
+        const b = den === 0 ? 0 : (sw * swxy - swx * swy) / den;
+        const a = sw === 0 ? 0 : (swy - b * swx) / sw;
+        return { a, b };
+    };
+
+    let fit = wls(new Array(n).fill(1)); // OLS initialisation
+    for (let iter = 0; iter < hubIterations; iter++) {
+        const resid = y.map((v, i) => v - (fit.a + fit.b * (i - xMean)));
+        const abs = resid.map(Math.abs).sort((p, q) => p - q);
+        const mid = abs.length >> 1;
+        const mad = abs.length % 2 === 1 ? abs[mid] : (abs[mid - 1] + abs[mid]) / 2;
+        // Floor the robust scale. On piecewise-perfect data (a pure ramp, a
+        // constant series) the MAD can collapse to ~0, which makes the Huber
+        // weights degenerate and the weighted fit unstable; the floor is far
+        // below any real per-bar signal (the reset gate is ~7e-5 here).
+        const s = Math.max(1.4826 * mad, hubScaleFloor);
+        const w = resid.map((r) => Math.min(1, (hubC * s) / Math.max(Math.abs(r), 1e-12)));
+        const next = wls(w);
+        const moved = Math.abs(next.b - fit.b);
+        fit = next;
+        if (moved < 1e-12) break;
+    }
+    const slope = fit.b * 100;
+    // A constant window has zero true slope, but centred WLS leaves ~1e-14 of
+    // rounding, which would flip a zero neutral zone to a trend (UP/DOWN).
+    // Snap anything below ZERO_EPSILON (far under the reset gate).
+    if (Number.isFinite(slope) && Math.abs(slope) < hubZeroEpsilon) return 0;
+    return Number.isFinite(slope) ? slope : null;
+}
+
+function echoLatchSeries(appliedSeries: number[], preGainSeries: number[] | null | undefined, confirmBars: unknown) {
     const n = Array.isArray(appliedSeries) ? appliedSeries.length : 0;
     const echoedAppliedSeries = new Array(n).fill(0);
     const echoedPreGainSeries = new Array(n).fill(0);
 
-    const safeConfirmBars = Math.max(0, Math.min(5, Math.round(confirmBars)));
+    const safeConfirmBars = Math.max(0, Math.min(5, Math.round(Number(confirmBars))));
     if (safeConfirmBars === 0) {
         for (let i = 0; i < n; i++) {
             echoedAppliedSeries[i] = appliedSeries[i];
@@ -45,7 +191,7 @@ function echoLatchSeries(appliedSeries: any[], preGainSeries: any[], confirmBars
     let pendingSign = 0;
     let pendingCount = 0;
     let latchedOff = 0;
-    let latchedGatedOff = 0;
+    let latchedGatedOff: number | undefined = 0;
     for (let i = 0; i < n; i++) {
         const raw = appliedSeries[i];
         const sign = raw > 0 ? 1 : raw < 0 ? -1 : 0;
@@ -76,12 +222,12 @@ function echoLatchSeries(appliedSeries: any[], preGainSeries: any[], confirmBars
     return { echoedAppliedSeries, echoedPreGainSeries };
 }
 
-function roundToN(value: any, factor: any) {
+function roundToN(value: number, factor: number): number {
     if (!Number.isFinite(value)) return NaN;
     return Math.round(value * factor) / factor;
 }
 
-function computeDynamicWeightSeries(inputs: any) {
+function computeDynamicWeightSeries(inputs: DynamicWeightSeriesInputs) {
     const {
         amaValues,
         kalmanVelocityPct,
@@ -113,9 +259,7 @@ function computeDynamicWeightSeries(inputs: any) {
 
     for (let i = 0; i < n; i++) {
         if (i < amaReadyBar) continue;
-        const last = amaValues[i];
-        const past = amaValues[i - lookbackBars];
-        const sp = computeAverageAmaSlopePct(last, past, lookbackBars);
+        const sp = computeHuberWindowSlopePct(amaValues, i, lookbackBars);
         if (sp == null) continue;
         const csp = Math.max(-amaClipThreshold, Math.min(amaClipThreshold, sp));
         // Inclusive dead-band boundary (matches computeAmaSlopeWeights): a
@@ -201,7 +345,7 @@ function percentileFromSorted(sorted: number[], clipPercentile: number): number 
  * @param clipPercentile Percentile to clip at (e.g. 10 → use 90th pct). 0 disables.
  */
 function computeAmaSlopeClipThreshold(
-    amaValues: any,
+    amaValues: unknown[] | null | undefined,
     erPeriod: number,
     lookbackBars: number,
     clipPercentile: number,
@@ -213,10 +357,7 @@ function computeAmaSlopeClipThreshold(
 
     const slopes: number[] = [];
     for (let i = readyBars; i < amaValues.length; i++) {
-        const last = amaValues[i];
-        const past = amaValues[i - lookbackBars];
-        if (!Number.isFinite(last) || !Number.isFinite(past)) continue;
-        const s = computeAverageAmaSlopePct(last, past, lookbackBars);
+        const s = computeHuberWindowSlopePct(amaValues, i, lookbackBars);
         if (Number.isFinite(s)) slopes.push(Math.abs(s as number));
     }
     if (slopes.length === 0) return Infinity;
@@ -253,20 +394,16 @@ function createAmaSlopeClipTracker(erPeriod: number, lookbackBars: number, clipP
             if (!enabled) return Infinity;
             const i = buffer.length - 1;
             if (i >= readyBars) {
-                const last = buffer[i];
-                const past = buffer[i - lookbackBars];
-                if (Number.isFinite(last) && Number.isFinite(past)) {
-                    const s = computeAverageAmaSlopePct(last, past, lookbackBars);
-                    if (Number.isFinite(s)) {
-                        const v = Math.abs(s as number);
-                        let lo = 0;
-                        let hi = sorted.length;
-                        while (lo < hi) {
-                            const mid = (lo + hi) >> 1;
-                            if (sorted[mid] < v) lo = mid + 1; else hi = mid;
-                        }
-                        sorted.splice(lo, 0, v);
+                const s = computeHuberWindowSlopePct(buffer, i, lookbackBars);
+                if (Number.isFinite(s)) {
+                    const v = Math.abs(s as number);
+                    let lo = 0;
+                    let hi = sorted.length;
+                    while (lo < hi) {
+                        const mid = (lo + hi) >> 1;
+                        if (sorted[mid] < v) lo = mid + 1; else hi = mid;
                     }
+                    sorted.splice(lo, 0, v);
                 }
             }
             return percentileFromSorted(sorted, clipPercentile);
@@ -277,8 +414,13 @@ function createAmaSlopeClipTracker(erPeriod: number, lookbackBars: number, clipP
 export {
     computeDynamicWeightSeries,
     computeAverageAmaSlopePct,
+    computeHuberWindowSlopePct,
     echoLatchSeries,
     roundToN,
     computeAmaSlopeClipThreshold,
     createAmaSlopeClipTracker,
+    // Exported so chart generators can embed the clip tracker's exact
+    // dependency set via fn.toString() (see embedFunctionSources): the tracker
+    // itself calls this, and embedding one without the other breaks the page.
+    percentileFromSorted,
 }

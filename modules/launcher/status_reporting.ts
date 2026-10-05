@@ -17,73 +17,80 @@ const STATUS_COLORS = {
     muted: CLI_COLORS.white,
 };
 
-function colorStatus(text: string, color: string, stream: any = runtime.stdout): string {
+function colorStatus(text: string, color: string, stream: { isTTY?: boolean } = runtime.stdout): string {
     return stream.isTTY && !Config.NO_COLOR ? `${color}${text}${STATUS_COLORS.reset}` : text;
 }
 
-function statusTitle(text: any) {
+function statusTitle(text: string) {
     return colorStatus(text, STATUS_COLORS.title);
 }
 
-function statusLabel(text: any) {
+function statusLabel(text: string) {
     return colorStatus(text, STATUS_COLORS.label);
 }
 
-function statusBool(value: any) {
+function statusBool(value: unknown) {
     return colorStatus(value ? 'yes' : 'no', value ? STATUS_COLORS.ok : STATUS_COLORS.warn);
 }
 
-function statusActiveBotName(name: any) {
+function statusActiveBotName(name: string) {
     return colorStatus(name, STATUS_COLORS.ok);
 }
 
-function statusSuccess(text: any) {
+function statusSuccess(text: string) {
     return colorStatus(text, STATUS_COLORS.ok);
 }
 
-function statusError(text: any) {
+function statusError(text: string) {
     return colorStatus(text, STATUS_COLORS.warn, runtime.stderr);
 }
 
-function readProcStat(pid: any) {
+function readProcStat(pid: number) {
     return getProcessDiscovery().readStat(pid);
 }
 
-function readProcMemMB(pid: any) {
+function readProcMemMB(pid: number) {
     return getProcessDiscovery().readMemMB(pid);
 }
 
-function readProcCpuTime(pid: any) {
+function readProcCpuTime(pid: number) {
     return getProcessDiscovery().readCpuTime(pid);
 }
 
-async function readProcCpuPercent(pid: any, samples: any = 2, intervalMs: any = 400) {
+async function readProcCpuPercent(pid: number, samples: number = 2, intervalMs: number = 400) {
     return getProcessDiscovery().readCpuPercent(pid, samples, intervalMs);
 }
 
-function readProcUptime(pid: any) {
+function readProcUptime(pid: number) {
     return getProcessDiscovery().readUptime(pid);
 }
 
-function formatControlUptime(ms: any) {
+function formatControlUptime(ms: number) {
     return formatUptime(ms);
 }
 
-function formatMemoryWithUptime(memory: any, uptime: any) {
+function formatMemoryWithUptime(memory: string, uptime: string | null | undefined) {
     return uptime && uptime !== '-' ? `${memory} (${uptime})` : memory;
 }
 
-function printControlStatus(status: any) {
+interface ControlBotStatus {
+    uptimeMs?: number;
+    status?: string;
+    pid?: number;
+    restarts?: number;
+}
+
+function printControlStatus(status: Record<string, ControlBotStatus>) {
     const entries = Object.entries(status);
     if (entries.length === 0) {
         console.log('No bots');
         return;
     }
-    const nameWidth = Math.max(...entries.map(([n]: any) => n.length), 8);
+    const nameWidth = Math.max(...entries.map(([n]) => n.length), 8);
     const header = `${'NAME'.padEnd(nameWidth)} | STATUS    | PID   | RESTARTS | UPTIME`;
     console.log(header);
     console.log('-'.repeat(header.length));
-    for (const [name, s] of entries as [string, any][]) {
+    for (const [name, s] of entries) {
         const uptime = s.uptimeMs ? formatControlUptime(s.uptimeMs) : '-';
         console.log(
             `${name.padEnd(nameWidth)} | ${(s.status || '-').padEnd(9)} | ${String(s.pid || '-').padEnd(5)} | ${String(s.restarts).padEnd(8)} | ${uptime}`

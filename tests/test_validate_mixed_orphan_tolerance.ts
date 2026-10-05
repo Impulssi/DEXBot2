@@ -18,6 +18,7 @@ const { validateCreateTargetSlots } = require('../modules/order/utils/validate')
 const {
     chainOrderMatchesSlot,
     chainOrderMatchesSlotWithTolerance,
+    parseChainOrder,
 } = require('../modules/order/utils/order');
 
 const dummyAssets = {
@@ -114,6 +115,48 @@ async function runTests() {
         assert.strictEqual(
             chainOrderMatchesSlotWithTolerance({ type: ORDER_TYPES.SELL, price: 100, size: 100 }, spread, dummyAssets),
             true, 'SPREAD slot adopts either side'
+        );
+    }
+
+    // ── Typing-refactor audit (modules/order/utils/order.ts):
+    // `ParsedChainOrder.size` is `number | undefined` (unset when the raw
+    // chain order has no `for_sale`). The refactor replaced
+    // `Math.max(parsed.size, slot.size)` with
+    // `Math.max(Number(parsed.size) || 0, slot.size)`. Pin the observable
+    // contract: a size-less parsed order is rejected for a sized slot (the
+    // `floatToBlockchainInt(undefined)` -> 0 size guard fires before the
+    // tolerance path can diverge) and the call must not throw.
+    console.log(' - audit: size-less parsed chain order is rejected, not thrown...');
+    {
+        const slot = { id: 'slot-7', type: ORDER_TYPES.SELL, price: 200000, size: 100 };
+
+        // Real parser path: a chain order without `for_sale` parses with size undefined.
+        const parsedNoSize = parseChainOrder({
+            id: '1.7.100',
+            sell_price: {
+                base: { asset_id: '1.3.0', amount: 1000 },
+                quote: { asset_id: '1.3.1', amount: 200000 },
+            },
+        }, dummyAssets);
+        assert.ok(parsedNoSize, 'chain order without for_sale should still parse');
+        assert.strictEqual(parsedNoSize.size, undefined, 'missing for_sale leaves size undefined');
+        assert.strictEqual(
+            chainOrderMatchesSlotWithTolerance(parsedNoSize, slot, dummyAssets),
+            false,
+            'size-less chain order must not be adopted into a sized slot'
+        );
+
+        // Same price/type with a size present IS adopted — the rejection is the missing size.
+        assert.strictEqual(
+            chainOrderMatchesSlotWithTolerance({ ...parsedNoSize, size: 100 }, slot, dummyAssets),
+            true,
+            'same order with a size present is adopted'
+        );
+        // A null size (raw chain read) behaves like undefined, not like 0.
+        assert.strictEqual(
+            chainOrderMatchesSlotWithTolerance({ ...parsedNoSize, size: null }, slot, dummyAssets),
+            false,
+            'null size must not be adopted'
         );
     }
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 'use strict';
+import { getErrorMessage } from '../../modules/utils/errors.js';
 import { getStorage } from '../../modules/storage/index.js';
 import { withReadOnlyClient } from '../chain_pool.js';
 const { writeJSON } = getStorage();
@@ -165,14 +166,14 @@ async function withRetry<T>(fn: () => Promise<T>, label: string, maxRetries = 3,
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             return await fn();
-        } catch (e: any) {
+        } catch (e) {
             if (attempt < maxRetries) {
                 const delay = baseDelayMs * Math.pow(2, attempt - 1);
-                console.warn(`  [warn] ${label} attempt ${attempt}/${maxRetries} failed: ${e.message}`);
+                console.warn(`  [warn] ${label} attempt ${attempt}/${maxRetries} failed: ${getErrorMessage(e)}`);
                 console.warn(`         retrying in ${delay}ms...`);
                 await new Promise(r => setTimeout(r, delay));
             } else {
-                throw new Error(`${label} failed after ${maxRetries} attempts: ${e.message}`);
+                throw new Error(`${label} failed after ${maxRetries} attempts: ${getErrorMessage(e)}`);
             }
         }
     }
@@ -181,15 +182,42 @@ async function withRetry<T>(fn: () => Promise<T>, label: string, maxRetries = 3,
 
 // ─── Grid analysis helpers (self-contained, no external import) ───────────────
 
-function hitPrice(hit: any, sellPrec: number, recvPrec: number): number | null {
+interface KibanaSearchResponse {
+    aggregations?: { by_account?: { buckets?: Array<{ key: string; doc_count: number }> } };
+    hits?: { hits?: KibanaHit[] };
+    took?: number;
+}
+
+interface KibanaHit {
+    _source?: {
+        operation_history?: { op_object?: { amount_to_sell?: { amount?: unknown; asset_id?: unknown }; min_to_receive?: { amount?: unknown; asset_id?: unknown } } };
+        block_data?: { block_time?: unknown };
+    };
+    [key: string]: unknown;
+}
+
+interface GridStats {
+    isGrid: boolean;
+    score: number;
+    count: number;
+    uniqueCount?: number;
+    impliedIncrementPct?: number;
+    minPrice?: number;
+    maxPrice?: number;
+    cv?: number;
+    totalOrders?: number;
+    sessionCount?: number;
+}
+
+function hitPrice(hit: KibanaHit, sellPrec: number, recvPrec: number): number | null {
     const op   = hit._source?.operation_history?.op_object;
-    const sell = op?.amount_to_sell?.amount;
-    const recv = op?.min_to_receive?.amount;
-    if (!sell || !recv || sell <= 0 || recv <= 0) return null;
+    const sell = Number(op?.amount_to_sell?.amount);
+    const recv = Number(op?.min_to_receive?.amount);
+    if (!Number.isFinite(sell) || !Number.isFinite(recv) || sell <= 0 || recv <= 0) return null;
     return (recv / Math.pow(10, recvPrec)) / (sell / Math.pow(10, sellPrec));
 }
 
-function spacingStats(prices: number[], cvThreshold = 0.35) {
+function spacingStats(prices: number[], cvThreshold = 0.35): GridStats {
     if (prices.length < 3) return { isGrid: false, score: 0, count: prices.length };
     const s = [...prices].sort((a, b) => a - b);
     const u = [s[0]];
@@ -217,14 +245,14 @@ function spacingStats(prices: number[], cvThreshold = 0.35) {
  * Session-aware grid spacing analysis.
  * Groups hits by 2-minute proximity, finds the best-scoring session.
  */
-function analyzeGrid(hits: any[], sellPrec: number, recvPrec: number, cvThreshold = 0.35) {
+function analyzeGrid(hits: KibanaHit[], sellPrec: number, recvPrec: number, cvThreshold = 0.35): GridStats {
     if (!hits || hits.length < 3) return { isGrid: false, score: 0, count: hits?.length ?? 0 };
     const SESSION_GAP = 2 * 60 * 1000;
 
     const entries = hits.map(h => {
         const p = hitPrice(h, sellPrec, recvPrec);
         const t = h._source?.block_data?.block_time
-            ? new Date(h._source.block_data.block_time).getTime() : null;
+            ? new Date(String(h._source.block_data.block_time)).getTime() : null;
         return p && t ? { p, t } : null;
     }).filter((x): x is { p: number; t: number } => x !== null).sort((a, b) => a.t - b.t);
 
@@ -236,11 +264,11 @@ function analyzeGrid(hits: any[], sellPrec: number, recvPrec: number, cvThreshol
         sessions[sessions.length - 1].push(entries[i]);
     }
 
-    let best: any = null;
+    let best: GridStats | null = null;
     for (const sess of sessions) {
         if (sess.length < 4) continue;
         const stats = spacingStats(sess.map(e => e.p), cvThreshold);
-        if (!best || stats.score > best.score || (stats.score === best.score && (stats as any).cv < (best as any).cv)) {
+        if (!best || stats.score > best.score || (stats.score === best.score && (stats.cv ?? Infinity) < (best.cv ?? Infinity))) {
             best = stats;
         }
     }
@@ -249,12 +277,12 @@ function analyzeGrid(hits: any[], sellPrec: number, recvPrec: number, cvThreshol
     return { ...best, totalOrders: entries.length, sessionCount: sessions.length };
 }
 
-function analyzeBatching(hits: any[]) {
+function analyzeBatching(hits: KibanaHit[]) {
     if (!hits.length) return { maxBatch: 0, avgBatch: 0 };
     const counts: Record<string, number> = {};
     for (const h of hits) {
         const t = h._source?.block_data?.block_time;
-        if (t) counts[t] = (counts[t] ?? 0) + 1;
+        if (t) counts[String(t)] = (counts[String(t)] ?? 0) + 1;
     }
     const vals = Object.values(counts);
     return {
@@ -279,14 +307,15 @@ function dexScore(creates: number, fills: number, _cancels: number, gridScore: n
 // ─── Account resolution ───────────────────────────────────────────────────────
 
 async function resolveNames(ids: string[]): Promise<Record<string, string>> {
-    const map: Record<string, any> = {};
+    const map: Record<string, string> = {};
     try {
         // Ephemeral read-only client over the built-in node pool (shared helper).
         await withReadOnlyClient(async (client) => {
             // BitShares db.get_objects accepts an array of IDs
             const objects = await client.db('get_objects', [ids]);
-            for (const obj of (objects ?? [])) {
-                if (obj?.id && obj?.name) map[obj.id] = obj.name;
+            for (const obj of ((objects ?? []) as unknown[])) {
+                const o = obj as { id?: string; name?: string } | null;
+                if (o?.id && o?.name) map[o.id] = o.name;
             }
 
             // Resolve extra asset precisions while connected
@@ -295,14 +324,14 @@ async function resolveNames(ids: string[]): Promise<Record<string, string>> {
                 try {
                     const assets = await client.db('lookup_asset_symbols', [[sym]]);
                     const a = Array.isArray(assets) ? assets[0] : null;
-                    if (a?.id && !(a.id in ASSET_PRECISION)) {
-                        (ASSET_PRECISION as Record<string, any>)[a.id] = a.precision;
+                    if (a?.id && !(String(a.id) in ASSET_PRECISION)) {
+                        (ASSET_PRECISION as Record<string, unknown>)[String(a.id)] = a.precision;
                     }
                 } catch (_) {}
             }
         });
-    } catch (e: any) {
-        console.warn(`  [warn] Name resolution failed: ${e.message}`);
+    } catch (e) {
+        console.warn(`  [warn] Name resolution failed: ${getErrorMessage(e)}`);
     }
     return map;
 }
@@ -329,7 +358,7 @@ async function run() {
 
     console.log('Phase 1: Querying Kibana for top active accounts...');
 
-    const [createRes, cancelRes, fillRes, updateRes]: any[] = await Promise.all([
+    const [createRes, cancelRes, fillRes, updateRes] = await Promise.all([
         withRetry(() => kibanaSearch(KIBANA_CFG, buildTopSellerAccountsQuery(lookbackH, 200, opts.minCreates)),
             'top-seller query', opts.maxRetries),
         withRetry(() => kibanaSearch(KIBANA_CFG, buildTopCancellerAccountsQuery(lookbackH, 200, 5)),
@@ -338,7 +367,7 @@ async function run() {
             'top-fills query', opts.maxRetries),
         withRetry(() => kibanaSearch(KIBANA_CFG, buildTopUpdaterAccountsQuery(lookbackH, 200, 1)),
             'top-updater query', opts.maxRetries),
-    ]);
+    ]) as KibanaSearchResponse[];
 
     const createBuckets = createRes?.aggregations?.by_account?.buckets ?? [];
     const cancelBuckets = cancelRes?.aggregations?.by_account?.buckets ?? [];
@@ -423,22 +452,22 @@ async function run() {
             const slice = results.slice(i, i + BATCH);
             process.stdout.write(`  [${i + 1}–${Math.min(i + BATCH, results.length)}/${results.length}] `);
 
-            const priceResults: any[] = await Promise.all(
+            const priceResults = await Promise.all(
                 slice.map(r => withRetry(
                     () => kibanaSearch(KIBANA_CFG, buildOrderPriceQuery(r.id, lookbackH, null, 200)),
                     `price-query for ${r.id}`,
                     opts.maxRetries
                 ))
-            );
+            ) as KibanaSearchResponse[];
 
             for (let j = 0; j < slice.length; j++) {
                 const r    = slice[j];
                 const hits = priceResults[j]?.hits?.hits ?? [];
 
-                const buyHits  = hits.filter((h: any) =>
+                const buyHits  = hits.filter((h: KibanaHit) =>
                     h._source?.operation_history?.op_object?.amount_to_sell?.asset_id === '1.3.0'
                 );
-                const sellHits = hits.filter((h: any) =>
+                const sellHits = hits.filter((h: KibanaHit) =>
                     h._source?.operation_history?.op_object?.amount_to_sell?.asset_id !== '1.3.0'
                 );
 
@@ -447,7 +476,7 @@ async function run() {
                     ?? buyHits[0]?._source?.operation_history?.op_object?.min_to_receive?.asset_id;
 
                 const btsPrc = getPrec('1.3.0');
-                const aPrc   = getPrec(sellAssetId ?? '');
+                const aPrc   = getPrec(String(sellAssetId ?? ''));
 
                 const primaryHits = buyHits.length >= sellHits.length ? buyHits : sellHits;
                 const [pSell, pRecv] = buyHits.length >= sellHits.length
@@ -456,15 +485,15 @@ async function run() {
                 const grid  = analyzeGrid(primaryHits, pSell, pRecv, opts.cvThreshold);
                 const batch = analyzeBatching(hits);
 
-                const pairAssets = new Set(hits.flatMap((h: any) => {
+                const pairAssets = new Set(hits.flatMap((h: KibanaHit) => {
                     const op = h._source?.operation_history?.op_object;
                     return [op?.amount_to_sell?.asset_id, op?.min_to_receive?.asset_id].filter(Boolean);
                 }) as string[]);
                 r.pairAssets = [...pairAssets];
 
                 r.gridScore  = grid.score;
-                r.impliedInc = (grid as any).impliedIncrementPct ?? null;
-                r.cv         = (grid as any).cv ?? null;
+                r.impliedInc = grid.impliedIncrementPct ?? null;
+                r.cv         = grid.cv ?? null;
                 r.maxBatch   = batch.maxBatch;
                 r.dexScore   = dexScore(r.creates, r.fills, r.cancels, grid.score, batch.maxBatch);
                 r.ordersFetched = hits.length;
@@ -473,7 +502,7 @@ async function run() {
 
                 if (opts.verbose && hits.length > 0) {
                     process.stdout.write(`\n  [verbose] ${r.id}: ${hits.length} orders (${buyHits.length} buy/${sellHits.length} sell), ` +
-                        `grid=${grid.score} cv=${(grid as any).cv?.toFixed(4) ?? '?'} sessions=${(grid as any).sessionCount}`);
+                        `grid=${grid.score} cv=${grid.cv?.toFixed(4) ?? '?'} sessions=${grid.sessionCount}`);
                     process.stdout.write(`\n`);
                 } else {
                     process.stdout.write('.');
@@ -628,8 +657,9 @@ async function run() {
     }
 }
 
-run().then(() => process.exit(0)).catch((e: any) => {
-    console.error('\n[fatal]', e.message);
-    if (process.env.DEBUG) console.error(e.stack);
+run().then(() => process.exit(0)).catch((e: unknown) => {
+    const err = e as { message?: unknown; stack?: unknown };
+    console.error('\n[fatal]', err.message);
+    if (process.env.DEBUG) console.error(err.stack);
     process.exit(1);
 });

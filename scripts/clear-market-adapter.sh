@@ -5,6 +5,9 @@
 # and market_adapter/state/, plus profiles/logs/market_adapter.log,
 # dexbot-adapter.log, and dexbot-adapter-error.log. The market
 # adapter will bootstrap fresh from Kibana and regenerate state on next run.
+# Advisory only: if a runtime is detected, a warning is printed (the deletion still
+# runs — stop with `dexbot stop` first, since a live adapter rewrites its state file
+# and its market_adapter.lock, and a deleted lock lets a second adapter start).
 #
 # Usage: ./scripts/clear-market-adapter.sh or bash scripts/clear-market-adapter.sh
 
@@ -126,6 +129,9 @@ if [ "$LOG_COUNT" -gt 0 ]; then
     done
     log_info ""
 fi
+
+# Warn (advisory) when a live runtime would undo the deletion
+warn_if_runtime_running
 
 # Ask for confirmation
 read -p "Delete all listed market adapter files? (y/n): " -r CONFIRM

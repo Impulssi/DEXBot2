@@ -3,6 +3,7 @@
 import { NATIVE_CLIENT } from '../constants.js';
 import { LRUCache } from './lru_cache.js';
 import { getErrorMessage } from '../utils/errors.js';
+import { normalizeAssetRef } from '../utils/asset_symbols.js';
 
 const { RESOLVERS } = NATIVE_CLIENT;
 
@@ -11,11 +12,23 @@ const ACCOUNT_TTL_MS: number = RESOLVERS.ACCOUNT_TTL_MS;
 const MAX_ASSETS: number = RESOLVERS.MAX_ASSETS;
 const MAX_ACCOUNTS: number = RESOLVERS.MAX_ACCOUNTS;
 
+interface AssetLike {
+    id?: string;
+    symbol?: string;
+    [key: string]: unknown;
+}
+
+interface AccountLike {
+    id?: string;
+    name?: string;
+    [key: string]: unknown;
+}
+
 interface ChainClientDb {
-    get_assets(ids: string[]): Promise<any[]>;
-    lookup_asset_symbols(symbols: string[]): Promise<any[]>;
-    get_full_accounts(ids: string[], subscribe: boolean): Promise<any[][]>;
-    [key: string]: (...args: any[]) => Promise<any>;
+    get_assets(ids: string[]): Promise<AssetLike[]>;
+    lookup_asset_symbols(symbols: string[]): Promise<AssetLike[]>;
+    get_full_accounts(ids: string[], subscribe: boolean): Promise<Array<[string, { account?: AccountLike }]>>;
+    [key: string]: (...args: never[]) => Promise<unknown>;
 }
 
 interface ChainClient {
@@ -23,18 +36,22 @@ interface ChainClient {
 }
 
 function createResolvers(chainClient: ChainClient) {
-    const assetCache = new LRUCache(MAX_ASSETS, ASSET_TTL_MS);
-    const accountCache = new LRUCache(MAX_ACCOUNTS, ACCOUNT_TTL_MS);
-    const accountIdCache = new LRUCache(MAX_ACCOUNTS, ACCOUNT_TTL_MS);
+    const assetCache = new LRUCache<AssetLike>(MAX_ASSETS, ASSET_TTL_MS);
+    const accountCache = new LRUCache<AccountLike>(MAX_ACCOUNTS, ACCOUNT_TTL_MS);
+    const accountIdCache = new LRUCache<string>(MAX_ACCOUNTS, ACCOUNT_TTL_MS);
 
-    async function resolveAsset(idOrSymbol: string): Promise<any> {
+    async function resolveAsset(idOrSymbol: string): Promise<AssetLike> {
         if (!idOrSymbol) throw new Error('asset id or symbol required');
 
+        // Canonicalize before the cache key and the chain call: a lowercase
+        // symbol would otherwise occupy a second cache slot and be echoed back
+        // lowercase to every caller.
+        idOrSymbol = normalizeAssetRef(idOrSymbol);
         const cacheKey = `asset:${idOrSymbol}`;
         const cached = assetCache.get(cacheKey);
         if (cached) return cached;
 
-        let asset: any;
+        let asset: AssetLike | undefined;
         try {
             if (/^1\.3\./.test(String(idOrSymbol))) {
                 const assets = await chainClient.db.get_assets([idOrSymbol]);
@@ -43,7 +60,7 @@ function createResolvers(chainClient: ChainClient) {
                 const assets = await chainClient.db.lookup_asset_symbols([idOrSymbol]);
                 asset = assets && assets[0];
             }
-        } catch (err: any) {
+        } catch (err) {
             throw new Error(`Failed to resolve asset ${idOrSymbol}: ${getErrorMessage(err)}`);
         }
 
@@ -56,7 +73,7 @@ function createResolvers(chainClient: ChainClient) {
         return asset;
     }
 
-    async function resolveAccount(nameOrId: string): Promise<any> {
+    async function resolveAccount(nameOrId: string): Promise<AccountLike> {
         if (!nameOrId) throw new Error('account name or id required');
 
         const cacheKey = `account:${nameOrId}`;
@@ -78,7 +95,7 @@ function createResolvers(chainClient: ChainClient) {
             if (result.id) accountCache.set(`account:${result.id}`, result);
 
             return result;
-        } catch (err: any) {
+        } catch (err) {
             throw err;
         }
     }

@@ -9,6 +9,7 @@ import { parseJsonWithComments } from '../modules/order/utils/system.js';
 import { MARKET_ADAPTER } from '../modules/constants.js';
 import { loadMarketProfiles } from './tradingview/tradingview_uplot_chart_generator.js';
 import { sanitizeKey } from '../modules/utils/sanitize_key.js';
+import { isSameAssetSymbol, canonicalizeBotAssetSymbols } from '../modules/utils/asset_symbols.js';
 // Single source of truth for bot keys (named AND unnamed bots) so analysis
 // tools resolve the same files production writes.
 import { createBotKey } from '../modules/account_orders.js';
@@ -18,7 +19,15 @@ const DEFAULT_AMA_KEY = String(MARKET_ADAPTER.DEFAULT_AMA_KEY).toUpperCase();
 const BUILTIN_AMAS = MARKET_ADAPTER.AMAS as Record<string, typeof MARKET_ADAPTER.AMAS.AMA1>;
 const AMA_KEYWORDS = new Set(['ama', 'ama1', 'ama2', 'ama3', 'ama4']);
 
-function loadBotSettings(filePath = PATHS.PROFILES.BOTS_JSON) {
+type BotEntry = Record<string, unknown>;
+
+interface AmaConfig {
+    erPeriod: number;
+    fastPeriod: number;
+    slowPeriod: number;
+}
+
+function loadBotSettings(filePath = PATHS.PROFILES.BOTS_JSON): { bots?: BotEntry[] } | null {
     if (!filePath || !fs.existsSync(filePath)) return null;
     try {
         return readJSON(filePath);
@@ -33,20 +42,20 @@ function loadBotSettings(filePath = PATHS.PROFILES.BOTS_JSON) {
     }
 }
 
-function computeBotKey(bot: any, index: number) {
+function computeBotKey(bot: unknown, index: number): string {
     // Delegate to the production key generator (modules/account_orders.ts):
     // named bots → sanitized name; unnamed bots → sanitized asset pair + index.
     // The previous local fallback produced `bot-<idx>-<idx>` keys that could
     // never match what the bot runtime actually wrote to disk.
-    return createBotKey(bot, index);
+    return createBotKey(bot as BotEntry | null | undefined, index);
 }
 
-function resolveBotKey(botName: any, filePath = PATHS.PROFILES.BOTS_JSON) {
+function resolveBotKey(botName: unknown, filePath = PATHS.PROFILES.BOTS_JSON): string | null {
     if (!botName) return null;
     const settings = loadBotSettings(filePath);
     const entries = Array.isArray(settings?.bots) ? settings.bots : [];
     const sanitized = sanitizeKey(botName);
-    const entry = entries.find((b: any) => sanitizeKey(b.name) === sanitized);
+    const entry = entries.find((b) => sanitizeKey(b.name) === sanitized);
     if (!entry) return null;
     return computeBotKey(entry, entries.indexOf(entry));
 }
@@ -66,15 +75,21 @@ function resolveCandleFile(botKey: string, intervalLabel: string, dataDir = PATH
     return null;
 }
 
-function loadBotMeta(botKey: any, filePath = PATHS.PROFILES.BOTS_JSON) {
+function loadBotMeta(botKey: unknown, filePath = PATHS.PROFILES.BOTS_JSON): BotEntry | null {
     const settings = loadBotSettings(filePath);
     const entries = Array.isArray(settings?.bots) ? settings.bots : [];
     if (!botKey) return null;
     const normalizedKey = String(botKey).toLowerCase();
-    const exact = entries.find((bot: any, index: number) => computeBotKey(bot, index) === normalizedKey);
-    if (exact) return exact;
-    const loose = entries.find((bot: any) => sanitizeKey(bot?.name) === normalizedKey.replace(/-\d+$/, ''));
-    return loose || null;
+    // Analysis-side twin of modules/bot_settings.normalizeBotEntry: hand out
+    // the pair in BitShares' canonical UPPERCASE so a hand-edited lowercase
+    // bots.json cannot leak into titles, overlays or symbol comparisons. The
+    // same single definition of the symbol-carrying keys is reused (no second
+    // copy of the rule), and persistBotAccountId patches the raw file by
+    // index, so nothing here can rewrite the operator's JSON.
+    const exact = entries.find((bot, index) => computeBotKey(bot, index) === normalizedKey);
+    if (exact) return canonicalizeBotAssetSymbols(exact);
+    const loose = entries.find((bot) => sanitizeKey(bot?.name) === normalizedKey.replace(/-\d+$/, ''));
+    return loose ? canonicalizeBotAssetSymbols(loose) : null;
 }
 
 /**
@@ -268,9 +283,9 @@ function patchAccountIdInRaw(filePath: string, entryIndex: number, accountId: st
  * same atomic writeJSON serialization the bot editor uses. Returns true when
  * the file was updated.
  */
-function persistBotAccountId(botKey: any, accountId: string, filePath = PATHS.PROFILES.BOTS_JSON): boolean {
+function persistBotAccountId(botKey: unknown, accountId: string, filePath = PATHS.PROFILES.BOTS_JSON): boolean {
     if (!botKey || !/^1\.2\.\d+$/.test(String(accountId))) return false;
-    let settings: any = null;
+    let settings: { bots?: BotEntry[] } | null = null;
     try {
         settings = loadBotSettings(filePath);
     } catch (_) {
@@ -278,7 +293,7 @@ function persistBotAccountId(botKey: any, accountId: string, filePath = PATHS.PR
     }
     const entries = Array.isArray(settings?.bots) ? settings.bots : [];
     const normalizedKey = String(botKey).toLowerCase();
-    const index = entries.findIndex((bot: any, i: number) => computeBotKey(bot, i) === normalizedKey);
+    const index = entries.findIndex((bot, i) => computeBotKey(bot, i) === normalizedKey);
     if (index < 0 || entries[index]?.accountId === accountId) return false;
     try {
         if (patchAccountIdInRaw(filePath, index, String(accountId))) return true;
@@ -300,15 +315,17 @@ function persistBotAccountId(botKey: any, accountId: string, filePath = PATHS.PR
  * the entry's current preferredAccount still matches it — a rename must
  * never silently reuse a stale ID.
  */
-function getStoredBotAccountId(botKey: any, expectedRef?: string | null, filePath = PATHS.PROFILES.BOTS_JSON): string | null {
+function getStoredBotAccountId(botKey: unknown, expectedRef?: string | null, filePath = PATHS.PROFILES.BOTS_JSON): string | null {
     if (!botKey) return null;
-    let meta: any = null;
+    let meta: BotEntry | null = null;
     try {
         meta = loadBotMeta(botKey, filePath);
     } catch (_) {
         return null;
     }
-    const stored = meta && /^1\.2\.\d+$/.test(String(meta.accountId ?? '')) ? String(meta.accountId) : null;
+    if (!meta) return null;
+    const accountIdRaw = String(meta.accountId ?? '');
+    const stored = /^1\.2\.\d+$/.test(accountIdRaw) ? accountIdRaw : null;
     if (!stored) return null;
     if (expectedRef != null && String(meta.preferredAccount ?? '').toLowerCase() !== String(expectedRef).toLowerCase()) return null;
     return stored;
@@ -320,9 +337,9 @@ function getStoredBotAccountId(botKey: any, expectedRef?: string | null, filePat
  * the stored accountId and the persist target. Returns null for 1.2.x input
  * or when no bot claims the name.
  */
-function findBotKeyByAccountRef(ref: any, filePath = PATHS.PROFILES.BOTS_JSON): { botKey: string; meta: any } | null {
+function findBotKeyByAccountRef(ref: unknown, filePath = PATHS.PROFILES.BOTS_JSON): { botKey: string; meta: BotEntry } | null {
     if (!ref || /^1\.2\.\d+$/.test(String(ref))) return null;
-    let settings: any = null;
+    let settings: { bots?: BotEntry[] } | null = null;
     try {
         settings = loadBotSettings(filePath);
     } catch (_) {
@@ -339,32 +356,21 @@ function findBotKeyByAccountRef(ref: any, filePath = PATHS.PROFILES.BOTS_JSON): 
     return null;
 }
 
-function resolveAmaConfig(botKey: any) {
+function resolveAmaConfig(botKey: unknown): AmaConfig {
     const botMeta = loadBotMeta(botKey);
-    // Unknown bot key: fall back to the global erSmoothPeriod default (same
-    // resolution path production uses) instead of forcing 0 — a typo'd
-    // --bot-key must not silently research with different ER smoothing.
-    if (!botMeta) return { ...MARKET_ADAPTER.AMAS.AMA3, erSmoothPeriod: Number(MARKET_ADAPTER.AMA_ER_SMOOTH_FAST_PERIOD) };
+    if (!botMeta) return { ...MARKET_ADAPTER.AMAS.AMA3 };
 
     const rawGridPrice = String(botMeta?.gridPrice || '').trim().toLowerCase();
     const isAmaKeyword = AMA_KEYWORDS.has(rawGridPrice);
-
-    // erSmoothPeriod: bot.ama inline > global default (matches production resolveErSmoothPeriodForBot)
-    const botAmaInline = (botMeta?.ama && typeof botMeta.ama === 'object') ? botMeta.ama : null;
-    const rawErSmooth = botAmaInline && Object.prototype.hasOwnProperty.call(botAmaInline, 'erSmoothPeriod')
-        ? Number(botAmaInline.erSmoothPeriod)
-        : Number(MARKET_ADAPTER.AMA_ER_SMOOTH_FAST_PERIOD);
-    const erSmoothPeriod = rawErSmooth === 0 ? 0
-        : (Number.isFinite(rawErSmooth) && rawErSmooth >= 1 ? rawErSmooth : 0);
+    const botAmaInline = (botMeta.ama && typeof botMeta.ama === 'object') ? botMeta.ama as BotEntry : null;
 
     // Priority: inline bot.ama overrides market profile for analysis visibility.
     // Production inverts this (profiles first, inline as fallback — market_adapter.ts:694-730).
     if (botAmaInline) {
-        const cfg: any = {
+        const cfg: AmaConfig = {
             erPeriod: Number(botAmaInline.erPeriod),
             fastPeriod: Number(botAmaInline.fastPeriod),
             slowPeriod: Number(botAmaInline.slowPeriod),
-            erSmoothPeriod,
         };
         if (isAmaKeyword) {
             const key = rawGridPrice === 'ama' ? DEFAULT_AMA_KEY : rawGridPrice.toUpperCase();
@@ -385,12 +391,15 @@ function resolveAmaConfig(botKey: any) {
     }
 
     const marketProfiles = loadMarketProfiles();
-    const selectedProfile = marketProfiles?.profiles
-        ? marketProfiles.profiles.find((entry: any) =>
-            String(entry.assetA) === String(botMeta.assetA) &&
-            String(entry.assetB) === String(botMeta.assetB) &&
+    // Pair match is case-insensitive: market_profiles.json and bots.json are
+    // hand-edited, and a case-only difference must not silently drop the
+    // profile (a strict === here made the AMA/grid config vanish).
+    const selectedProfile = (marketProfiles?.profiles
+        ? marketProfiles.profiles.find((entry: { assetA?: unknown; assetB?: unknown; intervalSeconds?: unknown }) =>
+            isSameAssetSymbol(entry.assetA, botMeta.assetA) &&
+            isSameAssetSymbol(entry.assetB, botMeta.assetB) &&
             Number(entry.intervalSeconds) === 3600)
-        : null;
+        : null) as { defaultAma?: string; amas?: Record<string, { erPeriod: number; fastPeriod: number; slowPeriod: number }> } | null | undefined;
 
     if (selectedProfile?.amas) {
         const fallbackKey = selectedProfile.defaultAma || DEFAULT_AMA_KEY;
@@ -401,7 +410,7 @@ function resolveAmaConfig(botKey: any) {
         const fromBuiltin = BUILTIN_AMAS[requestedKey] || BUILTIN_AMAS[fallbackKey];
         const base = fromProfile || fromBuiltin;
         if (base) {
-            return { erPeriod: base.erPeriod, fastPeriod: base.fastPeriod, slowPeriod: base.slowPeriod, erSmoothPeriod };
+            return { erPeriod: base.erPeriod, fastPeriod: base.fastPeriod, slowPeriod: base.slowPeriod };
         }
     }
 
@@ -409,10 +418,10 @@ function resolveAmaConfig(botKey: any) {
         ? (rawGridPrice === 'ama' ? DEFAULT_AMA_KEY : rawGridPrice.toUpperCase())
         : DEFAULT_AMA_KEY;
     const builtin = BUILTIN_AMAS[key] || MARKET_ADAPTER.AMAS.AMA3;
-    return { erPeriod: builtin.erPeriod, fastPeriod: builtin.fastPeriod, slowPeriod: builtin.slowPeriod, erSmoothPeriod };
+    return { erPeriod: builtin.erPeriod, fastPeriod: builtin.fastPeriod, slowPeriod: builtin.slowPeriod };
 }
 
-function resolveAmaKey(botKey: any) {
+function resolveAmaKey(botKey: unknown): string {
     const botMeta = loadBotMeta(botKey);
     if (!botMeta) return 'AMA3';
     const rawGridPrice = String(botMeta?.gridPrice || '').trim().toLowerCase();

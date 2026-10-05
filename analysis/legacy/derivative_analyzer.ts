@@ -491,11 +491,14 @@ class DerivativeAnalyzer {
     _advanceTrend(raw: string, key: string): void {
         const prevKey = `prevRaw${key}Trend` as keyof this;
         const barsKey = `barsIn${key}Trend` as keyof this;
-        if (raw !== (this as any)[prevKey]) {
-            (this as any)[prevKey] = raw;
-            (this as any)[barsKey] = 1;
+        const self = this as unknown as Record<string, unknown>;
+        const pk = prevKey as string;
+        const bk = barsKey as string;
+        if (raw !== self[pk]) {
+            self[pk] = raw;
+            self[bk] = 1;
         } else {
-            (this as any)[barsKey]++;
+            self[bk] = (self[bk] as number) + 1;
         }
     }
 

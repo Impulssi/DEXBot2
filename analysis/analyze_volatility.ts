@@ -21,6 +21,7 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
+import { getErrorMessage } from '../modules/utils/errors.js';
 import path from 'node:path';
 
 import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
@@ -28,6 +29,7 @@ import { computeATRSeries } from '../market_adapter/core/strategies/atr/calculat
 import { normalizeAtrPeriod } from '../market_adapter/core/config_normalizers.js';
 import { computeVolatilityShift } from '../market_adapter/core/strategies/volatility_shift.js';
 import { generateHTML } from './trend_detection/volatility_chart_generator.js';
+import type { VolatilityRow } from './trend_detection/volatility_chart_generator.js';
 import { MARKET_ADAPTER } from '../modules/constants.js';
 import { PATHS } from '../modules/paths.js';
 import { getCandleClose } from './math_utils.js';
@@ -43,7 +45,7 @@ const DEFAULT_CLAMP = MARKET_ADAPTER.DYNAMIC_WEIGHT_SYMMETRIC_SHIFT_CLAMP;
 const DEFAULT_CHART_DIR = PATHS.ANALYSIS.CHARTS_DIR;
 const DEFAULT_CHART_FILE = path.join(DEFAULT_CHART_DIR, 'volatility_chart.html');
 
-function computeATRSeriesNormalized(candles: any[], period = DEFAULT_ATR_PERIOD) {
+function computeATRSeriesNormalized(candles: unknown, period = DEFAULT_ATR_PERIOD) {
     return computeATRSeries(candles, normalizeAtrPeriod(period));
 }
 
@@ -135,7 +137,7 @@ async function main() {
         const atrPeriod = normalizeAtrPeriod(config.atrPeriod);
         const atrs = computeATRSeriesNormalized(candles, atrPeriod);
 
-        const allResults: any[] = [];
+        const allResults: VolatilityRow[] = [];
         for (let i = 0; i < candles.length; i++) {
             const { marketPrice, timestamp } = source.extractMarketPrice(candles[i]);
             const amaPrice = ama3Values[i] ?? null;
@@ -174,7 +176,7 @@ async function main() {
 
         if (!config.quiet) console.log(`[Volatility] ✓ Chart saved to ${config.chartFile}`);
     } catch (err: unknown) {
-        console.error(`[Volatility] Error: ${(err as any)?.message ?? err}`);
+        console.error(`[Volatility] Error: ${getErrorMessage(err)}`);
         process.exit(1);
     }
 }

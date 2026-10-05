@@ -1,4 +1,5 @@
 
+import { getErrorMessage } from './utils/errors.js';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
@@ -11,7 +12,25 @@ const { readJSON, writeJSON } = storage;
 const REGISTRY_FILE = PATHS.PROFILES.FUND_REGISTRY_JSON;
 
 const _lock = new AsyncLock();
-let _registry: any = null;
+
+/** Allocation value stored in the registry: a decimal number or a percentage string. */
+type PercentageValue = number | string;
+
+interface BotAllocationEntry {
+    buy?: PercentageValue;
+    sell?: PercentageValue;
+    collateral?: Record<string, PercentageValue>;
+}
+
+interface AccountRegistryEntry {
+    totalAllocatedPct: { buy: number; sell: number };
+    totalAllocatedCollateralPct: Record<string, number>;
+    bots: Record<string, BotAllocationEntry>;
+}
+
+type FundRegistry = Record<string, AccountRegistryEntry>;
+
+let _registry: FundRegistry | null = null;
 let _registryMtimeMs: number | null = null;
 
 function _statMtimeMs(filePath: string): number | null {
@@ -29,11 +48,11 @@ function _statMtimeMs(filePath: string): number | null {
  * @param {*} value
  * @returns {number}
  */
-function _parsePercentage(value: any) {
+function _parsePercentage(value: unknown): number {
     return require('./order/utils/math').toDecimal(value);
 }
 
-function _loadRegistry(): any {
+function _loadRegistry(): FundRegistry {
     if (_registry !== null) {
         const mtime = _statMtimeMs(REGISTRY_FILE);
         if (mtime !== null && mtime !== _registryMtimeMs) {
@@ -41,22 +60,22 @@ function _loadRegistry(): any {
         }
     }
     if (_registry !== null) return _registry;
+    let loaded: FundRegistry;
     try {
-        if (storage.exists(REGISTRY_FILE)) {
-            _registry = readJSON(REGISTRY_FILE);
-        } else {
-            _registry = {};
-        }
-    } catch (err: any) {
+        loaded = storage.exists(REGISTRY_FILE)
+            ? readJSON<FundRegistry>(REGISTRY_FILE)
+            : {};
+    } catch (err) {
         console.error(
-            `[fund_registry] Failed to load ${REGISTRY_FILE} (${err?.message || err}); ` +
+            `[fund_registry] Failed to load ${REGISTRY_FILE} (${getErrorMessage(err)}); ` +
             `resetting to an empty registry — previously registered bot allocations are unavailable ` +
             `and will be overwritten on the next save. Restore the file from backup before restarting other bots.`
         );
-        _registry = {};
+        loaded = {};
     }
+    _registry = loaded;
     _registryMtimeMs = _statMtimeMs(REGISTRY_FILE);
-    return _registry;
+    return loaded;
 }
 
 function _saveRegistry(): void {
@@ -64,7 +83,7 @@ function _saveRegistry(): void {
     _registryMtimeMs = _statMtimeMs(REGISTRY_FILE);
 }
 
-function _ensureAccount(registry: any, account: string): any {
+function _ensureAccount(registry: FundRegistry, account: string): AccountRegistryEntry {
     if (!registry[account]) {
         registry[account] = {
             totalAllocatedPct: { buy: 0, sell: 0 },
@@ -87,7 +106,7 @@ function _ensureAccount(registry: any, account: string): any {
  * @param {'buy'|'sell'} side - Trade side
  * @param {number|string} percentage - Percentage value (e.g., 1.0 or '100%')
  */
-async function registerAllocation(account: string, botName: string, side: 'buy' | 'sell', percentage: any): Promise<void> {
+async function registerAllocation(account: string, botName: string, side: 'buy' | 'sell', percentage: PercentageValue): Promise<void> {
     return _lock.acquire(async () => {
         const registry = _loadRegistry();
         const acc = _ensureAccount(registry, account);
@@ -112,7 +131,7 @@ async function registerAllocation(account: string, botName: string, side: 'buy' 
  * @param {string} collateralAssetId - Canonical collateral asset ID (e.g., '1.3.0')
  * @param {number|string} percentage - Percentage value (e.g., 1.0 or '100%')
  */
-async function registerCollateralAllocation(account: string, botName: string, collateralAssetId: string, percentage: any): Promise<void> {
+async function registerCollateralAllocation(account: string, botName: string, collateralAssetId: string, percentage: PercentageValue): Promise<void> {
     return _lock.acquire(async () => {
         const registry = _loadRegistry();
         const acc = _ensureAccount(registry, account);
@@ -229,7 +248,7 @@ async function releaseAllocation(account: string, botName: string): Promise<void
                         }
                     }
                 }
-            } else {
+            } else if (side === 'buy' || side === 'sell') {
                 const pct = _parsePercentage(acc.bots[botName][side]);
                 acc.totalAllocatedPct[side] = Math.max(0, (acc.totalAllocatedPct[side] || 0) - pct);
             }

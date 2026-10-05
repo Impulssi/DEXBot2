@@ -158,14 +158,18 @@ node dist/market_adapter/market_adapter.js --deltaPercent 2
 ```json
 {
   "ama": {
-    "enabled": true,
     "erPeriod": 10,      // Efficiency Ratio lookback period (candles)
     "fastPeriod": 2,     // Fast smoothing period for trending markets
-    "slowPeriod": 30,    // Slow smoothing period for choppy markets
-    "erSmoothPeriod": 0  // Optional ER smoothing; 0 disables it
+    "slowPeriod": 30     // Slow smoothing period for choppy markets
   }
 }
 ```
+
+> **`gridPrice` is the only switch.** A bot is AMA-driven when `gridPrice` says
+> so — `usesAmaGridPrice()`, the source of truth shared by the bot, maintenance
+> and launcher runtimes. There is deliberately no `ama.enabled`: a second switch
+> could only disagree with them, freezing the center the bot still trades on. To
+> park a bot, set a non-AMA `gridPrice` (`"fixed"`, a number, `"pool"`, `"book"`).
 
 **Optional: `poolRef`** — pin a specific pool ID for price derivation when using `startPrice: "pool"`. Set in `bots.json` alongside the bot entry:
 ```json
@@ -184,7 +188,6 @@ The pool is fetched directly by ID, bypassing pool discovery. Useful when the tr
 - If no pair profile matches, the bot's `ama` block is used as the fallback
 
 **AMA Parameters:**
-- `enabled`: Whether to track AMA and trigger grid resets (true/false)
 - `erPeriod`: How many candles to look back for trend detection
   - Higher values: More stable, slower response (e.g. `erPeriod=781` very stable)
   - Lower values: More responsive, catches quick moves
@@ -195,22 +198,10 @@ The pool is fetched directly by ID, bypassing pool discovery. Useful when the tr
 - `slowPeriod`: Smoothing constant for choppy/sideways markets
   - Higher = more lag, filters noise
   - Built-in presets range from `AMA1` (fastest) to `AMA4` (slowest) — see `MARKET_ADAPTER.AMAS` in `modules/constants.ts` for the exact `slowPeriod` values
-- `erSmoothPeriod`: Optional DEXBot2 extension that smooths Kaufman's raw Efficiency Ratio before the AMA smoothing constant is calculated
-  - `0`: Disabled, raw Kaufman ER is used directly
-  - `1`: Effectively no extra smoothing
-  - `3` to `5`: Light to moderate damping for faster AMAs that re-center too abruptly
-  - Higher values: More stable ER, but delayed trend/chop recognition
-  - Values between `0` and `1` are invalid and fall back to the configured default
 
 AMA parameters are resolved exclusively from **presets** (`AMA1`–`AMA4`): a matched
 pair profile in `profiles/market_profiles.json` wins, otherwise the built-in defaults
 (`MARKET_ADAPTER.AMAS` in `modules/constants.ts`, default key `AMA3`) are used.
-
-`erSmoothPeriod` is not part of canonical Kaufman AMA/KAMA. It is a bot-level
-stabilizer for cases where a faster AMA is useful but raw ER spikes cause false
-grid re-centering triggers. Market-profile presets still provide `erPeriod`,
-`fastPeriod`, and `slowPeriod`; an inline bot `ama.erSmoothPeriod` can be used
-with those presets.
 
 ### How It Works
 
@@ -279,9 +270,38 @@ The snapshot fields involved are:
 `profiles/general.settings.json` and editable via `dexbot bot` → `1) Grid
 Drift` (`AMA-Slope Δ`). An explicit `amaSlopeDeltaThresholdPercent` in
 `profiles/market_adapter_settings.json` bypasses the factor and is used
-directly as an average percent-per-bar threshold.
+directly as a percent-per-bar threshold (the same unit as the slope value
+described below — no averaging is implied by the unit).
 
-AMA slope values are stored and compared as average percent per bar. Older
+**Persistence gate.** The slope-delta trigger is gated by default: it fires only
+after `AMA_SLOPE_PERSIST_BARS` (default `3`) consecutive bars cross the threshold
+in the same direction, so a 1–2 bar excursion is ignored. A sustained move is
+confirmed K bars after onset — up to K−1 bars later than the ungated trigger;
+the independent price/Drift trigger is unaffected.
+`AMA_SLOPE_PERSIST_ENABLED` (default `true`) is the master switch; a
+bot/market can override via `amaSlope.persistBars` or `amaSlope.persistEnabled`.
+Versus the ungated path this cuts resets ~35% and whipsaws (~52%→~17%) with lag
+and range tilt unchanged.
+
+AMA slope values are stored and compared in percent per bar. The value itself
+is a **Huber-robust linear regression of `ln(AMA)` over the lookback window**
+(`DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS`, default `16` bars; `computeHuberWindowSlopePct` in
+`core/strategies/dynamic_weight_series.ts`; its tuning lives in
+`MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_HUBER`) — a smooth, robust fit whose influence
+function is bounded, so one outlier bar cannot drag it, which is what a plain
+mean (and the older two-point endpoint difference it is equivalent to) would do.
+Because the fit reports the log-return, a reading is ~`ln(1+r)` rather than the
+arithmetic `r`: negligible at the sub-0.1 %/bar magnitudes the defaults use, but
+~3% lower at a 6%/bar saturation (`ln(1.06)*100 = 5.83`). A pre-existing user
+override of `amaSlope.maxSlopePct` or `neutralZonePct` was tuned against the
+arithmetic reading, so treat a saturated override as a hair tighter than before.
+
+Changing the estimator changes the stored value: after a deploy, the first
+cycle compares a new-algorithm reading against the baseline persisted by the
+previous one (`botState.gridRangeScalingAmaSlope`). The magnitudes agree
+closely, so the delta stays under the reset gate on ~98% of bars — a rare,
+single extra recenter for whitelisted bots. No version marker is persisted to
+suppress it. Older
 settings that used cumulative percent over the full lookback can either be
 divided by `amaSlope.lookbackBars`, or marked with
 `"amaSlopePercentMode": "window"` in `profiles/market_adapter_settings.json`
@@ -620,3 +640,15 @@ Removed trigger file.
 - `modules/market_adapter_whitelist.ts` — Whitelist storage/read helpers (the bot editor's `6) Adapter` reads and writes the same file)
 - `profiles/general.settings.json` — User-editable configuration
 - `profiles/bots.json` — Per-bot configuration including AMA
+
+## Visualizing the AMA Triggers (§3 and §4)
+
+`dexbot tv <bot>` (and `analysis/tradingview/analyze_tradingview.js`) replays the
+two market-adapter recentering triggers over the chart's candle history and draws
+the accepted grid center, the range that center would own, and one marker per
+reset (amber = AMA-price Δ, cyan = AMA-slope Δ, grey = first snapshot). The
+thresholds are resolved through the same constants → `general.settings` →
+`market_adapter_settings` chain the adapter uses, so the chart shows where the
+grid would actually have moved — handy for tuning `AMA_DELTA_THRESHOLD_PERCENT`
+and `AMA-Slope Δ` before changing them. Details:
+[analysis/tradingview/README.md](../analysis/tradingview/README.md#grid-reset-simulation).

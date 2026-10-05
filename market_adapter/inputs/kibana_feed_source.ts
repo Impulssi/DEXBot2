@@ -59,7 +59,71 @@ const FEED_SOURCE_FIELDS = [
 
 // ─── Default Config ───────────────────────────────────────────────────────────
 
-const DEFAULT_CONFIG: any = {
+interface AssetRef {
+    id?: string;
+    precision?: number;
+    symbol?: string;
+    [key: string]: unknown;
+}
+
+interface FeedPoint {
+    tsMs: number;
+    price: number;
+    sequence?: number;
+    kibanaSortKey?: string;
+    feedPublishCount?: number;
+}
+
+interface RatioPoint {
+    tsMs: number;
+    price: number;
+    feedPublishCount?: number;
+}
+
+interface FeedBucket {
+    ts: number;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    count: number;
+    firstTs: number;
+    lastTs: number;
+}
+
+interface FeedLeg {
+    mpa?: AssetRef;
+    backing?: AssetRef;
+    [key: string]: unknown;
+}
+
+interface FeedContext {
+    kind?: string;
+    legs: FeedLeg[];
+    [key: string]: unknown;
+}
+
+interface FeedConfig {
+    intervalSeconds?: number;
+    lookbackHours?: number;
+    timeRange?: { gte?: string; lte?: string } | null;
+    kibanaPageSize?: number;
+    kibanaPageRetries?: number;
+    kibanaRetryDelayMs?: number;
+    kibanaMaxPages?: number;
+    kibanaSearch?: (...args: unknown[]) => Promise<unknown>;
+    fillGaps?: boolean;
+    fillGapsToRequestedRange?: boolean;
+    [key: string]: unknown;
+}
+
+interface FetchWindow {
+    index: number;
+    gte: string;
+    lte: string;
+}
+
+const DEFAULT_CONFIG: FeedConfig & { intervalSeconds: number; lookbackHours: number; kibanaPageSize: number; kibanaPageRetries: number; kibanaRetryDelayMs: number; kibanaMaxPages: number } = {
     ...BASE_CONFIG,
     intervalSeconds: 3600,
     lookbackHours: 500,
@@ -78,7 +142,7 @@ const DEFAULT_CONFIG: any = {
  * Integer blockchain amount → float. Amounts may arrive as numbers or
  * numeric strings; anything else yields NaN.
  */
-function floatAmount(raw: any, precision: any) {
+function floatAmount(raw: unknown, precision: unknown): number {
     const n = Number(raw);
     const p = Number(precision);
     if (!Number.isFinite(n) || !Number.isFinite(p) || p < 0) return Number.NaN;
@@ -90,9 +154,10 @@ function floatAmount(raw: any, precision: any) {
  * either base/quote orientation. Returns null when the price does not span
  * exactly the mpa/backing pair.
  */
-function backingPerMpa(settlement: any, mpaAsset: any, backingAsset: any) {
-    const base = settlement?.base;
-    const quote = settlement?.quote;
+function backingPerMpa(settlement: unknown, mpaAsset: AssetRef | null | undefined, backingAsset: AssetRef | null | undefined): number | null {
+    const s = settlement as { base?: { asset_id?: unknown; amount?: unknown }; quote?: { asset_id?: unknown; amount?: unknown } } | null | undefined;
+    const base = s?.base;
+    const quote = s?.quote;
     if (!base || !quote) return null;
     const baseId = String(base.asset_id || '');
     const quoteId = String(quote.asset_id || '');
@@ -102,8 +167,8 @@ function backingPerMpa(settlement: any, mpaAsset: any, backingAsset: any) {
     const ids = new Set([baseId, quoteId]);
     if (!ids.has(mpaId) || !ids.has(backingId)) return null;
 
-    const baseFloat = floatAmount(base.amount, baseId === mpaId ? mpaAsset.precision : backingAsset.precision);
-    const quoteFloat = floatAmount(quote.amount, quoteId === mpaId ? mpaAsset.precision : backingAsset.precision);
+    const baseFloat = floatAmount(base.amount, baseId === mpaId ? mpaAsset?.precision : backingAsset?.precision);
+    const quoteFloat = floatAmount(quote.amount, quoteId === mpaId ? mpaAsset?.precision : backingAsset?.precision);
     if (!Number.isFinite(baseFloat) || !Number.isFinite(quoteFloat) || baseFloat <= 0 || quoteFloat <= 0) return null;
 
     // backing-per-MPA: divide the backing side by the MPA side.
@@ -112,24 +177,26 @@ function backingPerMpa(settlement: any, mpaAsset: any, backingAsset: any) {
     return null;
 }
 
-function parseFeedTimestamp(source: any) {
-    const raw = source?.block_data?.block_time;
+function parseFeedTimestamp(source: unknown): number | null {
+    const raw = (source as { block_data?: { block_time?: unknown } } | null | undefined)?.block_data?.block_time;
     if (raw == null) return null;
     const text = String(raw);
     const tsMs = Date.parse(text.endsWith('Z') ? text : `${text}Z`);
     return Number.isFinite(tsMs) ? tsMs : null;
 }
 
-function hitSortKey(hit: any) {
-    const sort = Array.isArray(hit?.sort) ? hit.sort : [];
-    return sort.map((v: any) => String(v)).join('|') || String(hit?._id || '');
+function hitSortKey(hit: unknown): string {
+    const h = hit as { sort?: unknown; _id?: unknown } | null | undefined;
+    const sort = Array.isArray(h?.sort) ? h.sort : [];
+    return sort.map((v) => String(v)).join('|') || String(h?._id || '');
 }
 
-function hitSequence(source: any) {
+function hitSequence(source: unknown): number {
+    const src = source as { operation_id_num?: unknown; account_history?: { operation_id?: unknown; sequence?: unknown } } | null | undefined;
     const candidates = [
-        source?.operation_id_num,
-        source?.account_history?.operation_id,
-        source?.account_history?.sequence,
+        src?.operation_id_num,
+        src?.account_history?.operation_id,
+        src?.account_history?.sequence,
     ];
     for (const value of candidates) {
         if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -143,8 +210,8 @@ function hitSequence(source: any) {
  * Kibana hit → { tsMs, price, sequence, kibanaSortKey } in backing-per-MPA,
  * or null when the hit carries no usable settlement price for the pair.
  */
-function hitToFeedPrice(hit: any, { mpaAsset, backingAsset }: any) {
-    const source = hit?._source || {};
+function hitToFeedPrice(hit: unknown, { mpaAsset, backingAsset }: { mpaAsset: AssetRef | null | undefined; backingAsset: AssetRef | null | undefined }): FeedPoint | null {
+    const source = ((hit as { _source?: unknown } | null | undefined)?._source || {}) as { operation_history?: { op_object?: { feed?: { settlement_price?: unknown } } } };
     const tsMs = parseFeedTimestamp(source);
     if (tsMs == null) return null;
     const settlement = source?.operation_history?.op_object?.feed?.settlement_price;
@@ -160,12 +227,12 @@ function hitToFeedPrice(hit: any, { mpaAsset, backingAsset }: any) {
 
 // ─── Query ────────────────────────────────────────────────────────────────────
 
-function buildFeedDocumentQuery({ mpaAssetId, lookbackHours, timeRange, size, searchAfter }: any) {
+function buildFeedDocumentQuery({ mpaAssetId, lookbackHours, timeRange, size, searchAfter }: { mpaAssetId: string; lookbackHours?: number; timeRange?: { gte?: string; lte?: string } | null; size: number; searchAfter: unknown[] | null }): Record<string, unknown> {
     const rangeValue = timeRange
         ? { gte: timeRange.gte, lte: timeRange.lte }
         : { gte: `now-${lookbackHours}h`, lte: 'now' };
 
-    const query: any = {
+    const query: Record<string, unknown> = {
         size,
         track_total_hits: false,
         _source: FEED_SOURCE_FIELDS,
@@ -191,8 +258,8 @@ function buildFeedDocumentQuery({ mpaAssetId, lookbackHours, timeRange, size, se
 /**
  * All feed price points for the MPA in the requested window, time-ascending.
  */
-async function fetchFeedPricePoints({ mpaAsset, backingAsset, config = {} }: any) {
-    const cfg: any = { ...DEFAULT_CONFIG, ...config };
+async function fetchFeedPricePoints({ mpaAsset, backingAsset, config = {} }: { mpaAsset: AssetRef; backingAsset: AssetRef; config?: FeedConfig }): Promise<FeedPoint[]> {
+    const cfg: FeedConfig = { ...DEFAULT_CONFIG, ...config };
     const search = typeof cfg.kibanaSearch === 'function' ? cfg.kibanaSearch : kibanaSearch;
     const size = Math.min(Math.max(1, Number(cfg.kibanaPageSize) || DEFAULT_CONFIG.kibanaPageSize), 10000);
     const retriesRaw = Number(cfg.kibanaPageRetries);
@@ -204,8 +271,8 @@ async function fetchFeedPricePoints({ mpaAsset, backingAsset, config = {} }: any
     // The page loop owns the retry budget here (see kibana_candles.ts).
     const pageCfg = { ...cfg, kibanaSearchRetries: 1 };
 
-    const points: any[] = [];
-    let searchAfter: any = null;
+    const points: FeedPoint[] = [];
+    let searchAfter: unknown[] | null = null;
     let page = 0;
     let droppedTotal = 0;
 
@@ -219,7 +286,7 @@ async function fetchFeedPricePoints({ mpaAsset, backingAsset, config = {} }: any
             );
         }
         const query = buildFeedDocumentQuery({
-            mpaAssetId: mpaAsset.id,
+            mpaAssetId: String(mpaAsset.id),
             lookbackHours: cfg.lookbackHours,
             timeRange: cfg.timeRange ?? null,
             size,
@@ -229,14 +296,14 @@ async function fetchFeedPricePoints({ mpaAsset, backingAsset, config = {} }: any
         // A failed page is safe to retry: search_after pagination is
         // stateless on the server, so replaying the same page yields the
         // same documents.
-        let result: any = null;
-        let lastErr: any = null;
+        let result: { hits?: { hits?: unknown[] } } | null = null;
+        let lastErr: unknown = null;
         for (let attempt = 1; attempt <= retries; attempt++) {
             try {
-                result = await search(pageCfg, query);
+                result = await search(pageCfg, query) as { hits?: { hits?: unknown[] } } | null;
                 lastErr = null;
                 break;
-            } catch (err: any) {
+            } catch (err) {
                 lastErr = err;
                 if (attempt >= retries || !isTransientNetworkError(err)) throw err;
                 if (retryDelayMs > 0) await sleepMs(retryDelayMs * attempt);
@@ -253,7 +320,7 @@ async function fetchFeedPricePoints({ mpaAsset, backingAsset, config = {} }: any
         }
 
         if (hits.length < size) break;
-        const lastSort = hits[hits.length - 1]?.sort;
+        const lastSort = (hits[hits.length - 1] as { sort?: unknown[] } | undefined)?.sort;
         if (!Array.isArray(lastSort)) {
             throw new Error('Kibana document pagination requires sort values on hits');
         }
@@ -267,7 +334,7 @@ async function fetchFeedPricePoints({ mpaAsset, backingAsset, config = {} }: any
         );
     }
 
-    points.sort((a: any, b: any) => {
+    points.sort((a, b) => {
         const tsDelta = a.tsMs - b.tsMs;
         if (tsDelta !== 0) return tsDelta;
         const aSeq = Number(a.sequence);
@@ -288,12 +355,12 @@ async function fetchFeedPricePoints({ mpaAsset, backingAsset, config = {} }: any
  * @param {number} intervalSeconds – bucket size (1h default)
  * @returns {Array} [[timestamp_ms, open, high, low, close, publishCount], ...]
  */
-function bucketPricesToCandles(points: any, intervalSeconds = 3600) {
+function bucketPricesToCandles(points: unknown, intervalSeconds = 3600): number[][] {
     const bucketMs = Number(intervalSeconds) * 1000;
     if (!Array.isArray(points) || points.length === 0) return [];
     if (!Number.isFinite(bucketMs) || bucketMs <= 0) return [];
 
-    const buckets = new Map();
+    const buckets = new Map<number, FeedBucket>();
     for (const point of points || []) {
         const tsMs = Number(point?.tsMs);
         const price = Number(point?.price);
@@ -323,18 +390,19 @@ function bucketPricesToCandles(points: any, intervalSeconds = 3600) {
     }
 
     return [...buckets.entries()]
-        .sort((a: any, b: any) => a[0] - b[0])
-        .map(([, b]: any) => [b.ts, b.open, b.high, b.low, b.close, b.count]);
+        .sort((a, b) => a[0] - b[0])
+        .map(([, b]) => [b.ts, b.open, b.high, b.low, b.close, b.count]);
 }
 
 /**
  * Invert candles (1/price, high/low swapped). Pure function for pair
  * orientation when the MPA is the B leg (B-per-A = MPA-per-backing).
  */
-function invertCandles(candles: any) {
-    return (candles || [])
-        .filter((c: any) => Array.isArray(c) && c.slice(1, 5).every((v: any) => Number.isFinite(Number(v)) && Number(v) > 0))
-        .map((c: any) => [c[0], 1 / c[4], 1 / c[3], 1 / c[2], 1 / c[1], c[5]]);
+function invertCandles(candles: unknown): number[][] {
+    const list = Array.isArray(candles) ? (candles as number[][]) : [];
+    return list
+        .filter((c) => Array.isArray(c) && c.slice(1, 5).every((v) => Number.isFinite(Number(v)) && Number(v) > 0))
+        .map((c) => [c[0], 1 / c[4], 1 / c[3], 1 / c[2], 1 / c[1], c[5]]);
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -347,23 +415,23 @@ function invertCandles(candles: any) {
  * @param {Object} backingAsset – { id, precision, symbol }
  * @param {Object} [config] – { intervalSeconds, timeRange | lookbackHours, fillGaps, fillGapsToRequestedRange, kibanaSearch, ... }
  */
-async function getFeedCandlesForMpa(mpaAsset: any, backingAsset: any, config: any = {}) {
-    const cfg: any = { ...DEFAULT_CONFIG, ...config };
+async function getFeedCandlesForMpa(mpaAsset: AssetRef, backingAsset: AssetRef, config: FeedConfig = {}): Promise<number[][]> {
+    const cfg: FeedConfig = { ...DEFAULT_CONFIG, ...config };
     const points = await fetchFeedPricePoints({ mpaAsset, backingAsset, config: cfg });
     return applyGapFill(bucketPricesToCandles(points, cfg.intervalSeconds), cfg);
 }
 
-function applyGapFill(consolidated: any, cfg: any) {
+function applyGapFill(consolidated: number[][], cfg: FeedConfig): number[][] {
     if (cfg.fillGaps === false) {
         return consolidated;
     }
 
     if (cfg.fillGapsToRequestedRange === false) {
-        return fillCandleGaps(consolidated, cfg.intervalSeconds);
+        return fillCandleGaps(consolidated, Number(cfg.intervalSeconds));
     }
 
     const { startTs, endTs } = resolveRequestedFillRange(cfg);
-    return fillCandleGaps(consolidated, cfg.intervalSeconds, startTs, endTs);
+    return fillCandleGaps(consolidated, Number(cfg.intervalSeconds), startTs, endTs);
 }
 
 /**
@@ -377,24 +445,26 @@ function applyGapFill(consolidated: any, cfg: any) {
  * Numerator publishes predating the first denominator publish are dropped
  * (no reference price yet). Pure function of two point lists otherwise.
  */
-function crossPointsToRatios(numeratorPoints: any, denominatorPoints: any, intervalSeconds: any = 0) {
-    const ratios: any[] = [];
+function crossPointsToRatios(numeratorPoints: unknown, denominatorPoints: unknown, intervalSeconds: number = 0): RatioPoint[] {
+    const numer = Array.isArray(numeratorPoints) ? (numeratorPoints as FeedPoint[]) : [];
+    const denom = Array.isArray(denominatorPoints) ? (denominatorPoints as FeedPoint[]) : [];
+    const ratios: RatioPoint[] = [];
     let j = 0;
-    let lastDenominator: any = null;
+    let lastDenominator: FeedPoint | null = null;
     const bucketMs = Number(intervalSeconds) * 1000;
     const numeratorCounts = new Map<number, number>();
     const denominatorCounts = new Map<number, number>();
     const countedBuckets = new Set<number>();
 
     if (Number.isFinite(bucketMs) && bucketMs > 0) {
-        for (const point of numeratorPoints || []) {
+        for (const point of numer) {
             const tsMs = Number(point?.tsMs);
             if (Number.isFinite(tsMs)) {
                 const bucket = Math.floor(tsMs / bucketMs) * bucketMs;
                 numeratorCounts.set(bucket, (numeratorCounts.get(bucket) || 0) + 1);
             }
         }
-        for (const point of denominatorPoints || []) {
+        for (const point of denom) {
             const tsMs = Number(point?.tsMs);
             if (Number.isFinite(tsMs)) {
                 const bucket = Math.floor(tsMs / bucketMs) * bucketMs;
@@ -403,17 +473,17 @@ function crossPointsToRatios(numeratorPoints: any, denominatorPoints: any, inter
         }
     }
 
-    for (const point of numeratorPoints || []) {
+    for (const point of numer) {
         const tsMs = Number(point?.tsMs);
         const price = Number(point?.price);
         if (!Number.isFinite(tsMs) || !Number.isFinite(price) || price <= 0) continue;
-        while (j < (denominatorPoints || []).length && Number(denominatorPoints[j]?.tsMs) <= tsMs) {
-            lastDenominator = denominatorPoints[j];
+        while (j < denom.length && Number(denom[j]?.tsMs) <= tsMs) {
+            lastDenominator = denom[j];
             j++;
         }
         const refPrice = Number(lastDenominator?.price);
         if (!Number.isFinite(refPrice) || refPrice <= 0) continue;
-        const ratio: any = { tsMs, price: price / refPrice };
+        const ratio: RatioPoint = { tsMs, price: price / refPrice };
         if (Number.isFinite(bucketMs) && bucketMs > 0) {
             const bucket = Math.floor(tsMs / bucketMs) * bucketMs;
             if (!countedBuckets.has(bucket)) {
@@ -428,7 +498,7 @@ function crossPointsToRatios(numeratorPoints: any, denominatorPoints: any, inter
     return ratios;
 }
 
-async function fetchFeedCrossPoints({ mpaA, mpaB, backing, config = {} }: any) {
+async function fetchFeedCrossPoints({ mpaA, mpaB, backing, config = {} }: { mpaA: AssetRef; mpaB: AssetRef; backing: AssetRef; config?: FeedConfig }): Promise<RatioPoint[]> {
     if (String(mpaA?.id || '') === String(mpaB?.id || '')) {
         throw new Error('Feed cross requires two distinct MPAs');
     }
@@ -436,7 +506,7 @@ async function fetchFeedCrossPoints({ mpaA, mpaB, backing, config = {} }: any) {
         fetchFeedPricePoints({ mpaAsset: mpaA, backingAsset: backing, config }),
         fetchFeedPricePoints({ mpaAsset: mpaB, backingAsset: backing, config }),
     ]);
-    return crossPointsToRatios(pointsA, pointsB, config.intervalSeconds || 3600);
+    return crossPointsToRatios(pointsA, pointsB, Number(config.intervalSeconds) || 3600);
 }
 
 /**
@@ -448,7 +518,7 @@ async function fetchFeedCrossPoints({ mpaA, mpaB, backing, config = {} }: any) {
  *   cannot price that pair; use pool/orderbook candles instead, or
  *   getFeedCandlesForMpaCross() when both legs are MPAs.
  */
-async function getFeedCandlesForPair(assetA: any, assetB: any, mpaAsset: any, backingAsset: any, config: any = {}) {
+async function getFeedCandlesForPair(assetA: AssetRef, assetB: AssetRef, mpaAsset: AssetRef, backingAsset: AssetRef, config: FeedConfig = {}): Promise<number[][]> {
     const aId = String(assetA?.id || '');
     const bId = String(assetB?.id || '');
     const mpaId = String(mpaAsset?.id || '');
@@ -476,7 +546,7 @@ async function getFeedCandlesForPair(assetA: any, assetB: any, mpaAsset: any, ba
  * @param {Object} legA – { mpa, backing } for one MPA leg
  * @param {Object} legB – { mpa, backing } for the other MPA leg
  */
-async function getFeedCandlesForMpaCross(assetA: any, assetB: any, legA: any, legB: any, config: any = {}) {
+async function getFeedCandlesForMpaCross(assetA: AssetRef, assetB: AssetRef, legA: FeedLeg, legB: FeedLeg, config: FeedConfig = {}): Promise<number[][]> {
     const aId = String(assetA?.id || '');
     const bId = String(assetB?.id || '');
     const mpaAId = String(legA?.mpa?.id || '');
@@ -499,10 +569,10 @@ async function getFeedCandlesForMpaCross(assetA: any, assetB: any, legA: any, le
             `cannot price ${assetA?.symbol || aId}/${assetB?.symbol || bId} from the feed`
         );
     }
-    const cfg: any = { ...DEFAULT_CONFIG, ...config };
+    const cfg: FeedConfig = { ...DEFAULT_CONFIG, ...config };
     const points = flip
-        ? await fetchFeedCrossPoints({ mpaA: legB.mpa, mpaB: legA.mpa, backing: legA.backing, config: cfg })
-        : await fetchFeedCrossPoints({ mpaA: legA.mpa, mpaB: legB.mpa, backing: legA.backing, config: cfg });
+        ? await fetchFeedCrossPoints({ mpaA: legB.mpa as AssetRef, mpaB: legA.mpa as AssetRef, backing: legA.backing as AssetRef, config: cfg })
+        : await fetchFeedCrossPoints({ mpaA: legA.mpa as AssetRef, mpaB: legB.mpa as AssetRef, backing: legA.backing as AssetRef, config: cfg });
     return applyGapFill(bucketPricesToCandles(points, cfg.intervalSeconds), cfg);
 }
 
@@ -518,7 +588,7 @@ async function getFeedCandlesForMpaCross(assetA: any, assetB: any, legA: any, le
 // ranges but always take full-window fetches otherwise (same boundary
 // semantics as the uncached path: only the window-start edge is affected).
 
-function feedCacheKey(feedCtx: any) {
+function feedCacheKey(feedCtx: FeedContext): string {
     if (feedCtx?.kind === 'cross') {
         const a = feedCtx.legs[0]?.mpa?.symbol || feedCtx.legs[0]?.mpa?.id || 'legA';
         const b = feedCtx.legs[1]?.mpa?.symbol || feedCtx.legs[1]?.mpa?.id || 'legB';
@@ -527,13 +597,15 @@ function feedCacheKey(feedCtx: any) {
     return slugPart(feedCtx?.legs[0]?.mpa?.symbol || feedCtx?.legs[0]?.mpa?.id || 'feed');
 }
 
-function feedOutputPath(feedKey: any, intervalSeconds: any, assetA: any, assetB: any) {
+function feedOutputPath(feedKey: string, intervalSeconds: number, assetA: AssetRef, assetB: AssetRef): string {
     const label = toIntervalLabel(intervalSeconds);
     const folder = `${slugPart(assetA?.symbol)}_${slugPart(assetB?.symbol)}`;
     return path.join(PATHS.MARKET_ADAPTER.FEED_DATA_DIR, folder, `feed_${slugPart(feedKey)}_${label}.json`);
 }
 
-function isFeedChunkMatch(meta: any, requestKey: any) {
+function isFeedChunkMatch(metaInput: unknown, requestKeyInput: unknown): boolean {
+    const meta = metaInput as { feed?: unknown; intervalSeconds?: unknown; assetA?: AssetRef; assetB?: AssetRef };
+    const requestKey = requestKeyInput as { feed: string; intervalSeconds: number; assetA: AssetRef; assetB: AssetRef };
     if (meta.feed !== requestKey.feed) return false;
     if (meta.intervalSeconds !== requestKey.intervalSeconds) return false;
     if (meta.assetA?.id !== requestKey.assetA.id || meta.assetB?.id !== requestKey.assetB.id) return false;
@@ -541,7 +613,7 @@ function isFeedChunkMatch(meta: any, requestKey: any) {
     return true;
 }
 
-async function fetchFeedCandlesSequentially(feedCtx: any, assetA: any, assetB: any, opts: any = {}) {
+async function fetchFeedCandlesSequentially(feedCtx: FeedContext, assetA: AssetRef, assetB: AssetRef, opts: { intervalSeconds?: number; chunkMonths?: number; timeRange?: { gte?: string; lte?: string }; outPath?: string } = {}): Promise<number[][]> {
     const intervalSeconds = Number(opts.intervalSeconds) || 3600;
     const chunkMonths = Number(opts.chunkMonths) || 1;
     const timeRange = opts.timeRange;
@@ -560,7 +632,7 @@ async function fetchFeedCandlesSequentially(feedCtx: any, assetA: any, assetB: a
 
     const plainWindows = buildFetchWindowsFromRange(timeRange, chunkMonths);
     // Windows are fetch-planning splits only; storage is fixed month shards.
-    const windows = plainWindows.map((w: any, idx: any) => ({
+    const windows: FetchWindow[] = plainWindows.map((w, idx) => ({
         index: idx + 1,
         gte: w.gte,
         lte: w.lte,
@@ -572,7 +644,7 @@ async function fetchFeedCandlesSequentially(feedCtx: any, assetA: any, assetB: a
             { intervalSeconds, timeRange: { gte, lte } },
         )
         : (gte: string, lte: string) => getFeedCandlesForPair(
-            assetA, assetB, feedCtx.legs[0].mpa, feedCtx.legs[0].backing,
+            assetA, assetB, feedCtx.legs[0].mpa as AssetRef, feedCtx.legs[0].backing as AssetRef,
             { intervalSeconds, timeRange: { gte, lte } },
         );
 
@@ -581,7 +653,7 @@ async function fetchFeedCandlesSequentially(feedCtx: any, assetA: any, assetB: a
         outPath,
         requestKey,
         isMatch: isFeedChunkMatch,
-        metaForWindow: (window: any) => ({
+        metaForWindow: (window) => ({
             source: `https://kibana.bitshares.dev (bitshares-*, op_type 19, feed ${feedKey})`,
             feed: feedKey,
             assetA: requestKey.assetA,

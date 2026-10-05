@@ -61,6 +61,8 @@
  * ===============================================================================
  */
 
+import { getErrorMessage, getErrorCode, getErrorField } from './modules/utils/errors.js';
+import type { Server, Socket } from 'node:net';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
@@ -78,8 +80,69 @@ const { orderNodesForSettings } = require('./modules/node_health_cache');
 const credentialPolicy = require('./modules/credential_policy');
 const { getStorage } = require('./modules/storage');
 const storage = getStorage();
-let _nativeChainClient: any = null;
-let _nativeNodeList: any[] = [];
+interface NativeChainClient {
+    getStatus(): string;
+    setNodes(nodes: string[]): void;
+    connect(): Promise<unknown>;
+    disconnect(): void;
+    transport?: { getNodeUrl?(): string | undefined };
+    db: { lookup_asset_symbols(refs: string[]): Promise<unknown> };
+}
+
+interface SigningClientEntry {
+    signingClient: { dispose?(): void; client: SigningClientLike };
+    createdAt: number;
+}
+
+interface PolicyConfigShape {
+    sessionTtlMs?: number;
+    accounts?: Record<string, { botHmacSecret?: string }>;
+    [key: string]: unknown;
+}
+
+interface BroadcastGuard {
+    isFired(): boolean;
+    promise: Promise<unknown>;
+    currentNode: string | null;
+    fire(reason: string): void;
+    clearTimer(): void;
+}
+
+interface BroadcastOptions {
+    startedAt?: number;
+    guard?: BroadcastGuard;
+    workRef?: { work: Promise<unknown> | null };
+}
+
+interface RequestPayload {
+    type?: string;
+    accountName?: string;
+    sessionId?: string | null;
+    operations?: Array<{ op_name?: string; op_data?: unknown }>;
+    nodeUrl?: unknown;
+    [key: string]: unknown;
+}
+
+interface TxBuilder {
+    broadcast(): Promise<unknown>;
+    [key: string]: unknown;
+}
+
+interface SigningClientLike {
+    initPromise?: Promise<unknown>;
+    newTx(): TxBuilder;
+}
+
+interface UncertainError extends Error {
+    code: string;
+    uncertain: boolean;
+    accountName: string;
+    startedAt: number;
+    ageMs: number;
+}
+
+let _nativeChainClient: NativeChainClient;
+let _nativeNodeList: string[] = [];
 
 const native = require('./modules/bitshares-native');
 _nativeChainClient = native.createChainClient({ rpcTimeoutMs: TIMING.CONNECTION_TIMEOUT_MS, connectTimeoutMs: TIMING.CONNECTION_TIMEOUT_MS });
@@ -97,7 +160,7 @@ const assetResolver = async (assetRef: string): Promise<string | null> => {
         const result = await _nativeChainClient.db.lookup_asset_symbols([assetRef]);
         const asset = Array.isArray(result) ? result[0] : null;
         return asset?.id ? String(asset.id) : null;
-    } catch (_: any) {
+    } catch (_) {
         return null;
     }
 };
@@ -124,7 +187,6 @@ const daemonLogger = new Logger('credential-daemon');
 
 // Resolve project root — handles running from dist/ (compiled) vs source
 const { PATHS } = require('./modules/paths');
-const { getErrorMessage } = require('./modules/utils/errors');
 const { sleep } = require('./modules/order/utils/system');
 const { classifyBroadcastFailure } = require('./modules/broadcast_failure');
 
@@ -134,16 +196,16 @@ const RUNTIME_DIR = getCredentialRuntimeDir();
 const SOCKET_PATH = getCredentialSocketPath({ runtimeDir: RUNTIME_DIR });
 const READY_FILE = getCredentialReadyFilePath({ runtimeDir: RUNTIME_DIR });
 
-let vaultSecret: any = null;
-let sessionSecret: any = null;
-let sessionAccountKeys: Map<any, any> = new Map();
-let server: any = null;
+let vaultSecret: Record<string, unknown> | Buffer | null = null;
+let sessionSecret: Record<string, unknown> | Buffer | null = null;
+let sessionAccountKeys: Map<string, unknown> = new Map();
+let server: Server | null = null;
 let daemonShuttingDown = false;
 
 // Policy layer and session management
-let policyConfig: any = null;
+let policyConfig: PolicyConfigShape | null = null;
 let activeSessions: Map<string, { accountName: string; createdAt: number }> = new Map();
-let auditLogPath: any = null;
+let auditLogPath: string | null = null;
 let auditLogQueue: Array<() => Promise<void>> = [];
 let auditLogDraining = false;
 // Policy-file watcher (cleared on shutdown so we don't leak the inotify FD
@@ -157,14 +219,14 @@ let auditPruneIntervalTimer: ReturnType<typeof setInterval> | null = null;
 // Key rotation: loadDaemonPrivateKey re-reads from vault on every call. If the WIF changes the
 // fingerprint changes → cache miss → new signing client created with the current key. No staleness.
 // Cleared on transport reconnect (see broadcastWithDeadline). TTL-pruned (30 min) in pruneStaleSigningClients.
-const signingClientCache = new Map<string, { signingClient: any; createdAt: number }>();
+const signingClientCache = new Map<string, SigningClientEntry>();
 
-function debugLog(message: string, err: any = null) {
+function debugLog(message: string, err: unknown = null): void {
     const suffix = err && getErrorMessage(err) ? `: ${getErrorMessage(err)}` : '';
     daemonLogger.error(`[credential-daemon][debug] ${message}${suffix}`);
 }
 
-function formatFatalReason(reason: any) {
+function formatFatalReason(reason: unknown): string {
     if (!reason) return 'unknown';
     if (reason instanceof Error) return reason.stack || reason.message;
     if (typeof reason === 'object') {
@@ -178,17 +240,17 @@ function formatFatalReason(reason: any) {
 }
 
 function registerProcessDiagnostics() {
-    process.on('uncaughtException', (err: any) => {
+    process.on('uncaughtException', (err: unknown) => {
         daemonLogger.error(`[credential-daemon] Uncaught exception: ${formatFatalReason(err)}`);
         shutdown(1, 'uncaughtException');
     });
 
-    process.on('unhandledRejection', (reason: any) => {
+    process.on('unhandledRejection', (reason: unknown) => {
         daemonLogger.error(`[credential-daemon] Unhandled rejection: ${formatFatalReason(reason)}`);
         shutdown(1, 'unhandledRejection');
     });
 
-    process.on('exit', (code: any) => {
+    process.on('exit', (code: number) => {
         daemonLogger.log?.(`[credential-daemon] Process exiting with code ${code}`);
     });
 }
@@ -237,13 +299,13 @@ function pruneStaleSigningClients() {
     }
 }
 
-function checkSessionValid(accountName: any, sessionId: any) {
+function checkSessionValid(accountName: string, sessionId: string | null | undefined): boolean {
     // purgeExpiredSessions removed: handled by the 5-min interval timer in initialize()
     if (!sessionId) {
         return false;
     }
     const session = activeSessions.get(sessionId);
-    return session && session.accountName === accountName;
+    return Boolean(session && session.accountName === accountName);
 }
 
 function drainAuditLogQueue() {
@@ -251,8 +313,8 @@ function drainAuditLogQueue() {
         const task = auditLogQueue.shift();
         if (task) {
             try {
-                task().catch((err: any) => debugLog('Audit log operation failed', err));
-            } catch (err: any) {
+                task().catch((err) => debugLog('Audit log operation failed', err));
+            } catch (err) {
                 debugLog('Audit log operation failed', err);
             }
         }
@@ -282,13 +344,13 @@ function performAuditLogPrune() {
                 for (let i = TIMING.AUDIT_LOG_MAX_FILES - 1; i >= 1; i--) {
                     const oldPath = auditLogPath + '.' + i;
                     const newPath = auditLogPath + '.' + (i + 1);
-                    try { if (storage.exists(oldPath)) storage.rename(oldPath, newPath); } catch (err: any) { debugLog('Audit log rotation rename failed', err); }
+                    try { if (storage.exists(oldPath)) storage.rename(oldPath, newPath); } catch (err) { debugLog('Audit log rotation rename failed', err); }
                 }
-                try { if (storage.exists(auditLogPath)) storage.rename(auditLogPath, auditLogPath + '.1'); } catch (err: any) { debugLog('Audit log rotation rename failed', err); }
+                try { if (storage.exists(auditLogPath)) storage.rename(auditLogPath, auditLogPath + '.1'); } catch (err) { debugLog('Audit log rotation rename failed', err); }
                 resolve();
                 return;
             }
-        } catch (err: any) {
+        } catch (err) {
             debugLog('Audit log size check failed', err);
         }
         resolve();
@@ -299,11 +361,11 @@ function pruneAuditLog() {
     return queueAuditLogWork(() => performAuditLogPrune());
 }
 
-function appendAuditLog(entry: any) {
+function appendAuditLog(entry: Record<string, unknown>): void | Promise<void> {
     if (!auditLogPath) return;
     const line = JSON.stringify(entry) + '\n';
     return queueAuditLogWork(() => new Promise<void>((resolve) => {
-        fs.appendFile(auditLogPath, line, (err: any) => {
+        fs.appendFile(auditLogPath, line, (err: Error | null) => {
             if (err) {
                 debugLog('Audit log write failed', err);
             }
@@ -339,7 +401,7 @@ async function resolveVaultSecret() {
                 daemonLogger.log?.('[credential-daemon] Bootstrap secret transfer completed');
                 return normalizeBootstrapCredential(secret);
             }
-        } catch (err: any) {
+        } catch (err) {
             // Bootstrap path file was consumed on a previous run (or never
             // written).  This is normal for a PM2 restart/resurrect — the
             // daemon is locked and needs re-authentication.
@@ -365,7 +427,7 @@ async function resolveVaultSecret() {
     return chainKeys.authenticate();
 }
 
-function removeSecureStaleFile(filePath: string, expectedType: any) {
+function removeSecureStaleFile(filePath: string, expectedType: string): void {
     if (!storage.exists(filePath)) {
         return;
     }
@@ -382,7 +444,7 @@ function removeSecureStaleFile(filePath: string, expectedType: any) {
     storage.unlink(filePath);
 }
 
-async function loadCurrentPrivateKey(accountName: any) {
+async function loadCurrentPrivateKey(accountName: string): Promise<unknown> {
     return loadDaemonPrivateKey(accountName, {
         vaultSecret,
         sessionAccountKeys,
@@ -391,8 +453,8 @@ async function loadCurrentPrivateKey(accountName: any) {
     });
 }
 
-async function executeOperationsWithClient(client: any, operations: any) {
-    const ops = Array.isArray(operations) ? operations.filter(Boolean) : [];
+async function executeOperationsWithClient(client: SigningClientLike, operations: unknown): Promise<{ success: boolean; raw: unknown; operation_results: unknown[] }> {
+    const ops = (Array.isArray(operations) ? operations.filter(Boolean) : []) as Array<{ op_name?: string; op_data?: unknown }>;
     if (ops.length === 0) {
         return { success: true, operation_results: [], raw: null };
     }
@@ -413,15 +475,22 @@ async function executeOperationsWithClient(client: any, operations: any) {
         if (typeof tx[op.op_name] !== 'function') {
             throw new Error(`Transaction builder does not support ${op.op_name}`);
         }
-        tx[op.op_name](op.op_data);
+        (tx[op.op_name] as (data: unknown) => void)(op.op_data);
     }
 
     const result = await tx.broadcast();
-    const operationResults =
-        (result && Array.isArray(result.operation_results) && result.operation_results.length > 0 && result.operation_results) ||
-        (result && result.trx && Array.isArray(result.trx.operation_results) && result.trx.operation_results.length > 0 && result.trx.operation_results) ||
-        (Array.isArray(result) && result[0] && result[0].trx && Array.isArray(result[0].trx.operation_results) && result[0].trx.operation_results.length > 0 && result[0].trx.operation_results) ||
-        [];
+    const r = result as { operation_results?: unknown[]; trx?: { operation_results?: unknown[] } } | null;
+    let operationResults: unknown[] = [];
+    if (r && !Array.isArray(r) && Array.isArray(r.operation_results) && r.operation_results.length > 0) {
+        operationResults = r.operation_results;
+    } else if (r && !Array.isArray(r) && r.trx && Array.isArray(r.trx.operation_results) && r.trx.operation_results.length > 0) {
+        operationResults = r.trx.operation_results;
+    } else if (Array.isArray(result) && result[0]) {
+        const first = result[0] as { trx?: { operation_results?: unknown[] } };
+        if (first.trx && Array.isArray(first.trx.operation_results) && first.trx.operation_results.length > 0) {
+            operationResults = first.trx.operation_results;
+        }
+    }
 
     return {
         success: true,
@@ -435,8 +504,8 @@ async function executeOperationsWithClient(client: any, operations: any) {
  * The bot maps this code to BroadcastUncertainError and runs verify-before-
  * retry (chain read + adoption) instead of re-broadcasting.
  */
-function buildUncertainError(accountName: any, startedAt: number, detail: string): any {
-    const err: any = new Error(`${DAEMON_CODES.BROADCAST_DEADLINE}:${detail}`);
+function buildUncertainError(accountName: string, startedAt: number, detail: string): UncertainError {
+    const err = new Error(`${DAEMON_CODES.BROADCAST_DEADLINE}:${detail}`) as UncertainError;
     err.code = DAEMON_CODES.BROADCAST_DEADLINE;
     err.uncertain = true;
     err.accountName = accountName;
@@ -464,7 +533,7 @@ function buildUncertainError(accountName: any, startedAt: number, detail: string
  * chain AFTER the bot already verified chain absence and re-broadcast the
  * same operation.
  */
-let broadcastChain: Promise<any> = Promise.resolve();
+let broadcastChain: Promise<unknown> = Promise.resolve();
 function serializeBroadcast<T>(fn: () => Promise<T>, getWork?: () => Promise<unknown>): Promise<T> {
     const run = broadcastChain.then(fn, fn);
     // The chain must wait for the WORK to settle, not the deadline-raced
@@ -489,11 +558,11 @@ function serializeBroadcast<T>(fn: () => Promise<T>, getWork?: () => Promise<unk
  * before every attempt, so a late broadcast can never land after the bot
  * already verified chain absence and re-broadcast the operation.
  */
-function createBroadcastGuard(accountName: any, startedAt: number, deadlineMs: number) {
+function createBroadcastGuard(accountName: string, startedAt: number, deadlineMs: number): BroadcastGuard {
     let fired = false;
-    let timer: any = null;
-    let rejectGuard: any = null;
-    const promise = new Promise((_, reject) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let rejectGuard: (reason?: unknown) => void = () => {};
+    const promise = new Promise<unknown>((_, reject) => {
         rejectGuard = reject;
         timer = setTimeout(() => {
             fired = true;
@@ -537,7 +606,7 @@ function resolveInnerDeadlineMs() {
         : 20000;
 }
 
-async function broadcastWithDeadline(accountName: any, privateKey: any, broadcastFn: any, nodeUrl: string | null = null, opts: any = {}) {
+async function broadcastWithDeadline(accountName: string, privateKey: unknown, broadcastFn: (client: SigningClientLike) => Promise<unknown>, nodeUrl: string | null = null, opts: BroadcastOptions = {}): Promise<unknown> {
     // Deadline-capped broadcast: each node gets CREDENTIAL_DAEMON_BROADCAST_RETRIES
     // attempts pinned to it (the transport sweeps ONLY the pinned node), and
     // only when they ALL fail with failures that provably never reached the
@@ -580,7 +649,7 @@ async function broadcastWithDeadline(accountName: any, privateKey: any, broadcas
         // provably-untransmitted errors do we report the node failure and
         // rotate to the next best node.
         const attemptsPerNode = Math.max(1, maxRetries);
-        let lastErr: any = null;
+        let lastErr: unknown = null;
         const exhaustedNodes: string[] = [];
 
         // Build the ordered candidate list: the bot-supplied nodeUrl is the
@@ -721,12 +790,12 @@ async function broadcastWithDeadline(accountName: any, privateKey: any, broadcas
                     // the shared client don't inherit the single-node pin.
                     _nativeChainClient.setNodes(_nativeNodeList.length > 0 ? _nativeNodeList : NODE_MANAGEMENT.DEFAULT_NODES);
                     return result;
-                } catch (err: any) {
+                } catch (err) {
                     // Guard-fired aborts (deadline during connect/init) must
                     // propagate as uncertain immediately — they are never
                     // retryable, even during the connect phase, and a retry
                     // would just re-enter the same deadlined attempt.
-                    if (err?.code === DAEMON_CODES.BROADCAST_DEADLINE || err?.uncertain === true) {
+                    if (getErrorCode(err) === DAEMON_CODES.BROADCAST_DEADLINE || getErrorField<boolean>(err, 'uncertain') === true) {
                         throw err;
                     }
                     // Connect-phase failures are always pre-transmit: no broadcast
@@ -813,7 +882,7 @@ function refreshNodeList() {
                 _nativeChainClient.setNodes(bestNodes);
                 daemonLogger.log?.(`[credential-daemon] Node list refreshed: using best ${bestNodes.length} nodes from cache.`);
             }
-        } catch (err: any) {
+        } catch (err) {
             daemonLogger.warn?.(`[credential-daemon] Failed to refresh node list: ${getErrorMessage(err)}`);
         }
     }
@@ -828,9 +897,10 @@ function refreshNodeList() {
 const { createNodeHealthLedger } = require('./modules/daemon_node_health');
 const daemonNodeHealth = createNodeHealthLedger({ logger: daemonLogger });
 
-function getCredentialDaemonNodeRefreshIntervalMs(settings: any) {
-    const configured = settings?.NODES?.credentialDaemonRefreshIntervalMs
-        ?? settings?.NODES?.CREDENTIAL_DAEMON_NODE_REFRESH_INTERVAL_MS
+function getCredentialDaemonNodeRefreshIntervalMs(settings: unknown): number {
+    const s = settings as { NODES?: { credentialDaemonRefreshIntervalMs?: number; CREDENTIAL_DAEMON_NODE_REFRESH_INTERVAL_MS?: number } } | null | undefined;
+    const configured = s?.NODES?.credentialDaemonRefreshIntervalMs
+        ?? s?.NODES?.CREDENTIAL_DAEMON_NODE_REFRESH_INTERVAL_MS
         ?? NODE_MANAGEMENT.CREDENTIAL_DAEMON_NODE_REFRESH_INTERVAL_MS;
     return Number.isFinite(configured) && configured > 0
         ? configured
@@ -853,7 +923,7 @@ async function initialize() {
         vaultSecret = await resolveVaultSecret();
         const accountsData = chainKeys.loadAccounts();
         const sessionState = buildSessionAccountCache(accountsData, vaultSecret, {
-            onDecryptError: (accountName: any, err: any) => {
+            onDecryptError: (accountName: string, err: unknown) => {
                 debugLog(`Skipping account '${accountName}' — decryption failed: ${getErrorMessage(err)}`);
             },
         });
@@ -873,7 +943,7 @@ async function initialize() {
         if (!storage.exists(auditLogDir)) {
             try {
                 ensureDir(auditLogDir, { mode: 0o700 });
-            } catch (err: any) {
+            } catch (err) {
                 debugLog(`Failed to create audit log directory ${auditLogDir}: ${getErrorMessage(err)}`);
             }
         }
@@ -927,7 +997,7 @@ async function initialize() {
             try {
                 policyConfig = credentialPolicy.reloadPolicyFromDisk(policyConfigPath, { strict: true });
                 debugLog('Policy config reloaded');
-            } catch (err: any) {
+            } catch (err) {
                 daemonLogger.error?.(`[credential-daemon] SIGHUP policy reload failed: ${getErrorMessage(err)}`);
                 shutdown(1, 'invalid policy reload');
                 return;
@@ -958,7 +1028,7 @@ async function initialize() {
                     // intentionally distinct from SIGHUP's fail-closed policy.
                 }, 500);
             });
-        } catch (watchErr: any) {
+        } catch (watchErr) {
             // fs.watch can fail on exotic filesystems (network FS, FUSE).
             // Log at WARN (not debug): without the watch AND without a
             // successful SIGHUP from the bot, the daemon keeps the stale
@@ -974,17 +1044,18 @@ async function initialize() {
         try {
             removeSecureStaleFile(SOCKET_PATH, 'socket');
             removeSecureStaleFile(READY_FILE, 'file');
-        } catch (err: any) {
+        } catch (err) {
             throw new Error(`Insecure credential runtime path detected: ${getErrorMessage(err)}`);
         }
 
         // Create server
-        server = net.createServer(handleConnection);
-        server.listen(SOCKET_PATH, () => {
+        const srv = net.createServer(handleConnection) as Server;
+        server = srv;
+        srv.listen(SOCKET_PATH, () => {
             try {
                 storage.chmod(SOCKET_PATH, 0o600);
                 assertPrivatePathSecurity(SOCKET_PATH, { expectedType: 'socket', requiredMode: 0o600 });
-            } catch (err: any) {
+            } catch (err) {
                 daemonLogger.error?.(`[credential-daemon] FATAL: Insecure socket permissions on ${SOCKET_PATH}: ${getErrorMessage(err)}`);
                 shutdown(1, 'insecure socket permissions');
                 return;
@@ -998,14 +1069,14 @@ async function initialize() {
                 storage.writeFile(READY_FILE, readyPayload, { mode: 0o600 });
                 assertPrivatePathSecurity(READY_FILE, { expectedType: 'file', requiredMode: 0o600 });
                 daemonLogger.log?.(`[credential-daemon] Ready: listening on ${SOCKET_PATH}`);
-            } catch (err: any) {
+            } catch (err) {
                 daemonLogger.error?.(`[credential-daemon] FATAL: Insecure ready-file permissions on ${READY_FILE}: ${getErrorMessage(err)}`);
                 shutdown(1, 'insecure ready-file permissions');
                 return;
             }
         });
 
-        server.on('error', (error: any) => {
+        srv.on('error', (error: Error) => {
             daemonLogger.error(`Server error: ${getErrorMessage(error)}`);
             process.exit(1);
         });
@@ -1023,8 +1094,8 @@ async function initialize() {
             );
         });
 
-    } catch (error: any) {
-        daemonLogger.error(`[credential-daemon] Startup failed: ${error.stack || getErrorMessage(error)}`);
+    } catch (error) {
+        daemonLogger.error(`[credential-daemon] Startup failed: ${getErrorField<string>(error, 'stack') || getErrorMessage(error)}`);
         shutdown(1, 'startup failure');
     }
 }
@@ -1035,14 +1106,14 @@ async function initialize() {
  * 
  * @param {net.Socket} socket - Connected client socket
  */
-function handleConnection(socket: any) {
+function handleConnection(socket: Socket): void {
     let buffer = '';
     // Broadcast deadline guards for requests on this socket. Fired when the
     // socket dies (bot outer timeout destroys its end, crash, restart): the
     // queued/in-flight broadcast for a client that can no longer receive the
     // reply must abort — otherwise it can land on chain after the bot
     // verified chain absence and re-broadcast the same operation.
-    const activeGuards = new Set<any>();
+    const activeGuards = new Set<BroadcastGuard>();
 
     const abortSocketGuards = () => {
         for (const guard of activeGuards) {
@@ -1059,7 +1130,7 @@ function handleConnection(socket: any) {
         socket.destroy();
     });
 
-    socket.on('data', (data: any) => {
+    socket.on('data', (data: Buffer) => {
         try {
             buffer += data.toString();
 
@@ -1088,7 +1159,7 @@ function handleConnection(socket: any) {
         socket.destroy();
     });
 
-    socket.on('error', (error: any) => {
+    socket.on('error', (error: Error) => {
         daemonLogger.debug?.('[credential-daemon] Socket error: ' + getErrorMessage(error));
         abortSocketGuards();
         socket.destroy();
@@ -1107,13 +1178,13 @@ function handleConnection(socket: any) {
  * @param {string} requestStr - JSON string with {type, accountName}
  * @param {net.Socket} socket - Client socket to send response
  */
-function processRequest(requestStr: string, socket: any, activeGuards: Set<any> = new Set()) {
+function processRequest(requestStr: string, socket: Socket, activeGuards: Set<BroadcastGuard> = new Set()): void {
     if (daemonShuttingDown) return;
     // The outer try/catch handles JSON parse errors and any synchronous throws.
     // Each async branch manages its own errors via .catch() → sendError(), so
     // the outer catch is not expected to fire for async operation failures.
     try {
-        const request = JSON.parse(requestStr);
+        const request = JSON.parse(requestStr) as RequestPayload;
         const { type, accountName } = request;
 
         if (!type) {
@@ -1149,7 +1220,7 @@ function processRequest(requestStr: string, socket: any, activeGuards: Set<any> 
                     });
                     sendSuccess(socket, { sessionId });
                 })
-                .catch((error: any) => sendError(socket, getErrorMessage(error)));
+                .catch((error: unknown) => sendError(socket, getErrorMessage(error)));
             return;
         }
 
@@ -1192,7 +1263,7 @@ function processRequest(requestStr: string, socket: any, activeGuards: Set<any> 
             const context = credentialPolicy.buildPolicyContext(request);
 
             credentialPolicy.evaluatePolicy(policy, context)
-                .then(async (result: any) => {
+                .then(async (result: { allow: boolean; policyId?: string | null; reason?: string | null }) => {
                     if (!result.allow) {
                         appendAuditLog({
                             event: 'sign_denied',
@@ -1201,7 +1272,7 @@ function processRequest(requestStr: string, socket: any, activeGuards: Set<any> 
                             policyId: result.policyId,
                             reason: result.reason,
                             opCount: operations.length,
-                            opTypes: operations.map((o: any) => o && o.op_name).filter(Boolean),
+                            opTypes: operations.map((o) => o && o.op_name).filter(Boolean),
                             timestamp: new Date().toISOString(),
                         });
                         sendError(socket, credentialPolicy.POLICY_DENIED_PREFIX + result.reason);
@@ -1221,29 +1292,31 @@ function processRequest(requestStr: string, socket: any, activeGuards: Set<any> 
                     const broadcastGuard = createBroadcastGuard(accountName, broadcastStartedAt, resolveInnerDeadlineMs());
                     activeGuards.add(broadcastGuard);
                     const broadcastWorkRef: { work: Promise<unknown> | null } = { work: null };
-                    let signResult: any;
+                    let signResult: unknown;
                     try {
                         signResult = await serializeBroadcast(
                             () => broadcastWithDeadline(
                                 accountName, privateKey,
-                                (client: any) => executeOperationsWithClient(client, operations),
+                                (client: unknown) => executeOperationsWithClient(client as SigningClientLike, operations),
                                 broadcastNodeUrl,
                                 { guard: broadcastGuard, startedAt: broadcastStartedAt, workRef: broadcastWorkRef }
                             ),
                             () => broadcastWorkRef.work || Promise.resolve()
                         );
-                    } catch (broadcastErr: any) {
-                        if (broadcastErr && broadcastErr.code === DAEMON_CODES.BROADCAST_DEADLINE) {
+                    } catch (broadcastErr) {
+                        if (broadcastErr && getErrorCode(broadcastErr) === DAEMON_CODES.BROADCAST_DEADLINE) {
+                            const broadcastErrAgeMs = getErrorField<number>(broadcastErr, 'ageMs');
+                            const broadcastErrStartedAt = getErrorField<string>(broadcastErr, 'startedAt');
                             appendAuditLog({
                                 event: 'sign_timeout',
                                 accountName,
                                 sessionId,
                                 nodeUrl: broadcastGuard.currentNode || broadcastNodeUrl,
                                 opCount: operations.length,
-                                opTypes: operations.map((o: any) => o && o.op_name).filter(Boolean),
-                                ageMs: broadcastErr.ageMs,
-                                startedAt: broadcastErr.startedAt
-                                    ? new Date(broadcastErr.startedAt).toISOString()
+                                opTypes: operations.map((o) => o && o.op_name).filter(Boolean),
+                                ageMs: broadcastErrAgeMs,
+                                startedAt: broadcastErrStartedAt
+                                    ? new Date(broadcastErrStartedAt).toISOString()
                                     : null,
                                 timestamp: new Date().toISOString(),
                             });
@@ -1266,17 +1339,17 @@ function processRequest(requestStr: string, socket: any, activeGuards: Set<any> 
                         accountName,
                         sessionId,
                         opCount: operations.length,
-                        opTypes: operations.map((o: any) => o && o.op_name).filter(Boolean),
+                        opTypes: operations.map((o) => o && o.op_name).filter(Boolean),
                         timestamp: new Date().toISOString(),
                     });
-                    sendSuccess(socket, signResult);
+                    sendSuccess(socket, signResult as Record<string, unknown>);
                 })
-                .catch((error: any) => sendError(socket, getErrorMessage(error)));
+                .catch((error: unknown) => sendError(socket, getErrorMessage(error)));
             return;
         }
 
         return sendError(socket, `Unknown credential type: ${type}`);
-    } catch (error: any) {
+    } catch (error) {
         sendError(socket, getErrorMessage(error));
     }
 }
@@ -1287,7 +1360,7 @@ function processRequest(requestStr: string, socket: any, activeGuards: Set<any> 
  * @param {net.Socket} socket - Client socket
  * @param {Object} data - Response data
  */
-function sendSuccess(socket: any, data: any) {
+function sendSuccess(socket: Socket, data: Record<string, unknown>): void {
     const response = JSON.stringify({
         success: true,
         ...data
@@ -1304,7 +1377,7 @@ function sendSuccess(socket: any, data: any) {
  * @param {number} code - Error code
  * @param {Object} [extra] - Extra fields merged into the response (e.g. nodeUrl)
  */
-function sendError(socket: any, message: string, code: string | null = null, extra: Record<string, any> = {}) {
+function sendError(socket: Socket, message: string, code: string | null = null, extra: Record<string, unknown> = {}): void {
     const response = JSON.stringify({
         success: false,
         error: message,

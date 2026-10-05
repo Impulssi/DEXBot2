@@ -2,7 +2,7 @@
 
 This directory contains the comprehensive technical documentation for the DEXBot2 trading bot. It is designed to guide developers from high-level architecture down to the nuances of fund accounting and state management.
 
-**Version context:** v1.6.7 (released).
+**Version context:** v1.6.11 (released).
 
 ---
 
@@ -36,7 +36,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **AMA Fitting**: Parameter fitting, comparison charts, and LP data workflows
 - **Bot Fitting**: Grid parameter sweep backtests for AMA winners
 - **TradingView Exports**: Chart export utilities for visual analysis
-- **Trade Profitability**: FIFO-based PnL analysis from Kibana fill data (`trade_profitability.ts`)
+- **Trade Profitability**: FIFO-based PnL analysis from Kibana fill data (`trade_profitability.ts`), plus the self-contained HTML report behind `dexbot pnl` (`pnl_report.ts`) with a per-account month-shard fill cache (`fills_cache.ts`)
 - **Bot Usage Discovery**: On-chain bot account finder and Kibana query helpers (`bot_usage/`)
 
 ### 🦀 [Claw](../claw/README.md)
@@ -210,6 +210,8 @@ While these docs explain the *why*, the *how* lives in the code. See the full [m
 - **`modules/order/processed_fill_store.ts`**: Processed fill dedupe tracker and persistence batching
 - **`modules/order/strategy.ts`**: Grid rebalancing, order activation, consolidation, rotation, and spread management
 - **`modules/order/sync_engine.ts`**: Blockchain synchronization, fill detection, order reconciliation
+- **`modules/order/genesis_policy.ts`**: Missing-ladder refusal and the `MISSING_GENESIS_POLICY` rebuild/halt decision ([GRID_PRICE_INVARIANT.md](GRID_PRICE_INVARIANT.md))
+- **`modules/version_notice.ts`**: The single version probe and status-line renderer for every entry point (`stat`/`pm2`/`start`/`restart`). Two sources (npm, then GitHub releases), a 12h cache for successes and a 15min backoff for failures, an explicit reason when it cannot answer, and a staged wait in `dexbot stat` ending in "no current version information" rather than silence
 - **`modules/credit_runtime.ts`**: Bot-scoped debt workflow executor (MPA and credit offer accept/repay/reborrow)
 - **`modules/cr_planner.ts`**: Shared collateral-ratio math layer for debt-first planning
 - **`modules/order/utils/math.ts`**: Precision conversions, RMS divergence calculation, fund allocation math

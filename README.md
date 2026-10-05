@@ -194,7 +194,8 @@ Keep the default settings first, and tune these:
 
 6. **Tune `minPrice` / `maxPrice`** around the market's volatility range. Once
    AMA is active, tighten them around the maximum expected market volatility
-   instead of using an unnecessarily wide range.
+   instead of an unnecessarily wide range. Use `dexbot tv <bot>` to see the
+   grid range and AMA recentering against real candles.
 
 ### Bot Options Reference
 
@@ -329,7 +330,7 @@ First-run details and common mistakes are covered in the [BitShares Onboarding T
 
 ```bash
 dexbot key                 # Master password/keyring
-dexbot bot                 # Interactive bot configurator (adapter flags: 2) Modify bot → 6) Adapter)
+dexbot bot                 # Interactive bot configurator
 
 dexbot reset {all|<bot>}   # Regenerate grid
 dexbot disable {all|<bot>} # Disable bot in config
@@ -338,11 +339,12 @@ dexbot enable {all|<bot>}  # Enable bot in config
 dexbot stat                # Runtime status (unlock or PM2)
 dexbot order [<bot>]       # Analyze order grids (--export → HTML to analysis/charts/)
 dexbot tv <bot|pool|A/B>   # TradingView 1h chart with AMA overlay (default: 3 months)
-dexbot credit [<bot>]      # Live summed MPA + borrowed-credit positions per asset per bot
+dexbot pnl <bot|account>   # HTML PnL report (--month N, optional --pair A/B)
+dexbot credit [<bot>]      # Live summed MPA + borrowed-credit positions
 dexbot export <bot>        # Export trades + settings (CSV/JSON) for analysis/
 
 dexbot update              # Update DEXBot2
-dexbot clear               # Clear log files (also clear-orders, clear-market-adapter, clear-all)
+dexbot clear               # Delete log files in <profiles>/logs
 dexbot default             # Reset settings to defaults
 dexbot help                # Grouped command reference
 ```

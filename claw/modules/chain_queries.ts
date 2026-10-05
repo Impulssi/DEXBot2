@@ -3,6 +3,7 @@
 import * as client from './bitshares_client.js';
 const { BitShares, waitForConnected } = client;
 import { loadDexbotOrderSystemUtils, loadDexbotOrderUtils } from './dexbot_bridge.js';
+import { normalizeAssetRef } from '../../modules/utils/asset_symbols.js';
 function getDexbotSystem() {
   return loadDexbotOrderSystemUtils();
 }
@@ -40,15 +41,19 @@ async function getDynamicGlobalProperties() {
 }
 
 async function getAsset(symbolOrId: any) {
-  if (/^1\.3\.\d+$/.test(symbolOrId)) {
-    const assets = await dbCall('get_assets', [[symbolOrId]]);
+  // Symbols arrive from a user-supplied `pair: "BASE/QUOTE"` option; BitShares
+  // answers lowercase lookups without error, so canonicalize before the id
+  // test and both lookup paths.
+  const ref = normalizeAssetRef(symbolOrId);
+  if (/^1\.3\.\d+$/.test(ref)) {
+    const assets = await dbCall('get_assets', [[ref]]);
     return assets[0] || null;
   }
 
   try {
-    return await getDexbotSystem().lookupAsset(BitShares, symbolOrId);
+    return await getDexbotSystem().lookupAsset(BitShares, ref);
   } catch {
-    const assets = await dbCall('lookup_asset_symbols', [[symbolOrId]]);
+    const assets = await dbCall('lookup_asset_symbols', [[ref]]);
     return assets[0] || null;
   }
 }

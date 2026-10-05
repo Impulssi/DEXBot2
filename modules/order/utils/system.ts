@@ -60,7 +60,10 @@ import * as OrderUtils from './order.js';
 import Logger from '../../order/logger.js';
 import { runtime } from '../../runtime.js';
 import { getErrorMessage } from '../../utils/errors.js';
+import { normalizeAssetRef } from '../../utils/asset_symbols.js';
 import { withTimeout } from './timeout.js';
+import type { OrderManagerLike, BotLike, AccountOrdersLike, ManagedOrder, AccountTotals, CowAction } from '../../types.js';
+import type { WorkingGrid as WorkingGridType } from '../working_grid.js';
 const { ensureDir, readJSON } = storage;
 // Lazy hold gate for the divergence-COW planner: MUST NOT be a static
 // import. system.ts already sits inside the module cycle manual_hold →
@@ -78,6 +81,51 @@ function isSlotHeldLazy(manager: any, slotId: any): boolean {
 }
 
 const systemLogger = new Logger('System');
+
+/** Minimal structural views of the external BitShares client used here. */
+export interface AssetMeta {
+    id?: string;
+    precision?: number;
+    symbol?: string;
+    [key: string]: unknown;
+}
+export interface PoolReserve {
+    asset_id?: string;
+    amount?: number | string;
+    [key: string]: unknown;
+}
+export interface PoolEntry {
+    id?: string;
+    asset_a?: string;
+    asset_b?: string;
+    asset_ids?: string[];
+    balance_a?: number | string;
+    balance_b?: number | string;
+    reserves?: PoolReserve[];
+    [key: string]: unknown;
+}
+export interface BitSharesDb {
+    lookup_asset_symbols?: (refs: string[]) => Promise<unknown[]>;
+    get_assets?: (refs: string[]) => Promise<unknown[]>;
+    get_objects?: (ids: string[]) => Promise<unknown[]>;
+    get_order_book?: (base: string, quote: string, depth: number) => Promise<{ bids?: Array<{ price?: unknown }>; asks?: Array<{ price?: unknown }> }>;
+    get_ticker?: (base: string, quote: string) => Promise<{ latest?: unknown; latest_price?: unknown }>;
+    get_liquidity_pools_by_both_assets?: (a: string, b: string) => Promise<PoolEntry[]>;
+    get_liquidity_pools_by_share_asset?: (ids: string[], a: boolean, b: boolean) => Promise<PoolEntry[]>;
+    list_liquidity_pools?: (pageSize: number, startId: string) => Promise<PoolEntry[]>;
+    get_liquidity_pools?: (pageSize: number, startId: string) => Promise<PoolEntry[]>;
+    getGlobalProperties?: () => Promise<unknown>;
+    call?: (method: string, args: unknown[]) => Promise<unknown>;
+    [key: string]: unknown;
+}
+export interface BitSharesAssets {
+    [symbol: string]: Promise<unknown> | unknown;
+}
+export interface BitSharesClient {
+    db?: BitSharesDb;
+    assets?: BitSharesAssets;
+    [key: string]: unknown;
+}
 
 /**
  * Lazily-bound ladder validator: resolveOnGridPivot from the COW runtime,
@@ -98,21 +146,21 @@ const systemLogger = new Logger('System');
  * @param {number} price - Candidate pivot price
  * @returns {Object|null} {price, slotIdx, snapped, nearestDrift} or null
  */
-function cowRuntimeLadderValidator(manager: any, price: number): { price: number; slotIdx: number | null; snapped: boolean; nearestDrift: number | null } | null {
+function cowRuntimeLadderValidator(manager: OrderManagerLike, price: number): { price: number; slotIdx: number | null; snapped: boolean; nearestDrift: number | null } | null {
     try {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const { resolveOnGridPivot } = require('../../dexbot_cow_runtime');
         const validated = resolveOnGridPivot(manager, price);
         if (!validated || validated.price == null || validated.idx == null) return null;
         return { price: validated.price, slotIdx: validated.idx, snapped: !!validated.snapped, nearestDrift: validated.nearestDrift };
-    } catch (e: any) {
+    } catch (e) {
         systemLogger.warn(`restoreLastFillPivot: ladder validator unavailable (${getErrorMessage(e)})`);
         return null;
     }
 }
 
-function _debugLogAndNull(method: any, symA: any, symB: any) {
-    return (err: any) => {
+function _debugLogAndNull(method: string, symA: string, symB: string) {
+    return (err: unknown) => {
         // debug level: underlying derivePoolPrice/deriveMarketPrice already log at warn
         systemLogger.debug(`derivePrice(${method}) for ${symA}/${symB}: ${getErrorMessage(err)}`);
         return null;
@@ -134,13 +182,19 @@ const poolIdCache = new Map();
  * @returns {Promise<Object>} Asset metadata with id, symbol, precision
  * @throws {Error} If asset cannot be found on blockchain
  */
-export const lookupAsset = async (BitShares: any, s: string): Promise<any> => {
+export const lookupAsset = async (BitShares: BitSharesClient, s: string): Promise<AssetMeta | null> => {
     if (!BitShares) return null;
-    let cached: any = null;
+    // BitShares symbols are canonical UPPERCASE and object ids ("1.3.x") are
+    // passed through; normalizing here means every caller (price derivation,
+    // fee cache, pool lookup) hits the chain with the canonical spelling.
+    // Only real symbols are rewritten: a blank/non-string ref must keep its
+    // original spelling in the CRITICAL error below.
+    if (typeof s === 'string' && s.trim()) s = normalizeAssetRef(s);
+    let cached: AssetMeta | null = null;
     if (BitShares?.assets) {
         try {
-            cached = await BitShares.assets[s];
-        } catch (_: any) {
+            cached = (await BitShares.assets[s]) as AssetMeta | null;
+        } catch (_) {
             systemLogger.debug(`lookupAsset: cache access failed for ${s}`);
         }
     }
@@ -150,18 +204,19 @@ export const lookupAsset = async (BitShares: any, s: string): Promise<any> => {
     }
 
     const methods = [
-        () => BitShares.db.lookup_asset_symbols([s]),
-        () => BitShares.db.get_assets([s])
+        () => BitShares.db?.lookup_asset_symbols?.([s]),
+        () => BitShares.db?.get_assets?.([s])
     ];
 
     for (const method of methods) {
         try {
             if (typeof method !== 'function') continue;
             const r = await method();
-            if (r?.[0]?.id && typeof r[0].precision === 'number') {
-                return { ...(cached || {}), ...r[0] };
+            const first = r?.[0] as AssetMeta | undefined;
+            if (first?.id && typeof first.precision === 'number') {
+                return { ...(cached || {}), ...first };
             }
-        } catch (e: any) {
+        } catch (e) {
             systemLogger.debug(`lookupAsset: method failed for ${s}: ${getErrorMessage(e)}`);
         }
     }
@@ -179,25 +234,30 @@ export const lookupAsset = async (BitShares: any, s: string): Promise<any> => {
  * @param {*} ref - Asset ID (e.g. '1.3.0') or symbol (e.g. 'BTS')
  * @returns {Promise<Object|null>} Asset object or null if unresolvable
  */
-export const resolveAssetByRef = async (BitShares: any, ref: any): Promise<any> => {
+export const resolveAssetByRef = async (BitShares: BitSharesClient, ref: unknown): Promise<AssetMeta | null> => {
     if (!BitShares?.db) return null;
-    const cacheKey = String(ref);
+    // Same rule as lookupAsset: canonicalize real symbols, leave anything else
+    // (object ids pass through, junk keeps its original spelling) untouched.
+    const cacheKey = typeof ref === 'string' ? normalizeAssetRef(ref) : String(ref);
     const method = /^1\.3\.\d+$/.test(cacheKey) ? 'get_assets' : 'lookup_asset_symbols';
-    const camelMethod = method.replace(/_([a-z])/g, (_: any, c: string) => c.toUpperCase());
+    const camelMethod = method.replace(/_([a-z])/g, (_: string, c: string) => c.toUpperCase());
     try {
-        if (typeof BitShares.db[camelMethod] === 'function') {
-            const result = await BitShares.db[camelMethod]([cacheKey]);
-            return Array.isArray(result) ? result[0] || null : null;
+        const camelFn = BitShares.db[camelMethod] as ((refs: string[]) => Promise<unknown[]>) | undefined;
+        if (typeof camelFn === 'function') {
+            const result = await camelFn([cacheKey]);
+            return (Array.isArray(result) ? (result[0] as AssetMeta) : null) || null;
         }
-        if (typeof BitShares.db[method] === 'function') {
-            const result = await BitShares.db[method]([cacheKey]);
-            return Array.isArray(result) ? result[0] || null : null;
+        const snakeFn = BitShares.db[method] as ((refs: string[]) => Promise<unknown[]>) | undefined;
+        if (typeof snakeFn === 'function') {
+            const result = await snakeFn([cacheKey]);
+            return (Array.isArray(result) ? (result[0] as AssetMeta) : null) || null;
         }
-        if (typeof BitShares.db.call === 'function') {
-            const result = await BitShares.db.call(method, [[cacheKey]]);
-            return Array.isArray(result) ? result[0] || null : null;
+        const callFn = BitShares.db.call;
+        if (typeof callFn === 'function') {
+            const result = await callFn(method, [[cacheKey]]);
+            return (Array.isArray(result) ? (result[0] as AssetMeta) : null) || null;
         }
-    } catch (e: any) {
+    } catch (e) {
         systemLogger.debug(`resolveAssetByRef failed for ${cacheKey}: ${getErrorMessage(e)}`);
     }
     return null;
@@ -213,7 +273,7 @@ export const resolveAssetByRef = async (BitShares: any, ref: any): Promise<any> 
  * @param {string} symB - Second asset symbol
  * @returns {Promise<number|null>} Derived market price or null if unavailable
  */
-export const deriveMarketPrice = async (BitShares: any, symA: string, symB: string): Promise<number | null> => {
+export const deriveMarketPrice = async (BitShares: BitSharesClient, symA: string, symB: string): Promise<number | null> => {
     try {
         const [aMeta, bMeta] = await Promise.all([
             lookupAsset(BitShares, symA),
@@ -228,10 +288,10 @@ export const deriveMarketPrice = async (BitShares: any, symA: string, symB: stri
         if (typeof BitShares.db?.get_order_book === 'function') {
             try {
                 const ob = await BitShares.db.get_order_book(baseId, quoteId, API_LIMITS.ORDERBOOK_DEPTH);
-                const bestBid = isValidNumber(ob.bids?.[0]?.price) ? toFiniteNumber(ob.bids[0].price) : null;
-                const bestAsk = isValidNumber(ob.asks?.[0]?.price) ? toFiniteNumber(ob.asks[0].price) : null;
+                const bestBid = isValidNumber(ob.bids?.[0]?.price) ? toFiniteNumber(ob.bids?.[0]?.price) : null;
+                const bestAsk = isValidNumber(ob.asks?.[0]?.price) ? toFiniteNumber(ob.asks?.[0]?.price) : null;
                 if (bestBid !== null && bestAsk !== null) mid = (bestBid + bestAsk) / 2;
-            } catch (e: any) {
+            } catch (e) {
                 systemLogger.debug(`deriveMarketPrice: get_order_book failed for ${symA}/${symB}: ${getErrorMessage(e)}`);
             }
         }
@@ -240,7 +300,7 @@ export const deriveMarketPrice = async (BitShares: any, symA: string, symB: stri
             try {
                 const t = await BitShares.db.get_ticker(baseId, quoteId);
                 mid = isValidNumber(t?.latest) ? toFiniteNumber(t.latest) : (isValidNumber(t?.latest_price) ? toFiniteNumber(t.latest_price) : null);
-            } catch (err: any) {
+            } catch (err) {
                 systemLogger.debug(`deriveMarketPrice: get_ticker failed for ${symA}/${symB}: ${getErrorMessage(err)}`);
             }
         }
@@ -251,7 +311,7 @@ export const deriveMarketPrice = async (BitShares: any, symA: string, symB: stri
             systemLogger.info(`deriveMarketPrice: ${symA}/${symB} rawMid=${mid?.toFixed(8)} -> finalPrice(B/A)=${finalPrice.toFixed(8)}`);
         }
         return finalPrice;
-    } catch (err: any) {
+    } catch (err) {
         systemLogger.warn(`deriveMarketPrice failed for ${symA}/${symB}: ${getErrorMessage(err)}`);
         return null;
     }
@@ -267,7 +327,7 @@ export const deriveMarketPrice = async (BitShares: any, symA: string, symB: stri
  * @param {string} symB - Second asset symbol
  * @returns {Promise<number|null>} Derived pool price or null if unavailable
  */
-export const derivePoolPrice = async (BitShares: any, symA: string, symB: string): Promise<number | null> => {
+export const derivePoolPrice = async (BitShares: BitSharesClient, symA: string, symB: string): Promise<number | null> => {
     try {
         const [aMeta, bMeta] = await Promise.all([
             lookupAsset(BitShares, symA),
@@ -275,7 +335,7 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
         ]);
         if (!aMeta?.id || !bMeta?.id) return null;
 
-        let chosen: any = null;
+        let chosen: PoolEntry | null = null;
         const cacheKey = [aMeta.id, bMeta.id].sort().join(':');
         const cachedPoolId = poolIdCache.get(cacheKey);
 
@@ -283,16 +343,16 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
             try {
                 const pools = await BitShares.db.get_liquidity_pools_by_both_assets(aMeta.id, bMeta.id);
                 if (Array.isArray(pools) && pools.length > 0) {
-                    const valid = pools.filter((p: any) => p?.id);
+                    const valid = pools.filter((p) => p?.id);
                     if (valid.length) {
-                        chosen = valid.sort((a: any, b: any) => {
-                            const getBal = (p: any) => toFiniteNumber(String(p.asset_a) === String(aMeta.id) ? p.balance_a : p.balance_b);
+                        chosen = valid.sort((a, b) => {
+                            const getBal = (p: PoolEntry) => toFiniteNumber(String(p.asset_a) === String(aMeta.id) ? p.balance_a : p.balance_b);
                             return getBal(b) - getBal(a);
                         })[0];
                         if (chosen) poolIdCache.set(cacheKey, chosen.id);
                     }
                 }
-            } catch (e: any) {
+            } catch (e) {
                 systemLogger.debug(`derivePoolPrice: get_liquidity_pools_by_both_assets failed: ${getErrorMessage(e)}`);
             }
         }
@@ -300,8 +360,8 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
         if (!chosen && cachedPoolId && typeof BitShares.db?.get_objects === 'function') {
             try {
                 const [pool] = await BitShares.db.get_objects([cachedPoolId]);
-                if (pool) chosen = pool;
-            } catch (e: any) {
+                if (pool) chosen = pool as unknown as PoolEntry;
+            } catch (e) {
                 poolIdCache.delete(cacheKey);
             }
         }
@@ -312,7 +372,7 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
                 try {
                     let startId = '1.19.0';
                     const pageSize = API_LIMITS.POOL_BATCH_SIZE;
-                    const allMatches: any[] = [];
+                    const allMatches: PoolEntry[] = [];
 
                     let scannedBatches = 0;
                     while (true) {
@@ -325,7 +385,7 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
                         const effectivePools = (startId === '1.19.0') ? pools : pools.slice(1);
                         if (effectivePools.length === 0) break;
 
-                        const matches = effectivePools.filter((p: any) => {
+                        const matches = effectivePools.filter((p) => {
                             const ids = (p.asset_ids || [p.asset_a, p.asset_b]).map(String);
                             return ids.includes(String(aMeta.id)) && ids.includes(String(bMeta.id));
                         });
@@ -337,19 +397,19 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
                         if (pools.length < pageSize) {
                             break;
                         } else {
-                            startId = pools[pools.length - 1].id;
+                            startId = String(pools[pools.length - 1].id);
                         }
                     }
 
                     if (allMatches.length) {
                         // Select pool with highest balance for our assetA
-                        chosen = allMatches.sort((a: any, b: any) => {
-                            const getBal = (p: any) => toFiniteNumber(String(p.asset_a) === String(aMeta.id) ? p.balance_a : p.balance_b);
+                        chosen = allMatches.sort((a, b) => {
+                            const getBal = (p: PoolEntry) => toFiniteNumber(String(p.asset_a) === String(aMeta.id) ? p.balance_a : p.balance_b);
                             return getBal(b) - getBal(a);
                         })[0];
-                        poolIdCache.set(cacheKey, chosen.id);
+                        if (chosen) poolIdCache.set(cacheKey, chosen.id);
                     }
-                } catch (e: any) {
+                } catch (e) {
                     systemLogger.warn(`derivePoolPrice: pool pagination failed: ${getErrorMessage(e) || e}`);
                 }
             }
@@ -359,14 +419,14 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
 
         if (!chosen.reserves && !isValidNumber(chosen.balance_a) && typeof BitShares.db?.get_objects === 'function') {
             try {
-                const [full] = await BitShares.db.get_objects([chosen.id]);
-                if (full) chosen = full;
-            } catch (e: any) {
+                const [full] = await BitShares.db.get_objects([chosen.id as string]);
+                if (full) chosen = full as PoolEntry;
+            } catch (e) {
                 systemLogger.debug(`derivePoolPrice: get_objects failed for pool ${chosen.id}: ${getErrorMessage(e)}`);
             }
         }
 
-        let amtA: any = null, amtB: any = null;
+        let amtA: number | null = null, amtB: number | null = null;
         if (isValidNumber(chosen.balance_a) && isValidNumber(chosen.balance_b)) {
             // Pools store assets ordered by ID: lower ID is always first (asset_a)
             const aIdNum = toFiniteNumber(String(aMeta.id).split('.')[2]);
@@ -383,11 +443,11 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
                 amtB = toFiniteNumber(chosen.balance_a);
             }
         } else if (Array.isArray(chosen.reserves)) {
-            const resA = chosen.reserves.find((r: any) => String(r.asset_id) === String(aMeta.id));
-            const resB = chosen.reserves.find((r: any) => String(r.asset_id) === String(bMeta.id));
+            const resA = chosen.reserves.find((r) => String(r.asset_id) === String(aMeta.id));
+            const resB = chosen.reserves.find((r) => String(r.asset_id) === String(bMeta.id));
             if (resA && resB) {
-                amtA = resA.amount;
-                amtB = resB.amount;
+                amtA = Number(resA.amount);
+                amtB = Number(resB.amount);
             }
         }
 
@@ -402,7 +462,7 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
             systemLogger.info(`derivePoolPrice: ${symA}/${symB} pool=${chosen.id} amtA=${amtA}(prec=${aMeta.precision}) amtB=${amtB}(prec=${bMeta.precision}) -> finalPrice(B/A)=${finalPrice.toFixed(8)}`);
         }
         return finalPrice;
-    } catch (err: any) {
+    } catch (err) {
         systemLogger.warn(`derivePoolPrice failed for ${symA}/${symB}: ${getErrorMessage(err)}`);
         return null;
     }
@@ -418,17 +478,17 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
   * @param {string} [mode='auto'] - Derivation mode: "pool", "book", or "auto" (pool → book).
   * @returns {Promise<number|null>} Derived price or null if all methods fail
   */
- let _derivePriceTestHook: ((...args: any[]) => any) | null = null;
+ let _derivePriceTestHook: ((...args: unknown[]) => number | null | Promise<number | null>) | null = null;
 
  /**
   * Test-only seam: compiled ESM exports cannot be monkey-patched, so tests
   * install a hook here to short-circuit price derivation (offline runs).
   */
- export const setDerivePriceTestHook = (fn: ((...args: any[]) => any) | null): void => {
+ export const setDerivePriceTestHook = (fn: ((...args: unknown[]) => number | null | Promise<number | null>) | null): void => {
      _derivePriceTestHook = fn;
  };
 
- export const derivePrice = async (BitShares: any, symA: string, symB: string, mode: string = 'auto'): Promise<number | null> => {
+ export const derivePrice = async (BitShares: BitSharesClient, symA: string, symB: string, mode: string = 'auto'): Promise<number | null> => {
     if (_derivePriceTestHook) return await _derivePriceTestHook(BitShares, symA, symB, mode);
     mode = String(mode).toLowerCase();
     const validModes = new Set(['pool', 'book', 'auto']);
@@ -465,7 +525,7 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
  */
 const DEFAULT_PRICE_BRIDGES = ['BTS'];
 
-function isPositiveRate(value: any): value is number {
+function isPositiveRate(value: unknown): value is number {
     return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
 
@@ -482,7 +542,7 @@ function isPositiveRate(value: any): value is number {
  * @param {string} [mode='auto'] - Price derivation mode passed to derivePrice
  * @returns {Promise<{rate:number,path:string}|null>} Rate plus 'bridge:<ref>' path, or null
  */
-export async function derivePriceViaBridges(BitShares: any, symA: string, symB: string, bridges: string[] = DEFAULT_PRICE_BRIDGES, mode: string = 'auto'): Promise<{ rate: number; path: string } | null> {
+export async function derivePriceViaBridges(BitShares: BitSharesClient, symA: string, symB: string, bridges: string[] = DEFAULT_PRICE_BRIDGES, mode: string = 'auto'): Promise<{ rate: number; path: string } | null> {
     try {
         if (String(symA) === String(symB)) {
             return { rate: 1, path: 'identity' };
@@ -499,7 +559,7 @@ export async function derivePriceViaBridges(BitShares: any, symA: string, symB: 
             }
         }
         return null;
-    } catch (err: any) {
+    } catch (err) {
         systemLogger.debug(`derivePriceViaBridges failed for ${symA}/${symB}: ${getErrorMessage(err)}`);
         return null;
     }
@@ -520,7 +580,7 @@ export async function derivePriceViaBridges(BitShares: any, symA: string, symB: 
  * @param {string} [mode='auto'] - Price derivation mode passed to derivePrice
  * @returns {Promise<{rate:number,path:string}|null>} Rate plus 'direct' | 'identity' | 'bridge:<ref>' path, or null
  */
-export async function derivePriceWithBridges(BitShares: any, symA: string, symB: string, bridges: string[] = DEFAULT_PRICE_BRIDGES, mode: string = 'auto'): Promise<{ rate: number; path: string } | null> {
+export async function derivePriceWithBridges(BitShares: BitSharesClient, symA: string, symB: string, bridges: string[] = DEFAULT_PRICE_BRIDGES, mode: string = 'auto'): Promise<{ rate: number; path: string } | null> {
     if (String(symA) === String(symB)) {
         return { rate: 1, path: 'identity' };
     }
@@ -539,12 +599,12 @@ export async function derivePriceWithBridges(BitShares: any, symA: string, symB:
  * @param {string} shareAssetRef - Share asset symbol or reference
  * @returns {Promise<Object|null>} Object with {shareAsset, pool} or null if not found
  */
-async function resolveLiquidityPoolByShareAsset(BitShares: any, shareAssetRef: string): Promise<any> {
+async function resolveLiquidityPoolByShareAsset(BitShares: BitSharesClient, shareAssetRef: string): Promise<{ shareAsset: AssetMeta; pool: PoolEntry } | null> {
     if (!BitShares?.db || typeof BitShares.db.get_liquidity_pools_by_share_asset !== 'function') {
         return null;
     }
 
-    const shareAsset = await lookupAsset(BitShares, shareAssetRef).catch((e: any) => {
+    const shareAsset = await lookupAsset(BitShares, shareAssetRef).catch((e) => {
         systemLogger.debug(`resolveLiquidityPoolByShareAsset: lookupAsset failed for ${shareAssetRef}: ${getErrorMessage(e)}`);
         return null;
     });
@@ -552,7 +612,7 @@ async function resolveLiquidityPoolByShareAsset(BitShares: any, shareAssetRef: s
         return null;
     }
 
-    const response = await BitShares.db.get_liquidity_pools_by_share_asset([shareAsset.id], false, false).catch((e: any) => {
+    const response = await BitShares.db.get_liquidity_pools_by_share_asset([shareAsset.id], false, false).catch((e) => {
         systemLogger.debug(`resolveLiquidityPoolByShareAsset: get_liquidity_pools_by_share_asset failed for ${shareAssetRef}: ${getErrorMessage(e)}`);
         return null;
     });
@@ -560,21 +620,28 @@ async function resolveLiquidityPoolByShareAsset(BitShares: any, shareAssetRef: s
         return null;
     }
 
-    const pool = response.find((entry: any) => entry && (entry.id || entry.pool?.id)) || null;
+    const pool = response.find((entry) => entry && (entry.id || (entry.pool as PoolEntry | undefined)?.id)) || null;
     if (!pool) {
         return null;
     }
 
     return {
         shareAsset,
-        pool: pool.pool || pool,
+        pool: (pool.pool as PoolEntry | undefined) || pool,
     };
 }
 
-async function getAssetCurrentSupply(BitShares: any, assetRef: any): Promise<any> {
-    const asset = typeof assetRef === 'object' && assetRef !== null
+export interface ExtendedAssetMeta extends AssetMeta {
+    current_supply?: number | string | { amount?: number; value?: number };
+    dynamic_asset_data_id?: string;
+    dynamicDataId?: string;
+    dynamic_data_id?: string;
+}
+
+async function getAssetCurrentSupply(BitShares: BitSharesClient, assetRef: string | ExtendedAssetMeta): Promise<number | null> {
+    const asset: ExtendedAssetMeta | null = typeof assetRef === 'object' && assetRef !== null
         ? assetRef
-        : await lookupAsset(BitShares, assetRef).catch((e: any) => {
+        : await lookupAsset(BitShares, assetRef).catch((e) => {
             systemLogger.debug(`getAssetCurrentSupply: lookupAsset failed for ${assetRef}: ${getErrorMessage(e)}`);
             return null;
         });
@@ -584,7 +651,7 @@ async function getAssetCurrentSupply(BitShares: any, assetRef: any): Promise<any
 
     const hasDirectSupply = asset.current_supply != null;
     const directSupply = hasDirectSupply
-        ? toFiniteNumber(asset.current_supply?.amount ?? asset.current_supply, -1)
+        ? toFiniteNumber(typeof asset.current_supply === 'object' ? asset.current_supply?.amount : asset.current_supply, -1)
         : -1;
     if (hasDirectSupply && Number.isFinite(directSupply) && directSupply >= 0) {
         return directSupply;
@@ -595,15 +662,15 @@ async function getAssetCurrentSupply(BitShares: any, assetRef: any): Promise<any
         return null;
     }
 
-    const objects = await BitShares.db.get_objects([dynamicId]).catch((e: any) => {
+    const objects = await BitShares.db.get_objects([dynamicId]).catch((e) => {
         systemLogger.debug(`getAssetCurrentSupply: get_objects failed for ${dynamicId}: ${getErrorMessage(e)}`);
         return null;
     });
-    const dynamicData = Array.isArray(objects) ? objects[0] : null;
+    const dynamicData = (Array.isArray(objects) ? objects[0] : null) as { current_supply?: { amount?: number; value?: number } | number } | null;
     const supply = toFiniteNumber(
-        dynamicData?.current_supply?.amount
-        ?? dynamicData?.current_supply?.value
-        ?? dynamicData?.current_supply,
+        typeof dynamicData?.current_supply === 'object'
+            ? (dynamicData.current_supply?.amount ?? dynamicData.current_supply?.value)
+            : dynamicData?.current_supply,
         undefined
     );
     return Number.isFinite(supply) && supply >= 0 ? supply : null;
@@ -624,7 +691,7 @@ async function getAssetCurrentSupply(BitShares: any, assetRef: any): Promise<any
  *   behavior; the credit runtime opts in explicitly.
  * @returns {Promise<number|null>} Value per share in denomination asset, or null
  */
-export async function deriveLiquidityPoolTokenValue(BitShares: any, shareAssetRef: string, denominationAssetRef: string, mode: string = 'auto', allowBridges: boolean = false): Promise<number | null> {
+export async function deriveLiquidityPoolTokenValue(BitShares: BitSharesClient, shareAssetRef: string, denominationAssetRef: string, mode: string = 'auto', allowBridges: boolean = false): Promise<number | null> {
     try {
         const [shareAsset, denominationAsset] = await Promise.all([
             lookupAsset(BitShares, shareAssetRef),
@@ -641,12 +708,12 @@ export async function deriveLiquidityPoolTokenValue(BitShares: any, shareAssetRe
         }
 
         const [assetA, assetB, supply] = await Promise.all([
-            lookupAsset(BitShares, poolInfo.pool.asset_a),
-            lookupAsset(BitShares, poolInfo.pool.asset_b),
+            lookupAsset(BitShares, poolInfo.pool.asset_a ?? ''),
+            lookupAsset(BitShares, poolInfo.pool.asset_b ?? ''),
             getAssetCurrentSupply(BitShares, shareAsset),
         ]);
 
-        if (!assetA?.id || !assetB?.id || !Number.isFinite(supply) || supply <= 0) {
+        if (!assetA?.id || !assetB?.id || supply == null || !Number.isFinite(supply) || supply <= 0) {
             return null;
         }
 
@@ -661,15 +728,15 @@ export async function deriveLiquidityPoolTokenValue(BitShares: any, shareAssetRe
         // reserve -> BTS -> denomination). Without the bridge fallback the
         // whole LP valuation fails when a single exotic reserve has no
         // direct market against the denomination asset.
-        const priceReserveLeg = async (asset: any): Promise<number | null> => {
+        const priceReserveLeg = async (asset: AssetMeta): Promise<number | null> => {
             if (String(asset.id) === String(denominationAsset.id)) return 1;
-            const direct = await derivePrice(BitShares, asset.id, denominationAsset.id, mode).catch((e: any) => {
+            const direct = await derivePrice(BitShares, asset.id as string, denominationAsset.id as string, mode).catch((e) => {
                 systemLogger.debug(`deriveLiquidityPoolTokenValue: derivePrice failed for ${asset.id}/${denominationAsset.id}: ${getErrorMessage(e)}`);
                 return null;
             });
             if (isPositiveRate(direct)) return direct;
             if (!allowBridges) return null;
-            const bridged = await derivePriceViaBridges(BitShares, asset.id, denominationAsset.id, DEFAULT_PRICE_BRIDGES, mode).catch(() => null);
+            const bridged = await derivePriceViaBridges(BitShares, asset.id as string, denominationAsset.id as string, DEFAULT_PRICE_BRIDGES, mode).catch(() => null);
             if (bridged && isPositiveRate(bridged.rate)) {
                 systemLogger.debug(`deriveLiquidityPoolTokenValue: bridged reserve leg ${asset.id}/${denominationAsset.id} via ${bridged.path}`);
                 return bridged.rate;
@@ -692,7 +759,7 @@ export async function deriveLiquidityPoolTokenValue(BitShares: any, shareAssetRe
         const totalValue = reserveA * priceA! + reserveB * priceB!;
         const valuePerShare = totalValue / supplyFloat;
         return isValidNumber(valuePerShare) && valuePerShare > 0 ? valuePerShare : null;
-    } catch (err: any) {
+    } catch (err) {
         systemLogger.debug(`deriveLiquidityPoolTokenValue failed for ${shareAssetRef}/${denominationAssetRef}: ${getErrorMessage(err)}`);
         return null;
     }
@@ -713,10 +780,26 @@ export async function deriveLiquidityPoolTokenValue(BitShares: any, shareAssetRe
  * @param {string} botKey - Bot key (e.g. "iob-aaa-bbb-0")
  * @returns {Object|null} Snapshot with center and optional dynamicWeights fields, or null if invalid
  */
-export function loadAmaCenterSnapshot(botKey: string): any {
+export interface AmaCenterSnapshot {
+    gridCenterPrice: number;
+    centerPrice: number;
+    amaCenterPrice: number | null;
+    source: string | null;
+    updatedAt: string | null;
+    amaSlopePercentMode: unknown;
+    amaSlope: unknown;
+    gridRangeScalingAmaSlope: unknown;
+    gridPriceOffsetPct: number | null;
+    amaSlopeDeltaPercent: number | null;
+    amaSlopeThresholdPercent: number | null;
+    dynamicWeights: unknown;
+    asymmetricBounds: unknown;
+}
+
+export function loadAmaCenterSnapshot(botKey: string): AmaCenterSnapshot | null {
     try {
         const gridPriceFile = path.join(PATHS.ORDERS_DIR, `${botKey}.dynamicgrid.json`);
-        const data = readJSON(gridPriceFile);
+        const data = readJSON<Record<string, unknown>>(gridPriceFile);
         const gridCenterPrice = Number(data?.gridCenterPrice ?? data?.centerPrice);
         const amaCenterPrice = Number(data?.amaCenterPrice);
         if (!Number.isFinite(gridCenterPrice) || gridCenterPrice <= 0) {
@@ -726,8 +809,8 @@ export function loadAmaCenterSnapshot(botKey: string): any {
             gridCenterPrice,
             centerPrice: gridCenterPrice,
             amaCenterPrice: Number.isFinite(amaCenterPrice) && amaCenterPrice > 0 ? amaCenterPrice : null,
-            source: data?.source || null,
-            updatedAt: data?.updatedAt || null,
+            source: (data?.source as string | null) || null,
+            updatedAt: (data?.updatedAt as string | null) || null,
             amaSlopePercentMode: data?.amaSlopePercentMode || null,
             amaSlope: data?.amaSlope ?? null,
             gridRangeScalingAmaSlope: data?.gridRangeScalingAmaSlope ?? null,
@@ -745,7 +828,7 @@ export function loadAmaCenterSnapshot(botKey: string): any {
                 ? data.asymmetricBounds
                 : null,
         };
-    } catch (_: any) {
+    } catch (_) {
         return null;
     }
 }
@@ -769,30 +852,58 @@ export function loadAmaCenterPrice(botKey: string): number | null {
  * Load previously persisted fee cache from disk.
  * @returns {Record<string, any>} Cached fee data or empty object
  */
-function _loadFeeCacheFromDisk(): Record<string, any> {
+function _loadFeeCacheFromDisk(): Record<string, FeeCacheEntryData> {
     try {
         const filePath = PATHS.PROFILES.FEE_CACHE_JSON;
-        if ((storage as any).exists(filePath)) {
-            const diskCache = (storage as any).readJSON(filePath);
+        if (storage.exists(filePath)) {
+            const diskCache = storage.readJSON<Record<string, FeeCacheEntryData>>(filePath);
             if (diskCache && typeof diskCache === 'object') {
                 systemLogger.debug(`_loadFeeCacheFromDisk: loaded fee cache (${Object.keys(diskCache).length} assets)`);
                 return diskCache;
             }
         }
-    } catch (e: any) {
+    } catch (e) {
         systemLogger.debug(`_loadFeeCacheFromDisk: ${getErrorMessage(e)}`);
     }
     return {};
+}
+
+export interface AssetOptions {
+    flags?: number | string;
+    market_fee_percent?: number;
+    taker_fee_percent?: number;
+    max_market_fee?: number | string;
+}
+
+export interface FeeCacheEntryData {
+    assetId?: string;
+    symbol?: string;
+    precision?: number;
+    chargesMarketFees?: boolean;
+    marketFee?: { percent: number };
+    takerFee?: { percent: number } | null;
+    maxMarketFee?: { raw: number | string; float: number };
+    limitOrderCreate?: { raw: number; satoshis: number; bts: number };
+    limitOrderCancel?: { raw: number; satoshis: number; bts: number };
+    limitOrderUpdate?: { raw: number; satoshis: number; bts: number };
+    makerFeeDiscountPercent?: number;
+}
+
+export interface GlobalProps {
+    parameters?: {
+        current_fees?: { parameters?: Array<[number, { fee?: number | string }]> };
+        extensions?: { maker_fee_discount_percent?: number };
+    };
 }
 
 /**
  * Persist fee cache to disk for recovery across restarts.
  * @param {Record<string, any>} cache - Fee cache to persist
  */
-function _saveFeeCacheToDisk(cache: Record<string, any>): void {
+function _saveFeeCacheToDisk(cache: Record<string, FeeCacheEntryData>): void {
     try {
-        (storage as any).writeJSON(PATHS.PROFILES.FEE_CACHE_JSON, cache);
-    } catch (e: any) {
+        storage.writeJSON(PATHS.PROFILES.FEE_CACHE_JSON, cache);
+    } catch (e) {
         systemLogger.debug(`_saveFeeCacheToDisk: ${getErrorMessage(e)}`);
     }
 }
@@ -807,7 +918,7 @@ function _saveFeeCacheToDisk(cache: Record<string, any>): void {
  * @param {Object} BitShares - BitShares client instance
  * @returns {Promise<Object>} Fee cache object keyed by asset symbol
  */
-export async function initializeFeeCache(botsConfig: any[], BitShares: any): Promise<Record<string, any>> {
+export async function initializeFeeCache(botsConfig: Array<{ assetA?: string; assetB?: string }>, BitShares: BitSharesClient): Promise<Record<string, FeeCacheEntryData>> {
     const uniqueAssets = new Set(['BTS']);
     for (const bot of botsConfig) {
         if (bot.assetA) uniqueAssets.add(bot.assetA);
@@ -815,7 +926,7 @@ export async function initializeFeeCache(botsConfig: any[], BitShares: any): Pro
     }
 
     // Seed from disk so previously cached assets survive transient API failures
-    const cache: Record<string, any> = _loadFeeCacheFromDisk();
+    const cache: Record<string, FeeCacheEntryData> = _loadFeeCacheFromDisk();
 
     const maxAttempts = FEE_PARAMETERS.FEE_CACHE_RETRY_ATTEMPTS;
     const baseDelay = FEE_PARAMETERS.FEE_CACHE_RETRY_DELAY_MS;
@@ -826,10 +937,11 @@ export async function initializeFeeCache(botsConfig: any[], BitShares: any): Pro
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 if (assetSymbol === 'BTS') {
-                    const globalProps = await BitShares.db.getGlobalProperties();
-                    const currentFees = globalProps.parameters.current_fees.parameters;
-                    const findFee = (opCode: any) => {
-                        const param = currentFees.find((p: any) => p[0] === opCode);
+                    if (typeof BitShares.db?.getGlobalProperties !== 'function') throw new Error('getGlobalProperties unavailable');
+                    const globalProps = await BitShares.db.getGlobalProperties() as GlobalProps;
+                    const currentFees = globalProps.parameters?.current_fees?.parameters;
+                    const findFee = (opCode: number) => {
+                        const param = currentFees?.find((p) => p[0] === opCode);
                         const fee = param?.[1]?.fee;
                         const feeNum = toFiniteNumber(fee);
                         return {
@@ -850,7 +962,8 @@ export async function initializeFeeCache(botsConfig: any[], BitShares: any): Pro
                     };
                 } else {
                     const fullAsset = await lookupAsset(BitShares, assetSymbol);
-                    const options = fullAsset.options || {};
+                    if (!fullAsset) throw new Error(`asset ${assetSymbol} not found`);
+                    const options = (fullAsset.options ?? {}) as AssetOptions;
                     cache[assetSymbol] = {
                         assetId: fullAsset.id,
                         symbol: assetSymbol,
@@ -866,8 +979,8 @@ export async function initializeFeeCache(botsConfig: any[], BitShares: any): Pro
                 }
                 lastError = null;
                 break; // success
-            } catch (error: any) {
-                lastError = error;
+            } catch (error) {
+                lastError = error as Error;
                 if (attempt < maxAttempts) {
                     const delay = baseDelay * attempt;
                     systemLogger.warn(
@@ -887,7 +1000,7 @@ export async function initializeFeeCache(botsConfig: any[], BitShares: any): Pro
         }
     }
 
-    MathUtils._setFeeCache(cache);
+    MathUtils._setFeeCache(cache as unknown as Record<string, import('./math.js').FeeCacheEntry>);
     _saveFeeCacheToDisk(cache);
     return cache;
 }
@@ -904,7 +1017,7 @@ export async function initializeFeeCache(botsConfig: any[], BitShares: any): Pro
  * @param {Object} accountOrders - AccountOrders data accessor
  * @returns {Promise<boolean>} True if persistence succeeded, false on error
  */
-export async function persistGridSnapshot(manager: any, accountOrders: any, snapshotOrders?: any[], recentFillKeys?: Record<string, number>, fundSnapshot?: { btsFeesOwed: number; accountTotals: any }): Promise<boolean> {
+export async function persistGridSnapshot(manager: OrderManagerLike, accountOrders: AccountOrdersLike, snapshotOrders?: ManagedOrder[], recentFillKeys?: Record<string, number>, fundSnapshot?: { btsFeesOwed: number; accountTotals: AccountTotals | null }): Promise<boolean> {
     if (!manager || !accountOrders) return false;
     try {
         const orders = Array.isArray(snapshotOrders)
@@ -935,7 +1048,7 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
         const fillKeys = recentFillKeys || manager._recentFillKeysSnapshot || undefined;
         const btsFeesOwed = fundSnapshot?.btsFeesOwed ?? manager.funds.btsFeesOwed;
         const accountTotals = (fundSnapshot?.accountTotals ?? manager.accountTotals) || null;
-        const genesis = (manager as any)._genesis || null;
+        const genesis = manager._genesis || null;
         // Gap-evacuation streaks (Phase 3 restart resilience): Map -> plain
         // object; empty map persists as cleared so stale ids never resurrect.
         // Non-Map (legacy callers without the field) passes undefined so
@@ -949,12 +1062,12 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
         // array persists as cleared so consumed entries never resurrect.
         // Non-array (legacy callers) passes undefined so storeMasterGrid
         // leaves previously stored entries untouched.
-        const pendingFillCrawls = Array.isArray((manager as any)._pendingFillCrawls)
-            ? (manager as any)._pendingFillCrawls
-                .filter((e: any) => e && typeof e.slotId === 'string' && e.slotId.length > 0
+        const pendingFillCrawls = Array.isArray(manager._pendingFillCrawls)
+            ? manager._pendingFillCrawls
+                .filter((e) => e && typeof e.slotId === 'string' && e.slotId.length > 0
                     && (e.side === 'buy' || e.side === 'sell') && Number.isFinite(Number(e.ts)))
                 .slice(-500)
-                .map((e: any) => ({ slotId: e.slotId, side: e.side, ts: Number(e.ts) }))
+                .map((e) => ({ slotId: e.slotId, side: e.side, ts: Number(e.ts) }))
             : undefined;
         // Manual-cancel holds (fork restart resilience): Map -> plain array;
         // empty map persists as cleared so released holds never resurrect.
@@ -988,7 +1101,7 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
             lastFillPivot
         );
         return true;
-    } catch (e: any) {
+    } catch (e) {
         return false;
     }
 }
@@ -1006,11 +1119,11 @@ export async function persistGridSnapshot(manager: any, accountOrders: any, snap
  * @param {Object|null} persisted - {slotId: count} from loadGapEvacStreaks
  * @returns {number} Number of streak entries restored
  */
-export function restoreGapEvacStreaks(manager: any, persisted: any): number {
+export function restoreGapEvacStreaks(manager: OrderManagerLike, persisted: unknown): number {
     if (!manager) return 0;
-    const streaks = new Map();
+    const streaks = new Map<string, number>();
     if (persisted && typeof persisted === 'object') {
-        for (const [id, count] of Object.entries(persisted)) {
+        for (const [id, count] of Object.entries(persisted as Record<string, unknown>)) {
             const n = Math.floor(Number(count));
             if (id && Number.isFinite(n) && n > 0
                 && manager.orders instanceof Map && manager.orders.has(id)) {
@@ -1057,10 +1170,10 @@ export function restoreManualHolds(manager: any, persisted: any): number {
  * @param {Object} manager - OrderManager instance
  * @returns {Object|null} {price, type, fillsAt, genesisHash} or null to clear
  */
-function buildLastFillPivotPayload(manager: any): { price: number; type: string; fillsAt: number; genesisHash: string } | null {
+function buildLastFillPivotPayload(manager: OrderManagerLike): { price: number; type: string; fillsAt: number; genesisHash: string } | null {
     const price = Number(manager?._lastFilledPrice);
     const type = manager?._lastFilledType;
-    if ((manager as any)?.lastFillPivotSource !== 'fill') return null;
+    if (manager.lastFillPivotSource !== 'fill') return null;
     if (!Number.isFinite(price) || price <= 0) return null;
     if (type !== ORDER_TYPES.BUY && type !== ORDER_TYPES.SELL) return null;
     const fillsAt = Number(manager._lastFilledAt);
@@ -1081,15 +1194,16 @@ function buildLastFillPivotPayload(manager: any): { price: number; type: string;
  * - finite fillsAt > 0
  * - non-empty string genesisHash
  *
- * @param {any} row - Raw candidate row
+ * @param {unknown} row - Raw candidate row
  * @returns {Object|null} Normalized row or null
  */
-export function normalizeLastFillPivot(row: any): { price: number; type: string; fillsAt: number; genesisHash: string } | null {
+export function normalizeLastFillPivot(row: unknown): { price: number; type: string; fillsAt: number; genesisHash: string } | null {
     if (!row || typeof row !== 'object') return null;
-    const price = Number(row.price);
-    const type = row.type;
-    const fillsAt = Number(row.fillsAt);
-    const genesisHash = row.genesisHash;
+    const r = row as Record<string, unknown>;
+    const price = Number(r.price);
+    const type = r.type;
+    const fillsAt = Number(r.fillsAt);
+    const genesisHash = r.genesisHash;
     if (!Number.isFinite(price) || price <= 0) return null;
     if (type !== ORDER_TYPES.BUY && type !== ORDER_TYPES.SELL) return null;
     if (!Number.isFinite(fillsAt) || fillsAt <= 0) return null;
@@ -1116,7 +1230,7 @@ export function normalizeLastFillPivot(row: any): { price: number; type: string;
  * @param {number} [atMs] - Fill timestamp to preserve (defaults to now)
  * @returns {boolean} True when the pivot was written
  */
-export function setLastFillPivot(manager: any, type: any, price: any, provenance: 'fill' | 'book', atMs?: number): boolean {
+export function setLastFillPivot(manager: OrderManagerLike, type: string, price: unknown, provenance: 'fill' | 'book', atMs?: number): boolean {
     if (!manager) return false;
     if (type !== ORDER_TYPES.BUY && type !== ORDER_TYPES.SELL) return false;
     const p = Number(price);
@@ -1149,7 +1263,7 @@ export function setLastFillPivot(manager: any, type: any, price: any, provenance
  * @param {string} reason - Log/debug label
  * @returns {boolean} True when an armed pivot was cleared
  */
-export function resetLastFillPivot(manager: any, reason: string = 'unspecified'): boolean {
+export function resetLastFillPivot(manager: OrderManagerLike, reason: string = 'unspecified'): boolean {
     if (!manager) return false;
     const wasArmed = manager._lastFilledPrice != null && manager._lastFilledType != null;
     manager._lastFilledPrice = null;
@@ -1201,7 +1315,7 @@ export function resetLastFillPivot(manager: any, reason: string = 'unspecified')
  * @param {number} [options.now] - Injectable clock (tests)
  * @returns {boolean} True when the guard was re-armed from the snapshot
  */
-export function restoreLastFillPivot(manager: any, persisted: any, options: { now?: number } = {}): boolean {
+export function restoreLastFillPivot(manager: OrderManagerLike, persisted: unknown, options: { now?: number } = {}): boolean {
     if (!manager || !persisted || typeof persisted !== 'object') return false;
     const row = normalizeLastFillPivot(persisted);
     if (!row) return false;
@@ -1267,6 +1381,22 @@ export function restoreLastFillPivot(manager: any, persisted: any, options: { no
     }
 }
 
+export interface GridResizeResult {
+    workingGrid?: WorkingGridType;
+    actions?: CowAction[];
+    hasWorkingChanges?: boolean;
+}
+
+export interface CowResult {
+    actions: CowAction[];
+    workingGrid: WorkingGridType;
+    workingIndexes: unknown;
+    workingBoundary: number | null;
+    refillSlotIds?: unknown;
+    aborted: boolean;
+    localOnly?: boolean;
+}
+
 /**
  * Retry grid persistence if previous attempt failed.
  * Clears persistence warning flag if successful.
@@ -1274,14 +1404,14 @@ export function restoreLastFillPivot(manager: any, persisted: any, options: { no
  * @param {Object} manager - OrderManager instance
  * @returns {Promise<boolean>} True if persisted successfully or no warning, false on error
  */
-export async function retryPersistenceIfNeeded(manager: any): Promise<boolean> {
+export async function retryPersistenceIfNeeded(manager: OrderManagerLike): Promise<boolean> {
     if (!manager || !manager._persistenceWarning) return true;
     try {
         const result = typeof manager.persistGrid === 'function' ? await manager.persistGrid() : true;
         const success = result === true || (result && !result.skipped && result.isValid !== false);
         if (success) delete manager._persistenceWarning;
         return success;
-    } catch (e: any) {
+    } catch (e) {
         systemLogger.warn(`retryPersistenceIfNeeded failed: ${getErrorMessage(e)}`);
         return false;
     }
@@ -1302,14 +1432,18 @@ export async function retryPersistenceIfNeeded(manager: any): Promise<boolean> {
  * @param {Function} updateGridFromBlockchainSnapshotFn - Grid resize function (injected to avoid circular dependency with grid.ts)
  * @returns {Promise<void>}
  */
-export async function applyGridDivergenceCorrections(manager: any, accountOrders: any, _botKey: string, updateOrdersOnChainBatchFn: Function, updateGridFromBlockchainSnapshotFn: Function): Promise<{ committed: boolean, reason?: string } | undefined> {
+export async function applyGridDivergenceCorrections(manager: OrderManagerLike, accountOrders: AccountOrdersLike, _botKey: string, updateOrdersOnChainBatchFn: (cowResult: unknown) => Promise<{ executed?: boolean; reason?: string } | null | undefined>, updateGridFromBlockchainSnapshotFn: (manager: OrderManagerLike, orderType: string, force: boolean, pendingBoundaryIdx: number | null) => Promise<GridResizeResult | undefined>): Promise<{ committed: boolean, reason?: string } | undefined> {
     if (!manager._gridLock) return;
     if (typeof updateGridFromBlockchainSnapshotFn !== 'function') {
         manager.logger?.log?.('[DIVERGENCE-COW] updateGridFromBlockchainSnapshotFn is not a function — aborting', 'error');
         return undefined;
     }
-    const { WorkingGrid } = require('../working_grid');
-    const { hasActionForOrder, removeActionsForOrder, optimizeRebalanceActions } = require('./validate');
+    const { WorkingGrid } = require('../working_grid') as { WorkingGrid: new (orders: Map<string, ManagedOrder>, options?: { baseVersion?: number }) => WorkingGridType };
+    const { hasActionForOrder, removeActionsForOrder, optimizeRebalanceActions } = require('./validate') as {
+        hasActionForOrder: (actions: CowAction[], actionType: string | null, orderRef: { id?: string | null; orderId?: string | null }) => boolean;
+        removeActionsForOrder: (actions: CowAction[], actionType: string | null, orderRef: { id?: string | null; orderId?: string | null }) => void;
+        optimizeRebalanceActions: (actions: CowAction[], masterGrid: Map<string, ManagedOrder>, options?: { logger?: (msg: string, level?: string) => void; boundaryIdx?: number | null; gapSlots?: number; assets?: unknown }) => CowAction[];
+    };
 
     // Phase 1: Pre-lock grid resizing using COW
     // This calculates new sizes from blockchain state but DOES NOT modify master.
@@ -1320,7 +1454,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
     // the new boundary (h-bts 91->94) with no repair path.  Remaining writers:
     // fills (deriveTargetBoundary, same-cycle rotations) and spread promotion
     // (shifts only onto slots placed in the same atomic batch).
-    let resizeCowResult: any = null;
+    let resizeCowResult: GridResizeResult | null | undefined = null;
     const pendingBoundaryIdx = manager.boundaryIdx;
     if (manager._gridSidesUpdated && manager._gridSidesUpdated.size > 0) {
         const hasBuy = manager._gridSidesUpdated.has(ORDER_TYPES.BUY);
@@ -1333,7 +1467,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
 
         try {
             resizeCowResult = await updateGridFromBlockchainSnapshotFn(manager, resizeOrderType, true, pendingBoundaryIdx);
-        } catch (err: any) {
+        } catch (err) {
             manager.logger?.log?.(`[DIVERGENCE-COW] Grid resize failed: ${getErrorMessage(err)}`, 'error');
             manager._gridSidesUpdated.clear();
             return undefined;
@@ -1342,7 +1476,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
 
     // Phase 2: Create working grid for divergence corrections
     // Use the resize working grid as starting point if available
-    let cowResult: any = null;
+    let cowResult: CowResult | null = null;
     await manager._gridLock.acquire(async () => {
         if (!manager._gridSidesUpdated || manager._gridSidesUpdated.size === 0) return;
 
@@ -1367,12 +1501,12 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         const workingBoundaryIdx = (pendingBoundaryIdx !== null && pendingBoundaryIdx !== undefined && Number.isFinite(Number(pendingBoundaryIdx)))
             ? Number(pendingBoundaryIdx)
             : manager.boundaryIdx;
-        const gapSlots = (manager as any)._genesis?.gapSlots ?? manager._gapSlots ?? MathUtils.calculateGapSlots(
+        const gapSlots = manager._genesis?.gapSlots ?? manager._gapSlots ?? MathUtils.calculateGapSlots(
             manager.config?.incrementPercent,
             manager.config?.targetSpreadPercent,
             manager.config?.gridLimits
         );
-        const inRailByType = (orderType: any) => (slot: any) =>
+        const inRailByType = (orderType: string) => (slot: ManagedOrder) =>
             MathUtils.isSlotInRail(workingBoundaryIdx, gapSlots, orderType, slot);
 
         for (const orderType of manager._gridSidesUpdated) {
@@ -1387,9 +1521,9 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
             // creates a mismatch: SPREAD→BUY crossers appear as "holes" and get
             // spurious CREATEs queued, causing the COW batch to be rejected by
             // validateCreateTargetSlots and aborting the entire correction cycle.
-            const currentOnChainOrders = (Array.from(manager.orders.values()) as any[])
-                .filter((o: any) => OrderUtils.isOrderPlaced(o))
-                .filter((o: any) => {
+            const currentOnChainOrders = (Array.from(manager.orders.values()) as ManagedOrder[])
+                .filter((o) => OrderUtils.isOrderPlaced(o))
+                .filter((o) => {
                     const wSlot = workingGrid.get(o.id);
                     return wSlot && wSlot.type === orderType;
                 });
@@ -1407,15 +1541,16 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
             // descending sort the divergence path placed the top buys at
             // -1..-3% under market and they filled immediately.
             const windowLowDiv = orderType !== ORDER_TYPES.BUY || MathUtils.resolveBuyWindowMode(manager.config) !== 'closest';
-            const allSideSlots = (Array.from(workingGrid.values()) as any[])
-                .filter((o: any) => o.type === orderType)
+            const allSideSlots = (Array.from(workingGrid.values()) as ManagedOrder[])
+                .filter((o) => o.type === orderType)
                 .filter(inRailByType(orderType))
-                .filter((o: any) => !MathUtils.isDeepShelfId(o?.id))
-                .sort((a: any, b: any) => (orderType === ORDER_TYPES.BUY && !windowLowDiv) ? b.price - a.price : a.price - b.price);
+                .filter((o) => !MathUtils.isDeepShelfId(o?.id))
+                .sort((a, b) => (orderType === ORDER_TYPES.BUY && !windowLowDiv) ? b.price - a.price : a.price - b.price);
 
             // Calculate target count
-            const baseTargetCount = (manager.config.activeOrders && Number.isFinite(manager.config.activeOrders[sideName]))
-                ? Math.max(1, manager.config.activeOrders[sideName])
+            const activeOrdersCfg = manager.config.activeOrders;
+            const baseTargetCount = (activeOrdersCfg && typeof activeOrdersCfg === 'object' && Number.isFinite(Number(activeOrdersCfg[sideName])))
+                ? Math.max(1, Number(activeOrdersCfg[sideName]))
                 : currentOnChainOrders.length;
             const targetCount = baseTargetCount;
 
@@ -1427,14 +1562,14 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
             let desiredSlots = windowSlots;
             const reserveCount = OrderUtils.resolveReserveCount(manager.config, sideName);
             if (reserveCount > 0) {
-                const asc = allSideSlots.slice().sort((a: any, b: any) => a.price - b.price);
+                const asc = allSideSlots.slice().sort((a, b) => a.price - b.price);
                 const edge = sideName === 'sell' ? 'ceiling' : 'floor';
                 // Both edges anchor at the live grid's own edge (single source).
                 const edgeAnchor = OrderUtils.resolveLiveReserveEdgeAnchorPrice(manager, sideName);
                 const edgeSlots = OrderUtils.selectReserveEdgeSlots(
                     asc,
                     reserveCount,
-                    new Set(windowSlots.map((s: any) => s.id)),
+                    new Set(windowSlots.map((s) => s.id)),
                     edge,
                     edgeAnchor
                 );
@@ -1581,7 +1716,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                             type: onChainOrder.type,
                             price: slot.price,
                             size: newSize
-                        }
+                        } as unknown as ManagedOrder
                     });
                 }
             }
@@ -1632,7 +1767,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                             price: slot.price,
                             size: slot.size,
                             type: slot.type
-                        }
+                        } as unknown as ManagedOrder
                     });
                 }
             }
@@ -1644,7 +1779,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
         // removes churn when a fill-driven boundary shift re-types slots. The COW
         // executor already handles rotation UPDATEs (newGridId + newPrice remap).
         const optimizedActions = optimizeRebalanceActions(actions, manager.orders, {
-            logger: (msg: any, _level: any) => manager.logger?.log?.(msg, 'info'),
+            logger: (msg: string, level?: string) => manager.logger?.log?.(msg, level),
             boundaryIdx: pendingBoundaryIdx,
             gapSlots: manager._gapSlots,
             assets: manager.assets
@@ -1684,7 +1819,8 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
             edgeAnchors: {
                 buy: OrderUtils.resolveLiveReserveEdgeAnchorPrice(manager, 'buy'),
                 sell: OrderUtils.resolveLiveReserveEdgeAnchorPrice(manager, 'sell')
-            }
+            },
+            manager
         });
 
         // Build COW result with all actions
@@ -1712,15 +1848,16 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
     });
 
     // Phase 3: Execute corrections via COW batch
-    if (cowResult && !cowResult.aborted) {
+    const committedCow = cowResult as CowResult | null;
+    if (committedCow && !committedCow.aborted) {
         try {
-            let result: any = null;
+            let result: { executed?: boolean; reason?: string; localOnly?: boolean; commitSkipped?: boolean } | null | undefined = null;
 
-            if (cowResult.localOnly) {
+            if (committedCow.localOnly) {
                 const committed = await manager._commitWorkingGrid(
-                    cowResult.workingGrid,
-                    cowResult.workingIndexes,
-                    cowResult.workingBoundary
+                    committedCow.workingGrid,
+                    committedCow.workingIndexes,
+                    committedCow.workingBoundary
                 );
 
                 if (committed) {
@@ -1736,7 +1873,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                     manager.logger.log(`[DIVERGENCE-COW] Skipped local-only commit (working grid not committed)`, 'warn');
                 }
             } else {
-                result = await updateOrdersOnChainBatchFn(cowResult);
+                result = await updateOrdersOnChainBatchFn(committedCow);
             }
             
             if (result && result.executed) {
@@ -1756,7 +1893,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
                 manager._gridSidesUpdated.clear();
                 return { committed: false, reason: result?.reason };
             }
-        } catch (err: any) {
+        } catch (err) {
             manager.logger.log(`[DIVERGENCE-COW] Error executing divergence corrections: ${getErrorMessage(err)}`, 'error');
             manager._gridSidesUpdated.clear();
             return { committed: false };
@@ -1780,7 +1917,7 @@ export async function applyGridDivergenceCorrections(manager: any, accountOrders
  * @returns {boolean} True if directory was created, false if it already existed
  */
 export function ensureProfilesDirectory(profilesDir: string): boolean {
-    if (!(storage as any).exists(profilesDir)) { ensureDir(profilesDir); return true; }
+    if (!storage.exists(profilesDir)) { ensureDir(profilesDir); return true; }
     return false;
 }
 
@@ -1798,7 +1935,7 @@ export function nowIso(): string {
  * @returns {Promise<void>}
  */
 export function sleep(ms: number): Promise<void> {
-    return new Promise((resolve: any) => setTimeout(resolve, ms));
+    return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -1817,16 +1954,16 @@ export function sleep(ms: number): Promise<void> {
  * @returns {Promise<string>} User input (trimmed unless trimInput=false)
  */
 export function readInput(prompt: string, options: { hideEchoBack?: boolean; mask?: string; validate?: (input: string) => boolean; colorize?: (input: string) => string; trimInput?: boolean } = {}): Promise<string> {
-    return new Promise((resolve: any) => {
+    return new Promise<string>((resolve) => {
         const stdin = runtime.stdin!; const stdout = runtime.stdout;
         const ESC_SEQUENCE_TIMEOUT_MS = 150;
         let input = '';
         let cursorPos = 0;
         let escBuf = '';
-        let escTimer: any = null;
+        let escTimer: ReturnType<typeof setTimeout> | null = null;
         stdout.write(prompt);
-        const isRaw = (stdin as any).isRaw; if (stdin.isTTY) (stdin as any).setRawMode(true);
-        stdin.resume(); (stdin as any).setEncoding('utf8');
+        const isRaw = stdin.isRaw ?? false; if (stdin.isTTY) stdin.setRawMode?.(true);
+        stdin.resume(); stdin.setEncoding?.('utf8');
 
         function redraw() {
             const shouldMask = options.hideEchoBack || typeof options.mask === 'string';
@@ -1841,7 +1978,7 @@ export function readInput(prompt: string, options: { hideEchoBack?: boolean; mas
             }
         }
 
-        function handleSequence(seq: any) {
+        function handleSequence(seq: string) {
             // Arrow keys
             if (seq === 'D') { if (cursorPos > 0) { cursorPos--; redraw(); } return true; }
             if (seq === 'C') { if (cursorPos < input.length) { cursorPos++; redraw(); } return true; }
@@ -1877,7 +2014,7 @@ export function readInput(prompt: string, options: { hideEchoBack?: boolean; mas
             // ESC + something else (e.g. Alt+key) — ignore
         }
 
-        function handleChar(ch: any) {
+        function handleChar(ch: string) {
             if (ch === '\r' || ch === '\n' || ch === '\u0004') { cleanup(); stdout.write('\n'); return resolve(options.trimInput === false ? input : input.trim()); }
             if (ch === '\u0003') { cleanup(); stdout.write('\r\x1b[K\n'); runtime.exit(0); }
 
@@ -1899,7 +2036,7 @@ export function readInput(prompt: string, options: { hideEchoBack?: boolean; mas
             }
         }
 
-        const onData = (chunk: any) => {
+        const onData = (chunk: unknown) => {
             const s = String(chunk);
             for (let i = 0; i < s.length; i++) {
                 const ch = s[i];
@@ -1910,7 +2047,7 @@ export function readInput(prompt: string, options: { hideEchoBack?: boolean; mas
                     // CSI: after ESC [, collect up to final byte (@-~)
                     if (escBuf.length === 2 && escBuf[1] === '[') continue;
                     if (escBuf.length > 2 && ch >= '@' && ch <= '~') {
-                        clearTimeout(escTimer);
+                        if (escTimer) clearTimeout(escTimer);
                         processEscBuf();
                     }
                     continue;
@@ -1926,7 +2063,7 @@ export function readInput(prompt: string, options: { hideEchoBack?: boolean; mas
                 handleChar(ch);
             }
         };
-        const cleanup = () => { clearTimeout(escTimer); escBuf = ''; (stdin as any).removeListener('data', onData); if (stdin.isTTY) (stdin as any).setRawMode(isRaw); };
+        const cleanup = () => { if (escTimer) clearTimeout(escTimer); escBuf = ''; stdin.removeListener('data', onData); if (stdin.isTTY) stdin.setRawMode?.(isRaw); };
         stdin.on('data', onData);
     });
 }
@@ -1958,7 +2095,7 @@ export async function withRetry<T>(fn: () => Promise<T>, options: { maxAttempts?
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
             return await fn();
-        } catch (err: any) {
+        } catch (err) {
             if (attempt === maxAttempts) throw err;
             const delay = Math.min(baseDelayMs * Math.pow(2, attempt - 1), maxDelayMs);
             logger?.log?.(`${operationName} attempt ${attempt} failed. Retrying in ${delay}ms...`, 'warn');
@@ -2001,7 +2138,7 @@ export async function withBlockchainRetry<T>(
     const maxRetries = options?.maxRetries ?? PIPELINE_TIMING.RETRY_MAX_ATTEMPTS;
     const retryDelayMs = options?.retryDelayMs ?? 2000;
     const logger = options?.logger;
-    let lastError: any;
+    let lastError: unknown;
 
     /** Run fn() with a timeout via shared withTimeout utility. */
     function raceWithTimeout(attemptLabel: string): Promise<T> {
@@ -2013,7 +2150,7 @@ export async function withBlockchainRetry<T>(
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             return await raceWithTimeout(`attempt ${attempt}/${maxRetries}`);
-        } catch (err: any) {
+        } catch (err) {
             lastError = err;
 
             // Report node failure so NodeManager can blacklist and trigger failover
@@ -2024,7 +2161,7 @@ export async function withBlockchainRetry<T>(
                 if (nodeUrl && typeof nodeManager.reportNodeFailure === 'function') {
                     nodeManager.reportNodeFailure(nodeUrl, getErrorMessage(err), 'blockchain-op');
                 }
-            } catch (_: any) { /* reporting errors are non-fatal */ }
+            } catch (_) { /* reporting errors are non-fatal */ }
 
             if (attempt < maxRetries) {
                 logger?.log?.(
@@ -2053,7 +2190,7 @@ export async function withBlockchainRetry<T>(
             logger?.log?.(`${label}: reconnected to different node. Retrying operation...`, 'warn');
             return await raceWithTimeout('failover attempt');
         }
-    } catch (_: any) { /* failover recovery errors are non-fatal — throw original error */ }
+    } catch (_) { /* failover recovery errors are non-fatal — throw original error */ }
 
     throw new Error(`${label} failed after ${maxRetries} attempts: ${getErrorMessage(lastError)}`);
 }
@@ -2070,7 +2207,7 @@ export async function withBlockchainRetry<T>(
  * @param {string} account - Account name (optional)
  * @returns {string|null} Resolved account reference or null
  */
-export function resolveAccountRef(manager: any, account: string): string | null {
+export function resolveAccountRef(manager: OrderManagerLike, account: string): string | null {
     if (manager && typeof manager.accountId === 'string' && manager.accountId) {
         return manager.accountId;
     }
@@ -2088,15 +2225,16 @@ export function resolveAccountRef(manager: any, account: string): string | null 
  * @param {Object} obj 
  * @returns {Object}
  */
-export function deepFreeze(obj: any): any {
+export function deepFreeze<T>(obj: T): T {
     if (obj === null || typeof obj !== 'object') return obj;
     Object.freeze(obj);
-    Object.getOwnPropertyNames(obj).forEach((prop: any) => {
+    const rec = obj as Record<string, unknown>;
+    Object.getOwnPropertyNames(obj).forEach((prop: string) => {
         if (Object.prototype.hasOwnProperty.call(obj, prop) &&
-            obj[prop] !== null &&
-            (typeof obj[prop] === 'object' || typeof obj[prop] === 'function') &&
-            !Object.isFrozen(obj[prop])) {
-            deepFreeze(obj[prop]);
+            rec[prop] !== null &&
+            (typeof rec[prop] === 'object' || typeof rec[prop] === 'function') &&
+            !Object.isFrozen(rec[prop])) {
+            deepFreeze(rec[prop]);
         }
     });
     return obj;
@@ -2117,9 +2255,9 @@ export function cloneMap<K, V>(map: Map<K, V>): Map<K, V> {
  * @param {string} raw - The raw string content with possible comments.
  * @returns {Object} The parsed JSON object.
  */
-export function parseJsonWithComments(raw: string): any {
+export function parseJsonWithComments(raw: string): Record<string, unknown> {
     const stripped = raw.replace(/\/\*(?:.|[\r\n])*?\*\//g, '').replace(/(^|\s*)\/\/.*$/gm, '');
-    return JSON.parse(stripped);
+    return JSON.parse(stripped) as Record<string, unknown>;
 }
 
 export { ensureDir };
@@ -2151,12 +2289,12 @@ export { ensureDir };
  * @returns {Promise<{applied: boolean, from?: number, to?: number, count?: number, reason?: string}>}
  */
 export async function applyPersistedPendingCrawls(
-    bot: any,
-    options: { log?: (message: string, level?: any) => void; forceReload?: boolean } = {}
+    bot: BotLike,
+    options: { log?: (message: string, level?: string) => void; forceReload?: boolean } = {}
 ): Promise<{ applied: boolean; from?: number; to?: number; count?: number; reason?: string }> {
     const log = typeof options.log === 'function'
         ? options.log
-        : (message: string, level?: any) => {
+        : (message: string, level?: string) => {
             try { bot?.manager?.logger?.log?.(message, level); } catch { /* best-effort */ }
         };
     try {
@@ -2165,9 +2303,9 @@ export async function applyPersistedPendingCrawls(
             ? (load.call(bot.accountOrders, options.forceReload === true) ?? [])
             : [];
         if (Array.isArray(persisted) && persisted.length > 0 && Array.isArray(bot?.manager?._pendingFillCrawls)) {
-            bot.manager._pendingFillCrawls = persisted;
+            bot.manager._pendingFillCrawls = persisted as Array<{ slotId: string; side: string; ts: number }>;
         }
-        const result = OrderUtils.consumePendingFillCrawls(bot?.manager);
+        const result = OrderUtils.consumePendingFillCrawls(bot.manager!);
         if (result?.applied) {
             log(
                 `[BOUNDARY] Applied ${result.count} pending fill crawl(s): boundary ${result.from} -> ${result.to}; ` +
@@ -2175,6 +2313,11 @@ export async function applyPersistedPendingCrawls(
                 'warn'
             );
             try { await bot.manager?.persistGrid?.(); } catch { /* best-effort */ }
+        } else if (result?.reason === 'restore-failed') {
+            // consumePendingFillCrawls deliberately does NOT clear the ledger
+            // on a restore failure, so these records are retained and retried —
+            // they were not dropped.
+            log(`[BOUNDARY] Pending fill crawls retained (${result.reason}); restored boundary kept`, 'warn');
         } else if (result?.reason && result.reason !== 'nothing-owed'
             && result.reason !== 'no-op' && result.reason !== 'null-boundary') {
             log(`[BOUNDARY] Pending fill crawls dropped (${result.reason})`, 'warn');

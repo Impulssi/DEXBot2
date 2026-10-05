@@ -236,6 +236,9 @@ async function executeOperations(operations: any, options: Record<string, any> =
   }
 
   const client = await getSigningClient(options);
+  if (!client) {
+    throw new Error('Signing client unavailable');
+  }
   if (client.initPromise) {
     await client.initPromise;
   }
@@ -252,7 +255,7 @@ async function executeOperations(operations: any, options: Record<string, any> =
     if (typeof tx[op.op_name] !== 'function') {
       throw new Error(`Transaction builder does not support ${op.op_name}`);
     }
-    tx[op.op_name](op.op_data);
+    (tx[op.op_name] as (data: unknown) => unknown)(op.op_data);
   }
 
   // Direct-key broadcasts must be classified: a timeout/drop here surfaces as
@@ -303,6 +306,9 @@ async function broadcastOperation(operation: any, options: Record<string, any> =
   }
 
   const client = await getSigningClient(options);
+  if (!client) {
+    throw new Error('Signing client unavailable');
+  }
   try {
     return await client.broadcast(operation);
   } catch (err: any) {

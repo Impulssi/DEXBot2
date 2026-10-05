@@ -69,7 +69,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
   - A hold run carrying fresh fills (>= `TIMING.BOUNDARY_HOLD_RESYNC_THRESHOLD`) requests a guard-aware structural re-center (`requestStructuralGridResync`, cooldown `TIMING.BOUNDARY_HOLD_RESYNC_COOLDOWN_MS`) instead of holding forever — the heal path when the grid is trailing the market.
 
 - `INV-COW-008` Owed fill crawls survive unapplied commits
-  - `order/strategy.ts` records a crawl per shift-eligible fill at intake (slot-level dedupe, capped at 500); `deriveTargetBoundary` folds still-owed `_pendingFillCrawls` into the next derivation, excluding the current batch's slots and reserve slots.
+  - `order/strategy.ts` records a crawl per shift-eligible fill at intake (slot-level dedupe, capped at 500); `deriveTargetBoundary` folds still-owed `_pendingFillCrawls` into the next derivation, excluding the current batch's slots, reserve slots, and window members — a window that reaches the grid edge is not a reserve, using the same window exclusion every placement picker and `countLiveReserveOrders` apply.
   - `_commitWorkingGrid` clears them only when the plan's boundary was actually applied — a held boundary (`boundaryHeld`), a gate-rejected boundary, and a null boundary all leave them owed.
   - `consumePendingFillCrawls` applies them onto a restored finite boundary; `applyPersistedPendingCrawls` is the shared startup/recovery wrapper used before sync/reconcile; `_clearPendingFillCrawls` drops them when the boundary is re-anchored (grid rebuild via `initializeGrid`, rejected snapshot via `rejectCorruptedGridSnapshot`, persisted snapshot wipe via `AccountOrders.clearGrid`).
 
@@ -208,7 +208,8 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
   - Enforced at all six emission sites (CREATE / UPDATE / CREATE-FALLBACK, RECONCILE-CREATE / RECONCILE-UPDATE, STARTUP-CREATE): an off-grid emission is blocked, never broadcast.
   - Range guards (`isChainPriceOutOfGrid`) are bounds checks, not membership checks — they cannot substitute for this invariant.
   - Adoption keeps the slot's own level (a fill/chain price is metadata, not the slot's price); `loadGrid` repairs a pre-existing off-grid slot price at load.
-  - Tests: GPI-001..015 (`tests/test_grid_price_invariant_guard.ts`), GPI-WIRE-001..009 (`tests/test_grid_price_invariant_wiring.ts`), LEGACY-ADOPT/MATERIALIZE/ADOPT-NAME (`tests/test_sync_out_of_grid_defer.ts`).
+  - A snapshot carrying orders but no usable ladder is **refused** before any mutation (`loadGrid`, before the startup resume decision, and at the persisted-row schema), and the sync entry refuses to reconcile a ladder-less grid at all — without a ladder no consumer has authority for a slot's price, which is what this invariant exists to prevent. The tolerance matcher that used to cover that state has been removed. `config.gridLimits.MISSING_GENESIS_POLICY` picks the response: `'rebuild'` (default, structural resync) or `'halt'` (manual reset). One decision, one module: `modules/order/genesis_policy.ts`.
+  - Tests: GPI-001..015 (`tests/test_grid_price_invariant_guard.ts`), GPI-WIRE-001..009 (`tests/test_grid_price_invariant_wiring.ts`), LEGACY-ADOPT/MATERIALIZE/ADOPT-NAME (`tests/test_sync_out_of_grid_defer.ts`), GEN-01..21 (`tests/test_missing_genesis_policy.ts`).
 
 ---
 

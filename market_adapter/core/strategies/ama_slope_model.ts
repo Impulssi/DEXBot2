@@ -12,6 +12,7 @@ import { computeVolatilityShift } from './volatility_shift.js';
 // chart generators can embed its exact source); re-exported here for compat.
 import {
     computeAverageAmaSlopePct,
+    computeHuberWindowSlopePct,
     computeAmaSlopeClipThreshold,
     createAmaSlopeClipTracker,
 } from './dynamic_weight_series.js';
@@ -43,26 +44,40 @@ const DEFAULT_ER_PERIOD = MARKET_ADAPTER.AMAS[_DEFAULT_AMA_KEY].erPeriod;
  * @param {number}   [opts.clipThreshold=Infinity]      Pre-computed clip threshold from slope history (percentile clipping is done by the caller)
  * @returns {{ slopeOffset, rawSlopeOffset, symmetricDelta, slopePct, clippedSlopePct, confidence, trend, isReady }}
  */
-function computeAmaSlopeWeights(amaValues: any, weightVariance: any, opts: any = {}) {
-    const lookbackBars = Number.isFinite(opts.lookbackBars) && opts.lookbackBars >= 0
-        ? Math.ceil(opts.lookbackBars)
+interface AmaSlopeOpts {
+    lookbackBars?: unknown;
+    maxSlopePct?: unknown;
+    neutralZonePct?: unknown;
+    volatilityExponent?: unknown;
+    volatilityScaleX?: unknown;
+    volatilityThreshold?: unknown;
+    erPeriod?: unknown;
+    maxSlopeOffset?: unknown;
+    maxVolatilityOffset?: unknown;
+    clipThreshold?: unknown;
+    [key: string]: unknown;
+}
+
+function computeAmaSlopeWeights(amaValues: unknown, weightVariance: number, opts: AmaSlopeOpts = {}) {
+    const lookbackBars = Number.isFinite(Number(opts.lookbackBars)) && Number(opts.lookbackBars) >= 0
+        ? Math.ceil(Number(opts.lookbackBars))
         : MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS;
-    const maxSlopePct = opts.maxSlopePct ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT;
-    const neutralZonePct = opts.neutralZonePct ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_NEUTRAL_ZONE_PCT;
-    const volatilityExponent = opts.volatilityExponent ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_VOLATILITY_EXPONENT;
-    const volatilityScaleX = opts.volatilityScaleX ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_VOLATILITY_SCALE_X_DEFAULT;
-    const volatilityThreshold = normalizeVolatilityThreshold(opts.volatilityThreshold);
-    const erPeriod = Number.isFinite(opts.erPeriod) && opts.erPeriod > 0
-        ? Math.ceil(opts.erPeriod)
+    const maxSlopePct = Number(opts.maxSlopePct ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT);
+    const neutralZonePct = Number(opts.neutralZonePct ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_AMA_NEUTRAL_ZONE_PCT);
+    const volatilityExponent = Number(opts.volatilityExponent ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_VOLATILITY_EXPONENT);
+    const volatilityScaleX = Number(opts.volatilityScaleX ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_VOLATILITY_SCALE_X_DEFAULT);
+    const volatilityThreshold = normalizeVolatilityThreshold(Number(opts.volatilityThreshold));
+    const erPeriod = Number.isFinite(Number(opts.erPeriod)) && Number(opts.erPeriod) > 0
+        ? Math.ceil(Number(opts.erPeriod))
         : DEFAULT_ER_PERIOD;
     // Reject negative caps outright (a negative cap would silently invert the
     // trend-bias sign); fall back to the default like other invalid values.
-    const rawMaxSlopeOffset = opts.maxSlopeOffset ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP;
+    const rawMaxSlopeOffset = Number(opts.maxSlopeOffset ?? MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP);
     const maxSlopeOffset = Number.isFinite(rawMaxSlopeOffset) && rawMaxSlopeOffset >= 0
         ? rawMaxSlopeOffset
         : MARKET_ADAPTER.DYNAMIC_WEIGHT_ASYMMETRIC_OFFSET_CLAMP;
-    const maxVolatilityOffset = normalizeMaxVolatilityOffset(opts.maxVolatilityOffset);
-    const clipThreshold = opts.clipThreshold ?? Infinity;
+    const maxVolatilityOffset = normalizeMaxVolatilityOffset(Number(opts.maxVolatilityOffset));
+    const clipThreshold = Number(opts.clipThreshold ?? Infinity);
     const hasDirectionalOffset = Number.isFinite(maxSlopeOffset) && maxSlopeOffset > 0;
     const safeWeightVariance = Number.isFinite(weightVariance) && weightVariance > 0 ? weightVariance : 0;
     const safeVolatilityExponent = Number.isFinite(volatilityExponent) && volatilityExponent >= 0
@@ -89,16 +104,17 @@ function computeAmaSlopeWeights(amaValues: any, weightVariance: any, opts: any =
     }
 
     const N = amaValues.length;
-    const last = amaValues[N - 1];
-    const past = amaValues[N - 1 - lookbackBars];
 
-    if (!Number.isFinite(last) || !Number.isFinite(past) || past === 0) {
-        return notReady;
-    }
-
-    // 2. Average slope percent per bar over the lookback window. This keeps
-    // lookback as a smoothing/lag knob instead of adding gain in sustained trends.
-    const slopePct = computeAverageAmaSlopePct(last, past, lookbackBars);
+    // 2. Slope percent per bar over the lookback window, as a Huber-robust
+    // linear regression of ln(AMA) (canonical: computeHuberWindowSlopePct). The
+    // two-point endpoint difference is kept in dynamic_weight_series as the
+    // reference definition, but it gives the window-edge bar full weight: a
+    // single-bar impulse moves it 7x-70x the reset gate while the robust fit
+    // bounds that influence without the lag of a rank-based estimator.
+    // lookback stays a smoothing/lag knob rather than adding gain in sustained
+    // trends. The estimator validates every bar in the window (both ends
+    // strictly positive), so it subsumes the old two-endpoint guard here.
+    const slopePct = computeHuberWindowSlopePct(amaValues, N - 1, lookbackBars);
     if (!Number.isFinite(slopePct)) {
         return notReady;
     }
@@ -156,6 +172,7 @@ function computeAmaSlopeWeights(amaValues: any, weightVariance: any, opts: any =
 export {
     computeAmaSlopeWeights,
     computeAverageAmaSlopePct,
+    computeHuberWindowSlopePct,
     computeAmaSlopeClipThreshold,
     createAmaSlopeClipTracker,
 }

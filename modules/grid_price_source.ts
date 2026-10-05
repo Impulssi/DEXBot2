@@ -17,7 +17,7 @@
  * @param {Object} bot - Bot configuration object
  * @returns {boolean} True if gridPrice starts with 'ama' (ama, ama1..ama4)
  */
-function usesAmaGridPrice(bot: any) {
+function usesAmaGridPrice(bot: Record<string, unknown> | null | undefined) {
     const gridPrice = String(bot?.gridPrice || '').trim().toLowerCase();
     return /^ama(?:[1-4])?$/.test(gridPrice);
 }

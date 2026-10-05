@@ -132,7 +132,7 @@ function buildDebtFirstCrPlan({
     collateralLimitReferenceAmount,
     minCollateralIncreaseThreshold,
     debtOnly,
-}: DebtFirstCrPlanOptions = {}): any {
+}: DebtFirstCrPlanOptions = {}) {
     const currentCr = calculateCollateralRatio(currentCollateralAmount, currentDebtAmount, feedPrice);
     const policy: CrPolicy = {
         minCollateralRatio,
@@ -240,7 +240,7 @@ function buildCollateralFallbackPlan({
     targetCollateralRatio,
     maxCollateralAmount,
     collateralLimitReferenceAmount,
-}: CollateralFallbackPlanOptions = {}): any {
+}: CollateralFallbackPlanOptions = {}) {
     const targetCr = positiveOrNull(targetCollateralRatio);
     const currentCr = calculateCollateralRatio(currentCollateralAmount, currentDebtAmount, feedPrice);
     if (!Number.isFinite(currentCr) || targetCr === null) {

@@ -1,6 +1,11 @@
 'use strict';
-import assert from 'node:assert';
-import { KalmanTrendAnalyzer, KalmanFilter } from '../kalman_trend_analyzer.js';
+
+const assert = require('node:assert');
+
+const {
+    KalmanTrendAnalyzer,
+    KalmanFilter,
+} = require('../../trend_detection/kalman_trend_analyzer.js');
 
 
 /**

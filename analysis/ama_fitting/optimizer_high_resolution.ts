@@ -12,6 +12,7 @@ import { PATHS } from '../../modules/paths.js';
 import { ensureDir } from '../../modules/order/utils/system.js';
 import { range } from '../math_utils.js';
 import { getStorage } from '../../modules/storage/index.js';
+import { normalizeAssetSymbol } from '../../modules/utils/asset_symbols.js';
 const { readJSON, writeJSON } = getStorage();
 
 import {
@@ -83,7 +84,76 @@ function geometricRange(min: number, max: number, count: number, quantum: number
     return [...new Set(out)].sort((a, b) => a - b);
 }
 
-function buildDimension(_label: string, cfg: Record<string, any>) {
+interface DataMeta {
+    intervalSeconds?: unknown;
+    pool?: unknown;
+    fetchedAt?: unknown;
+    assetA?: { symbol?: unknown; id?: unknown };
+    assetB?: { symbol?: unknown; id?: unknown };
+    [key: string]: unknown;
+}
+
+interface SearchCandle {
+    timestamp: number;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+    [key: string]: unknown;
+}
+
+interface AmaArea {
+    maxDist: number;
+    total: number;
+    above: number;
+    below: number;
+    [key: string]: unknown;
+}
+
+interface SearchEntry {
+    er: number;
+    fast: number;
+    slow: number;
+    area: AmaArea;
+    amaMovementTotal: number;
+    distanceTotal: number;
+    bandFactorPct: number;
+    [key: string]: unknown;
+}
+
+interface WeightedEntry extends SearchEntry {
+    weightedScore: number;
+    normDistance: number | null;
+    normMovement: number | null;
+    key: string;
+    label: string;
+}
+
+interface ProgressMsg {
+    workerId: number;
+    checked: number;
+    total: number;
+    elapsedSec: number;
+}
+
+interface ShardPayload {
+    workerId: number;
+    erShard: number[];
+    fastValues: number[];
+    slowValues: number[];
+    candles: SearchCandle[];
+    closes: number[];
+}
+
+interface SearchResult {
+    workerId: number;
+    entries: SearchEntry[];
+    totalCombos: number;
+    validCombos: number;
+}
+
+function buildDimension(_label: string, cfg: Record<string, unknown>) {
     const min = Number(cfg.min);
     const max = Number(cfg.max);
     const step = Number(cfg.step);
@@ -215,16 +285,16 @@ function percentile(values: number[], q: number): number | null {
     return sorted[lo] * (1 - t) + sorted[hi] * t;
 }
 
-function getAmaObjectivesFromArgs(args: Record<string, any>) {
+function getAmaObjectivesFromArgs(args: Record<string, unknown>) {
     const objectives = cloneObjectives();
     for (const o of objectives) {
         const id = o.key.toLowerCase();
-        const cap = args[`${id}Cap`];
+        const cap = Number(args[`${id}Cap`]);
         if (Number.isFinite(cap)) o.distanceCapQuantile = cap;
         if (!Number.isFinite(o.distanceCapQuantile) || o.distanceCapQuantile <= 0 || o.distanceCapQuantile > 1) {
             throw new Error(`Invalid cap for ${o.key}: ${o.distanceCapQuantile}. Use 0 < cap <= 1`);
         }
-        const w = args[`${id}Weight`];
+        const w = Number(args[`${id}Weight`]);
         if (Number.isFinite(w)) {
             if (w <= 0) throw new Error(`${o.key} distanceWeight must be positive, got ${w}`);
             o.distanceWeight = w;
@@ -233,8 +303,11 @@ function getAmaObjectivesFromArgs(args: Record<string, any>) {
     return objectives;
 }
 
-function ensureValidRange(label: string, cfg: Record<string, any>) {
-    const { min, max, step, count } = cfg;
+function ensureValidRange(label: string, cfg: Record<string, unknown>) {
+    const min = Number(cfg.min);
+    const max = Number(cfg.max);
+    const step = Number(cfg.step);
+    const count = Number(cfg.count);
     if (!Number.isFinite(min) || !Number.isFinite(max) || max < min) {
         throw new Error(`Invalid ${label} range: min=${min}, max=${max}`);
     }
@@ -244,8 +317,8 @@ function ensureValidRange(label: string, cfg: Record<string, any>) {
     }
 }
 
-function boundaryFlags(winner: Record<string, any> | null, erValues: number[], fastValues: number[], slowValues: number[], fixedEr: number | null = null, fixedFast: number | null = null) {
-    if (!winner) return { er: null, fast: null, slow: null, any: false };
+function boundaryFlags(winner: WeightedEntry | null, erValues: number[], fastValues: number[], slowValues: number[], fixedEr: number | null = null, fixedFast: number | null = null) {
+    if (!winner) return { er: null, fast: null, slow: null, onBoundary: false };
     const eps = 1e-9;
     const minEr = erValues[0], maxEr = erValues[erValues.length - 1];
     const minFast = fastValues[0], maxFast = fastValues[fastValues.length - 1];
@@ -253,17 +326,17 @@ function boundaryFlags(winner: Record<string, any> | null, erValues: number[], f
     const er = Number.isFinite(fixedEr) ? null : (Math.abs(winner.er - minEr) < eps ? 'min' : (Math.abs(winner.er - maxEr) < eps ? 'max' : null));
     const fast = Number.isFinite(fixedFast) ? null : (Math.abs(winner.fast - minFast) < eps ? 'min' : (Math.abs(winner.fast - maxFast) < eps ? 'max' : null));
     const slow = Math.abs(winner.slow - minSlow) < eps ? 'min' : (Math.abs(winner.slow - maxSlow) < eps ? 'max' : null);
-    return { er, fast, slow, any: !!(er || fast || slow) };
+    return { er, fast, slow, onBoundary: !!(er || fast || slow) };
 }
 
 
 // ── Data loaders ──────────────────────────────────────────────────────────────
 
-function normalizeSymbol(value: string | null | undefined): string {
-    return String(value || '').trim().toUpperCase();
+function normalizeSymbol(value: unknown): string {
+    return normalizeAssetSymbol(value);
 }
 
-function inferIntervalLabel(dataFile: string | null, meta: Record<string, any> | null): string {
+function inferIntervalLabel(dataFile: string | null, meta: DataMeta | null): string {
     const fromMeta = Number(meta?.intervalSeconds);
     if (Number.isFinite(fromMeta) && fromMeta > 0) {
         return toIntervalLabel(fromMeta);
@@ -273,7 +346,7 @@ function inferIntervalLabel(dataFile: string | null, meta: Record<string, any> |
     return m ? `${m[1]}${m[2].toLowerCase()}` : '1h';
 }
 
-function updateAmaProfilesFile({ dataFile, meta, winners, sourceResultsFile }: { dataFile: string | null; meta: Record<string, any> | null; winners: Record<string, any>; sourceResultsFile: string | null }) {
+function updateAmaProfilesFile({ dataFile, meta, winners, sourceResultsFile }: { dataFile: string | null; meta: DataMeta | null; winners: { ama1: WeightedEntry; ama2: WeightedEntry; ama3: WeightedEntry; ama4: WeightedEntry }; sourceResultsFile: string | null }) {
     const assetASymbol = normalizeSymbol(meta?.assetA?.symbol);
     const assetBSymbol = normalizeSymbol(meta?.assetB?.symbol);
     const assetAId = normalizeSymbol(meta?.assetA?.id);
@@ -289,7 +362,7 @@ function updateAmaProfilesFile({ dataFile, meta, winners, sourceResultsFile }: {
     const payload: {
         version: number;
         updatedAt: string;
-        profiles: any[];
+        profiles: unknown[];
     } = {
         version: 1,
         updatedAt: new Date().toISOString(),
@@ -346,7 +419,7 @@ function updateAmaProfilesFile({ dataFile, meta, winners, sourceResultsFile }: {
         },
     };
 
-    const idx = payload.profiles.findIndex((p) => String(p?.key || '') === key);
+    const idx = payload.profiles.findIndex((p) => String((p as { key?: unknown } | null)?.key || '') === key);
     if (idx >= 0) payload.profiles[idx] = profile;
     else payload.profiles.push(profile);
 
@@ -372,7 +445,7 @@ function calcTotalAmaMovement(amaValues: number[], erPeriod: number, fastPeriod:
 
 // ── Informational: area above/below AMA ──────────────────────────────────────
 
-function calcArea(amaValues: number[], candles: any[], erPeriod: number, fastPeriod: number, slowPeriod: number) {
+function calcArea(amaValues: number[], candles: SearchCandle[], erPeriod: number, fastPeriod: number, slowPeriod: number) {
     const skip = amaWarmupSkip(erPeriod, fastPeriod, slowPeriod);
     let above = 0, below = 0, maxUp = 0, maxDown = 0;
     for (let i = skip; i < candles.length; i++) {
@@ -393,7 +466,7 @@ function calcArea(amaValues: number[], candles: any[], erPeriod: number, fastPer
     return { above, below, total, maxUp, maxDown, maxDist };
 }
 
-function calcTotalRelativeDistance(amaValues: number[], candles: any[], erPeriod: number, fastPeriod: number, slowPeriod: number): number {
+function calcTotalRelativeDistance(amaValues: number[], candles: SearchCandle[], erPeriod: number, fastPeriod: number, slowPeriod: number): number {
     const skip = amaWarmupSkip(erPeriod, fastPeriod, slowPeriod);
     let total = 0;
     for (let i = skip; i < candles.length; i++) {
@@ -404,7 +477,7 @@ function calcTotalRelativeDistance(amaValues: number[], candles: any[], erPeriod
     return total;
 }
 
-function runSearchShard(payload: any, onProgress: ((msg: any) => void) | null = null) {
+function runSearchShard(payload: ShardPayload, onProgress: ((msg: ProgressMsg) => void) | null = null): SearchResult {
     const {
         workerId,
         erShard,
@@ -418,7 +491,7 @@ function runSearchShard(payload: any, onProgress: ((msg: any) => void) | null = 
     const progressStep = Math.max(2000, Math.floor(totalCombos / 20));
     let checked = 0;
     let valid = 0;
-    const entries: any[] = [];
+    const entries: SearchEntry[] = [];
     const startMs = Date.now();
 
     for (const er of erShard) {
@@ -459,7 +532,7 @@ function runSearchShard(payload: any, onProgress: ((msg: any) => void) | null = 
     return { workerId, entries, totalCombos, validCombos: valid };
 }
 
-function spawnShardWorker(payload: any, onProgress: ((msg: any) => void) | null): Promise<any> {
+function spawnShardWorker(payload: ShardPayload, onProgress: ((msg: ProgressMsg) => void) | null): Promise<SearchResult> {
     return new Promise((resolve, reject) => {
         // ESM: resolve this module's path from import.meta.url
         // (__filename is undefined in ES modules).
@@ -479,8 +552,8 @@ function spawnShardWorker(payload: any, onProgress: ((msg: any) => void) | null)
     });
 }
 
-function splitIntoShards(values: any[], shardCount: number): any[][] {
-    const out: any[][] = [];
+function splitIntoShards(values: number[], shardCount: number): number[][] {
+    const out: number[][] = [];
     const size = Math.ceil(values.length / shardCount);
     for (let i = 0; i < values.length; i += size) {
         out.push(values.slice(i, i + size));
@@ -528,16 +601,16 @@ async function run() {
     console.log(`  Combos:     ${totalCombos}\n`);
 
     // Load data
-    let candles: any, dataLabel: string, dataMeta: any = null;
+    let candles: SearchCandle[], dataLabel: string, dataMeta: DataMeta | null = null;
     if (!dataFile) {
         throw new Error('Optimizer requires --data <lp_pool_*.json>. Use --write-profiles to also update profiles/market_profiles.json.');
     }
     const loaded = loadLpDataFile(path.resolve(dataFile));
-    candles   = loaded.candleObjects;
-    const m   = loaded.meta;
+    candles   = loaded.candleObjects as SearchCandle[];
+    const m   = loaded.meta as DataMeta | null;
     dataMeta = m;
     dataLabel = m ? `LP Pool ${m.pool} (${m.assetA?.symbol}/${m.assetB?.symbol})` : path.basename(dataFile);
-    const closes = candles.map((c: any) => c.close);
+    const closes = candles.map((c) => c.close);
     console.log(`  Data:       ${dataLabel}  (${candles.length} candles)\n`);
 
     // ── Run: core-parallel full-grid scan split by ER shards ──────────────────
@@ -566,8 +639,8 @@ async function run() {
         });
     }));
 
-    const entries = shardResults.flatMap((r) => (r as any).entries);
-    const validCombos = shardResults.reduce((acc, r) => acc + (r as any).validCombos, 0);
+    const entries = shardResults.flatMap((r) => r.entries);
+    const validCombos = shardResults.reduce((acc, r) => acc + r.validCombos, 0);
     const maxDistVals = entries.map((e) => e.area.maxDist);
     // When both ER and Fast are fixed, the search is 1D over Slow only. Slow
     // variation rarely produces maxDist outliers, so the distance cap filter adds
@@ -579,10 +652,10 @@ async function run() {
         const computedCap = skipCap ? null : percentile(maxDistVals, objective.distanceCapQuantile);
         const cappedEntries = skipCap || computedCap == null ? entries : entries.filter((e) => e.area.maxDist <= computedCap!);
 
-        let best: any = null;
+        let best: WeightedEntry | null = null;
         for (const e of cappedEntries) {
             const score = e.amaMovementTotal + (distanceWeight * e.distanceTotal);
-            const bestScore = best ? best.weightedScore : Infinity;
+            const bestScore: number = best ? best.weightedScore : Infinity;
             if (!best || score < bestScore || (score === bestScore && e.amaMovementTotal < best.amaMovementTotal) || (score === bestScore && e.amaMovementTotal === best.amaMovementTotal && e.distanceTotal < best.distanceTotal)) {
                 best = {
                     ...e,
@@ -608,7 +681,7 @@ async function run() {
     const elapsedSec = (Date.now() - startMs) / 1000;
     console.log(`  Completed parallel search in ${elapsedSec.toFixed(1)}s  (valid combos: ${validCombos})\n`);
 
-    const selected = objectiveResults.map((r) => r.best).filter(Boolean) as any[];
+    const selected = objectiveResults.map((r) => r.best).filter(Boolean) as WeightedEntry[];
     const failed = objectiveResults.filter((r) => !r.best).map((r) => r.objective?.key || '?');
     if (failed.length > 0) {
         throw new Error(`No candidate under distance cap for: ${failed.join(', ')}. Increase corresponding cap (e.g. --ama4Cap 0.35).`);
@@ -619,7 +692,7 @@ async function run() {
     const ama3 = selected.find((s) => s.key === 'AMA3') || null;
     const ama4 = selected.find((s) => s.key === 'AMA4') || null;
 
-    function detail(label: string, r: any, optimisedFor: string) {
+    function detail(label: string, r: WeightedEntry | null, optimisedFor: string) {
         if (!r) {
             console.log(`  ${label}`);
             console.log('  └─ No valid candidate under constraint\n');
@@ -684,17 +757,17 @@ async function run() {
     console.log(' Boundary Check');
     console.log('────────────────────────────────────────────────────────────────────────────────');
     for (const [name, b] of Object.entries(boundarySummary)) {
-        const txt = b.any ? `ER:${b.er || '-'} Fast:${b.fast || '-'} Slow:${b.slow || '-'}` : 'none';
+        const txt = b.onBoundary ? `ER:${b.er || '-'} Fast:${b.fast || '-'} Slow:${b.slow || '-'}` : 'none';
         console.log(`${name.padEnd(24)} ${txt}`);
     }
     console.log();
 
     // ── Chart ─────────────────────────────────────────────────────────────────
-    const ws = (v: any) => String(v).replace('.', '_');
+    const ws = (v: unknown) => String(v).replace('.', '_');
     const lambdaSuffix = `_w${objectives.map((o) => ws(String(o.distanceWeight))).join('_')}`;
     const COLOR_CYCLE = ['#26a69a', '#fb8c00', '#5c9ee6', '#ef5350'];
     const DASH_CYCLE = ['dot', 'solid', 'dash', 'dashdot'];
-    const candleArrays = candles.map((c: any) => [c.timestamp, c.open, c.high, c.low, c.close, c.volume]);
+    const candleArrays = candles.map((c) => [c.timestamp, c.open, c.high, c.low, c.close, c.volume]);
     const chartMeta = {
         ...(dataMeta || {}),
         assetA: dataMeta?.assetA || { symbol: '?' },
@@ -783,8 +856,9 @@ async function run() {
 }
 
 if (!isMainThread) {
-    if ((workerData as any)?.type === 'search_shard') {
-        const result = runSearchShard((workerData as any).payload, (p: any) => {
+    const workerMessage = workerData as { type?: string; payload: ShardPayload } | null;
+    if (workerMessage?.type === 'search_shard') {
+        const result = runSearchShard(workerMessage.payload, (p: ProgressMsg) => {
             parentPort!.postMessage({ type: 'progress', ...p });
         });
         parentPort!.postMessage({ type: 'done', result });

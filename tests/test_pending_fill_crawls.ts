@@ -35,6 +35,7 @@ const { OrderManager } = require('../modules/order/manager');
 const { WorkingGrid } = require('../modules/order/working_grid');
 const { applyPersistedPendingCrawls } = require('../modules/order/utils/system');
 const { loadGrid } = require('../modules/order/grid');
+const { buildGenesisFromPriceLevels, calculateGapSlots } = require('../modules/order/utils/math');
 
 const GAP = 4;
 const N_SLOTS = 216;
@@ -99,6 +100,9 @@ function mockManager(boundary, orders, pending, config: any = CFG): any {
     return {
         boundaryIdx: boundary,
         orders,
+        // The live reserve anchor comes from the frozen ladder (the ladder
+        // extremes ARE the live rail bounds); slot-0's level is the buy floor.
+        _genesis: buildGenesisFromPriceLevels(0.001, 1, GAP, buildSlots(N_SLOTS).map((s) => s.price)),
         config,
         _gapSlots: GAP,
         _pendingFillCrawls: pending,
@@ -233,12 +237,12 @@ async function testConsume_DropsUnsafe() {
 }
 
 async function testConsume_LiveAnchorClassifies() {
-    console.log('\n[PEND-011] startup classifies reserves with the live anchor, not the config fallback...');
+    console.log('\n[PEND-011] startup classifies reserves with the ladder anchor, not the config fallback...');
     // Stale leftover: a BUY-typed VIRTUAL slot left above the buy rail by an
-    // older bound, priced below the live floor. The live run (finite live
-    // anchor) ranks it out of the reserve set, so its crawl is owed; the
-    // config-bound fallback is null for mode-string bounds, and plain rank
-    // would make it a reserve and drop the crawl.
+    // older bound, priced below the live floor. The ladder anchor (the buy
+    // rail's lowest level) ranks it out of the reserve set, so its crawl is
+    // owed; the config-bound fallback is null for mode-string bounds, and
+    // plain rank would make it a reserve and drop the crawl.
     const orders = buildMaster();
     Object.assign(orders.get('slot-210'), {
         type: ORDER_TYPES.BUY, state: ORDER_STATES.VIRTUAL, orderId: '', price: 0.0005, size: 0,
@@ -249,7 +253,8 @@ async function testConsume_LiveAnchorClassifies() {
     const liveAnchor = resolveLiveReserveEdgeAnchorPrice(mgr, 'buy');
     const liveReserveIds = reserveEdgeIdSet(allSlots, mgr.config, ORDER_TYPES.BUY, liveAnchor);
     const configAnchorIds = reserveEdgeIdSet(allSlots, mgr.config, ORDER_TYPES.BUY);
-    assert.ok(!liveReserveIds.has('slot-210'), 'live anchor must not rank the stale leftover as a reserve');
+    assert.strictEqual(liveAnchor, 0.001, 'live anchor is the ladder bottom (buy rail floor)');
+    assert.ok(!liveReserveIds.has('slot-210'), 'ladder anchor must not rank the stale leftover as a reserve');
     assert.ok(configAnchorIds.has('slot-210'), 'config fallback would (the drift this pins down)');
     const result = consumePendingFillCrawls(mgr);
     assert.strictEqual(result.applied, true, `live-anchored classification must apply the crawl (${result.reason ?? 'no reason'})`);
@@ -509,6 +514,18 @@ function buildPersistableMaster(count) {
     return arr;
 }
 
+/**
+ * The ladder for the linear-price fixture grid (0.001 + i*0.000004).
+ * loadGrid requires a ladder for a non-empty snapshot (genesis invariant), and
+ * a linear fixture rail can never match the geometric migration rail — so the
+ * snapshot carries its own genesis, exactly as a real one does.
+ */
+function fixtureGenesis(count = N_SLOTS) {
+    const levels = [];
+    for (let i = 0; i < count; i++) levels.push(0.001 + i * 0.000004);
+    return buildGenesisFromPriceLevels(0.001 + (count / 2) * 0.000004, 0.5, GAP, levels);
+}
+
 function createGeomManager() {
     const manager = new OrderManager({
         assetA: 'BTS', assetB: 'USD', ...GEOM_CFG, logging: { level: 'error' },
@@ -536,7 +553,7 @@ async function testPersistSkip_RestartReplaysCommitOnce() {
     try {
         // Generation on disk: boundary 96 with two owed buy crawls (93, 94).
         await accountOrders.storeMasterGrid(buildPersistableMaster(N_SLOTS), 0, B0,
-            null, null, null, null, undefined, [
+            null, null, null, fixtureGenesis(), undefined, [
                 { slotId: 'slot-93', side: ORDER_TYPES.BUY, ts: 1 },
                 { slotId: 'slot-94', side: ORDER_TYPES.BUY, ts: 2 },
             ]);

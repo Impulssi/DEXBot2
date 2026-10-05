@@ -82,6 +82,7 @@ import { PATHS } from './paths.js';
 import { path } from './path_api.js';
 import * as Format from './order/format.js';
 import cowRuntime from './dexbot_cow_runtime.js';
+import type { ChainOrderLike, CowResult, OpPhase } from './dexbot_cow_runtime.js';
 import {
     ProcessedFillStore,
     PROCESSED_FILL_PERSISTENCE_MODES
@@ -91,62 +92,65 @@ import {
     DAEMON_CODES,
 } from './constants.js';
 import { normalizeBotEntry } from './bot_settings.js';
-import { getErrorMessage } from './utils/errors.js';
+import type { FillOpLike, FillLike, ReplayMessageFn } from './dexbot_fill_runtime.js';
+import { getErrorMessage, getErrorCode } from './utils/errors.js';
+import type {BotLike, AssetPair, IncomingFill, ManagerLogger, UnknownRecord, GridConfig, OrderManagerLike, AccountOrdersLike, BotMetrics, ProcessedFillStoreLike, CreditRuntimeLike, FillBatchResult, SigningToken} from './types.js';
 
-function waitForConnected(...args: any) { return require('./bitshares_client').waitForConnected(...args); }
-function getKeyStore(...args: any) { return require('./key_store').getKeyStore(...args); }
-function hasExecutableActions(...args: any) { return require('./order/utils/validate').hasExecutableActions(...args); }
-function getRecalculateTriggerFile(...args: any) { return require('./paths').getRecalculateTriggerFile(...args); }
-function cloneWeightDistribution(...args: any) { return require('./order/utils/math').cloneWeightDistribution(...args); }
-function resolveBotRuntimeSettings(...args: any) { return require('./runtime_settings').resolveBotRuntimeSettings(...args); }
+function waitForConnected(...args: unknown[]) { return require('./bitshares_client').waitForConnected(...args); }
+function getKeyStore(...args: unknown[]) { return require('./key_store').getKeyStore(...args); }
+function hasExecutableActions(...args: unknown[]) { return require('./order/utils/validate').hasExecutableActions(...args); }
+function getRecalculateTriggerFile(...args: unknown[]) { return require('./paths').getRecalculateTriggerFile(...args); }
+function cloneWeightDistribution(...args: unknown[]) { return require('./order/utils/math').cloneWeightDistribution(...args); }
+function resolveBotRuntimeSettings(...args: unknown[]) { return require('./runtime_settings').resolveBotRuntimeSettings(...args); }
 
-class DEXBot {
-    config: any;
+class DEXBot implements BotLike {
+    static normalizeBotEntry: typeof normalizeBotEntry;
+    config: GridConfig;
     _baseWeightDistribution: { sell: number; buy: number };
-    account: any;
+    account: string | null;
     accountId: string | null = null;
-    privateKey: any;
-    manager: any;
-    accountOrders: any;
+    privateKey: string | SigningToken | null;
+    manager: OrderManagerLike;
+    accountOrders: AccountOrdersLike;
     triggerFile: string;
-    _recentlyQueuedFills: Map<any, any>;
+    _recentlyQueuedFills: Map<string, number>;
     _fillCleanupCounter: number;
     _fillDedupeWindowMs: number;
     _fillRecordRetentionMs: number;
     _processedFillPersistBatchMs: number;
     _processedFillPersistBatchSize: number;
-    _processedFillStore: any;
-    _recentlyProcessedFills: any;
-    _pendingProcessedFillWrites: any;
-    _incomingFillQueue: any[];
+    _processedFillStore: ProcessedFillStoreLike;
+    _recentlyProcessedFills: Map<string, number>;
+    _pendingProcessedFillWrites: unknown;
+    _incomingFillQueue: IncomingFill[];
     logPrefix: string;
-    _credentialDaemonWatchdogInterval: any;
+    _credentialDaemonWatchdogInterval: ReturnType<typeof setInterval> | null;
     _credentialDaemonDown: boolean;
     _credentialRecoveryNeeded: boolean;
     _credentialRecoveryInFlight: boolean;
     _credentialDaemonWatchdogInFlight: boolean;
     _staleCleanedOrderIds: Map<string, number>;
     _staleCleanupRetentionMs: number;
-    _metrics: any;
+    _metrics: BotMetrics;
     _shuttingDown: boolean;
     _shutdownPromise: Promise<void> | null;
-    _blockchainFetchInterval: any;
+    _blockchainFetchInterval: ReturnType<typeof setInterval> | null;
     _blockchainFetchInFlight: number;
-    _botsConfigPollInterval: any;
+    _botsConfigPollInterval: ReturnType<typeof setInterval> | null;
     _botsConfigPollInFlight: boolean;
     _marketAdapterWatchdogFingerprint: string | null;
     _appliedBotConfigFingerprint: string | null;
-    _appliedBotConfigEntry: any;
+    _appliedBotConfigEntry: unknown;
     _lastBotConfigHintFingerprint: string | null;
-    _fillsUnsubscribe: any;
-    _triggerWatcher: any;
-    _triggerDebounceTimer: any;
-    _deferredGridResyncTimer: any;
-    _maintenanceIdleTimer: any;
+    _fillsUnsubscribe: (() => Promise<unknown>) | null;
+    _triggerWatcher: { close?: () => void } | null;
+    _triggerDebounceTimer: ReturnType<typeof setTimeout> | null;
+    _deferredGridResyncTimer: ReturnType<typeof setTimeout> | null;
+    _maintenanceIdleTimer: ReturnType<typeof setTimeout> | null;
     _mainLoopActive: boolean;
-    _mainLoopPromise: any;
-    _creditRuntime: any;
-    _creditWatchdogInterval: any;
+    _mainLoopPromise: Promise<unknown> | null;
+    _creditRuntime: CreditRuntimeLike | null;
+    _creditWatchdogInterval: ReturnType<typeof setInterval> | null;
     _batchInFlight: number;
     _cowBroadcastInFlight: boolean;
     _recoverySyncInFlight: number;
@@ -155,26 +159,68 @@ class DEXBot {
     // consumeFillQueue at lock acquire to widen the fund-invariant tolerance
     // (orphan-equivalent) for that drain cycle only.
     _deferredFillsPending: boolean;
-    _postRecoveryRebalanceTimer: any;
-    _deferredFillRetryTimer: any;
+    _postRecoveryRebalanceTimer: ReturnType<typeof setTimeout> | null;
+    _deferredFillRetryTimer: ReturnType<typeof setTimeout> | null;
     _lastTargetedDriftSyncAt: number;
     _lightweightSyncCheckAt: number;
+    _lastUncertainResyncAt!: number;
+    _lastResolvedPollIntervalMs!: number;
+    _fillBroadcastDeferSince!: number;
+    _fillBroadcastDeferRegionAt!: number;
+    _fillTotalsParkedFills!: IncomingFill[];
+    _fillTotalsRetryTimer!: ReturnType<typeof setTimeout> | null;
+    _fillTotalsRetryDelayMs!: number;
     _targetedDriftSyncCooldownMs: number;
     _maintenanceCooldownCycles: number;
     _lastGridActivityAt: number;
     _currentCycleId: number;
-    _autoCancelOrphanCycleMarker: number | null;
-    _autoCancelOrphanSubCount: number;
     _consecutiveConsumeFailures: number;
     _consumeFailureFirstAt: number;
-    _reconnectUnregister: any;
-    _credentialRecoveryDeferredTimer: any;
-    _structuralGridResyncTimer: any;
+    _reconnectUnregister!: (() => void) | null;
+    _credentialRecoveryDeferredTimer!: ReturnType<typeof setTimeout> | null;
+    _structuralGridResyncTimer!: ReturnType<typeof setTimeout> | null;
     _structuralGridResyncRunning: number = 0;
-    _dustHealthCheckTimer: any;
+    _dustHealthCheckTimer: ReturnType<typeof setInterval> | null;
     _lastBroadcastHeartbeatAt: number | undefined;
     _lastDeferredDustCount: number;
     _currentBatchId: string | number | null | undefined;
+
+    // --- runtime-assigned members (declared so DEXBot structurally satisfies BotLike) ---
+    assets!: AssetPair | null;
+    botKey!: string;
+    name!: string;
+    _blockchainFetchIntervalMin!: number;
+    _deferredFillRetryDelayMs!: number;
+    _deferredFillRetryWaits!: number;
+    _fillTotalsRetryAttempt!: number;
+    _gridLockHoldWarnAt!: number;
+    _gridModule: unknown;
+    _gridPriceInvariantRejectStreak!: Map<string, number>;
+    _gridReconcileModule: unknown;
+    _lastDeferredHoldResyncAt!: number;
+    _lastGridPriceInvariantResyncAt!: number;
+    _lastHeldChainOrderSignature!: string | null;
+    _lastHeldChainOrderSignatureSince!: number;
+    _lastHeldChainOrderWarnAt!: number;
+    _lastSpreadStaleResyncAt!: number;
+    _marketAdapterWatchdogInFlight!: boolean;
+    _outOfSpreadSince!: number;
+    _outOfSpreadStaleWarned!: boolean;
+    _postRecoveryRebalanceDefers!: number;
+    _skipEmptyReadConfirmDelay!: boolean;
+    _spreadFundsExhausted!: boolean;
+    _strandedHoldSince!: Map<string, number>;
+    _structuralGridResyncDeferCount!: number;
+    _structuralGridResyncDeferStartedAt!: number;
+    _testPollIntervalMs!: number;
+    _getPm2ProcessNames!: (...args: unknown[]) => Promise<string[]>;
+    _listenForFillsHook!: (...args: unknown[]) => unknown;
+    _loadBotsConfigSnapshot!: (...args: unknown[]) => unknown;
+    _readOpenOrdersHook!: (...args: unknown[]) => unknown;
+    _startMarketAdapterPm2!: (...args: unknown[]) => unknown;
+    _stopMarketAdapterPm2!: (...args: unknown[]) => unknown;
+    _submitCancelOrder!: (...args: unknown[]) => unknown;
+    _syncMarketAdapterHook!: (...args: unknown[]) => unknown;
 
     /**
      * Create a new DEXBot instance
@@ -182,16 +228,16 @@ class DEXBot {
      * @param {Object} options - Optional settings
      * @param {string} options.logPrefix - Prefix for console logs (e.g., "[bot.js]")
      */
-    constructor(config: any, options: { logPrefix?: string } = {}) {
+    constructor(config: GridConfig, options: { logPrefix?: string } = {}) {
         this._validateStartupConfig(config);
 
         this.config = config;
         this._baseWeightDistribution = cloneWeightDistribution(config.weightDistribution) || { sell: 0.5, buy: 0.5 };
         this.account = null;
         this.privateKey = null;
-        this.manager = null;
-        this.accountOrders = null;
-        this.triggerFile = getRecalculateTriggerFile(config.botKey);
+        this.manager = null as unknown as OrderManagerLike;
+        this.accountOrders = null as unknown as AccountOrdersLike;
+        this.triggerFile = getRecalculateTriggerFile(config.botKey as string);
         this._recentlyQueuedFills = new Map();
         this._fillCleanupCounter = 0;
 
@@ -205,16 +251,16 @@ class DEXBot {
         this.config.pipelineTiming = rs.pipelineTiming;
         this.config.logging = rs.logging;
 
-        this._fillDedupeWindowMs = this.config.timing.FILL_DEDUPE_WINDOW_MS;
-        this._fillRecordRetentionMs = this.config.timing.FILL_RECORD_RETENTION_MS;
+        this._fillDedupeWindowMs = this.config.timing?.FILL_DEDUPE_WINDOW_MS as number;
+        this._fillRecordRetentionMs = this.config.timing?.FILL_RECORD_RETENTION_MS as number;
         this._processedFillPersistBatchMs = TIMING.PROCESSED_FILL_PERSIST_BATCH_MS;
         this._processedFillPersistBatchSize = TIMING.PROCESSED_FILL_PERSIST_BATCH_SIZE;
         this._processedFillStore = new ProcessedFillStore({
             batchMs: this._processedFillPersistBatchMs,
             batchSize: this._processedFillPersistBatchSize,
-            warn: (message: any) => this._warn(message)
-        });
-        this._recentlyProcessedFills = this._processedFillStore.tracker;
+            warn: (message: unknown) => this._warn(message)
+        }) as unknown as ProcessedFillStoreLike;
+        this._recentlyProcessedFills = this._processedFillStore.tracker as Map<string, number>;
         this._pendingProcessedFillWrites = this._processedFillStore.pendingWrites;
 
         this._incomingFillQueue = [];
@@ -237,6 +283,8 @@ class DEXBot {
             fillProcessingTimeMs: 0,
             batchesExecuted: 0,
             lockContentionEvents: 0,
+            gridLockContention: 0,
+            fundRecalcCount: 0,
             maxQueueDepth: 0
         };
 
@@ -284,13 +332,11 @@ class DEXBot {
         this._deferredFillRetryTimer = null;
         this._lastTargetedDriftSyncAt = 0;
         this._lightweightSyncCheckAt = 0;
-        this._targetedDriftSyncCooldownMs = this.config.timing.TARGETED_DRIFT_SYNC_COOLDOWN_MS;
+        this._targetedDriftSyncCooldownMs = this.config.timing?.TARGETED_DRIFT_SYNC_COOLDOWN_MS as number;
         this._maintenanceCooldownCycles = 0;
         this._lastGridActivityAt = 0;
         this._lastDeferredDustCount = 0;
         this._currentCycleId = 0;
-        this._autoCancelOrphanCycleMarker = null;
-        this._autoCancelOrphanSubCount = 0;
 
         // Dust cancellation is driven by the periodic dust health-check timer
         // (setupDustHealthCheckInterval) rather than per-dust state maps.
@@ -310,7 +356,7 @@ class DEXBot {
      * @throws {Error} If critical validation fails
      * @private
      */
-    _validateStartupConfig(config: any) {
+    _validateStartupConfig(config: Record<string, unknown>) {
         const errors: string[] = [];
 
         // Skip trading field validation in credit-only mode
@@ -333,7 +379,7 @@ class DEXBot {
             }
 
             // Validate incrementPercent
-            const increment = config.incrementPercent;
+            const increment = Number(config.incrementPercent);
             if (!Number.isFinite(increment) || increment <= 0 || increment > 100) {
                 errors.push(`incrementPercent must be between 0 and 100, got: ${increment}`);
             }
@@ -341,7 +387,7 @@ class DEXBot {
 
         // Throw all validation errors at once
         if (errors.length > 0) {
-            throw new Error(`Config validation failed:\n${errors.map((e: any) => `  - ${e}`).join('\n')}`);
+            throw new Error(`Config validation failed:\n${errors.map((e) => `  - ${e}`).join('\n')}`);
         }
     }
 
@@ -351,13 +397,13 @@ class DEXBot {
      * @param {string} [level='info'] - The log level ('debug', 'info', 'warn', 'error').
      * @private
      */
-    _log(msg: any, level: any = 'info') {
+    _log(msg: unknown, level: string = 'info') {
         if (level === 'warn') {
             this._warn(msg);
             return;
         }
 
-        const line = this.logPrefix ? `${this.logPrefix} ${msg}` : msg;
+        const line = String(this.logPrefix ? `${this.logPrefix} ${msg}` : msg);
         const logger = this.manager?.logger;
         if (logger && typeof logger.log === 'function') {
             logger.log(line, level);
@@ -376,8 +422,8 @@ class DEXBot {
      * @param {string} msg - The message to log.
      * @private
      */
-    _warn(msg: any) {
-        const line = this.logPrefix ? `${this.logPrefix} ${msg}` : msg;
+    _warn(msg: unknown) {
+        const line = String(this.logPrefix ? `${this.logPrefix} ${msg}` : msg);
         const logger = this.manager?.logger;
         if (logger && typeof logger.log === 'function') {
             logger.log(line, 'warn');
@@ -423,7 +469,7 @@ class DEXBot {
      * @param {string} [reason='activity'] - Reason for activity
      * @returns {void}
      */
-    _markGridActivity(reason: any = 'activity') {
+    _markGridActivity(reason: string = 'activity') {
         return DexbotMaintenanceRuntime.markGridActivity(this, reason);
     }
 
@@ -432,7 +478,7 @@ class DEXBot {
      * @param {string} [reason='state recovery sync'] - Reason for recovery
      * @returns {Promise<void>}
      */
-    async _triggerStateRecoverySync(reason: any = 'state recovery sync') {
+    async _triggerStateRecoverySync(reason: string = 'state recovery sync') {
         return DexbotStateRecovery.triggerStateRecoverySync(this, reason);
     }
 
@@ -441,7 +487,7 @@ class DEXBot {
      * @param {string} flowContext - Description of the flow being aborted
      * @returns {Promise<boolean>} True if flow was aborted
      */
-    async _abortFlowIfIllegalState(flowContext: any) {
+    async _abortFlowIfIllegalState(flowContext: string) {
         return DexbotStateRecovery.abortFlowIfIllegalState(this, flowContext);
     }
 
@@ -452,7 +498,7 @@ class DEXBot {
      * @param {number} [opsCount=0] - Number of operations in the batch
      * @returns {Promise<Object>} Abort result object
      */
-    async _handleBatchHardAbort(err: any, phase: any = 'batch processing', opsCount: any = 0) {
+    async _handleBatchHardAbort(err: unknown, phase: string = 'batch processing', opsCount: number = 0) {
         return DexbotStateRecovery.handleBatchHardAbort(this, err, phase, opsCount);
     }
 
@@ -462,7 +508,7 @@ class DEXBot {
      * @param {string} [context='recoverable-grid-update'] - Context label for logging
      * @returns {Promise<number>} Number of updates applied
      */
-    async _applyRecoverableGridUpdates(updates: any, context: any = 'recoverable-grid-update') {
+    async _applyRecoverableGridUpdates(updates: unknown[], context: string = 'recoverable-grid-update') {
         return DexbotStateRecovery.applyRecoverableGridUpdates(this, updates, context);
     }
 
@@ -472,7 +518,7 @@ class DEXBot {
      * @param {string} [reason='stale order cleanup'] - Reason for cleanup
      * @returns {Promise<{executed: boolean, hadRotation: boolean, stale: boolean, recoveredByVirtualization?: boolean}>}
      */
-    async _recoverExplicitStaleOrders(staleOrderIds: any, reason: any = 'stale order cleanup') {
+    async _recoverExplicitStaleOrders(staleOrderIds: unknown, reason: string = 'stale order cleanup') {
         return DexbotStateRecovery.recoverExplicitStaleOrders(this, staleOrderIds, reason);
     }
 
@@ -481,7 +527,7 @@ class DEXBot {
      * @param {Error} err - The size drift error
      * @returns {Promise<{executed: boolean, hadRotation: boolean, recoveredBySync: boolean, reason: string}>}
      */
-    async _recoverBatchSizeDrift(err: any, opContexts: any = []) {
+    async _recoverBatchSizeDrift(err: unknown, opContexts: unknown[] = []) {
         return DexbotStateRecovery.recoverBatchSizeDrift(this, err, opContexts);
     }
 
@@ -508,7 +554,7 @@ class DEXBot {
      * @param {'startup'|'recovery'} context - Controls log prefix.
      * @returns {Promise<boolean>} True if the snapshot was rejected (cleared).
      */
-    async _rejectCorruptedGridSnapshot(context: any) {
+    async _rejectCorruptedGridSnapshot(context: string) {
         return DexbotStateRecovery.rejectCorruptedGridSnapshot(this, context);
     }
 
@@ -519,7 +565,7 @@ class DEXBot {
      * @param {string[]} orderIds
      * @returns {Promise<boolean>} True if all affected orders were repaired
      */
-    async _targetedOrderRepair(orderIds: any) {
+    async _targetedOrderRepair(orderIds: string[]) {
         return DexbotStateRecovery.targetedOrderRepair(this, orderIds);
     }
 
@@ -547,7 +593,7 @@ class DEXBot {
      * @param {Object} [options={}] - Flush options
      * @returns {Promise<void>}
      */
-    async _flushProcessedFillPersistence(reason: any = 'manual', options: any = {}) {
+    async _flushProcessedFillPersistence(reason: string = 'manual', options: Record<string, unknown> = {}) {
         return DexbotFillRuntime.flushProcessedFillPersistence(this, reason, options);
     }
 
@@ -558,7 +604,7 @@ class DEXBot {
      * @param {Object} [options={}] - Flush options
      * @returns {Promise<void>}
      */
-    async _flushProcessedFillPersistenceForKeys(fillKeys: any, reason: any = 'manual-selected', options: any = {}) {
+    async _flushProcessedFillPersistenceForKeys(fillKeys: string[] | Set<string>, reason: string = 'manual-selected', options: Record<string, unknown> = {}) {
         return DexbotFillRuntime.flushProcessedFillPersistenceForKeys(this, fillKeys, reason, options);
     }
 
@@ -567,14 +613,14 @@ class DEXBot {
      * @param {Object} fill - Fill event object
      * @returns {string|null} Fallback key or null
      */
-    _buildOrphanFillFallbackKey(fill: any) {
+    _buildOrphanFillFallbackKey(fill: FillLike) {
         return DexbotFillRuntime.buildOrphanFillFallbackKey(this, fill);
     }
 
-    _isNewFillKey(fillKey: any, processedFillKeys: any, label: any = '', orderId: any = '') {
+    _isNewFillKey(fillKey: string, processedFillKeys: Set<string>, label: string = '', orderId: string = '') {
         const now = Date.now();
         if (this._recentlyQueuedFills.has(fillKey)) {
-            const lastProcessed = this._recentlyQueuedFills.get(fillKey);
+            const lastProcessed = this._recentlyQueuedFills.get(fillKey) ?? 0;
             if (now - lastProcessed < this._fillDedupeWindowMs) {
                 if (label) {
                     const idSuffix = orderId ? ` for ${orderId}` : '';
@@ -593,7 +639,7 @@ class DEXBot {
     /**
      * Apply replay-safe fill accounting for tracked fills (those with a valid grid order).
      * @param {Object} fill - Fill event object
-     * @param {any} fillOp - Fill operation data
+     * @param {unknown} fillOp - Fill operation data
      * @param {Object} [options={}]
      * @param {string} [options.context]
      * @param {Object} [options.logger]
@@ -601,16 +647,16 @@ class DEXBot {
      * @param {string} [options.persistenceMode='batched']
      * @returns {Promise<any>}
      */
-    async _applyReplaySafeTrackedFillAccounting(fill: any, fillOp: any, {
+    async _applyReplaySafeTrackedFillAccounting(fill: unknown, fillOp: FillOpLike, {
         context,
         logger = this.manager?.logger,
         replayMessage,
         persistenceMode = PROCESSED_FILL_PERSISTENCE_MODES.BATCHED
     }: {
         context?: string;
-        logger?: any;
-        replayMessage?: any;
-        persistenceMode?: any;
+        logger?: Partial<ManagerLogger>;
+        replayMessage?: ReplayMessageFn;
+        persistenceMode?: string;
     } = {}) {
         return DexbotFillRuntime.applyReplaySafeTrackedFillAccounting(this, fill, fillOp, {
             context,
@@ -623,7 +669,7 @@ class DEXBot {
     /**
      * Apply replay-safe fill accounting for orphan fills (grid order not found).
      * @param {Object} fill - Fill event object
-     * @param {any} fillOp - Fill operation data
+     * @param {unknown} fillOp - Fill operation data
      * @param {Object} [options={}]
      * @param {string} [options.context]
      * @param {Object} [options.logger]
@@ -631,16 +677,16 @@ class DEXBot {
      * @param {string} [options.persistenceMode='batched']
      * @returns {Promise<any>}
      */
-    async _applyReplaySafeOrphanFillAccounting(fill: any, fillOp: any, {
+    async _applyReplaySafeOrphanFillAccounting(fill: unknown, fillOp: FillOpLike, {
         context,
         logger = this.manager?.logger,
         replayMessage,
         persistenceMode = PROCESSED_FILL_PERSISTENCE_MODES.BATCHED
     }: {
         context?: string;
-        logger?: any;
-        replayMessage?: any;
-        persistenceMode?: any;
+        logger?: Partial<ManagerLogger>;
+        replayMessage?: ReplayMessageFn;
+        persistenceMode?: string;
     } = {}) {
         return DexbotFillRuntime.applyReplaySafeOrphanFillAccounting(this, fill, fillOp, {
             context,
@@ -655,7 +701,7 @@ class DEXBot {
      * @param {string} [context='runtime'] - Context label for logging
      * @returns {any|null}
      */
-    _refreshDynamicWeightDistribution(context: any = 'runtime') {
+    _refreshDynamicWeightDistribution(context: string = 'runtime') {
         return DexbotMaintenanceRuntime.refreshDynamicWeightDistribution(this, context);
     }
 
@@ -665,7 +711,7 @@ class DEXBot {
      * @param {Object} startupState - The startup state from _initializeStartupState.
      * @private
      */
-    async _finishStartupSequence(startupState: any) {
+    async _finishStartupSequence(startupState: Parameters<typeof DexbotStartupRuntime.finishStartupSequence>[1]) {
         return DexbotStartupRuntime.finishStartupSequence(this, startupState);
     }
 
@@ -676,7 +722,7 @@ class DEXBot {
      * @returns {Function} Async callback for processing fills
      * @private
      */
-    _createFillCallback(chainOrders: any) {
+    _createFillCallback(chainOrders: typeof import('./chain_orders.js')) {
         return DexbotFillRuntime.createFillCallback(this, chainOrders);
     }
 
@@ -686,7 +732,7 @@ class DEXBot {
      * @param {string} tag - Context label for logging
      * @returns {Promise<{syncResult: Object|null, aborted: boolean, hasUnmatched: number, openOrders: Array|null}>}
      */
-    async _syncOpenOrdersAndProcessFills(tag: any) {
+    async _syncOpenOrdersAndProcessFills(tag: string) {
         return DexbotMaintenanceRuntime.syncOpenOrdersAndProcessFills(this, tag);
     }
 
@@ -698,7 +744,7 @@ class DEXBot {
      * @param {Object} chainOrders - Chain orders module for blockchain operations
      * @private
      */
-    _scheduleFillConsumerRestart(chainOrders: any) {
+    _scheduleFillConsumerRestart(chainOrders: typeof import('./chain_orders.js')) {
         DexbotFillRuntime.scheduleFillConsumerRestart(this, chainOrders);
     }
 
@@ -715,7 +761,7 @@ class DEXBot {
      * @param {Object} chainOrders - Chain orders module for blockchain operations
      * @private
      */
-    async _consumeFillQueue(chainOrders: any) {
+    async _consumeFillQueue(chainOrders: typeof import('./chain_orders.js')) {
         return DexbotFillRuntime.consumeFillQueue(this, chainOrders);
     }
 
@@ -739,7 +785,7 @@ class DEXBot {
      * @param {Object} chainOrders - Chain orders instance for broadcasting
      * @returns {Promise<void>}
      */
-    async _processFillsWithBootstrapMode(chainOrders: any) {
+    async _processFillsWithBootstrapMode(chainOrders: typeof import('./chain_orders.js')) {
         return DexbotFillRuntime.processFillsWithBootstrapMode(this, chainOrders);
     }
 
@@ -748,7 +794,7 @@ class DEXBot {
      * @param {string} accountName - The name of the account to set up
      * @private
      */
-    async _setupAccountContext(accountName: any) {
+    async _setupAccountContext(accountName: string) {
         const accId = await chainOrders.resolveAccountId(accountName);
 
         if (!accId) {
@@ -771,7 +817,7 @@ class DEXBot {
      * @returns {Promise<void>}
      * @throws {Error} If initialization fails or preferredAccount is missing.
      */
-    async initialize(vaultSecret: any = null) {
+    async initialize(vaultSecret: string | null = null) {
         await waitForConnected(TIMING.CONNECTION_TIMEOUT_MS);
         if (this.config && this.config.preferredAccount) {
             try {
@@ -783,7 +829,7 @@ class DEXBot {
                         vaultSecret,
                         BitShares
                     );
-                } catch (err: any) {
+                } catch (err) {
                     if (vaultSecret) throw err;
                     this._warn(`Credential daemon probe failed: ${getErrorMessage(err)}. Falling back to interactive authentication.`);
                 }
@@ -793,9 +839,9 @@ class DEXBot {
                     privateKey = await chainKeys.resolvePrivateKey(this.config.preferredAccount, unlockSecret, BitShares);
                 }
 
-                this.privateKey = privateKey;
+                this.privateKey = privateKey as string | SigningToken | null;
                 await this._setupAccountContext(this.config.preferredAccount);
-            } catch (err: any) {
+            } catch (err) {
                 if (chainKeys.isMasterPasswordFailure(err)) {
                     throw err;
                 }
@@ -827,8 +873,8 @@ class DEXBot {
      * @param {Array<Object>} orders - Array of order objects
      * @returns {Array<Array<Object>>} Grouped order arrays
      */
-    _buildOutsideInPairGroupsForOrders(orders: any) {
-        return cowRuntime.buildOutsideInPairGroupsForOrders(orders);
+    _buildOutsideInPairGroupsForOrders(orders: unknown[]) {
+        return cowRuntime.buildOutsideInPairGroupsForOrders(orders as Parameters<typeof cowRuntime.buildOutsideInPairGroupsForOrders>[0]);
     }
 
     /**
@@ -836,8 +882,8 @@ class DEXBot {
      * @param {Array<Object>} createEntries - Array of create entry objects with context.order
      * @returns {Array<Array<Object>>} Grouped entry arrays
      */
-    _buildOutsideInPairGroupsForCreateEntries(createEntries: any) {
-        return cowRuntime.buildOutsideInPairGroupsForCreateEntries(createEntries);
+    _buildOutsideInPairGroupsForCreateEntries(createEntries: unknown[]) {
+        return cowRuntime.buildOutsideInPairGroupsForCreateEntries(createEntries as Parameters<typeof cowRuntime.buildOutsideInPairGroupsForCreateEntries>[0]);
     }
 
     /**
@@ -911,8 +957,8 @@ class DEXBot {
      * @param {Array<{index:number, ctx:Object}>} missingCreateResults - Missing CREATE results.
      * @returns {void}
      */
-    _markMissingCreateResultsAsStructuralBlocker(missingCreateResults: any) {
-        return cowRuntime.markMissingCreateResultsAsStructuralBlocker(this, missingCreateResults);
+    _markMissingCreateResultsAsStructuralBlocker(missingCreateResults: unknown) {
+        return cowRuntime.markMissingCreateResultsAsStructuralBlocker(this, missingCreateResults as Parameters<typeof cowRuntime.markMissingCreateResultsAsStructuralBlocker>[1]);
     }
 
     /**
@@ -921,8 +967,8 @@ class DEXBot {
      * @param {Object} order - Unmatched chain order or structural blocker.
      * @returns {string} Compact human-readable diagnostic.
      */
-    _formatUnmatchedChainOrderForLog(order: any) {
-        return cowRuntime.formatUnmatchedChainOrderForLog(order);
+    _formatUnmatchedChainOrderForLog(order: unknown) {
+        return cowRuntime.formatUnmatchedChainOrderForLog(order as Record<string, unknown>);
     }
 
     /**
@@ -945,8 +991,8 @@ class DEXBot {
      * @param {Object} entry.finalInts - { amountToSell, minToReceive, ... } blockchain integers
      * @returns {void}
      */
-    _recordPendingBroadcast(entry: any) {
-        return cowRuntime.recordPendingBroadcast(this, entry);
+    _recordPendingBroadcast(entry: unknown) {
+        return cowRuntime.recordPendingBroadcast(this, entry as Parameters<typeof cowRuntime.recordPendingBroadcast>[1]);
     }
 
     /**
@@ -976,7 +1022,7 @@ class DEXBot {
      * @param {Object} planned - { sell, receive, orderType } integers from the planned op
      * @returns {Object|null} Matching chain order, or null
      */
-    _findChainOrderForSlot(chainOrders: any, slotId: any, planned: any) {
+    _findChainOrderForSlot(chainOrders: ChainOrderLike[], slotId: string, planned: Parameters<typeof cowRuntime.findChainOrderForSlot>[3]) {
         return cowRuntime.findChainOrderForSlot(this, chainOrders, slotId, planned);
     }
 
@@ -1006,37 +1052,8 @@ class DEXBot {
      * @param {Array<Object>} opContexts - Original opContexts from the failed batch
      * @returns {Promise<Object>} Result object compatible with batch return shape
      */
-    async _reconcileAfterUncertainBroadcast(err: any, opContexts: any, options: Record<string, any> = {}) {
+    async _reconcileAfterUncertainBroadcast(err: unknown, opContexts: OpPhase[], options: UnknownRecord = {}) {
         return cowRuntime.reconcileAfterUncertainBroadcast(this, err, opContexts, options);
-    }
-
-    /**
-     * Auto-cancel a price-drift orphan from the unmatched-order snapshot.
-     *
-     * Only cancels entries with reason === 'price-drift-orphan' — these are
-     * surplus orders that drifted away from their slot price and have no
-     * adoptable grid slot. All other unmatched orders (duplicate-price-level,
-     * already-matched-slot, etc.) are adoptable positions that the structural
-     * resync will integrate into the grid; cancelling them destroys capital.
-     *
-     * This is the post-recovery safety net: if, after
-     * _reconcileAfterUncertainBroadcast runs, there are still price-drift
-     * orphans, cancel ONE per cycle. Per-cycle cap = 1 (or 5 in recovery mode)
-     * — the next cycle will pick up the next orphan if more remain.
-     *
-     * Safety conditions (ALL must hold):
-     *   1. _pendingBroadcasts is empty (no in-flight recovery)
-     *   2. _lastUnmatchedChainOrders contains at least one price-drift-orphan
-     *   3. The current cycle has not already auto-cancelled an orphan
-     *      (tracked via this._autoCancelOrphanCycleMarker)
-     *
-     * Records the cancel via _recordOwnCancelOps so the fill consumer
-     * doesn't trip the self-cancel guard.
-     *
-     * @returns {Promise<{cancelled: boolean, orderId?: string, reason?: string}>}
-     */
-    async _autoCancelOneUnmatchedOrphan() {
-        return cowRuntime.autoCancelOneUnmatchedOrphan(this);
     }
 
     /**
@@ -1052,7 +1069,7 @@ class DEXBot {
      * execution where earlier groups already committed). Re-broadcasting
      * the full operations array would duplicate those creates on chain.
      */
-    async _executeWithRetryOnUncertain(operations: any, opContexts: any) {
+    async _executeWithRetryOnUncertain(operations: unknown[], opContexts: OpPhase[]) {
         return cowRuntime.executeWithRetryOnUncertain(this, operations, opContexts);
     }
 
@@ -1065,7 +1082,7 @@ class DEXBot {
      * @param {Array<Object>} opContexts - Array of operation context metadata (1:1 with operations)
      * @returns {Promise<{result: Object, opContexts: Array}>} Execution result with contexts
      */
-    async _executeChunkedWithRetryOnUncertain(operations: any, opContexts: any) {
+    async _executeChunkedWithRetryOnUncertain(operations: unknown[], opContexts: OpPhase[]) {
         return cowRuntime.executeChunkedWithRetryOnUncertain(this, operations, opContexts);
     }
 
@@ -1075,20 +1092,21 @@ class DEXBot {
      * @param {string} [contextLabel='rebalance'] - Context label for logging
      * @returns {Promise<Object>} Batch execution result
      */
-    async _executeBatchIfNeeded(rebalanceResult: any, contextLabel: any = 'rebalance') {
+    async _executeBatchIfNeeded(rebalanceResult: unknown, contextLabel: unknown = 'rebalance'): Promise<unknown> {
         if (!hasExecutableActions(rebalanceResult)) {
             this.manager?.logger?.log?.(`[COW] No actions needed for ${contextLabel}`, 'debug');
             // Structural-resync request from the plan path (unrecoverable
             // boundary, rail-edge target, over-distance rotations): the plan
             // was refused before broadcast, so trigger the rebuild here where
             // bot context (and the wired resync entry point) exists.
-            if ((rebalanceResult as any)?.needsResync && typeof this.manager?.requestStructuralGridResync === 'function') {
-                const reason = String((rebalanceResult as any)?.resyncReason || (rebalanceResult as any)?.reason || 'plan-refused');
+            const rbResult = rebalanceResult as UnknownRecord | null | undefined;
+            if (rbResult?.needsResync && typeof this.manager?.requestStructuralGridResync === 'function') {
+                const reason = String(rbResult.resyncReason || rbResult.reason || 'plan-refused');
                 this.manager?.logger?.log?.(`[COW] Requesting structural resync: ${reason}`, 'warn');
                 try {
                     await this.manager.requestStructuralGridResync(reason, { reason });
-                } catch (err: any) {
-                    this.manager?.logger?.log?.(`[COW] Structural resync request failed: ${err?.message || err}`, 'warn');
+                } catch (err) {
+                    this.manager?.logger?.log?.(`[COW] Structural resync request failed: ${getErrorMessage(err)}`, 'warn');
                 }
             }
             // Clear REBALANCING state even when there are no actions to execute.
@@ -1101,7 +1119,7 @@ class DEXBot {
             // outputs, updateOrdersOnChainPlan cowResults, reconcileGridOrders
             // null results) must NOT pop the stack — an unmatched pop could steal
             // a nested grid's entry.
-            cowRuntime.popPushedWorkingGrid(this, rebalanceResult);
+            cowRuntime.popPushedWorkingGrid(this, rebalanceResult as UnknownRecord);
             // Persist master grid mutations that may have occurred outside COW
             // broadcast (e.g., partial-fill size updates applied directly by the
             // sync engine). Without this, a partial fill that does not trigger a
@@ -1140,14 +1158,15 @@ class DEXBot {
      * @param {Object} [options={}] - Passed through to processFilledOrders
      * @returns {{aborted: boolean}}
      */
-    async _processFillsWithBatching(fills: any, excl: any, contextLabel: any, options: any = {}) {
-        if (!fills || fills.length === 0) {
+    async _processFillsWithBatching(fills: unknown, excl: unknown, contextLabel: unknown, options: UnknownRecord = {}): Promise<FillBatchResult> {
+        const fillList = (fills as unknown[] | null | undefined) || [];
+        if (fillList.length === 0) {
             return { aborted: false };
         }
 
         const managerLog = this.manager?.logger?.log?.bind(this.manager.logger) || (() => {});
         const maxBatch = this._getMaxFillBatchSize();
-        const totalFills = fills.length;
+        const totalFills = fillList.length;
         const useUnifiedPlan = totalFills <= maxBatch;
         const modeLabel = useUnifiedPlan ? 'unified' : 'chunked';
 
@@ -1173,34 +1192,34 @@ class DEXBot {
             const activeBuy = this.manager?.config?.activeOrders?.buy ?? 1;
             const legacyCap = Math.max(Math.floor(activeSell / 2), Math.floor(activeBuy / 2), 1);
             const shiftBudget = legacyCap;
-            (this.manager as any)._boundaryShiftBudget = shiftBudget;
-            (this.manager as any)._boundaryShiftBudgetBase = shiftBudget;
+            this.manager._boundaryShiftBudget = shiftBudget;
+            this.manager._boundaryShiftBudgetBase = shiftBudget;
             let i = 0;
             while (i < totalFills) {
                 const remaining = totalFills - i;
                 const currentBatchSize = useUnifiedPlan ? remaining : Math.min(maxBatch, remaining);
                 const batchEnd = Math.min(i + currentBatchSize, totalFills);
-                const fillBatch = fills.slice(i, batchEnd);
+                const fillBatch = fillList.slice(i, batchEnd) as Array<{ id?: unknown; orderId?: unknown }>;
                 i = batchEnd;
 
                 // Refresh the LAST-FILL guard pivot for this chunk's broadcast:
                 // recordLastFilledPrices walks the batch in order, so the pivot
                 // always reflects the latest ingested fill before planning and
                 // broadcasting this chunk's rotation/create ops.
-                try { (this.manager as any)?.recordLastFilledPrices?.(fillBatch); } catch {}
+                try { this.manager?.recordLastFilledPrices?.(fillBatch); } catch {}
 
-                const batchIds = fillBatch.map((f: any) => f.id).join(', ');
+                const batchIds = fillBatch.map((f: { id?: unknown }) => f.id).join(', ');
                 const label = `${contextLabel} [${batchIds}]`;
                 managerLog(
                     `>>> Processing fill set ${label} (${i}/${totalFills})`,
                     'info'
                 );
 
-                let fullExcludeSet = excl || new Set();
+                let fullExcludeSet = new Set<unknown>(((excl as Iterable<unknown> | null | undefined) || []));
                 if (!useUnifiedPlan) {
-                    const batchIdSet = new Set(fillBatch.map((f: any) => f.id));
-                    fullExcludeSet = new Set(excl || []);
-                    for (const other of fills) {
+                    const batchIdSet = new Set(fillBatch.map((f: { id?: unknown }) => f.id));
+                    fullExcludeSet = new Set<unknown>(((excl as Iterable<unknown> | null | undefined) || []));
+                    for (const other of fillList as Array<{ id?: unknown; orderId?: unknown }>) {
                         if (batchIdSet.has(other.id)) continue;
                         if (other.orderId) fullExcludeSet.add(other.orderId);
                         if (other.id) fullExcludeSet.add(other.id);
@@ -1222,7 +1241,7 @@ class DEXBot {
                 // incident 2026-09-12: 6 fills deferred after the commit, no
                 // future region end, grid frozen). This replaces the old
                 // in-lock 30s wait that cascaded into "Lock acquisition timeout".
-                if ((rebalanceResult as any)?.deferred) {
+                if ((rebalanceResult as UnknownRecord)?.deferred) {
                     anyDeferred = true;
                     managerLog(
                         `[COW] ${label} rebalance deferred (broadcast active); accounting applied, boundary re-derives after the region ends`,
@@ -1230,7 +1249,7 @@ class DEXBot {
                     );
                     continue;
                 }
-                const batchResult = await this._executeBatchIfNeeded(rebalanceResult, label);
+                const batchResult = (await this._executeBatchIfNeeded(rebalanceResult, label)) as FillBatchResult;
 
                 if (batchResult?.abortedForIllegalState || batchResult?.abortedForAccountingFailure) {
                     managerLog(
@@ -1242,8 +1261,8 @@ class DEXBot {
             }
         } finally {
             if (this.manager) {
-                delete (this.manager as any)._boundaryShiftBudget;
-                delete (this.manager as any)._boundaryShiftBudgetBase;
+                delete this.manager._boundaryShiftBudget;
+                delete this.manager._boundaryShiftBudgetBase;
             }
             if (typeof this.manager?.resumeFundRecalc === 'function') {
                 await this.manager.resumeFundRecalc();
@@ -1271,7 +1290,7 @@ class DEXBot {
                     this,
                     'fill rebalance deferred by an active broadcast region'
                 );
-            } catch (err: any) {
+            } catch (err) {
                 // Never swallow the owed boundary-shift retry silently: a
                 // scheduling failure here re-creates the frozen-grid hang
                 // this level-triggered retry was added to fix.
@@ -1298,9 +1317,9 @@ class DEXBot {
      * @param {string} reason - Reason for suspension
      * @returns {void}
      */
-    _suspendGridPersistenceForCredentialOutage(reason: any) {
+    _suspendGridPersistenceForCredentialOutage(reason: unknown): void {
         if (typeof this.manager?.suspendGridPersistence === 'function') {
-            this.manager.suspendGridPersistence(reason);
+            this.manager.suspendGridPersistence(reason as string | undefined);
         }
     }
 
@@ -1309,9 +1328,9 @@ class DEXBot {
      * @param {string} reason - Reason for resuming
      * @returns {void}
      */
-    _resumeGridPersistenceAfterCredentialRecovery(reason: any) {
+    _resumeGridPersistenceAfterCredentialRecovery(reason: unknown): void {
         if (typeof this.manager?.resumeGridPersistence === 'function') {
-            this.manager.resumeGridPersistence(reason);
+            this.manager.resumeGridPersistence(reason as string | null | undefined);
         }
     }
 
@@ -1321,26 +1340,27 @@ class DEXBot {
      * @returns {Promise<void>}
      * @throws {Error} With code CREDENTIAL_DAEMON_UNAVAILABLE if daemon is down
      */
-    async _ensureCredentialDaemonWritable(contextLabel: any = 'write batch') {
+    async _ensureCredentialDaemonWritable(contextLabel: unknown = 'write batch'): Promise<void> {
         if (!this._isCredentialDaemonWriteRequired()) {
             return;
         }
 
         try {
-            if (this.privateKey && getKeyStore().isDaemonSigningKey(this.privateKey)) {
+            const signingToken = this.privateKey as SigningToken | null;
+            if (signingToken && getKeyStore().isDaemonSigningKey(signingToken)) {
                 await chainKeys.pingDaemon(
-                    this.privateKey.accountName,
+                    signingToken.accountName,
                     Math.min(TIMING.DAEMON_PING_TIMEOUT_MS, TIMING.DAEMON_STARTUP_TIMEOUT_MS),
-                    { socketPath: this.privateKey.socketPath }
+                    { socketPath: signingToken.socketPath }
                 );
             }
-        } catch (err: any) {
+        } catch (err) {
             const message = `Credential daemon unavailable before ${contextLabel}: ${getErrorMessage(err)}`;
             this._credentialDaemonDown = true;
             this._credentialRecoveryNeeded = true;
             this._suspendGridPersistenceForCredentialOutage(message);
             this.manager?.logger?.log?.(`[CREDENTIAL] ${message}. Write operations paused; re-unlock with dexbot pm2.`, 'error');
-            const wrapped: any = new Error(message);
+            const wrapped = new Error(message) as Error & { code?: string; cause?: unknown };
             wrapped.code = DAEMON_CODES.CREDENTIAL_DAEMON_UNAVAILABLE;
             wrapped.cause = err;
             throw wrapped;
@@ -1352,9 +1372,9 @@ class DEXBot {
      * @param {Error|*} err - Error to check
      * @returns {boolean}
      */
-    _isCredentialDaemonError(err: any) {
+    _isCredentialDaemonError(err: unknown): boolean {
         if (!err) return false;
-        if (err.code === DAEMON_CODES.CREDENTIAL_DAEMON_UNAVAILABLE) return true;
+        if (getErrorCode(err) === DAEMON_CODES.CREDENTIAL_DAEMON_UNAVAILABLE) return true;
         const message = String(getErrorMessage(err) || '');
         return /Credential daemon|Daemon connection failed|daemon .*unavailable|dexbot-cred-daemon\.sock|ECONNREFUSED|ENOENT/.test(message);
     }
@@ -1376,7 +1396,7 @@ class DEXBot {
                 );
                 this._credentialRecoveryDeferredTimer = setTimeout(() => {
                     this._credentialRecoveryDeferredTimer = null;
-                    this._runCredentialRecoveryAfterDaemonRestored().catch((err: any) => {
+                    this._runCredentialRecoveryAfterDaemonRestored().catch((err) => {
                         this.manager?.logger?.log?.(`[CREDENTIAL] Deferred recovery failed: ${getErrorMessage(err)}`, 'error');
                         if (this.manager) {
                             this.manager._recoveryState = { ...this.manager._recoveryState, lastFailureAt: Date.now() };
@@ -1405,7 +1425,7 @@ class DEXBot {
             }
             this._credentialRecoveryNeeded = false;
             this.manager?.logger?.log?.('[CREDENTIAL] Credential recovery sync complete.', 'info');
-        } catch (err: any) {
+        } catch (err) {
             this._credentialRecoveryNeeded = true;
             this._suspendGridPersistenceForCredentialOutage(`credential recovery failed: ${getErrorMessage(err)}`);
             this.manager?.logger?.log?.(
@@ -1441,7 +1461,7 @@ class DEXBot {
             if (this._credentialDaemonWatchdogInFlight) return;
             this._credentialDaemonWatchdogInFlight = true;
             try {
-                const token = this.privateKey;
+                const token = this.privateKey as unknown as SigningToken;
                 try {
                     if (getKeyStore().isDaemonSigningKey(token)) {
                         await chainKeys.pingDaemon(
@@ -1455,7 +1475,7 @@ class DEXBot {
                     }
                     this._credentialDaemonDown = false;
                     await this._runCredentialRecoveryAfterDaemonRestored();
-                } catch (err: any) {
+                } catch (err) {
                     if (!this._credentialDaemonDown) {
                         const errMsg = String(getErrorMessage(err) || '');
                         let hint = '';
@@ -1483,7 +1503,7 @@ class DEXBot {
         };
 
         this._credentialDaemonWatchdogInterval = setInterval(() => {
-            probe().catch((err: any) => {
+            probe().catch((err) => {
                 this.manager?.logger?.log?.(`[CREDENTIAL] Credential daemon watchdog error: ${getErrorMessage(err)}`, 'warn');
             });
         }, intervalMs);
@@ -1511,8 +1531,9 @@ class DEXBot {
      * @param {Object} rebalanceResult - COW result containing workingGrid + actions.
      * @returns {Promise<Object>} The batch result.
      */
-    async updateOrdersOnChainBatch(rebalanceResult: any) {
-        if (!rebalanceResult || !rebalanceResult.workingGrid) {
+    async updateOrdersOnChainBatch(rebalanceResult: unknown): Promise<unknown> {
+        const rb = rebalanceResult as CowResult | null | undefined;
+        if (!rb || !rb.workingGrid) {
             const reason = 'NON_COW_PAYLOAD';
             this.manager?.logger?.log?.(
                 `[COW] Rejected non-COW batch payload. Use updateOrdersOnChainPlan() for plan inputs.`,
@@ -1521,7 +1542,7 @@ class DEXBot {
             return { executed: false, aborted: true, reason };
         }
 
-        return await this._updateOrdersOnChainBatchCOW(rebalanceResult);
+        return await this._updateOrdersOnChainBatchCOW(rb);
     }
 
     /**
@@ -1530,7 +1551,7 @@ class DEXBot {
      * @param {Object|Array} plan - Plan object or array of ordersToPlace
      * @returns {Promise<Object>} Batch execution result
      */
-    async updateOrdersOnChainPlan(plan: any) {
+    async updateOrdersOnChainPlan(plan: UnknownRecord): Promise<UnknownRecord> {
         const cowResult = this._buildCowResultFromPlan(plan);
         return await this._updateOrdersOnChainBatchCOW(cowResult);
     }
@@ -1540,7 +1561,7 @@ class DEXBot {
      * @param {Object|Array} plan - Plan object or array of ordersToPlace
      * @returns {{workingGrid: any, workingIndexes: Object, workingBoundary: number, actions: Array}}
      */
-    _buildCowResultFromPlan(plan: any) {
+    _buildCowResultFromPlan(plan: UnknownRecord): CowResult {
         return cowRuntime.buildCowResultFromPlan(this, plan);
     }
 
@@ -1551,11 +1572,11 @@ class DEXBot {
      * @returns {Promise<Object>} The batch result.
      * @private
      */
-    async _updateOrdersOnChainBatchCOW(cowResult: any, options: any = {}) {
+    async _updateOrdersOnChainBatchCOW(cowResult: CowResult, options: UnknownRecord = {}): Promise<UnknownRecord> {
         return cowRuntime.updateOrdersOnChainBatchCOW(this, cowResult, options);
     }
 
-    async _processBatchResults(result: any, opContexts: any) {
+    async _processBatchResults(result: UnknownRecord, opContexts: OpPhase[]): Promise<UnknownRecord> {
         return cowRuntime.processBatchResults(this, result, opContexts);
     }
     /**
@@ -1566,7 +1587,7 @@ class DEXBot {
      * @returns {Promise<boolean>} True if resync succeeded
      * @private
      */
-    async _performGridResync(options: any = {}) {
+    async _performGridResync(options: UnknownRecord = {}): Promise<unknown> {
         return DexbotMaintenanceRuntime.performGridResync(this, options);
     }
 
@@ -1594,8 +1615,8 @@ class DEXBot {
      * @param {string|Object|Buffer} [vaultSecret=null] - The unlock secret.
      * @returns {Promise<void>}
      */
-    async start(vaultSecret: any = null) {
-        await this.initialize(vaultSecret);
+    async start(vaultSecret: unknown = null) {
+        await this.initialize(vaultSecret as string | null | undefined);
         await this._runStartupSequence();
     }
 
@@ -1605,15 +1626,15 @@ class DEXBot {
      * @param {string|Object} privateKey - Pre-decrypted private key or daemon signing token
      * @returns {Promise<void>}
      */
-    async startWithPrivateKey(privateKey: any) {
+    async startWithPrivateKey(privateKey: unknown) {
         // Initialize account data with provided private key
         await waitForConnected(TIMING.CONNECTION_TIMEOUT_MS);
 
         if (this.config && this.config.preferredAccount) {
             try {
-                this.privateKey = privateKey;
+                this.privateKey = privateKey as string | SigningToken | null;
                 await this._setupAccountContext(this.config.preferredAccount);
-            } catch (err: any) {
+            } catch (err) {
                 this._warn(`Auto-selection of preferredAccount failed: ${getErrorMessage(err)}`);
                 throw err;
             }
@@ -1636,7 +1657,7 @@ class DEXBot {
             }
             const startupState = await this._initializeStartupState();
             await this._finishStartupSequence(startupState);
-        } catch (err: any) {
+        } catch (err) {
             this._warn(`Error during grid initialization: ${getErrorMessage(err)}`);
             await this.shutdown();
             throw err;
@@ -1720,8 +1741,8 @@ class DEXBot {
         return DexbotMaintenanceRuntime.stopBotsConfigPollInterval(this);
     }
 
-    async _releaseMarketAdapterRuntime(context: any = 'shutdown') {
-        return DexbotMaintenanceRuntime.releaseMarketAdapterRuntime(this, this.config?.botKey || this.config?.name, context);
+    async _releaseMarketAdapterRuntime(context: unknown = 'shutdown') {
+        return DexbotMaintenanceRuntime.releaseMarketAdapterRuntime(this, (this.config?.botKey || this.config?.name) as string, context as string);
     }
 
     /**
@@ -1729,10 +1750,10 @@ class DEXBot {
      * @returns {import('./credit_runtime.js').CreditRuntime|null}
      */
     _getCreditRuntime() {
-        const lending = this.config?.debtPolicy?.lending;
+        const lending = (this.config?.debtPolicy as UnknownRecord | undefined)?.lending;
         const enabledPolicy = Array.isArray(lending)
             && lending.length > 0
-            && lending.every((item: any) => typeof item?.collateralAsset === 'string' && item.collateralAsset.length > 0);
+            && lending.every((item) => typeof item?.collateralAsset === 'string' && item.collateralAsset.length > 0);
         if (!enabledPolicy) {
             this._creditRuntime = null;
             return null;
@@ -1767,7 +1788,7 @@ class DEXBot {
         if (!runtime) return;
         try {
             await runtime.refreshState();
-        } catch (err: any) {
+        } catch (err) {
             this._warn(`Credit runtime refresh/sync failed: ${getErrorMessage(err)}`);
         }
     }
@@ -1778,7 +1799,7 @@ class DEXBot {
      * @param {Object} [options={}] - Maintenance options
      * @returns {Promise<*>} Maintenance result from runtime
      */
-    async _runCreditRuntimeMaintenance(context: any = 'periodic', options: any = {}) {
+    async _runCreditRuntimeMaintenance(context: unknown = 'periodic', options: UnknownRecord = {}): Promise<unknown> {
         const runtime = this._getCreditRuntime();
         if (!runtime) {
             return null;
@@ -1808,7 +1829,7 @@ class DEXBot {
         this._creditWatchdogInterval = setInterval(async () => {
             try {
                 await runtime.runCreditWatchdog();
-            } catch (err: any) {
+            } catch (err) {
                 this._warn(`Credit watchdog error: ${getErrorMessage(err)}`);
             }
         }, intervalMs);
@@ -1829,8 +1850,8 @@ class DEXBot {
         }
     }
 
-    async requestGridReset(reason: any = 'structural change', options: { refreshCenterPrice?: boolean; [key: string]: any } = {}) {
-        return DexbotMaintenanceRuntime.requestGridReset(this, reason, options);
+    async requestGridReset(reason: unknown = 'structural change', options: UnknownRecord = {}): Promise<unknown> {
+        return DexbotMaintenanceRuntime.requestGridReset(this, reason as string | undefined, options as { refreshCenterPrice?: boolean });
     }
 
     _wireStructuralGridResyncRequest() {
@@ -1849,7 +1870,7 @@ class DEXBot {
      * drain. Re-entry safe: the marker keeps repeated wiring idempotent.
      */
     _wireBroadcastRegionEndDrain() {
-        const manager: any = this.manager;
+        const manager = this.manager;
         if (!manager || typeof manager.addBroadcastRegionEndListener !== 'function') return;
         const regionEndHandler = () => {
             if (this._shuttingDown) return;
@@ -1858,8 +1879,8 @@ class DEXBot {
             // the deferred fills recorded. Runs after _batchInFlight teardown
             // (schedulePostRecoveryRebalance re-defers), so it never overlaps
             // the batch whose finally is still executing.
-            if ((manager as any)._deferredRebalanceAt) {
-                (manager as any)._deferredRebalanceAt = 0;
+            if (manager._deferredRebalanceAt) {
+                manager._deferredRebalanceAt = 0;
                 DexbotStateRecovery.schedulePostRecoveryRebalance(
                     this,
                     'fill rebalance deferred by an active broadcast region'
@@ -1867,8 +1888,8 @@ class DEXBot {
             }
             // A recovery sync wrapping the region keeps the consumer gated;
             // requestGridReset's finally drains once the counter clears.
-            if ((this as any)._recoverySyncInFlight) return;
-            if ((this as any)._batchInFlight) return;
+            if (this._recoverySyncInFlight) return;
+            if (this._batchInFlight) return;
             if (!this._incomingFillQueue || this._incomingFillQueue.length === 0) return;
             this._log(`[FILL-QUEUE] Broadcasting region ended; draining ${this._incomingFillQueue.length} deferred fill(s).`, 'info');
             // Region-ended drain residue: the parked fills run against
@@ -1877,11 +1898,11 @@ class DEXBot {
             this._deferredFillsPending = true;
             this._scheduleFillConsumerRestart(chainOrders);
         };
-        (regionEndHandler as any)._isRegionEndDrain = true;
+        regionEndHandler._isRegionEndDrain = true;
         const existing = Array.isArray(manager._onBroadcastRegionEndListeners)
             ? manager._onBroadcastRegionEndListeners
             : [];
-        if (!existing.some((fn: any) => fn && (fn as any)._isRegionEndDrain)) {
+        if (!existing.some((fn) => !!(fn as { _isRegionEndDrain?: unknown })._isRegionEndDrain)) {
             manager.addBroadcastRegionEndListener(regionEndHandler);
         }
     }
@@ -1925,8 +1946,8 @@ class DEXBot {
      * @param {Object} context - Maintenance context for logging.
      * @private
      */
-    async _executeMaintenanceLogic(context: any) {
-        return DexbotMaintenanceRuntime.executeMaintenanceLogic(this, context);
+    async _executeMaintenanceLogic(context: unknown) {
+        return DexbotMaintenanceRuntime.executeMaintenanceLogic(this, context as string);
     }
 
     /**
@@ -1937,8 +1958,8 @@ class DEXBot {
      * @returns {Promise<{cancelledCount: number, batchResult: {aborted: boolean}|null}>}
      * @private
      */
-    async _cancelDustOrders({ buy: buyDust = [], sell: sellDust = [] }: any = {}) {
-        return DexbotMaintenanceRuntime.cancelDustOrders(this, { buy: buyDust, sell: sellDust });
+    async _cancelDustOrders({ buy: buyDust = [], sell: sellDust = [] }: { buy?: unknown[]; sell?: unknown[] } = {}) {
+        return DexbotMaintenanceRuntime.cancelDustOrders(this, { buy: buyDust as never, sell: sellDust as never });
     }
 
     /**
@@ -1987,8 +2008,8 @@ class DEXBot {
      * @param {Object} options - Maintenance options
      * @private
      */
-    async _runGridMaintenance(context: any = 'periodic', options: any = {}) {
-        return DexbotMaintenanceRuntime.runGridMaintenance(this, context, options);
+    async _runGridMaintenance(context: unknown = 'periodic', options: UnknownRecord = {}): Promise<unknown> {
+        return DexbotMaintenanceRuntime.runGridMaintenance(this, context as string | undefined, options as { skipIdle?: boolean });
     }
 
     /**
@@ -2073,7 +2094,7 @@ class DEXBot {
         if (this._creditRuntime) {
             try {
                 await this._creditRuntime.shutdown();
-            } catch (err: any) {
+            } catch (err) {
                 this._warn(`Failed to persist credit runtime state: ${getErrorMessage(err)}`);
             }
         }
@@ -2081,7 +2102,7 @@ class DEXBot {
         if (this._triggerWatcher && typeof this._triggerWatcher.close === 'function') {
             try {
                 this._triggerWatcher.close();
-            } catch (err: any) {
+            } catch (err) {
                 this._warn(`Failed to close trigger watcher: ${getErrorMessage(err)}`);
             } finally {
                 this._triggerWatcher = null;
@@ -2091,7 +2112,7 @@ class DEXBot {
         if (typeof this._fillsUnsubscribe === 'function') {
             try {
                 await this._fillsUnsubscribe();
-            } catch (err: any) {
+            } catch (err) {
                 this._warn(`Failed to unsubscribe fill listener: ${getErrorMessage(err)}`);
             } finally {
                 this._fillsUnsubscribe = null;
@@ -2099,7 +2120,7 @@ class DEXBot {
         }
 
         if (typeof this._reconnectUnregister === 'function') {
-            try { this._reconnectUnregister(); } catch (err: any) {
+            try { this._reconnectUnregister(); } catch (err) {
                 this._warn(`Error unregistering reconnect callback: ${getErrorMessage(err)}`);
             }
             this._reconnectUnregister = null;
@@ -2107,13 +2128,13 @@ class DEXBot {
 
         try {
             await this._stopOpenOrdersSyncLoop();
-        } catch (err: any) {
+        } catch (err) {
             this._warn(`Error while stopping open-orders sync loop: ${getErrorMessage(err)}`);
         }
 
         try {
             await this._releaseMarketAdapterRuntime('shutdown');
-        } catch (err: any) {
+        } catch (err) {
             this._warn(`Error while releasing market adapter runtime: ${getErrorMessage(err)}`);
         }
 
@@ -2123,7 +2144,7 @@ class DEXBot {
                 this._warn('Shutdown lock skipped: manager or fillProcessingLock unavailable');
             } else {
                 const shutdownLockTimeoutMs = this.config?.timing?.SYNC_LOCK_TIMEOUT_MS;
-                let shutdownLockTimer: any;
+                let shutdownLockTimer: ReturnType<typeof setTimeout> | undefined;
                 let finalFlushPromise: Promise<void> | null = null;
                 const startFinalFlush = (label: string): Promise<void> => {
                     if (finalFlushPromise) return finalFlushPromise;
@@ -2141,7 +2162,7 @@ class DEXBot {
                             try {
                                 await this.manager.persistGrid();
                                 this._log(`Final grid snapshot persisted (${label})`);
-                            } catch (err: any) {
+                            } catch (err) {
                                 this._warn(`Failed to persist final state (${label}): ${getErrorMessage(err)}`);
                             }
                         }
@@ -2153,8 +2174,8 @@ class DEXBot {
                         this._log('Fill processing lock acquired for shutdown');
                         await startFinalFlush('shutdown');
                     }).then(() => 'acquired').catch(() => 'lock-error'),
-                    new Promise<string>((resolve: any) => {
-                        shutdownLockTimer = setTimeout(() => resolve('timed-out'), shutdownLockTimeoutMs);
+                    new Promise<string>((resolve: (value: string) => void) => {
+                        shutdownLockTimer = setTimeout(() => resolve('timed-out'), shutdownLockTimeoutMs as number | undefined);
                     })
                 ]).finally(() => {
                     if (shutdownLockTimer) clearTimeout(shutdownLockTimer);
@@ -2167,7 +2188,7 @@ class DEXBot {
                     );
                     try {
                         await startFinalFlush('shutdown-fallback');
-                    } catch (err: any) {
+                    } catch (err) {
                         this._warn(`Best-effort flush during shutdown failed: ${getErrorMessage(err)}`);
                     }
                 }
@@ -2177,7 +2198,7 @@ class DEXBot {
                 this._consecutiveConsumeFailures = 0;
                 this._consumeFailureFirstAt = 0;
             }
-        } catch (err: any) {
+        } catch (err) {
             this._warn(`Error during shutdown lock acquisition: ${getErrorMessage(err)}`);
         }
 
@@ -2187,7 +2208,7 @@ class DEXBot {
             if (botName) {
                 try {
                     await fundRegistry.releaseAllocation(this.config.preferredAccount, botName);
-                } catch (err: any) {
+                } catch (err) {
                     this._warn(`Failed to release fund allocation for ${botName}: ${getErrorMessage(err)}`);
                 }
             }
@@ -2200,11 +2221,11 @@ class DEXBot {
             `lockContentions=${metrics.lockContentionEvents}, maxQueueDepth=${metrics.maxQueueDepth}, ` +
             `heldChainOrders=${metrics.heldChainOrders ?? 0}, blockingChainOrders=${metrics.blockingChainOrders ?? 0}`);
 
-        await this.manager?.logger?.flush();
+        await this.manager?.logger?.flush?.();
     }
 }
 
-(DEXBot as any).normalizeBotEntry = normalizeBotEntry;
+DEXBot.normalizeBotEntry = normalizeBotEntry;
 
 export default DEXBot
 

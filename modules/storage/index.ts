@@ -45,7 +45,7 @@ function getStorage(): IStorageAdapter {
  * Override the storage adapter (for DI, testing, or explicit choice).
  * Pass `null` to reset to auto-detection on next `getStorage()` call.
  */
-function setAdapter(adapter: any) {
+function setAdapter(adapter: IStorageAdapter | null) {
   _adapter = adapter;
 }
 

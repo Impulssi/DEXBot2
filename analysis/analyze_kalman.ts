@@ -12,9 +12,11 @@
  *     --file market_adapter/data/lp/<path>/<to>/<lp-candles>.json
  */
 
+import { getErrorMessage } from '../modules/utils/errors.js';
 import path from 'node:path';
 import { KalmanTrendAnalyzer } from './trend_detection/kalman_trend_analyzer.js';
 import { generateHTML } from './trend_detection/kalman_chart_generator.js';
+import type { KalmanRow } from './trend_detection/kalman_chart_generator.js';
 import { calculateAMA } from '../market_adapter/core/strategies/ama.js';
 import { computeAmaSlopeWeights, createAmaSlopeClipTracker } from '../market_adapter/core/strategies/ama_slope_model.js';
 import { MARKET_ADAPTER } from '../modules/constants.js';
@@ -99,12 +101,12 @@ async function main() {
             qModal: config.qModal ?? config.qNoise ?? undefined,
         });
 
-        const allResults: any[] = [];
+        const allResults: KalmanRow[] = [];
         for (let i = 0; i < candles.length; i++) {
             const { marketPrice, timestamp } = source.extractMarketPrice(candles[i]);
             const result = analyzer.update(marketPrice);
             result.timestamp = timestamp;
-            allResults.push(result);
+            allResults.push(result as unknown as KalmanRow);
         }
 
         // ── AMA weight offset (for comparison panel) ─────────────────────────
@@ -149,7 +151,7 @@ async function main() {
 
         if (!config.quiet) console.log(`[Kalman] ✓ Chart saved to ${config.chartFile}`);
     } catch (err: unknown) {
-        console.error(`[Kalman] Error: ${(err as any)?.message ?? err}`);
+        console.error(`[Kalman] Error: ${getErrorMessage(err)}`);
         process.exit(1);
     }
 }

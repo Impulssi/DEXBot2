@@ -55,7 +55,7 @@ const storage = getStorage();
  * @param {string} targetPath - Path of the final JSON file.
  * @param {*} data - Anything `JSON.stringify` accepts.
  */
-function writeJsonFileAtomic(targetPath: any, data: any) {
+function writeJsonFileAtomic(targetPath: string, data: unknown) {
     storage.writeJSON(targetPath, data);
 }
 
@@ -71,7 +71,7 @@ const botsFileLock = new AsyncLock();
  * @returns {Promise<{content: string, config: Object}>} File content and parsed config
  * @throws {Error} If file doesn't exist or JSON is invalid
  */
-async function readBotsFileWithLock(botsJsonPath: any, parseFunction: any) {
+async function readBotsFileWithLock<T>(botsJsonPath: string, parseFunction: (content: string) => T): Promise<{ content: string; config: T }> {
     return botsFileLock.acquire(async () => {
         if (!storage.exists(botsJsonPath)) {
             throw new Error(`bots.json not found at ${botsJsonPath}`);
@@ -79,7 +79,7 @@ async function readBotsFileWithLock(botsJsonPath: any, parseFunction: any) {
 
         const content = storage.readFile(botsJsonPath);
         if (!content || !content.trim()) {
-            return { content: '', config: { bots: [] } };
+            return { content: '', config: { bots: [] } as unknown as T };
         }
 
         const config = parseFunction(content);
@@ -94,7 +94,7 @@ async function readBotsFileWithLock(botsJsonPath: any, parseFunction: any) {
  * @returns {Promise<void>}
  * @throws {Error} If write fails
  */
-async function writeBotsFileWithLock(botsJsonPath: any, config: any) {
+async function writeBotsFileWithLock(botsJsonPath: string, config: unknown) {
     return botsFileLock.acquire(async () => {
         // Atomic write prevents readers (in this process or another) from
         // seeing a truncated file mid-write. The in-process semaphore here
@@ -114,14 +114,14 @@ async function writeBotsFileWithLock(botsJsonPath: any, config: any) {
  * @returns {{content: string, config: Object}} File content and parsed config
  * @throws {Error} If file doesn't exist or JSON is invalid
  */
-function readBotsFileSync(botsJsonPath: any, parseFunction: any) {
+function readBotsFileSync<T>(botsJsonPath: string, parseFunction: (content: string) => T): { content: string; config: T } {
     if (!storage.exists(botsJsonPath)) {
         throw new Error(`bots.json not found at ${botsJsonPath}`);
     }
 
     const content = storage.readFile(botsJsonPath);
     if (!content || !content.trim()) {
-        return { content: '', config: { bots: [] } };
+        return { content: '', config: { bots: [] } as unknown as T };
     }
 
     const config = parseFunction(content);

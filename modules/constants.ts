@@ -74,7 +74,7 @@
  *       AMA_DELTA_THRESHOLD_PERCENT: % change in AMA center price that triggers grid reset
  *       DEFAULT_AMA_KEY: Default AMA profile used for `gridPrice: "ama"`
  *       AMAS: Built-in AMA1..AMA4 presets for market adapter defaults
- *       Related to bot AMA configuration (profiles/bots.json: ama.enabled, erPeriod, etc.)
+ *       Related to bot AMA configuration (profiles/bots.json: gridPrice keyword, ama.erPeriod, etc.)
  *       Stored in: profiles/general.settings.json
  *
  * MAINTENANCE & MONITORING:
@@ -208,12 +208,12 @@ let DEFAULT_CONFIG = {
 
 // Range quality zones for price bounds (minPrice/maxPrice multipliers).
 // Used for pre-entry legend in the bot editor (mountain-style).
-// Thresholds per user spec: green >=2x, yellow >=1.55x, orange 1.45x–1.55x, red <1.45x.
+// Thresholds per user spec: green >=2x, yellow >=1.55x, orange 1.4x–1.55x, red <1.4x.
 let RANGE_QUALITY = {
     GREEN_MIN: 2.0,   // >=2.0x → green (wide)
     YELLOW_MIN: 1.55, // >=1.55x → yellow (effeciant)
-    ORANGE_MIN: 1.45, // >=1.45x → orange (tight)
-    RED_MAX: 1.45,    // <1.45x → red (suizidal) — exclusive upper bound for red
+    ORANGE_MIN: 1.4,  // >=1.4x → orange (tight)
+    RED_MAX: 1.4,     // <1.4x → red (suizidal) — exclusive upper bound for red
 };
 
 // Timing constants used by OrderManager and helpers
@@ -581,6 +581,38 @@ let TIMING = {
 
 // Grid limits and scaling constants
 let GRID_LIMITS = {
+    // MISSING_GENESIS_POLICY: what to do when a persisted grid cannot be tied
+    // to a price ladder ("no genesis" -- the genesis-less state analysed in
+    // docs/GRID_PRICE_INVARIANT.md). A genesis-less grid is NOT repairable in
+    // place: every consumer (nearest-slot adoption, the materialize
+    // descriptor-price fallback, reserve-edge anchoring) has no authority for a
+    // slot's price, which is exactly how an off-grid price became grid evidence
+    // and was re-emitted. The load and sync gates refuse that state outright —
+    // no tolerance matcher remains.
+    //   'rebuild' (default) -- refuse the snapshot and rebuild a clean ladder
+    //                         through the existing resync machinery
+    //                         (initializeGrid/recalculateGrid, which re-derive
+    //                          prices and reconcile update-first, so only true
+    //                          surplus is cancelled). Deterministic, but the
+    //                          live orders are re-slotted -- the same net effect
+    //                          as a manual `dexbot reset`.
+    //   'halt'              -- refuse to start and require the operator to run a
+    //                         manual grid reset. Strongest fund safety (nothing
+    //                         is cancelled without consent); the bot stays down
+    //                         until a human acts, so it is opt-in, not default.
+    // Read as `config.gridLimits.MISSING_GENESIS_POLICY` (see
+    // modules/order/genesis_policy.ts); any other value falls back to 'rebuild'.
+    MISSING_GENESIS_POLICY: 'rebuild',
+
+    // MISSING_GENESIS_MISMATCH_RATIO: share of persisted slots that must match
+    // the config-derived rail before a migrated (genesis-less) snapshot may
+    // adopt that rail as its genesis. Above it, the config was edited since the
+    // snapshot, so the config-derived ladder is a DIFFERENT generation:
+    // adopting it would mass-virtualize live order tracking in 'enforce' mode
+    // (or flood the log in 'log' mode) and persist a genesis the live grid does
+    // not match. Treated as a missing genesis instead -- refused, never adopted.
+    MISSING_GENESIS_MISMATCH_RATIO: 0.5,
+
     // MIN_SPREAD_FACTOR: Ensures spread is at least (incrementPercent × MIN_SPREAD_FACTOR) slots wide.
     // Rationale: Spread must be sufficiently wide to:
     //   1. Avoid order collision (orders too close get rejected by blockchain)
@@ -612,12 +644,6 @@ let GRID_LIMITS = {
     // PRICE_TOLERANCE_MIN_ABSOLUTE: Floor for the price tolerance cap in price units.
     // Ensures the cap is non-zero even for extremely cheap assets.
     PRICE_TOLERANCE_MIN_ABSOLUTE: 0.0001,
-
-    // ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER: Legacy fallback multiplier for calculatePriceTolerance
-    // (sync_engine pass-2 before genesis). With genesis-frozen nearest-slot (slotIndexForPrice)
-    // this multiplier is deprecated — deterministic slotId equality replaces widening. Kept for
-    // migration fallback when genesis missing; otherwise unused.
-    ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER: 4,
 
     // GRID_REGENERATION_PERCENTAGE: Trigger threshold for automatic grid size recalculation.
     // Works in BOTH directions (bidirectional), sharing one threshold:
@@ -765,11 +791,6 @@ let GRID_LIMITS = {
     // Example: 0.1 means two values are considered equal when diff < 0.1% of magnitude.
     // Note: Final blockchain update filtering still happens with integer precision checks.
     RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT: 0.1,
-
-    // PRICE_DRIFT_TOLERANCE_MULTIPLIER: Legacy for price-drift-orphan tagging when genesis missing.
-    // With genesis-frozen nearest-slot, drift is deterministic no-available-nearest-slot (gap/occupied)
-    // not a tolerance band. Kept for diagnostics fallback only.
-    PRICE_DRIFT_TOLERANCE_MULTIPLIER: 4,
 
 };
 
@@ -1225,8 +1246,15 @@ let MARKET_ADAPTER = {
     // DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS: Lookback window for measuring AMA trend.
     // Lower values react faster to recent price changes.
     // Higher values smooth the signal and require a more sustained move.
+    // 16 (was 20): the shorter window's slope is ~8% noisier (bar-to-bar wobble
+    // and zero-crossings), which by itself would add slope resets; the
+    // persistence gate (K=3) absorbs that, so resets/day stay matched — 962 vs
+    // 960 on the sample, 0.95/day either way. It buys a cleaner signal where it
+    // matters: AMA group delay 10→8 bars, reversal lag 22→20, and range-tilt
+    // wrong-way 13.7%→12.6%. Measured on the real 1h pools; see
+    // docs/AMA_SLOPE_WINDOW.md.
     // nob: lb (Lookback Bars)
-    DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS: 9,
+    DYNAMIC_WEIGHT_AMA_LOOKBACK_BARS: 16,
 
     // DYNAMIC_WEIGHT_AMA_MAX_SLOPE_PCT: Average per-bar trend size that counts as "full strength" for AMA.
     // Lower values make the AMA channel reach maximum influence more easily.
@@ -1240,13 +1268,55 @@ let MARKET_ADAPTER = {
     // Lower values make the Kalman channel reach maximum influence more easily.
     // Higher values require a stronger move before the Kalman branch reaches full effect.
     // nob: kalS% (Kalman Max Slope %)
-    DYNAMIC_WEIGHT_KALMAN_MAX_SLOPE_PCT: 1.0,
+    DYNAMIC_WEIGHT_KALMAN_MAX_SLOPE_PCT: 1.2,
 
     // DYNAMIC_WEIGHT_AMA_NEUTRAL_ZONE_PCT: Ignore small AMA moves around flat price action.
     // Higher values create a larger neutral zone and reduce small trend reactions.
     // Lower values make the AMA channel react to smaller moves.
     // nob: nz% (Neutral Zone %)
     DYNAMIC_WEIGHT_AMA_NEUTRAL_ZONE_PCT: 0,
+
+    // DYNAMIC_WEIGHT_AMA_HUBER: Single source of truth for the canonical AMA-slope
+    // estimator (computeHuberWindowSlopePct in strategy/dynamic_weight_series.ts).
+    // Every consumer — live market adapter, grid-reset replay, bot-fitting
+    // backtests, both browser-embedded research charts — reads these values:
+    // Node callers via the module import, generated HTML via an injected
+    // `const AMA_SLOPE_HUBER = {...}` literal. Change a value here and every
+    // slope computation follows; do not re-declare them per caller.
+    //   C            Huber tuning constant. Nominal 1.345 ~= 95% Gaussian
+    //                efficiency, but the plug-in 1.4826*MAD scale is biased low
+    //                (residual degrees of freedom), so the EFFECTIVE C is
+    //                ~1.25 at the 16-bar window — more robust, less efficient
+    //                than nominal. The detune grows ~1/(bars-1) at short
+    //                windows and vanishes at long ones; deliberately NOT
+    //                compensated (the bias points the robust way, and a
+    //                sqrt(n/(n-2)) correction is decision-neutral). See
+    //                analysis/trend_detection/huber_scale_variants.ts.
+    //   ITERATIONS   IRLS passes (converges in a few at the ~16-bar window)
+    //   SCALE_FLOOR  Floor for the 1.4826*MAD robust scale, in log units
+    //   ZERO_EPSILON Slopes below this (%/bar) snap to exactly 0
+    // nob: n/a (algorithm-internal)
+    DYNAMIC_WEIGHT_AMA_HUBER: {
+        C: 1.345,
+        ITERATIONS: 5,
+        SCALE_FLOOR: 1e-6,
+        ZERO_EPSILON: 1e-9,
+    },
+
+    // AMA_SLOPE_PERSIST_ENABLED: slope-delta persistence gate (trigger B).
+    // When true, the slope reset requires AMA_SLOPE_PERSIST_BARS consecutive
+    // confirming bars, filtering short-lived excursions. Enabled by default
+    // (was legacy fire-on-first-crossing): measured over the real 1h pools it
+    // cuts resets ~35% and whipsaw ~52%→~17%, leaving lag and range-tilt
+    // unchanged. Per bot/market override via `amaSlope.persistBars` /
+    // `amaSlope.persistEnabled`. See docs/AMA_SLOPE_WINDOW.md.
+    AMA_SLOPE_PERSIST_ENABLED: true,
+
+    // AMA_SLOPE_PERSIST_BARS: consecutive confirming bars required before the
+    // slope-delta grid reset (trigger B) fires once enabled. 1 = legacy behavior
+    // (no persistence). Filters short-lived slope excursions without adding trend
+    // latency.
+    AMA_SLOPE_PERSIST_BARS: 3,
 
     // DYNAMIC_WEIGHT_ALPHA: Blend between AMA trend and Kalman trend.
     // 0 = pure Kalman, 1 = pure AMA.
@@ -1483,15 +1553,6 @@ let MARKET_ADAPTER = {
     // AMA_CONVERGENCE_EPSILON: Target fraction of initialization bias remaining
     // after convergence. 0.01 = 99 % of the initial bias has decayed.
     AMA_CONVERGENCE_EPSILON: 0.01,
-
-    // AMA_ER_SMOOTH_FAST_PERIOD: Fast-period equivalent for smoothing the raw
-    // Efficiency Ratio via EMA before it enters the SC formula. Raw ER can spike
-    // at regime boundaries (trending ↔ ranging), causing jerky AMA transitions
-    // and false grid re-centering triggers.
-    // 0 = disabled (raw ER used directly, backward compatible).
-    // Enabled alpha = 2 / (AMA_ER_SMOOTH_FAST_PERIOD + 1).
-    // Overridable per bot via bots.json inline `ama.erSmoothPeriod` field.
-    AMA_ER_SMOOTH_FAST_PERIOD: 0,
 };
 
 // Logging Level Configuration
@@ -1603,7 +1664,54 @@ let UPDATER = {
     // │ │ │ │ ┌────── day of week (0 - 6) (0 is Sunday)
     // │ │ │ │ │
     // 0 0 * * *  (Default: Daily at midnight)
-    SCHEDULE: "0 0 * * *"
+    SCHEDULE: "0 0 * * *",
+
+    // ── Passive version NOTICE (modules/version_notice.ts) ──────────
+    // Deliberately independent of ACTIVE: the notice never changes code, it
+    // only tells the operator a newer release exists. Keeping it on a separate
+    // switch means the default-off auto-updater does not also silence the
+    // "you are running an outdated build" warning.
+    NOTICE_ENABLED: true,
+    // Minimum gap between probes AFTER A SUCCESSFUL observation (12h). A
+    // successful answer is stable, so it is cached and costs no request on
+    // every run that consults it. Half a day rather than a full day: the
+    // published version does not move under us, but `dexbot stat` is the
+    // command an operator runs to ask "am I current?", and 24h let that answer
+    // come from an observation taken the previous morning. Set 0 to probe on
+    // every run (an explicit opt-in to always-check, which disables the
+    // failure backoff too).
+    NOTICE_INTERVAL_MS: 43_200_000,
+    // Backoff after a FAILED probe. A failure is the one observation that
+    // decays fastest: throttling it for the full NOTICE_INTERVAL_MS turned a
+    // 5s network hiccup into a permanent gray "?" for a day, with no retry to
+    // disprove it. A failure is therefore re-tried after 15 minutes while the
+    // last good answer is still served from the cache in the meantime.
+    NOTICE_RETRY_MS: 900_000,
+    // Total network budget for one probe, shared evenly across the configured
+    // sources. The check never blocks startup, but a hung socket must not keep
+    // the launcher alive either.
+    NOTICE_TIMEOUT_MS: 4_000,
+    // Budget for the final re-probe in `dexbot stat`. That command gives the
+    // probe 1s at the top of the report, 1s more at the end, and then this
+    // budget for a forced second attempt; when even that answers nothing the
+    // verdict says "no current version information" instead of leaving the
+    // operator to infer it from a missing line. Kept at 3s so the whole
+    // escalation costs ~4s of waiting, all of it at the bottom of the report.
+    NOTICE_STATUS_TIMEOUT_MS: 3_000,
+    // How long `dexbot stat` waits for an answer before printing the rest of
+    // the report. A valid cache or a quick registry answer lands inside this
+    // and the command never notices the wait.
+    NOTICE_STAGE_GRACE_MS: 1_000,
+    // Source 1 — the npm dist-tag document. Empty disables the source.
+    REGISTRY_URL: "https://registry.npmjs.org/dexbot/latest",
+    // Source 2 — the GitHub "latest release" document, the fallback for a host
+    // that cannot reach registry.npmjs.org. Empty DERIVES the URL from
+    // REPOSITORY_URL (so a fork/self-hosted mirror is honoured); set it to a
+    // non-GitHub value to pin the endpoint, or to 'off' to disable the source.
+    GITHUB_RELEASE_URL: "",
+    // Base for the derived GitHub source. Split out so a GitHub Enterprise
+    // mirror is a config change, not a code change.
+    GITHUB_API_BASE: "https://api.github.com"
 };
 
 let LAUNCHER = {
@@ -2067,7 +2175,7 @@ let NATIVE_CLIENT = {
  * derived last) so all three producers emit byte-compatible documents.
  * Sections are cloned — callers may mutate the result freely.
  */
-function buildDefaultGeneralSettings(): Record<string, any> {
+function buildDefaultGeneralSettings() {
     return {
         LOG_LEVEL,
         GRID_LIMITS: { ...GRID_LIMITS, GRID_COMPARISON: { ...GRID_LIMITS.GRID_COMPARISON } },
@@ -2096,7 +2204,7 @@ function buildDefaultGeneralSettings(): Record<string, any> {
 // Lazy require breaks the circular dependency: constants → general_settings → constants
 const settings = readGeneralSettings({
     fallback: null,
-    onError: (err: any, filePath: string) => {
+    onError: (err: unknown, filePath: string) => {
         console.warn(`[WARN] Failed to load local settings from ${filePath}: ${getErrorMessage(err)}`);
     }
 });

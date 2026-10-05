@@ -1,6 +1,7 @@
 /**
  * @enum {string}
  */
+import type { AccountOrdersLike } from '../types.js';
 import { getErrorMessage } from '../utils/errors.js';
 const PROCESSED_FILL_PERSISTENCE_MODES: { readonly IMMEDIATE: string; readonly BATCHED: string; readonly MANUAL: string } = Object.freeze({
     IMMEDIATE: 'immediate',
@@ -38,12 +39,12 @@ class ProcessedFillStore {
     _warn: (msg: string) => void;
     _persistTimer: ReturnType<typeof setTimeout> | null;
     _flushPromise: Promise<void>;
-    _accountOrders: any | null;
+    _accountOrders: AccountOrdersLike | null;
     _shuttingDown: boolean;
 
     /**
      * Create a ProcessedFillStore instance.
-     * @param {any} [options] - Configuration
+     * @param {unknown} [options] - Configuration
      * @param {number} [options.batchMs] - Batch interval in ms for coalesced writes
      * @param {number} [options.batchSize] - Max batch size before auto-flush
      * @param {Function} [options.warn] - Warning logger function
@@ -69,7 +70,7 @@ class ProcessedFillStore {
      * @param {Object} [options] - Configuration options
      * @param {Object} [options.accountOrders] - AccountOrders instance for persistence
      */
-    configure({ accountOrders }: { accountOrders?: any } = {}): void {
+    configure({ accountOrders }: { accountOrders?: AccountOrdersLike } = {}): void {
         this._accountOrders = accountOrders || null;
     }
 
@@ -184,8 +185,8 @@ class ProcessedFillStore {
 
         const flushWork = async () => {
             try {
-                await this._accountOrders.updateProcessedFillsBatch(batch);
-            } catch (err: any) {
+                await this._accountOrders!.updateProcessedFillsBatch(batch);
+            } catch (err) {
                 flushError = err;
                 for (const [fillKey, timestamp] of batch) {
                     const queuedTimestamp = this.pendingWrites.get(fillKey);
@@ -236,8 +237,8 @@ class ProcessedFillStore {
         let flushError = null;
         const flushWork = async () => {
             try {
-                await this._accountOrders.updateProcessedFillsBatch(batch);
-            } catch (err: any) {
+                await this._accountOrders!.updateProcessedFillsBatch(batch);
+            } catch (err) {
                 flushError = err;
                 for (const [fillKey, timestamp] of batch) {
                     const queuedTimestamp = this.pendingWrites.get(fillKey);

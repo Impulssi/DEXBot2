@@ -3,13 +3,28 @@ const {
     validateBoundaryCommit,
     validatePersistedBoundary,
     isTransientInBandRejection,
+    buildGenesisFromPriceLevels,
+    calculateGapSlots,
     BOUNDARY_REJECT_PLACED_IN_BAND
 } = require('../modules/order/utils/math');
 const { loadGrid } = require('../modules/order/grid');
 const { recoverFromPersistedGrid } = require('../modules/dexbot_state_recovery');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { isMissingGenesisError } = require('../modules/order/genesis_policy');
 
 // ── helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * The price ladder that describes `buildGrid()`'s slots (price 1 + i*0.01).
+ *
+ * loadGrid REQUIRES a ladder for a non-empty snapshot (docs/GRID_PRICE_INVARIANT.md,
+ * INV-GRID-004): a genesis-less grid is refused before any state is touched.
+ * These tests exercise boundary restore/repair, so they hand loadGrid the
+ * ladder the snapshot would really carry.
+ */
+function gridLadder() {
+    return buildGenesisFromPriceLevels(1.05, 1, calculateGapSlots(1, 1), buildGrid().map((s) => s.price));
+}
 
 /**
  * Build a 10-slot price-sorted grid:
@@ -63,6 +78,7 @@ function buildFakeManager(config) {
         _gridVersion: 0,
         boundaryIdx: null,
         _gapSlots: null,
+        _missingGenesis: null,
         assets: { assetA: {}, assetB: {} },
         initialSpreadCount: 0,
         currentSpreadCount: 0,
@@ -240,7 +256,7 @@ async function testLoadGridValidBoundaryPassthrough() {
     const grid = buildGrid();
     const manager = buildFakeManager({ incrementPercent: 1, targetSpreadPercent: 1, startPrice: 1.07 });
 
-    await loadGrid(manager, grid, 5);
+    await loadGrid(manager, grid, 5, gridLadder());
 
     assert.strictEqual(manager.boundaryIdx, 5, 'honest boundary restored verbatim');
     assert.strictEqual(manager._gapSlots, 2, 'gapSlots set from config math');
@@ -261,7 +277,7 @@ async function testLoadGridRepairsPoisonedBoundary() {
     const grid = buildGrid();
     const manager = buildFakeManager({ incrementPercent: 1, targetSpreadPercent: 1, startPrice: 1.07 });
 
-    await loadGrid(manager, grid, 3);
+    await loadGrid(manager, grid, 3, gridLadder());
 
     // calculateIdealBoundary with startPrice=1.07: splitIdx=7 -> 7-1-1=5,
     // which is exactly the honest boundary and passes re-validation.
@@ -297,7 +313,7 @@ async function testLoadGridFallsBackToNullBoundary() {
     manager.boundaryIdx = 42;      // sentinel: must NOT be overwritten by poison
     manager._gapSlots = 'unset';   // sentinel: null path must not touch it
 
-    await loadGrid(manager, grid, 3);
+    await loadGrid(manager, grid, 3, gridLadder());
 
     assert.strictEqual(manager.boundaryIdx, 42, 'poison discarded, previous value kept');
     assert.strictEqual(manager._gapSlots, 'unset', 'null-boundary path leaves _gapSlots untouched');
@@ -308,38 +324,52 @@ async function testLoadGridFallsBackToNullBoundary() {
     console.log('  PASS: unrepairable poison degrades to boundary-less load');
 }
 
-// ── loadGrid: repair maps back to the STORED array ordering ─────────────
+// ── loadGrid: a ladder-less snapshot is refused (genesis invariant) ────
 
-async function testLoadGridRepairMapsToStoredOrder() {
-    console.log('Running test: loadGrid repair maps the derived boundary to stored positions');
+async function testLoadGridRefusesSnapshotWithoutLadder() {
+    console.log('Running test: loadGrid refuses a snapshot that carries no price ladder');
 
-    // Reversed snapshot: boundaryIdx indexes the stored array, so the
-    // re-derived price-sorted index (5) must land on the anchor slot's
-    // ORIGINAL position (slot-5 -> position 4), not be reused verbatim.
+    // Reversed snapshot AND no persisted/in-memory ladder. Before the genesis
+    // invariant this loaded "as-is" and the repair mapped the derived index
+    // back into the stored (unsorted) positions; the state is now unreachable
+    // because a grid without a ladder has no defined slot prices at all.
     const grid = buildGrid().slice().reverse();
     const manager = buildFakeManager({ incrementPercent: 1, targetSpreadPercent: 1, startPrice: 1.07 });
 
-    await loadGrid(manager, grid, 3);
+    let thrown = null;
+    try { await loadGrid(manager, grid, 3, null); } catch (e) { thrown = e; }
+    assert.ok(isMissingGenesisError(thrown), 'loadGrid refuses the ladder-less snapshot');
+    assert.strictEqual(thrown.reason, 'non_finite_config',
+        'the fixture config has no numeric rail to migrate from');
+    assert.strictEqual(manager.orders.size, 0, 'no slot installed from a refused snapshot');
+    assert.strictEqual(manager.boundaryIdx, null, 'boundary untouched');
+    assert.ok(manager._missingGenesis && manager._missingGenesis.reason === 'non_finite_config',
+        'the fault is recorded for observability');
 
-    assert.strictEqual(manager.boundaryIdx, 4,
-        'repair must map sorted idx 5 to the anchor slot\'s stored position');
-    assert.ok(manager.logs.some(l => l.msg.includes('boundary repaired: 3 -> 4')), 'repair logged with mapped index');
+    // The same snapshot WITH its ladder loads and is re-sorted to canonical
+    // slot-N order before the boundary gate reads it.
+    const manager2 = buildFakeManager({ incrementPercent: 1, targetSpreadPercent: 1, startPrice: 1.07 });
+    await loadGrid(manager2, grid, 3, gridLadder());
+    assert.ok(manager2.logs.some(l => l.msg.includes('Re-sorted')),
+        'a reversed snapshot with a ladder is re-sorted to canonical order');
+    assert.strictEqual(manager2.orders.size, 10, 'all slots loaded');
+    // Canonical order + boundary 3 (poison) is re-derived against THAT order.
+    assert.ok(manager2.logs.some(l => l.msg.includes('boundary repaired')),
+        'the boundary is re-derived after the canonical re-sort');
 
-    // Types follow loadGrid's standard reassignment over STORED positions
+    // Canonical order + boundary 3 (poison) is re-derived against THAT order:
+    // the honest structural center is 5, gap 2 -> sellStart 8.
+    assert.strictEqual(manager2.boundaryIdx, 5, 'boundary re-derived in canonical order');
+    // Types follow loadGrid's standard reassignment over the canonical order
     // (rail-typed holes: empty in-rail slots keep BUY/SELL by geometry, only
-    // true band slots are SPREAD; placed slots resolve per its retype
-    // rules — e.g. an on-chain slot keeps its persisted rail type rather than
-    // becoming SPREAD). What this test pins is the MAPPING: the derived
-    // price-sorted index must land on the anchor slot's stored position.
-    // Repaired boundary 4, gap 2 → sellStart 7: slot-7 sits on the SELL rail,
-    // slot-6 sits in the band.
-    assert.strictEqual(manager.orders.get('slot-7').type, ORDER_TYPES.SELL, 'empty in-rail hole keeps rail type');
-    assert.strictEqual(manager.orders.get('slot-6').type, ORDER_TYPES.SPREAD, 'empty band slot normalized');
-    assert.strictEqual(manager.orders.get('slot-5').type, ORDER_TYPES.BUY);
-    assert.strictEqual(manager.orders.get('slot-4').type, ORDER_TYPES.BUY,
+    // true band slots are SPREAD; placed slots resolve per its retype rules).
+    assert.strictEqual(manager2.orders.get('slot-8').type, ORDER_TYPES.SELL, 'empty in-rail hole keeps rail type');
+    assert.strictEqual(manager2.orders.get('slot-7').type, ORDER_TYPES.SPREAD, 'empty band slot normalized');
+    assert.strictEqual(manager2.orders.get('slot-5').type, ORDER_TYPES.BUY);
+    assert.strictEqual(manager2.orders.get('slot-4').type, ORDER_TYPES.BUY,
         'on-chain slot keeps persisted rail type instead of SPREAD');
 
-    console.log('  PASS: unsorted snapshots repair against stored ordering');
+    console.log('  PASS: ladder-less snapshots refused; unsorted snapshots re-sorted canonically');
 }
 
 // ── recovery: poisoned snapshot refused so resync rebuilds clean ────────
@@ -356,7 +386,8 @@ async function testRecoveryRejectsPoisonedSnapshot() {
         accountId: '1.2.3',
         accountOrders: {
             loadGrid: () => grid,
-            loadBoundaryIdx: () => 9
+            loadBoundaryIdx: () => 9,
+            loadGenesis: () => gridLadder()
         },
         // Gate reads config-derived gapSlots (calculateGapSlots(1,1) = 2),
         // matching loadGrid's restore gate exactly.
@@ -396,7 +427,8 @@ async function testRecoveryToleratesTransientStranding() {
         accountId: '1.2.3',
         accountOrders: {
             loadGrid: () => grid,
-            loadBoundaryIdx: () => 5
+            loadBoundaryIdx: () => 5,
+            loadGenesis: () => gridLadder()
         },
         manager: buildFakeManager({ incrementPercent: 1, targetSpreadPercent: 1 }),
         // Sentinel AFTER the load: reaching it proves the gate tolerated the
@@ -431,7 +463,7 @@ async function testLoadGridToleratesTransientStranding() {
     grid[6] = { ...grid[6], orderId: '1.7.999', state: ORDER_STATES.ACTIVE, size: 10 };
     const manager = buildFakeManager({ incrementPercent: 1, targetSpreadPercent: 1, startPrice: 1.07 });
 
-    await loadGrid(manager, grid, 5, null, { tolerateTransientStranding: true });
+    await loadGrid(manager, grid, 5, gridLadder(), { tolerateTransientStranding: true });
 
     assert.strictEqual(manager.boundaryIdx, 5, 'transient boundary kept verbatim');
     assert.ok(manager.logs.some(l => l.msg.includes('transient in-band placement') && l.level === 'warn'),
@@ -443,7 +475,7 @@ async function testLoadGridToleratesTransientStranding() {
     // the repair path (rejection logged, boundary re-derived).
     const strictManager = buildFakeManager({ incrementPercent: 1, targetSpreadPercent: 1, startPrice: 1.07 });
     await loadGrid(strictManager, buildGrid().map((s, i) => i === 6
-        ? { ...s, orderId: '1.7.999', state: ORDER_STATES.ACTIVE, size: 10 } : s), 5);
+        ? { ...s, orderId: '1.7.999', state: ORDER_STATES.ACTIVE, size: 10 } : s), 5, gridLadder());
     assert.ok(strictManager.logs.some(l => l.msg.includes('Persisted boundary rejected')),
         'strict loadGrid still rejects transient stranding (repair path)');
 
@@ -494,7 +526,7 @@ async function runAll() {
     await testLoadGridValidBoundaryPassthrough();
     await testLoadGridRepairsPoisonedBoundary();
     await testLoadGridFallsBackToNullBoundary();
-    await testLoadGridRepairMapsToStoredOrder();
+    await testLoadGridRefusesSnapshotWithoutLadder();
     await testRecoveryRejectsPoisonedSnapshot();
     await testRecoveryToleratesTransientStranding();
     await testLoadGridToleratesTransientStranding();

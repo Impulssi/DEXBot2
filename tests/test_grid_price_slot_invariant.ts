@@ -221,14 +221,26 @@ async function run() {
         process.env.GRID_PRICE_SLOT_VALIDATION = origEnv;
         if (origEnv === undefined) delete process.env.GRID_PRICE_SLOT_VALIDATION;
 
-        // Cross-check: config edited across restarts (startPrice changed) → most slots mismatch → NOT adopted
+        // Cross-check: config edited across restarts (startPrice changed) → most slots mismatch → REFUSED.
+        // The fail-closed migration policy (docs/GRID_PRICE_INVARIANT.md) no longer
+        // "keeps the grid as-is without a ladder": loadGrid throws MissingGenesisError
+        // before it mutates anything, so the caller rebuilds (or halts).
         const editedCfg = { ...cfg, startPrice: 200 };
         const manager2 = makeManagerForLoad({ config: editedCfg });
-        await loadGrid(manager2, truncatedGrid as any, full.boundaryIdx, null);
-        // With edited startPrice, geometric rail is far from truncated prices → high mismatch ratio → migration should warn and NOT adopt
-        // Our implementation warns and skips adoption when >50% mismatch; truncatedGrid prices are around 100, new rail around 200
+        let thrown: any = null;
+        try {
+            await loadGrid(manager2, truncatedGrid as any, full.boundaryIdx, null);
+        } catch (e: any) { thrown = e; }
+        assert.ok(thrown, 'edited config must refuse the snapshot');
+        assert.strictEqual(thrown.name, 'MissingGenesisError', 'refusal is a MissingGenesisError');
+        assert.strictEqual(thrown.reason, 'slot_mismatch', 'refusal reason is slot_mismatch');
+        assert.strictEqual(thrown.policy, 'rebuild', 'default policy is rebuild');
         assert.ok(manager2.logs.some(l => l.includes('NOT adopting')), 'edited config triggers NOT adopting warning');
-        assert.ok(!manager2._genesis || manager2._genesis.startPrice !== 200 || manager2.logs.some(l => l.includes('NOT adopting')), 'mismatched migration not adopted');
+        assert.ok(manager2.logs.some(l => l.includes('[GENESIS] No usable price ladder')), 'refusal is logged');
+        assert.ok(!manager2._genesis, 'refused snapshot never adopts the mismatched genesis');
+        assert.strictEqual(manager2.orders.size, 0, 'refused snapshot leaves the manager untouched');
+        assert.ok(manager2._missingGenesis && manager2._missingGenesis.reason === 'slot_mismatch',
+            'fault recorded on the manager for observability');
     }
 
     // 11. Unparseable-id handling in loadGrid type reassignment

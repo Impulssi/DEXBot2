@@ -12,7 +12,7 @@ function readHeadlessPassword({ passwordFile }: { passwordFile?: string | null }
         try {
             assertPrivatePathSecurity(passwordFile, { expectedType: 'file', requiredMode: 0o400 });
             password = storage.readFile(passwordFile).trim().split('\n')[0];
-        } catch (err: any) {
+        } catch (err) {
             throw new Error(`Cannot read master password from '${passwordFile}': ${getErrorMessage(err)}`);
         }
         if (!password) {

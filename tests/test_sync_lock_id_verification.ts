@@ -24,6 +24,7 @@ const assert = require('assert');
 const SyncEngine = require('../modules/order/sync_engine').default;
 const AsyncLock = require('../modules/order/async_lock').default;
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { makeLadderFromPrices } = require('./helpers/order_test_helpers');
 
 const ASSETS = {
     assetA: { id: '1.3.111', precision: 4, symbol: 'BASE' },
@@ -61,6 +62,9 @@ function makeSyncMgr(ordersList: any[], extra: any = {}) {
     return {
         orders,
         assets: ASSETS,
+        // Genesis-frozen engine: a populated grid needs a price ladder or the
+        // sync gate refuses the run (INV-GRID-004).
+        _genesis: makeLadderFromPrices(ordersList.map((o) => o.price)),
         config: { startPrice: 1100 },
         logger: { log: (msg, level) => logs.push(`[${level}] ${msg}`) },
         _logEntries: logs,

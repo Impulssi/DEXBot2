@@ -287,26 +287,23 @@ async function testBoundaryUnknownHoldDoesNotBlockRailRefill() {
 
 
 /**
- * LEGACY-ADOPT-001..002 — the no-genesis (migration) adoption fallback must
- * keep the slot's GENESIS price.
+ * ADOPT-001..002 — nearest-slot adoption keeps the slot's OWN ladder level.
  *
- * This branch used to write `price: chainOrder.price` into the adopted slot,
- * so whatever price sat on the book BECAME the slot's grid level. A slot whose
- * price is set from the book is no longer a ladder position, and the next plan
- * that reads slot.price re-emits that value as a plan price — the adoption-side
- * route into the off-grid-price failure. The genesis path never did this; it
- * mutates a COPY of the slot and leaves slot.price alone.
- *
- * Exercised without a genesis so the legacy branch is the one that runs.
+ * Adoption used to write `price: chainOrder.price` into the adopted slot (the
+ * legacy no-genesis branch), so whatever price sat on the book BECAME the
+ * slot's grid level. A slot whose price is set from the book is no longer a
+ * ladder position, and the next plan that reads slot.price re-emits that value
+ * as a plan price — the adoption-side route into the off-grid-price failure.
+ * Adoption now mutates a COPY and never touches slot.price.
  */
-async function testLegacyAdoptionKeepsGenesisPrice() {
-    console.log(' - Legacy (no-genesis) adoption keeps the slot price, not the chain price...');
-    const slotPrice = 100;
-    const chainPrice = 103.5;
-    // The legacy fallback applies ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER to widen
-    // the strict per-size tolerance. A high multiplier here is what makes the
-    // price DISTINGUISHABLE: with the strict tolerance no representable chain
-    // price fits, so the two prices would be equal and the assertion vacuous.
+async function testAdoptionKeepsOwnLevelNotChainPrice() {
+    console.log(' - Nearest-slot adoption keeps the slot level, not the chain price...');
+    const genesis = GENESIS();
+    const slotPrice = LEVELS[0];
+    // A resting price inside slot-0's basin but clearly off the level itself:
+    // level 1 is 1% away, so 0.4% still maps to slot-0 while being a different
+    // number (the assertion must not be vacuous).
+    const chainPrice = slotPrice * 1.004;
     const mgr = makeMgr({
         orders: [{
             id: 'slot-0',
@@ -316,10 +313,9 @@ async function testLegacyAdoptionKeepsGenesisPrice() {
             size: 0,
             orderId: null,
         }],
-        // No genesis: takes the legacy fallback.
+        genesis,
         boundaryIdx: 40,
         gapSlots: 4,
-        config: { gridLimits: { ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER: 100000 } },
     });
     const engine = new SyncEngine(mgr);
     const chain = [makeChainOrder('1.7.920001', ORDER_TYPES.BUY, chainPrice, 5)];
@@ -328,19 +324,20 @@ async function testLegacyAdoptionKeepsGenesisPrice() {
     const adopted = mgr.orders.get('slot-0');
     assert.strictEqual(adopted.orderId, '1.7.920001', 'the orphan must be adopted into the slot');
     assert.strictEqual(adopted.size, 5, 'the chain size is real state and must be adopted');
-    assert.ok(Math.abs(Number(adopted.price) - chainPrice) > 1,
-        `fixture must keep the two prices distinguishable; chain=${chainPrice} slot=${slotPrice} adopted=${adopted.price}`);
+    assert.ok(Math.abs(chainPrice - slotPrice) > 1e-6,
+        `fixture must keep the two prices distinguishable; chain=${chainPrice} slot=${slotPrice}`);
     assert.strictEqual(adopted.price, slotPrice,
-        `adoption must keep the slot's own price ${slotPrice}, got ${adopted.price} (chain price was ${chainPrice})`);
+        `adoption must keep the slot's own level ${slotPrice}, got ${adopted.price} (chain price was ${chainPrice})`);
     assert.strictEqual(result.unmatchedChainOrders.length, 0, 'an in-rail orphan must still be adopted');
-    console.log('   \u2713 LEGACY-ADOPT-001 passed');
+    console.log('   \u2713 ADOPT-001 passed');
 }
 
-async function testLegacyAdoptionRejectsOutOfRailSlot() {
-    console.log(' - Legacy adoption defers an orphan whose slot is out of rail...');
-    // boundaryIdx 0 means the buy rail is idx <= 0, so a buy landing on
-    // slot-5 must not be adopted there (the widened spread tolerance can
-    // reach across the boundary).
+async function testAdoptionRejectsOutOfRailSlot() {
+    console.log(' - Adoption defers an orphan whose nearest slot is out of rail...');
+    // boundaryIdx 0 means the buy rail does not reach idx 5, so a buy whose
+    // nearest slot is slot-5 must not be adopted there. The chain price is the
+    // exact level of slot-5 so `slotIndexForPrice` lands on it and the rail
+    // check (not the missing-slot path) is what rejects the adoption.
     const mgr = makeMgr({
         orders: [{
             id: 'slot-5',
@@ -350,20 +347,20 @@ async function testLegacyAdoptionRejectsOutOfRailSlot() {
             size: 0,
             orderId: null,
         }],
+        genesis: GENESIS(),
         boundaryIdx: 0,
         gapSlots: 4,
-        config: { gridLimits: { ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER: 100000 } },
     });
     const engine = new SyncEngine(mgr);
-    const chain = [makeChainOrder('1.7.930001', ORDER_TYPES.BUY, LEVELS[5] * 1.03, 5)];
+    const chain = [makeChainOrder('1.7.930001', ORDER_TYPES.BUY, LEVELS[5], 5)];
     const result = await engine.syncFromOpenOrders(chain, { skipAccounting: true });
 
     const adopted = mgr.orders.get('slot-5');
-    assert.strictEqual(adopted.orderId, null, 'a buy must not be adopted into an out-of-rail sell-side slot');
+    assert.strictEqual(adopted.orderId, null, 'a buy must not be adopted into an out-of-rail slot');
     const unmatched = result.unmatchedChainOrders.find((u: any) => u.chainOrderId === '1.7.930001');
     assert.ok(unmatched, 'the out-of-rail orphan must be reported as unmatched');
-    assert.strictEqual(unmatched.reason, 'out-of-rail-deferred', 'it must be deferred, not silently dropped');
-    console.log('   \u2713 LEGACY-ADOPT-002 passed');
+    assert.strictEqual(unmatched.reason, 'no-available-nearest-slot', 'out-of-rail must be reported, not silently dropped');
+    console.log('   \u2713 ADOPT-002 passed');
 }
 
 
@@ -462,11 +459,17 @@ async function testMaterializeUsesGenesisPriceNotDescriptor() {
     console.log('   \u2713 MATERIALIZE-001 passed');
 }
 
-async function testMaterializeFallsBackToDescriptorWithoutGenesis() {
-    console.log(' - Materialize falls back to the descriptor price with no genesis...');
+async function testMaterializeFaultsOnUndefinedGrid() {
+    console.log(' - Materialize on a ladder-less grid keeps the order tracked but faults loudly...');
+    // INV-GRID-004: a `slot-N` id with no ladder is an UNDEFINED grid, not a
+    // migration case. The live chain order must still be tracked (stranding it
+    // would be worse), but the descriptor price is unverified, so the fault is
+    // logged at ERROR and a structural resync is requested to re-derive the
+    // ladder and re-price the slot.
     const LEVELS_LOCAL = Array.from({ length: 51 }, (_, i) => 100 * Math.pow(1.01, i));
-    // No genesis: migration path, nothing to derive from.
-    const mgr = makeMgr({ boundaryIdx: 40, gapSlots: 4 });
+    const mgr = makeMgr({ boundaryIdx: 40, gapSlots: 4 }); // no genesis
+    let resyncReason: string | null = null;
+    (mgr as any).requestStructuralGridResync = async (reason: string) => { resyncReason = reason; };
     const engine = new SyncEngine(mgr);
     const gridOrderId = 'slot-5';
     const descriptorPrice = LEVELS_LOCAL[5];
@@ -481,11 +484,12 @@ async function testMaterializeFallsBackToDescriptorWithoutGenesis() {
     }, 'createOrder');
 
     const materialized = mgr.orders.get(gridOrderId);
-    assert.ok(materialized, 'the slot must still be materialized without genesis');
+    assert.ok(materialized, 'the placed order must still be tracked (never stranded)');
     assert.strictEqual(materialized.price, descriptorPrice,
-        'without a genesis ladder the descriptor price is the only available price');
-    const warned = mgr._logEntries.some((e: any) => String(e.msg).includes('DESCRIPTOR price'));
-    assert.ok(warned, 'falling back to the descriptor price must be warned about, not silent');
+        'with no ladder the descriptor is the only price available');
+    const faulted = mgr._logEntries.some((e: any) => e.level === 'error' && String(e.msg).includes('no price ladder'));
+    assert.ok(faulted, 'the undefined grid must be reported as an error, not a silent fallback');
+    assert.strictEqual(resyncReason, 'missing-genesis', 'a structural resync must be requested to re-derive the ladder');
     console.log('   \u2713 MATERIALIZE-002 passed');
 }
 
@@ -538,11 +542,11 @@ async function runTests() {
     await testHelperClassifiesEdges();
     await testHoldDoesNotBlockRailRefill();
     await testBoundaryUnknownHoldDoesNotBlockRailRefill();
-    await testLegacyAdoptionKeepsGenesisPrice();
-    await testLegacyAdoptionRejectsOutOfRailSlot();
+    await testAdoptionKeepsOwnLevelNotChainPrice();
+    await testAdoptionRejectsOutOfRailSlot();
     await testMaterializeDerivesTypeFromLadderNotDescriptor();
     await testMaterializeUsesGenesisPriceNotDescriptor();
-    await testMaterializeFallsBackToDescriptorWithoutGenesis();
+    await testMaterializeFaultsOnUndefinedGrid();
     await testAdoptionKeepsSlotPriceAndDoesNotWarn();
     console.log('✓ Sync engine out-of-grid defer tests passed!');
 }

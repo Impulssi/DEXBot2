@@ -25,15 +25,15 @@ const { unlink: safeUnlink } = storage;
  * password" path.
  */
 
-function readCredentialSocketInode(socketPath: any) {
+function readCredentialSocketInode(socketPath: string) {
     return getProcessDiscovery().readSocketInode(socketPath);
 }
 
-function findCredentialSocketOwnerPid(socketPath: any, isLikelyProcess: any) {
+function findCredentialSocketOwnerPid(socketPath: string, isLikelyProcess: ((pid: number) => boolean) | null | undefined) {
     return getProcessDiscovery().findSocketOwnerPid(socketPath, isLikelyProcess || undefined);
 }
 
-function readOwnedCredentialDaemonPid(pidFile: any, isLikelyProcess: any) {
+function readOwnedCredentialDaemonPid(pidFile: string | null | undefined, isLikelyProcess: ((pid: number) => boolean) | null | undefined) {
     if (!pidFile) return 0;
     let raw;
     try { raw = storage.readFile(pidFile); } catch (_) { return 0; }
@@ -53,7 +53,7 @@ function readOwnedCredentialDaemonPid(pidFile: any, isLikelyProcess: any) {
     return pid;
 }
 
-async function stopPid(pid: any, timeoutMs: any = 5000) {
+async function stopPid(pid: number, timeoutMs: number = 5000) {
     if (!isPidAlive(pid)) return true;
     runtime.kill(pid, 'SIGTERM');
 

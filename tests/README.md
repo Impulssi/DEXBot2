@@ -11,6 +11,9 @@ npm test
 # Run a single test file
 npm run build:tests
 node dist/tests/<file>.js
+
+# Run the archived legacy suites (excluded from `npm test`)
+npm run test:legacy
 ```
 
 ## Directory Layout
@@ -54,6 +57,10 @@ Price derivation, orderbook inspection, tolerance checks.
 AMA signal processing, price offset, bound clamping, signal gates.
 *Examples:* `test_market_adapter_logic.ts`, `test_market_adapter_service.ts`, `test_market_adapter_signal_gates.ts`, `test_market_adapter_integration_core.ts`
 
+### Analysis & Charting
+Research/analysis tools: chart generators, backtests, and the grid-reset replay used by the TradingView exporter ([GRID_RECALCULATION.md](../docs/GRID_RECALCULATION.md)).
+*Examples:* `test_grid_reset_sim.ts`, `test_tradingview_chart_storage_key.ts`, `test_backtest_bot_fitting_logic.ts`
+
 ### Order Management & Execution
 Order lifecycle, fill processing, trade history, batch execution.
 *Examples:* `test_open_orders.ts`, `test_fills.ts`, `test_fill_batch_chunking.ts`, `test_fill_replay_guards.ts`, `test_uncertain_broadcast.ts`
@@ -79,8 +86,8 @@ Credential management, daemon lifecycle, session caching, debt policy.
 *Examples:* `test_credential_daemon.ts`, `test_credential_runtime.ts`, `test_credential_session_cache.ts`, `test_credit_runtime.ts`
 
 ### PM2 & Process Management
-PM2 lifecycle, startup ordering, bot supervision.
-*Examples:* `test_pm2_logic.ts`, `test_pm2_main_output.ts`, `test_bot_supervisor.ts`, `test_unlock_main.ts`
+PM2 lifecycle, startup ordering, bot supervision, launcher version reporting.
+*Examples:* `test_pm2_logic.ts`, `test_pm2_main_output.ts`, `test_bot_supervisor.ts`, `test_unlock_main.ts`, `test_version_notice.ts`
 
 ### Diagnostics & Benchmarks
 Interactive tools and performance benchmarks (not part of CI).
@@ -124,10 +131,11 @@ Shared utility functions, precision handling, chain helpers.
 - Every emitted order's price must equal its slot's genesis level (`priceForSlot(idx, genesis)`); off-grid emissions are blocked, not counted
 - The guard itself plus the live batch wiring, escalation thresholds, and per-order stranded-hold clocks are each pinned and mutation-tested
 - Adoption keeps the slot's own level; `loadGrid` repairs a pre-existing off-grid slot price
+- A snapshot with no usable ladder is refused at load (`MISSING_GENESIS_POLICY` rebuild/halt) and the sync entry refuses rather than falling back to a tolerance matcher
 
 **Reference:** [docs/GRID_PRICE_INVARIANT.md](../docs/GRID_PRICE_INVARIANT.md)
 
-**Examples:** `test_grid_price_invariant_guard.ts`, `test_grid_price_invariant_wiring.ts`, `test_grid_price_slot_invariant.ts`, `test_final_pivot_gate.ts`, `test_hold_and_center_guards.ts`, `test_sync_out_of_grid_defer.ts`
+**Examples:** `test_grid_price_invariant_guard.ts`, `test_grid_price_invariant_wiring.ts`, `test_grid_price_slot_invariant.ts`, `test_final_pivot_gate.ts`, `test_hold_and_center_guards.ts`, `test_sync_out_of_grid_defer.ts`, `test_missing_genesis_policy.ts`, `test_last_fill_pivot_persistence.ts`
 
 ---
 

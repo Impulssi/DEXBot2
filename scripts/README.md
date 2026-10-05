@@ -32,12 +32,37 @@ Env overrides: `DEXBOT_PROFILE_ROOT`, `DEXBOT_MARKET_ADAPTER_DATA_DIR`,
 `dexbot` CLI, the resolved runtime dirs are passed automatically, so the CLI
 always clears the same dirs the runtime uses.
 
+**Two behaviors are shared by all four `clear-*` scripts** (helpers in
+`scripts/lib/dexbot-paths.sh`):
+
+- **Advisory live-runtime warning.** Before the confirmation prompt, the scripts
+  read `<profiles>/{monolithic,monolithic-bot,monolithic-cred}.pid` and — only when
+  the PM2 daemon is already up, so a cleanup script can never spawn one — the
+  online PM2 apps belonging to this install (`pm2 jlist`, filtered to
+  `cwd`/`script_path` under the project or profiles root). If anything is found, a
+  `YELLOW` warning is printed. It is **advisory**: the prompt still runs, the
+  deletion still happens, and the exit code is unchanged. The reason it matters:
+  a live bot re-persists its grid within seconds, a live adapter rewrites its
+  state file *and* `market_adapter.lock` (a deleted lock lets a second adapter
+  start), and open log FDs mean the disk space is only reclaimed on restart. Stop
+  first with `dexbot stop` / `dexbot pm2 stop all`.
+- **One log predicate.** Every `find` over the logs directory goes through
+  `log_files` (`*.log`, rotated `*.log.*`, `*.jsonl*`), so the preview, the count,
+  the delete and the verification can never disagree. `*.jsonl*` also sweeps the
+  credential audit trail `logs/daemon-audit.jsonl` **and** its rotated
+  `daemon-audit.jsonl.1` siblings, which match no other pattern — they used to
+  survive a "clear" and leave a partial wipe. The audit trail is deleted with
+  everything else, with no extra prompt and no opt-in flag; it is only named in
+  the preview (`Includes the credential audit trail: daemon-audit.jsonl*`) so the
+  deletion is never a surprise.
+
 ### Wipe Logs
 **File:** `clear-logs.sh`
 **Purpose:** Delete all bot `.log` and `.jsonl` files, including `profiles/logs/market_adapter.log`.
 ```bash
 # IRREVERSIBLE: Deletes all files in profiles/logs/*.log and *.jsonl, including market_adapter.log
-# Prompts for confirmation before deleting.
+# (also the credential audit trail daemon-audit.jsonl and its rotated siblings)
+# Prompts for confirmation before deleting; warns first if a runtime is live.
 bash scripts/clear-logs.sh
 ```
 
@@ -67,7 +92,8 @@ bash scripts/clear-market-adapter.sh
 # IRREVERSIBLE: Deletes profiles/orders/*, profiles/logs/*.{log,jsonl},
 # market_adapter/{data,state}/*, and claw data (positions.json, watcher-health.json, memu/) under
 # <profiles>/claw/data (or <repo>/claw/data for source checkouts).
-# Prompts for confirmation before deleting.
+# Also deletes daemon-audit.jsonl and its rotated siblings.
+# Prompts for confirmation before deleting; warns first if a runtime is live.
 bash scripts/clear-all.sh
 ```
 
@@ -390,6 +416,20 @@ dexbot dw TOKENA/TOKENB --month 1 --chart analysis/charts/custom.html
 dexbot dw BTS/HONEST.USD --feed --month 1
 ```
 Research knobs (`--alpha`, `--gain`, `--dw`, `--lb`, `--clip`) stay on the analyzer itself — call `node dist/analysis/analyze_dynamic_weight.js` directly for parameter sweeps (see `analysis/README.md`).
+
+### PnL Report (`dexbot pnl`)
+**File:** `pnl.ts` (thin entry; analyzer + HTML renderer: `analysis/trade_profitability.ts` + `analysis/pnl_report.ts`)
+**Purpose:** Resolve a bot profile (local-first), account name, or `1.2.x` id, fetch the account's fills for the requested window, and write a self-contained HTML PnL report (summary cards, performance metrics, realized-lot table). Terminal tables stay available by running the analyzer directly.
+**Output:** `analysis/charts/pnl_<bot|account>[_<pair>]_<range>.html`
+**Cache:** per-account fill shards under `analysis/cache/fills/` (settled months are reused; the unsettled tail is re-queried). `--refresh-account` bypasses it.
+```bash
+# HTML PnL report for a local bot, last 3 months
+dexbot pnl <bot> --month 3
+# Filter a multi-pair account to one pair
+dexbot pnl 1.2.123456 --month 6 --pair TOKENA/BTS
+# Custom output path
+dexbot pnl <bot> --month 1 --report analysis/charts/custom-pnl.html
+```
 
 ### LP Chart
 **File:** `generate_lp_chart.ts`

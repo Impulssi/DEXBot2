@@ -17,17 +17,17 @@ function _resolveFeeCacheTtl(): number {
             const v = getTxBuilderFeeCacheTtl();
             if (typeof v === 'number' && v > 0) return v;
         }
-    } catch (err: any) {
+    } catch (err) {
         txCacheLogger.warn(`Failed to load TX_BUILDER_FEE_CACHE_TTL_MS config, using default: ${getErrorMessage(err)}`);
     }
     return TX_BUILDER.FEE_CACHE_TTL_MS;
 }
 
-let _feeCache: any = null;
+let _feeCache: import('../lru_cache.js').LRUCache<unknown[]> | null = null;
 
-function _ensureFeeCache(): any {
+function _ensureFeeCache(): import('../lru_cache.js').LRUCache<unknown[]> {
     if (!_feeCache) {
-        _feeCache = new LRUCache(RESOLVERS.LRU_DEFAULT_SIZE, _resolveFeeCacheTtl());
+        _feeCache = new LRUCache<unknown[]>(RESOLVERS.LRU_DEFAULT_SIZE, _resolveFeeCacheTtl());
     }
     return _feeCache;
 }
@@ -38,24 +38,24 @@ function _ensureFeeCache(): any {
  * setRequiredFees writes back onto the ops) to avoid stale fees when the
  * same op type has different parameters (e.g. different amounts or extensions).
  */
-function buildFeeCacheKey(opList: Array<[number, any]>, feeAssetId: string): string {
+function buildFeeCacheKey(opList: Array<[number, unknown]>, feeAssetId: string): string {
     const parts: string[] = [];
     for (const [typeId, params] of opList) {
-        const keyParams: any = { ...(params || {}) };
+        const keyParams = { ...((params as Record<string, unknown>) || {}) };
         delete keyParams.fee;
         parts.push(`${typeId}:${JSON.stringify(keyParams)}`);
     }
     return parts.join('|') + ':' + feeAssetId;
 }
 
-function getFees(cacheKey: string): any[] | undefined {
+function getFees(cacheKey: string): unknown[] | undefined {
     const cache = _ensureFeeCache();
-    const value: any = cache.get(cacheKey);
+    const value = cache.get(cacheKey);
     if (!value) return undefined;
     return value;
 }
 
-function setFees(cacheKey: string, fees: any[]): void {
+function setFees(cacheKey: string, fees: unknown[]): void {
     const cache = _ensureFeeCache();
     cache.set(cacheKey, fees);
 }
@@ -65,7 +65,7 @@ function setFees(cacheKey: string, fees: any[]): void {
  * Returns the fee array even if stale (expired), or undefined if absent.
  * Useful as a fallback when a chain re-fetch fails.
  */
-function peekFees(cacheKey: string): any[] | undefined {
+function peekFees(cacheKey: string): unknown[] | undefined {
     const cache = _ensureFeeCache();
     const stale = cache.getStale(cacheKey);
     return stale ? stale.value : undefined;

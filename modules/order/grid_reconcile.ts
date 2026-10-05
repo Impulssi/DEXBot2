@@ -19,8 +19,9 @@ import {
 } from './utils/order.js';
 import * as Format from './format.js';
 import { getErrorMessage } from '../utils/errors.js';
+import type { OrderManagerLike, ChainOrder, ChainOrdersLike, ManagedOrder, ParsedChainEntry, PendingPriceCorrection, GridConfig, LoggerLike, StartupCancelPlan, StartupUpdatePlan, StartupCreatePlan } from '../types.js';
 
-function _startupChainSnapshotSignature(orders: any[], manager: any): Map<string, string> {
+function _startupChainSnapshotSignature(orders: ChainOrder[], manager: OrderManagerLike): Map<string, string> {
     const signature = new Map<string, string>();
     for (const raw of Array.isArray(orders) ? orders : []) {
         if (!raw?.id) continue;
@@ -38,8 +39,8 @@ function _startupChainSnapshotSignature(orders: any[], manager: any): Map<string
  * cancellation. Other orders may have legitimately changed since planning.
  */
 function _startupCancelPlanStillCurrent(
-    plan: any,
-    manager: any,
+    plan: StartupCancelPlan,
+    manager: OrderManagerLike,
     initialChainSignature: Map<string, string>,
     currentChainSignature: Map<string, string>
 ): boolean {
@@ -65,6 +66,15 @@ function _startupCancelPlanStillCurrent(
 }
 
 /**
+ * Resume a persisted grid whose order ids no longer match the book, by
+ * re-adopting the live chain orders into the frozen ladder (nearest-slot).
+ *
+ * The name is historical: there is no price matcher here any more. It loads the
+ * persisted grid (which establishes the price ladder, or is refused with
+ * MissingGenesisError and reported as "not resumed") and lets the normal sync
+ * bind each live chain order to the slot its price maps to. A grid whose ladder
+ * is unusable never resumes — the caller regenerates.
+ *
  * Returns { resumed: boolean, matchedCount: number }.
  * @param {Object} params - Destructured parameters
  * @param {Object} params.manager - OrderManager instance
@@ -83,45 +93,45 @@ export async function attemptResumePersistedGridByPriceMatch({
     boundaryIdx = null,
     genesis = null,
 }: {
-    manager: any;
-    persistedGrid: any[];
-    chainOpenOrders: any[];
-    logger: any;
-    storeGrid: any;
+    manager: OrderManagerLike;
+    persistedGrid: ManagedOrder[];
+    chainOpenOrders: ChainOrder[];
+    logger: LoggerLike;
+    storeGrid: (orders: ManagedOrder[]) => unknown;
     boundaryIdx?: number | null;
-    genesis?: any;
-}) {
+    genesis?: unknown;
+}): Promise<{ resumed: boolean; matchedCount: number }> {
     if (!Array.isArray(persistedGrid) || persistedGrid.length === 0) return { resumed: false, matchedCount: 0 };
     if (!Array.isArray(chainOpenOrders) || chainOpenOrders.length === 0) return { resumed: false, matchedCount: 0 };
     if (!manager || typeof manager.synchronizeWithChain !== 'function') return { resumed: false, matchedCount: 0 };
 
     try {
-        logger && logger.log && logger.log('No matching active order IDs found. Attempting to match by price...', 'info');
+        logger && logger.log && logger.log('No matching active order IDs found. Attempting to re-adopt by ladder level...', 'info');
         const { loadGrid } = require('./grid');
         // Prefer explicit genesis if caller wired it, else fall back to manager._genesis
-        const genesisArg = genesis ?? (manager as any)?._genesis ?? null;
+        const genesisArg = genesis ?? manager._genesis ?? null;
         await loadGrid(manager, persistedGrid, boundaryIdx, genesisArg);
         await manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
 
         const matchedOrderIds = new Set(
-            (Array.from(manager.orders.values()) as any[])
-                .filter((o: any) => o && isOrderOnChain(o))
-                .map((o: any) => o.orderId)
+            (Array.from(manager.orders.values()))
+                .filter((o) => o && isOrderOnChain(o))
+                .map((o) => o.orderId)
                 .filter(Boolean)
         );
 
         if (matchedOrderIds.size === 0) {
-            logger && logger.log && logger.log('Price-based matching found no matches. Generating new grid.', 'info');
+            logger && logger.log && logger.log('Ladder-level re-adoption found no matches. Generating new grid.', 'info');
             return { resumed: false, matchedCount: 0 };
         }
 
-        logger && logger.log && logger.log(`Successfully matched ${matchedOrderIds.size} orders by price. Resuming with existing grid.`, 'info');
+        logger && logger.log && logger.log(`Successfully re-adopted ${matchedOrderIds.size} orders by ladder level. Resuming with existing grid.`, 'info');
         if (typeof storeGrid === 'function') {
-            await storeGrid(Array.from(manager.orders.values()) as any[]);
+            await storeGrid(Array.from(manager.orders.values()));
         }
         return { resumed: true, matchedCount: matchedOrderIds.size };
-    } catch (err: any) {
-        logger && logger.log && logger.log(`Price-based resume attempt failed: ${err && getErrorMessage(err) ? getErrorMessage(err) : err}`, 'warn');
+    } catch (err) {
+        logger && logger.log && logger.log(`Ladder-level resume attempt failed: ${err && getErrorMessage(err) ? getErrorMessage(err) : err}`, 'warn');
         return { resumed: false, matchedCount: 0 };
     }
 }
@@ -153,14 +163,14 @@ export async function decideStartupGridAction({
     genesis = null,
     attemptResumeFn = attemptResumePersistedGridByPriceMatch,
 }: {
-    persistedGrid: any[];
-    chainOpenOrders: any[];
-    manager: any;
-    logger: any;
-    storeGrid: any;
+    persistedGrid: ManagedOrder[];
+    chainOpenOrders: ChainOrder[];
+    manager: OrderManagerLike;
+    logger: LoggerLike;
+    storeGrid: (orders: ManagedOrder[]) => unknown;
     boundaryIdx?: number | null;
-    genesis?: any;
-    attemptResumeFn?: any;
+    genesis?: unknown;
+    attemptResumeFn?: typeof attemptResumePersistedGridByPriceMatch;
 }) {
     const persisted = Array.isArray(persistedGrid) ? persistedGrid : [];
     const chain = Array.isArray(chainOpenOrders) ? chainOpenOrders : [];
@@ -210,12 +220,12 @@ export async function reconcileGridOrders({
     chainOrders,
     chainOpenOrders,
 }: {
-    manager: any;
-    config: any;
-    account: any;
-    privateKey: any;
-    chainOrders: any;
-    chainOpenOrders: any[];
+    manager: OrderManagerLike;
+    config: GridConfig;
+    account: string;
+    privateKey: string;
+    chainOrders: ChainOrdersLike;
+    chainOpenOrders: ChainOrder[];
 }) {
     // Parameter validation
     if (!manager || typeof manager.synchronizeWithChain !== 'function') {
@@ -242,9 +252,9 @@ export async function reconcileGridOrders({
     const logger = manager && manager.logger;
     const dryRun = !!(config && config.dryRun);
 
-    const parsedChain = (chainOpenOrders || [])
-        .map((co: any) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
-        .filter((x: any) => x.parsed);
+    const parsedChain: ParsedChainEntry[] = (chainOpenOrders || [])
+        .map((co) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
+        .filter((x): x is ParsedChainEntry => x.parsed !== null);
 
     const activeCfg = (config && config.activeOrders) ? config.activeOrders : {};
     let targetBuy = Math.max(0, Number.isFinite(Number(activeCfg.buy)) ? Number(activeCfg.buy) : 1)
@@ -252,8 +262,8 @@ export async function reconcileGridOrders({
     let targetSell = Math.max(0, Number.isFinite(Number(activeCfg.sell)) ? Number(activeCfg.sell) : 1)
         + resolveReserveCount(config, 'sell');
 
-    const chainBuys = parsedChain.filter((x: any) => x.parsed.type === ORDER_TYPES.BUY).map((x: any) => x.chain);
-    const chainSells = parsedChain.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).map((x: any) => x.chain);
+    const chainBuys = parsedChain.filter((x) => x.parsed.type === ORDER_TYPES.BUY).map((x) => x.chain);
+    const chainSells = parsedChain.filter((x) => x.parsed.type === ORDER_TYPES.SELL).map((x) => x.chain);
 
     // PHASE 1: In-memory reconciliation under lock — pure planning, no blockchain I/O.
     // All cancellations are collected into plannedCancels and executed in Phase 2.
@@ -264,10 +274,10 @@ export async function reconcileGridOrders({
         }
         const applyUpdate = manager._applyOrderUpdate.bind(manager);
 
-        const chainIds = new Set((Array.isArray(chainOpenOrders) ? chainOpenOrders : []).map(o => o && o.id).filter(Boolean));
+        const chainIds = new Set<string>((Array.isArray(chainOpenOrders) ? chainOpenOrders : []).map(o => o?.id).filter((id): id is string => Boolean(id)));
         for (const order of manager.orders.values()) {
             if (isOrderPlaced(order)) {
-                if (!chainIds.has(order.orderId)) {
+                if (!order.orderId || !chainIds.has(order.orderId)) {
                     // Absence-decision guard: only virtualize as a phantom when
                     // the absence is trustworthy. An orderId assigned within the
                     // sync-lock window may be an in-flight create/adopt whose
@@ -277,7 +287,7 @@ export async function reconcileGridOrders({
                     // reconcile-timeout death-spiral root cause). Mirror the
                     // sync_engine committed-order guard; ghost orders (PARTIAL +
                     // size=0) still pass through so known fills get cleaned up.
-                    const assignedAt = manager._orderIdAssignedAt?.get(order.orderId) || 0;
+                    const assignedAt = manager._orderIdAssignedAt?.get(order.orderId ?? '') || 0;
                     const isGhost = order.size <= 0 && order.state === ORDER_STATES.PARTIAL;
                     if (!isGhost && assignedAt > 0 && Date.now() - assignedAt < TIMING.SYNC_LOCK_TIMEOUT_MS) {
                         logger?.log?.(
@@ -299,21 +309,21 @@ export async function reconcileGridOrders({
             }
         }
 
-        const matchedChainOrderIds = new Set();
+        const matchedChainOrderIds = new Set<string>();
         for (const gridOrder of manager.orders.values()) {
             if (gridOrder && gridOrder.orderId) {
                 matchedChainOrderIds.add(gridOrder.orderId);
             }
         }
 
-        const unmatchedChain = (Array.isArray(chainOpenOrders) ? chainOpenOrders : []).filter((co: any) => co && !matchedChainOrderIds.has(co.id));
-        let unmatchedParsed = unmatchedChain
-            .map((co: any) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
-            .filter((x: any) => x.parsed);
+        const unmatchedChain = (Array.isArray(chainOpenOrders) ? chainOpenOrders : []).filter((co) => co && !matchedChainOrderIds.has(co.id));
+        let unmatchedParsed: ParsedChainEntry[] = unmatchedChain
+            .map((co) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
+            .filter((x): x is ParsedChainEntry => x.parsed !== null);
 
-        const plannedCancels: any[] = [];
+        const plannedCancels: StartupCancelPlan[] = [];
         const cancelledDuplicateIds = new Set<string>();
-        const activeGridOrders = (Array.from(manager.orders.values()) as any[]).filter((o: any) => o && o.orderId && isOrderPlaced(o));
+        const activeGridOrders = (Array.from(manager.orders.values())).filter((o) => o && o.orderId && isOrderPlaced(o));
         // Update-first policy: unmatched chain orders are NEVER cancelled here.
         // They flow into _reconcileStartupSide below, which price-updates them onto
         // rail slots in a single batch (plannedUpdates), creates missing orders, and
@@ -323,7 +333,7 @@ export async function reconcileGridOrders({
         for (const u of unmatchedParsed) {
             const p = u.parsed!;
             const desc = `Unmatched chain order: ${p.orderId} (${p.type === ORDER_TYPES.BUY ? 'BUY' : 'SELL'}), price=${Format.formatPrice6(p.price)}, size=${Format.formatSizeByOrderType(p.size ?? 0, p.type, manager.assets)}`;
-            let nearest: any = null;
+            let nearest: { gridOrder: ManagedOrder; priceDiff: number; isEqual: boolean } | null = null;
             for (const gridOrder of activeGridOrders) {
                 if (gridOrder.type !== p.type) continue;
                 const precision = p.type === ORDER_TYPES.SELL ? manager.assets.assetA.precision : manager.assets.assetB.precision;
@@ -340,13 +350,14 @@ export async function reconcileGridOrders({
                 // but restore the untracked-fund accounting its cancel-only path does not
                 // perform (reconcile's Phase-2 cancel used to do it via releaseUntrackedFunds).
                 const alreadyQueued = Array.isArray(manager.ordersNeedingPriceCorrection) &&
-                    manager.ordersNeedingPriceCorrection.some((q: any) => q?.chainOrderId === p.orderId && q?.cancelOnly === true);
+                    manager.ordersNeedingPriceCorrection.some((q) => q?.chainOrderId === p.orderId && q?.cancelOnly === true);
                 const alreadyCancelled = typeof chainOrders.wasRecentlyOwnCancelled === 'function' &&
                     chainOrders.wasRecentlyOwnCancelled(p.orderId);
                 if (alreadyQueued || alreadyCancelled) {
                     if (manager.accountant && manager._fundLock && p.size != null && p.size > 0) {
+                        const size = p.size;
                         await manager._fundLock.acquire(async () => {
-                            await manager.accountant.addToChainFree(p.type, p.size, 'startup-skip-duplicate');
+                            await manager.accountant.addToChainFree(p.type, size, 'startup-skip-duplicate');
                         });
                     }
                     cancelledDuplicateIds.add(p.orderId);
@@ -379,13 +390,13 @@ export async function reconcileGridOrders({
         }
 
         if (cancelledDuplicateIds.size > 0) {
-            unmatchedParsed = unmatchedParsed.filter((u: any) => !cancelledDuplicateIds.has(u.parsed!.orderId));
+            unmatchedParsed = unmatchedParsed.filter((u) => !cancelledDuplicateIds.has(u.parsed.orderId));
         }
 
-        let unmatchedBuys = unmatchedParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.BUY).map((x: any) => x.chain);
-        let unmatchedSells = unmatchedParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).map((x: any) => x.chain);
-        const plannedCreates: any[] = [];
-        const plannedUpdates: any[] = [];
+        let unmatchedBuys = unmatchedParsed.filter((x) => x.parsed.type === ORDER_TYPES.BUY).map((x) => x.chain);
+        let unmatchedSells = unmatchedParsed.filter((x) => x.parsed.type === ORDER_TYPES.SELL).map((x) => x.chain);
+        const plannedCreates: StartupCreatePlan[] = [];
+        const plannedUpdates: StartupUpdatePlan[] = [];
 
         logger && logger.log && logger.log(
             `Startup reconcile starting: unmatched(sell=${unmatchedSells.length}, buy=${unmatchedBuys.length}), target(sell=${targetSell}, buy=${targetBuy})`,
@@ -460,7 +471,7 @@ export async function reconcileGridOrders({
             let currentChainSignature: Map<string, string> | null = null;
             try {
                 const currentChainOrders = await readOpenOrdersGuarded(chainOrders, account, {
-                    log: (message: string, level: any) => logger?.log?.(message, level),
+                    log: (message: string, level?: string) => logger?.log?.(message, level),
                     label: 'STARTUP-PHASE2-CANCEL',
                 });
                 if (currentChainOrders === null) {
@@ -472,7 +483,7 @@ export async function reconcileGridOrders({
                 } else {
                     currentChainSignature = _startupChainSnapshotSignature(currentChainOrders, manager);
                 }
-            } catch (readErr: any) {
+            } catch (readErr) {
                 logger?.log?.(
                     `Startup: Skipping ${plannedCancels.length} stale cancellation plan(s): ` +
                     `pre-cancel chain read failed (${getErrorMessage(readErr)})`,
@@ -514,10 +525,10 @@ export async function reconcileGridOrders({
                             `Startup: Cancelled queued order ${cancelPlan.chainOrderId} (Phase 2)`,
                             'info'
                         );
-                    } catch (cancelErr: any) {
+                    } catch (cancelErr) {
                         logger?.log?.(
                             `Startup: Failed to cancel queued order ${cancelPlan.chainOrderId}: ${getErrorMessage(cancelErr)}. ` +
-                            `The order stays live: the relocation/create phases will skip any placement ` +
+                            `The order stays live: the relocation/create phases will skip a placement ` +
                             `that would cross it (STARTUP-CROSS-GUARD) and re-align on the next cycle.`,
                             'error'
                         );
@@ -548,7 +559,7 @@ export async function reconcileGridOrders({
                         }
                         batchCompleted = true;
                         break;
-                    } catch (err: any) {
+                    } catch (err) {
                         logger?.log?.(`Startup: Update batch attempt ${attempt}/${maxBatchAttempts} failed: ${getErrorMessage(err)}`, 'error');
 
                         const refreshedChainOrders = await _recoverStartupSyncFailure({
@@ -560,7 +571,7 @@ export async function reconcileGridOrders({
                             source: 'startupReconcileUpdateBatchFailure',
                         });
 
-                        updatePlans = _refreshStartupUpdatePlans(updatePlans, refreshedChainOrders);
+                        updatePlans = _refreshStartupUpdatePlans(updatePlans, refreshedChainOrders ?? []);
                         if (updatePlans.length === 0) {
                             logger?.log?.('Startup: No update plans remain after recovery sync; skipping further update attempts', 'warn');
                             batchCompleted = true;
@@ -594,7 +605,7 @@ export async function reconcileGridOrders({
                             fallbackResult.failed > 0 ? 'warn' : 'info'
                         );
                     }
-                } catch (err: any) {
+                } catch (err) {
                     logger?.log?.(`Startup: Sequential fallback failed unexpectedly: ${getErrorMessage(err)}`, 'error');
                 }
             }
@@ -626,14 +637,14 @@ export async function reconcileGridOrders({
                 // snapshot — defer to the sync loop's targeted drift detection and
                 // keep the pre-Phase-2 counts for the summary log.
                 const freshOpenOrders = await readOpenOrdersGuarded(chainOrders, account, {
-                    log: (message: string, level: any) => logger?.log?.(message, level),
+                    log: (message: string, level?: string) => logger?.log?.(message, level),
                     label: 'STARTUP',
                     detail: 'Post-Phase-2 chain read',
                 });
                 if (freshOpenOrders !== null) {
-                    const freshParsed = (Array.isArray(freshOpenOrders) ? freshOpenOrders : [])
-                        .map((co: any) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
-                        .filter((x: any) => x.parsed);
+                    const freshParsed: ParsedChainEntry[] = (Array.isArray(freshOpenOrders) ? freshOpenOrders : [])
+                        .map((co) => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
+                        .filter((x): x is ParsedChainEntry => x.parsed !== null);
 
                     const gridOrderIds = new Set<string>();
                     for (const order of manager.orders.values()) {
@@ -660,11 +671,11 @@ export async function reconcileGridOrders({
                     // Phase-2 broadcast would destroy the confirmed grid.
                     const btsFeeData = getAssetFeesSafe('BTS');
                     for (const entry of freshParsed) {
-                        const co: any = entry.chain;
-                        const parsed: any = entry.parsed;
+                        const co: ChainOrder = entry.chain;
+                        const parsed = entry.parsed;
                         if (!co?.id || !parsed) continue;
                         if (gridOrderIds.has(co.id)) continue;
-                        const candidate: any = Array.from(manager.orders.values()).find((o: any) => {
+                        const candidate: ManagedOrder | undefined = Array.from(manager.orders.values()).find((o) => {
                             if (!o || o.orderId || o.state !== ORDER_STATES.VIRTUAL) return false;
                             // HOLD gate: an operator-cancelled slot must not
                             // resurrect via an uncertain-landed create adopt.
@@ -687,7 +698,7 @@ export async function reconcileGridOrders({
                                 `Startup: Adopted uncertain-landed chain order ${co.id} into slot ${candidate.id} (${parsed.type}, price=${parsed.price})`,
                                 'warn'
                             );
-                        } catch (adoptErr: any) {
+                        } catch (adoptErr) {
                             logger?.log?.(
                                 `Startup: Failed to adopt landed order ${co.id} into slot ${candidate?.id}: ${getErrorMessage(adoptErr)}`,
                                 'warn'
@@ -702,18 +713,18 @@ export async function reconcileGridOrders({
                     }
                     const queuedCancellationIds = new Set(
                         (Array.isArray(manager.ordersNeedingPriceCorrection) ? manager.ordersNeedingPriceCorrection : [])
-                            .filter((entry: any) => entry?.chainOrderId && (entry?.cancelOnly === true || entry?.isSurplus === true))
-                            .map((entry: any) => String(entry.chainOrderId))
+                            .filter((entry: PendingPriceCorrection) => entry?.chainOrderId && (entry?.cancelOnly === true || entry?.isSurplus === true))
+                            .map((entry: PendingPriceCorrection) => String(entry.chainOrderId))
                     );
-                    const staleSurplusCancels: Array<{ chainOrderObj: any; sideLabel: string }> = [];
+                    const staleSurplusCancels: Array<{ chainOrderObj: ChainOrder; sideLabel: string }> = [];
                     for (const side of [ORDER_TYPES.SELL, ORDER_TYPES.BUY]) {
                         const targetCount = side === ORDER_TYPES.SELL ? targetSell : targetBuy;
-                        let sideOrders = freshParsed.filter((x: any) => x.parsed.type === side);
+                        let sideOrders = freshParsed.filter((x) => x.parsed.type === side);
                         const sideLabel = side === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
 
                         if (sideOrders.length > targetCount) {
                             // Sort by chain ID for deterministic cancellation order.
-                            sideOrders = sideOrders.sort((a: any, b: any) =>
+                            sideOrders = sideOrders.sort((a, b) =>
                                 (a.chain.id || '').localeCompare(b.chain.id || '')
                             );
                             let cancelLimit = sideOrders.length - targetCount;
@@ -753,16 +764,16 @@ export async function reconcileGridOrders({
                                 if (sc.sideLabel === 'SELL') cancelledSellCount++;
                                 else cancelledBuyCount++;
                                 logger?.log?.(`Startup: Cancelled stale surplus ${sc.sideLabel} order ${sc.chainOrderObj.id}`, 'info');
-                            } catch (e: any) {
+                            } catch (e) {
                                 logger?.log?.(`Startup: Failed to cancel surplus ${sc.sideLabel} ${sc.chainOrderObj.id}: ${getErrorMessage(e)}`, 'warn');
                             }
                         }
                     }
 
-                    finalChainSellCount = freshParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.SELL).length - cancelledSellCount;
-                    finalChainBuyCount = freshParsed.filter((x: any) => x.parsed.type === ORDER_TYPES.BUY).length - cancelledBuyCount;
+                    finalChainSellCount = freshParsed.filter((x) => x.parsed.type === ORDER_TYPES.SELL).length - cancelledSellCount;
+                    finalChainBuyCount = freshParsed.filter((x) => x.parsed.type === ORDER_TYPES.BUY).length - cancelledBuyCount;
                 }
-            } catch (err: any) {
+            } catch (err) {
                 logger?.log?.(`Startup: Failed to refresh final chain counts: ${getErrorMessage(err)}`, 'warn');
             }
         }

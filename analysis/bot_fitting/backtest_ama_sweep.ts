@@ -5,7 +5,7 @@ import os from 'node:os';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { calculateAMA, getAmaWarmupBars } from '../../market_adapter/core/strategies/ama.js';
-import { computeAverageAmaSlopePct } from '../../market_adapter/core/strategies/ama_slope_model.js';
+import { computeHuberWindowSlopePct } from '../../market_adapter/core/strategies/ama_slope_model.js';
 import { range } from '../math_utils.js';
 import { parseListOrRange, loadLpData, fmt } from './shared_utils.js';
 import { getStorage } from '../../modules/storage/index.js';
@@ -92,6 +92,7 @@ function parseArgs() {
         makerCreateFactor: number;
         txFeePrice: number;
         topN: number;
+        lookbackBars: number | null;
     } = {
         dataPath: null,
         resultsPath: null,
@@ -109,6 +110,7 @@ function parseArgs() {
         makerCreateFactor: DEFAULT_BTS_MAKER_CREATE_FACTOR,
         txFeePrice: DEFAULT_TX_FEE_PRICE,
         topN: 15,
+        lookbackBars: null,
     };
 
     for (let i = 0; i < args.length; i++) {
@@ -133,6 +135,7 @@ function parseArgs() {
             case '--maker-create-factor': out.makerCreateFactor = Number(val); i++; break;
             case '--tx-fee-price': out.txFeePrice = Number(val); i++; break;
             case '--top': out.topN = Number(val); i++; break;
+            case '--lookback': out.lookbackBars = Math.max(1, Math.round(Number(val))); i++; break;
         }
     }
     if (!out.dataPath) {
@@ -167,18 +170,36 @@ function printHelp() {
     console.log('  --maker-create-factor   Maker share of create fee (default: 0.10)');
     console.log('  --tx-fee-price <n>      Convert BTS fees into backtest units (default: 1.0)');
     console.log('  --top <n>               Show top N results (default: 15)');
+    console.log(`  --lookback <bars>       Huber slope lookback override (default: ${SLOPE_LOOKBACK_BARS})`);
 }
 
-function loadAmaStrategies(resultsPath: string) {
-    const json = readJSON(resultsPath);
-    const amas = (json.meta as any)?.amas;
+interface AmaStrategy {
+    id: string;
+    name: string;
+    er: number;
+    fast: number;
+    slow: number;
+}
+
+interface GridOrder {
+    level: number;
+    price: number;
+    railIdx: number;
+    cooldownUntil: number;
+    size: number;
+    [key: string]: unknown;
+}
+
+function loadAmaStrategies(resultsPath: string): AmaStrategy[] {
+    const json = readJSON(resultsPath) as { meta?: { amas?: Record<string, { er?: unknown; fast?: unknown; slow?: unknown; label?: unknown }> } };
+    const amas = json.meta?.amas;
     if (!amas) throw new Error('No meta.amas found in results file.');
 
-    const out: any[] = [];
+    const out: AmaStrategy[] = [];
     for (const [key, val] of Object.entries(amas)) {
-        const v = val as any;
-        if (!v || !Number.isFinite(v.er)) continue;
-        out.push({ id: key, name: v.label || key, er: v.er, fast: v.fast, slow: v.slow });
+        const v = val as { er?: unknown; fast?: unknown; slow?: unknown; label?: unknown };
+        if (!v || !Number.isFinite(Number(v.er))) continue;
+        out.push({ id: key, name: String(v.label || key), er: Number(v.er), fast: Number(v.fast), slow: Number(v.slow) });
     }
     out.sort((a, b) => a.id.localeCompare(b.id));
     if (out.length === 0) throw new Error('No valid AMA strategies found');
@@ -234,7 +255,7 @@ function allocateFundsByWeights(totalFunds: number, n: number, weight: number, i
  *
  * Returns arrays of buy and sell order objects with fixed chain prices and sizes.
  */
-function buildGrid(center: number, params: any, capitalPerSide: number, weightFactor: number) {
+function buildGrid(center: number, params: { incrementPct: number; maxMinRatio: number; maxOrders: number; spreadPct: number }, capitalPerSide: number, weightFactor: number) {
     const { incrementPct, maxMinRatio, maxOrders, spreadPct } = params;
     const built = buildProductionGrid(center, spreadPct, incrementPct, maxMinRatio, maxOrders);
 
@@ -244,11 +265,11 @@ function buildGrid(center: number, params: any, capitalPerSide: number, weightFa
     // Level k = k-th slot from the gap on each side. Each placed slot also
     // carries its MASTER-RAIL index so rotation hops land on adjacent rail
     // nodes (live anchor-&-refill hop) instead of a flat ×(1+inc).
-    const buys: any[] = built.buys.map((price: number, i: number) => {
+    const buys: GridOrder[] = built.buys.map((price: number, i: number) => {
         const k = built.buys.length - i;
         return { level: k, price, railIdx: built.buySliceStart + i, cooldownUntil: -1, size: buySizes[k - 1] || 0 };
     });
-    const sells: any[] = built.sells.map((price: number, i: number) => ({
+    const sells: GridOrder[] = built.sells.map((price: number, i: number) => ({
         level: i + 1, price, railIdx: built.sellStartIdx + i, cooldownUntil: -1, size: sellSizes[i] || 0,
     }));
     return { buys, sells, rail: built.rail };
@@ -272,10 +293,71 @@ function markInventoryAtPrice(inventory: { units: number; cost: number }, exitPr
     return { grossUnits, profitUnits: grossUnits - feeUnits };
 }
 
-function simulatePersistentGrid(candles: any[], amaValues: number[], params: any, weightName: string, weightFactor: number) {
+type SimResult = ReturnType<typeof simulatePersistentGrid>;
+
+interface SweepResult {
+    strategy: AmaStrategy;
+    best: SimResult | null;
+    top5: SimResult[];
+    allSims: SimResult[];
+    evaluated: number;
+}
+
+interface RankedResult {
+    strategy: AmaStrategy;
+    sim: SimResult;
+}
+
+interface SimCandle {
+    open?: number;
+    high: number;
+    low: number;
+    close: number;
+    time?: number;
+    [key: string]: unknown;
+}
+
+interface SimOrder {
+    side: 'buy' | 'sell';
+    price: number;
+    size: number;
+    railIdx: number;
+    linkedBuyPrice: number | null;
+    linkedEntryBar: number;
+    cooldownUntil: number;
+}
+
+interface SimParams {
+    spreadPct: number;
+    incrementPct: number;
+    maxMinRatio: number;
+    maxOrders: number;
+    feeRoundtripPct: number;
+    capital: number;
+    repositionThreshold: number;
+    asymmetricBounds: boolean;
+    btsCreateFee: number;
+    btsCancelFee: number;
+    makerCreateFactor: number;
+    txFeePrice: number;
+    warmupBars: number;
+    lookbackBars: number;
+    [key: string]: unknown;
+}
+
+function simulatePersistentGrid(candles: SimCandle[], amaValues: number[], params: SimParams, weightName: string, weightFactor: number) {
     const { spreadPct, incrementPct, maxMinRatio, feeRoundtripPct,
             capital, repositionThreshold, asymmetricBounds, btsCreateFee, btsCancelFee,
             makerCreateFactor, txFeePrice } = params;
+    // Slope-delta persistence gate: follow the production default (constants)
+    // unless the caller pins a value, so the sweep's reset path matches live
+    // whenever asymmetricBounds enables trigger B.
+    const slopePersistBarsRaw = Number(params.slopePersistBars);
+    const slopePersistBars = Number.isFinite(slopePersistBarsRaw) && slopePersistBarsRaw >= 1
+        ? Math.round(slopePersistBarsRaw)
+        : (MARKET_ADAPTER.AMA_SLOPE_PERSIST_ENABLED === true && Number(MARKET_ADAPTER.AMA_SLOPE_PERSIST_BARS) >= 1
+            ? Math.round(Number(MARKET_ADAPTER.AMA_SLOPE_PERSIST_BARS))
+            : 1);
     // Warmup follows production AMA seeding/convergence (getAmaWarmupBars,
     // passed via params.warmupBars from sweepOneAma) instead of an arbitrary
     // fraction of the dataset. Direct callers that omit warmupBars fall back
@@ -298,9 +380,14 @@ function simulatePersistentGrid(candles: any[], amaValues: number[], params: any
 
     // Production AMA slope series (%/bar averaged over the lookback window) —
     // feeds trigger B and the grid price offset when asymmetricBounds is on.
+    // Lookback is overridable for research (params.lookbackBars); production
+    // callers leave it unset and get the centralized constant.
+    const slopeLookbackBars = Number.isFinite(params.lookbackBars) && params.lookbackBars >= 1
+        ? Math.round(params.lookbackBars)
+        : SLOPE_LOOKBACK_BARS;
     const slopeAt: (number | null)[] = new Array(candles.length).fill(null);
-    for (let j = SLOPE_LOOKBACK_BARS; j < candles.length; j++) {
-        const s = computeAverageAmaSlopePct(amaValues[j], amaValues[j - SLOPE_LOOKBACK_BARS], SLOPE_LOOKBACK_BARS);
+    for (let j = slopeLookbackBars; j < candles.length; j++) {
+        const s = computeHuberWindowSlopePct(amaValues, j, slopeLookbackBars);
         if (s != null && Number.isFinite(s)) slopeAt[j] = s;
     }
 
@@ -309,7 +396,7 @@ function simulatePersistentGrid(candles: any[], amaValues: number[], params: any
     // orders: id -> { side, price, size, linkedBuyPrice, linkedEntryBar,
     //                 cooldownUntil }. linkedBuyPrice != null marks an armed
     // refill sell created by a specific filled buy (one-increment rotation).
-    const orders = new Map<number, any>();
+    const orders = new Map<number, SimOrder>();
     let nextOrderId = 0;
     // Bought-and-held base across the whole run (weighted-average entry pool).
     // Never negative — unfundable sells stay pending instead of shorting.
@@ -378,6 +465,9 @@ function simulatePersistentGrid(candles: any[], amaValues: number[], params: any
     // Slope-delta baseline: mirrors botState.gridRangeScalingAmaSlope —
     // seeded at bootstrap and re-seeded on every reset.
     let slopeBaseline: number | null = null;
+    // Persistence-gate state for trigger B.
+    let slopePersistCount = 0;
+    let slopePersistDir = 0;
     for (let j = startIdx + 1; j < candles.length; j++) {
         if (slopeAt[j] != null) { slopeBaseline = slopeAt[j]; break; }
     }
@@ -401,11 +491,23 @@ function simulatePersistentGrid(candles: any[], amaValues: number[], params: any
         let shouldReposition = drift >= repositionThreshold;
         if (shouldReposition) { triggerDriftSumPct += driftPct; driftTriggerCount++; }
         if (!shouldReposition && asymmetricBounds && slopeBaseline != null && slopeAt[i] != null) {
-            const slopeDeltaPct = Math.abs(slopeAt[i]! - slopeBaseline);
-            if (slopeDeltaPct >= slopeDeltaThresholdPct) { shouldReposition = true; slopeTriggerCount++; }
+            const crossed = Math.abs(slopeAt[i]! - slopeBaseline) >= slopeDeltaThresholdPct;
+            if (slopePersistBars <= 1) {
+                if (crossed) { shouldReposition = true; slopeTriggerCount++; }
+            } else if (!crossed) {
+                slopePersistCount = 0;
+                slopePersistDir = 0;
+            } else {
+                const dir = Math.sign(slopeAt[i]! - slopeBaseline);
+                if (dir !== 0 && dir === slopePersistDir) slopePersistCount++;
+                else { slopePersistDir = dir; slopePersistCount = 1; }
+                if (slopePersistCount >= slopePersistBars) { shouldReposition = true; slopeTriggerCount++; }
+            }
         }
 
         if (shouldReposition && Number.isFinite(ama) && ama > 0) {
+            slopePersistCount = 0;
+            slopePersistDir = 0;
             canceledOnReposition += orders.size;
             btsFeesBts += orders.size * btsCancelFee;
             orders.clear(); // inventory survives — resync never market-sells
@@ -426,8 +528,8 @@ function simulatePersistentGrid(candles: any[], amaValues: number[], params: any
         imbalanceSamples++;
 
         // ── Fill detection against FIXED chain prices ───────────────────
-        const filledBuysThisBar: { id: number; order: any }[] = [];
-        const filledSellsThisBar: { id: number; order: any }[] = [];
+        const filledBuysThisBar: { id: number; order: SimOrder }[] = [];
+        const filledSellsThisBar: { id: number; order: SimOrder }[] = [];
         for (const [id, o] of orders) {
             if (i < o.cooldownUntil || !(o.size > 0)) continue;
             if (o.side === 'buy' && lo <= o.price) filledBuysThisBar.push({ id, order: o });
@@ -619,13 +721,13 @@ function simulatePersistentGrid(candles: any[], amaValues: number[], params: any
 
 // ── Per-AMA sweep logic (runs in main thread or worker) ─────────────────────
 
-function sweepOneAma(strategy: any, candles: any[], closes: number[], weightEntries: [string, number][], cfg: any) {
+function sweepOneAma(strategy: AmaStrategy, candles: SimCandle[], closes: number[], weightEntries: [string, number][], cfg: ReturnType<typeof parseArgs>) {
     const amaValues = calculateAMA(closes, { erPeriod: strategy.er, fastPeriod: strategy.fast, slowPeriod: strategy.slow });
     // Production-aligned warmup: ER window + convergence (getAmaWarmupBars).
     const warmupBars = getAmaWarmupBars(strategy.er, strategy.slow, 0, strategy.fast);
-    let best: any = null;
-    const top5: any[] = [];
-    const allSims: any[] = [];
+    let best: SimResult | null = null;
+    const top5: SimResult[] = [];
+    const allSims: SimResult[] = [];
     let evaluated = 0;
     const minSpreadFactor = Number.isFinite(cfg.minSpreadFactor) && cfg.minSpreadFactor > 0 ? cfg.minSpreadFactor : null;
 
@@ -650,6 +752,7 @@ function sweepOneAma(strategy: any, candles: any[], closes: number[], weightEntr
                         makerCreateFactor: cfg.makerCreateFactor,
                         txFeePrice: cfg.txFeePrice,
                         warmupBars,
+                        lookbackBars: cfg.lookbackBars as number,
                     }, weightName, weightFactor);
 
                     if (!best || sim.score > best.score) best = sim;
@@ -686,18 +789,18 @@ if (!isMainThread) {
 
 // ── Parallel dispatch (main thread) ─────────────────────────────────────────
 
-function runParallel(strategies: any[], candles: any[], closes: number[], weightEntries: [string, number][], cfg: any): Promise<any[]> {
+function runParallel(strategies: AmaStrategy[], candles: SimCandle[], closes: number[], weightEntries: [string, number][], cfg: ReturnType<typeof parseArgs>): Promise<SweepResult[]> {
     const numCpus = Math.min(os.cpus().length, strategies.length);
     console.log(`  Workers:      ${numCpus} threads (${os.cpus().length} CPUs available)\n`);
 
     return Promise.all(strategies.map((strategy) => {
-        return new Promise((resolve, reject) => {
+        return new Promise<SweepResult>((resolve, reject) => {
             // ESM: resolve this module's path from import.meta.url
             // (__filename is undefined in ES modules).
             const worker = new Worker(fileURLToPath(import.meta.url), {
                 workerData: { strategy, candles, closes, weightEntries, cfg },
             });
-            worker.on('message', resolve);
+            worker.on('message', (msg) => resolve(msg as SweepResult));
             worker.on('error', reject);
             worker.on('exit', (code) => {
                 if (code !== 0) reject(new Error(`Worker exited with code ${code}`));
@@ -713,7 +816,7 @@ async function run() {
 
     const loaded = loadLpData(cfg.dataPath!);
     const candles = loaded.candles;
-    const closes = candles.map((c: any) => c.close);
+    const closes = candles.map((c) => (c as { close: number }).close);
     const strategies = loadAmaStrategies(cfg.resultsPath!);
 
     const weightEntries = Object.entries(WEIGHT_PROFILES);
@@ -733,13 +836,13 @@ async function run() {
     console.log(`  Spread floor: > fee (${cfg.feeRoundtripPct}%)`);
     console.log(`  Reset (A):    ${cfg.repositionPct}% AMA drift from grid center (ratchet)`);
     console.log(`  Asym. bounds: ${cfg.asymmetricBounds ? 'ON — slope reset (B) + grid price offset enabled (whitelist semantics)' : 'OFF — typical non-whitelisted bot (production default)'}`);
-    console.log(`  Reset (B):    |slope - slope@lastReset| >= ${fmt((SLOPE_TRIGGER_FACTOR / 100) * SLOPE_MAX_PCT, 4)}% (lookback ${SLOPE_LOOKBACK_BARS})${cfg.asymmetricBounds ? '' : ' [gated off]'}`);
+    console.log(`  Reset (B):    |slope - slope@lastReset| >= ${fmt((SLOPE_TRIGGER_FACTOR / 100) * SLOPE_MAX_PCT, 4)}% (lookback ${cfg.lookbackBars ?? SLOPE_LOOKBACK_BARS})${cfg.asymmetricBounds ? '' : ' [gated off]'}`);
     console.log(`  Tx model:     create=${fmt(cfg.btsCreateFee, 5)} BTS, cancel=${fmt(cfg.btsCancelFee, 5)} BTS, maker=${fmt(cfg.makerCreateFactor * 100, 1)}%, 1 BTS=${fmt(cfg.txFeePrice, 2)} units`);
     console.log(`  Combos/AMA:   ${totalCombos}  |  Total: ${totalCombos * strategies.length}\n`);
 
     // ── Run AMA sweeps in parallel (one worker per AMA strategy) ──────
-    const byAma: any[] = [];
-    const allResults: any[] = [];
+    const byAma: SweepResult[] = [];
+    const allResults: RankedResult[] = [];
 
     const workerResults = await runParallel(strategies, candles, closes, weightEntries, cfg);
 
@@ -789,7 +892,7 @@ async function run() {
         console.log(`\n  ${row.strategy.id} — Top 5:`);
         console.log('  # | wt    | spr%  | inc%  | ratio | nOrd |  pairs | net/cap | drift | gAge | fee/d | score');
         console.log('  --+-------+-------+-------+-------+------+--------+---------+-------+------+-------+------');
-        row.top5.forEach((b: any, idx: number) => {
+        row.top5.forEach((b: SimResult, idx: number) => {
             console.log(
                 `  ${idx + 1} | ` +
                 `${b.weightName.padEnd(5)} | ` +
@@ -810,7 +913,7 @@ async function run() {
     // ── Global ranking (deduplicated) ───────────────────────────────────────
     allResults.sort((a, b) => b.sim.score - a.sim.score);
     const seen = new Set();
-    const deduped: any[] = [];
+    const deduped: RankedResult[] = [];
     for (const r of allResults) {
         const key = `${r.strategy.id}|${r.sim.spreadPct}|${r.sim.incrementPct}|${r.sim.maxMinRatio}|${r.sim.weightName}`;
         if (seen.has(key)) continue;

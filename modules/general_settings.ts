@@ -10,9 +10,36 @@ import { getStorage } from './storage/index.js';
 import { PATHS } from './paths.js';
 import { writeJsonFileAtomic } from './bots_file_lock.js';
 import { getErrorMessage } from './utils/errors.js';
+import type { UnknownRecord } from './types.js';
 const storage = getStorage();
 
 const SETTINGS_FILE = PATHS.PROFILES.GENERAL_SETTINGS_JSON;
+
+/**
+ * The on-disk general settings document. Open-ended (dynamic top-level
+ * sections) but `NODES` is typed because several callers read it directly.
+ */
+export interface GeneralSettingsDocument {
+    NODES?: {
+        enabled?: boolean;
+        list?: string[];
+        healthCheck?: {
+            enabled?: boolean;
+            intervalMs?: number;
+            timeoutMs?: number;
+            maxPingMs?: number;
+            blacklistThreshold?: number;
+            [key: string]: unknown;
+        };
+        selection?: {
+            strategy?: string;
+            preferredNode?: string | null;
+            [key: string]: unknown;
+        };
+        [key: string]: unknown;
+    };
+    [key: string]: unknown;
+}
 
 /**
  * Read general application settings from file.
@@ -23,14 +50,14 @@ const SETTINGS_FILE = PATHS.PROFILES.GENERAL_SETTINGS_JSON;
  * @param {Function} [options.onError=null] - Optional error callback (err, filePath)
  * @returns {Object|*} Parsed settings object or fallback value
  */
-function readGeneralSettings({ fallback = null, onError = null }: { fallback?: any; onError?: ((err: Error, filePath: string) => void) | null } = {}): any {
+function readGeneralSettings({ fallback = null, onError = null }: { fallback?: GeneralSettingsDocument | null; onError?: ((err: unknown, filePath: string) => void) | null } = {}): GeneralSettingsDocument | null {
     if (!storage.exists(SETTINGS_FILE)) return fallback;
 
     try {
         const raw = storage.readFile(SETTINGS_FILE);
         if (!raw || !raw.trim()) return fallback;
-        return JSON.parse(raw);
-    } catch (err: any) {
+        return JSON.parse(raw) as GeneralSettingsDocument;
+    } catch (err) {
         if (typeof onError === 'function') {
             onError(err, SETTINGS_FILE);
         } else {
@@ -48,7 +75,7 @@ function readGeneralSettings({ fallback = null, onError = null }: { fallback?: a
  * @param {Object} settings - Settings object to write
  * @throws {Error} If write operation fails
  */
-function writeGeneralSettings(settings: any): void {
+function writeGeneralSettings(settings: UnknownRecord): void {
     // Atomic write: see writeJsonFileAtomic in bots_file_lock.ts. A plain
     // writeFileSync could leave a truncated file on crash and break the
     // next process that reads general.settings.json.

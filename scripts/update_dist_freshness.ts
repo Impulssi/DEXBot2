@@ -20,6 +20,7 @@ export const REQUIRED_DIST_ENTRIES = [
     'credential-daemon.js',
     'modules/dexbot_class.js',
     'scripts/update.js',
+    'scripts/update_layout.js',
 ];
 
 /** Roots compiled by the root tsconfig.json (`include`), used to map sources to dist. */

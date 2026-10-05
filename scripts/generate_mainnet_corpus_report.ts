@@ -108,10 +108,10 @@ async function main(): Promise<void> {
     for (let b = startBlock; b > startBlock - maxBlocks && validCount < targetCount; b--) {
         blocksScanned++;
         scannedTo = b;
-        let block: any;
+        let block: { transactions?: Record<string, unknown>[]; transaction_ids?: string[] } | null;
         try {
             block = await client.db('get_block', [b]);
-        } catch (e: any) {
+        } catch (e) {
             console.log(`  block ${b}: fetch error ${getErrorMessage(e)}`);
             continue;
         }
@@ -119,7 +119,7 @@ async function main(): Promise<void> {
         for (let i = 0; i < block.transactions.length && validCount < targetCount; i++) {
             const signedTx = block.transactions[i];
             const rawExpectedTxId = (block.transaction_ids && block.transaction_ids[i]) || null;
-            const opTypeIds: number[] = (signedTx.operations || []).map((op: any) => op[0]);
+            const opTypeIds: number[] = ((signedTx.operations as unknown[]) || []).map((op) => (op as unknown[])[0] as number);
             for (const id of opTypeIds) opCoverage[id] = (opCoverage[id] || 0) + 1;
 
             const detail: TxDetail = {
@@ -163,7 +163,7 @@ async function main(): Promise<void> {
                         detail.computedSignedHex = computedHex;
                         detail.hexMatch = computedHex === expectedHex;
                         if (detail.hexMatch) hexMatches++; else hexMismatches++;
-                    } catch (e: any) {
+                    } catch (e) {
                         if (txHexAvailable === null) {
                             txHexAvailable = false;
                             console.log(`  note: get_transaction_hex unavailable on this node (${getErrorMessage(e)}); txid-only mode\n`);
@@ -179,7 +179,7 @@ async function main(): Promise<void> {
                     detail.error = 'no proof available (node lacks transaction_ids and get_transaction_hex)';
                     skipped++;
                 }
-            } catch (e: any) {
+            } catch (e) {
                 detail.error = getErrorMessage(e);
                 skipped++;
             }
@@ -242,8 +242,8 @@ async function main(): Promise<void> {
     process.exit(passed ? 0 : 1);
 }
 
-main().catch((err: any) => {
-    console.error('FATAL:', err && err.stack ? err.stack : err);
+main().catch((err: unknown) => {
+    console.error('FATAL:', err && (err as { stack?: string }).stack ? (err as { stack?: string }).stack : err);
     process.exit(2);
 });
 

@@ -1,9 +1,11 @@
 'use strict';
-import assert from 'node:assert';
-import {
+
+const assert = require('node:assert');
+
+const {
     buildKalmanVelocitySeries,
     smoothKalmanVelocityPoint,
-} from '../kalman_velocity_smoothing.js';
+} = require('../../trend_detection/kalman_velocity_smoothing.js');
 
 
 const baseline = smoothKalmanVelocityPoint(

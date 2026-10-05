@@ -27,26 +27,26 @@ export interface SocketJsonRequestOptions {
     socketPath: string;
     timeoutMs: number;
     /** Write the request to the connected socket (one JSON line). */
-    writePayload: (socket: any) => void;
+    writePayload: (socket: { write(data: string): unknown; destroy(): void }) => void;
     /** Build the failure error for timeout / connection / truncated-stream / invalid-response cases. */
-    buildError: (kind: SocketJsonFailureKind, detail?: any) => Error;
+    buildError: (kind: SocketJsonFailureKind, detail?: unknown) => Error;
     /** Handle a fully parsed response line: resolve or reject the request. */
-    handleResponse: (parsed: any, resolve: (value: any) => void, reject: (err: any) => void) => void;
+    handleResponse: (parsed: unknown, resolve: (value: unknown) => void, reject: (err: unknown) => void) => void;
 }
 
-export function sendSocketJsonRequest(options: SocketJsonRequestOptions): Promise<any> {
+export function sendSocketJsonRequest(options: SocketJsonRequestOptions): Promise<unknown> {
     const net = _require ? _require('net') : null;
     if (!net) {
         return Promise.reject(new Error('Unix socket IPC unavailable in this environment'));
     }
     const { socketPath, timeoutMs, writePayload, buildError, handleResponse } = options;
 
-    return new Promise((resolve: any, reject: any) => {
+    return new Promise<unknown>((resolve, reject) => {
         let settled = false;
         const socket = net.createConnection(socketPath, () => {
             try {
                 writePayload(socket);
-            } catch (error: any) {
+            } catch (error) {
                 socket.destroy();
                 clearTimeout(timer);
                 if (!settled) {
@@ -65,7 +65,7 @@ export function sendSocketJsonRequest(options: SocketJsonRequestOptions): Promis
             }
         }, timeoutMs);
 
-        socket.on('data', (data: any) => {
+        socket.on('data', (data: Buffer) => {
             responseBuffer += data.toString();
             const lines = responseBuffer.split('\n');
             responseBuffer = lines.pop() ?? '';
@@ -76,7 +76,7 @@ export function sendSocketJsonRequest(options: SocketJsonRequestOptions): Promis
                 socket.end();
                 if (!settled) {
                     settled = true;
-                    let parsed: any;
+                    let parsed: unknown;
                     try {
                         parsed = JSON.parse(line);
                     } catch {
@@ -91,7 +91,7 @@ export function sendSocketJsonRequest(options: SocketJsonRequestOptions): Promis
             }
         });
 
-        socket.on('error', (error: any) => {
+        socket.on('error', (error: unknown) => {
             clearTimeout(timer);
             if (!settled) {
                 settled = true;

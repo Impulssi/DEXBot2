@@ -15,7 +15,7 @@
  * Time/Performance (ms, %):     1-2 decimals - readable metrics
  *
  * ===============================================================================
- * TABLE OF CONTENTS (14 exported functions)
+ * TABLE OF CONTENTS (15 exported functions)
  * ===============================================================================
  *
  * SECTION 1: ASSET FORMATTING (4 functions)
@@ -24,22 +24,24 @@
  *   3. formatAmountByPrecision(value, precision) - Format using chain precision
  *   4. formatSizeByOrderType(value, orderType, assets) - Format order size by BUY/SELL asset precision
  *
- * SECTION 2: PRICE FORMATTING (3 functions)
- *   6. formatPrice(value) - Format to 8 decimals (maximum precision)
- *   7. formatPrice6(value) - Format to 6 decimals
- *   8. formatPrice4(value) - Format to 4 decimals (simplified display)
+ * SECTION 2: PRICE & FUNDS FORMATTING (5 functions)
+ *   5. formatPrice(value) - Format to 8 decimals (maximum precision)
+ *   6. formatPrice6(value) - Format to 6 decimals
+ *   7. formatPrice4(value) - Format to 4 decimals (simplified display)
+ *   8. formatCurrency(value, digits) - Grouped thousands with SI micro-suffixes
+ *   9. formatFundsValue(value) - Compact K/M, 4 significant figures (keeps trailing zeros)
  *
- * SECTION 3: PERCENTAGE FORMATTING (3 functions)
- *   9. formatPercent2(value) - Format to 2 decimals (spread %, ratios)
- *   10. formatPercent(value, decimals) - Format with custom decimal places
+ * SECTION 3: PERCENTAGE FORMATTING (2 functions)
+ *   10. formatPercent2(value) - Format to 2 decimals (spread %, ratios)
+ *   11. formatPercent(value, decimals) - Format with custom decimal places
  *
- * SECTION 4: RATIO/METRIC FORMATTING (3 functions)
- *   11. formatMetric2(value) - Format to 2 decimals (timing, performance)
+ * SECTION 4: RATIO/METRIC FORMATTING (1 function)
+ *   12. formatMetric2(value) - Format to 2 decimals (timing, performance)
  *
- * SECTION 5: HELPER UTILITIES (4 functions)
- *   12. isValidNumber(value) - Check if value is defined and finite
- *   13. toFiniteNumber(value, defaultValue) - Convert to finite number with fallback
- *   14. safeFormat(value, decimals, fallback) - Safely format with fallback
+ * SECTION 5: HELPER UTILITIES (3 functions)
+ *   13. isValidNumber(value) - Check if value is defined and finite
+ *   14. toFiniteNumber(value, defaultValue) - Convert to finite number with fallback
+ *   15. safeFormat(value, decimals, fallback) - Safely format with fallback
  *
  * ===============================================================================
  */
@@ -104,7 +106,7 @@ function formatSizeByOrderType(value: number, orderType: string, assets: { asset
 }
 
 // ===============================================================================
-// SECTION 2: PRICE FORMATTING
+// SECTION 2: PRICE & FUNDS FORMATTING
 // ===============================================================================
 
 /**
@@ -159,6 +161,50 @@ function formatCurrency(value: number, digits: number = 4): string {
 		: formatted;
 }
 
+/**
+ * Format a value with compact K/M notation and exactly 4 significant figures
+ * for values that have more than 4. Unlike `formatCurrency`, this caps the
+ * significant digits of large magnitudes (e.g. a volume of 19,423,608.6 ->
+ * "19.42M") instead of keeping every integer digit, and it KEEPS significant
+ * trailing zeros rather than trimming them (1009.794 -> "1.010K", not "1.01K").
+ * Examples:
+ *   194395   -> "194.4K"
+ *   1009.794 -> "1.010K"
+ *   10000    -> "10.00K"
+ *   1000     -> "1.000K"
+ *   332.33   -> "332.3"
+ *   10.389   -> "10.39"
+ *   1500000  -> "1.500M"
+ * @param {number} value
+ * @returns {string}
+ */
+function formatFundsValue(value: number): string {
+	if (!Number.isFinite(value)) return 'N/A';
+	if (value === 0) return '0';
+	const digits = 4;
+	const absValue = Math.abs(value);
+
+	let quotient: number;
+	let suffix = '';
+	if (absValue >= 1000000) {
+		quotient = value / 1000000;
+		suffix = 'M';
+	} else if (absValue >= 1000) {
+		quotient = value / 1000;
+		suffix = 'K';
+	} else {
+		quotient = value;
+	}
+
+	const absQ = Math.abs(quotient);
+	const intDigits = Math.floor(Math.log10(Math.max(absQ, 1e-10))) + 1;
+	const formatted = intDigits >= digits
+		? String(Math.round(quotient))
+		: quotient.toFixed(digits - intDigits);
+
+	return formatted + suffix;
+}
+
 // ===============================================================================
 // SECTION 3: PERCENTAGE FORMATTING
 // ===============================================================================
@@ -201,7 +247,7 @@ function formatMetric2(value: number): string {
  * @param {*} value - Value to check
  * @returns {boolean} True if value is defined and finite
  */
-function isValidNumber(value: any): boolean {
+function isValidNumber(value: unknown): boolean {
 	return value !== null && value !== undefined && Number.isFinite(Number(value));
 }
 
@@ -211,9 +257,9 @@ function isValidNumber(value: any): boolean {
  * IMPORTANT: passing `undefined` as defaultValue triggers the TS default of 0.
  * Pass `null` explicitly to get `null` back for non-finite values.
  */
-function toFiniteNumber(value: any, defaultValue?: number): number;
-function toFiniteNumber(value: any, defaultValue: number | null): number | null;
-function toFiniteNumber(value: any, defaultValue: number | null = 0): number | null {
+function toFiniteNumber(value: unknown, defaultValue?: number): number;
+function toFiniteNumber(value: unknown, defaultValue: number | null): number | null;
+function toFiniteNumber(value: unknown, defaultValue: number | null = 0): number | null {
 	const num = Number(value);
 	return Number.isFinite(num) ? num : defaultValue;
 }
@@ -226,13 +272,13 @@ function toFiniteNumber(value: any, defaultValue: number | null = 0): number | n
  * @param {string} [fallback='N/A'] - Fallback value if format fails
  * @returns {string} Formatted value or fallback string
  */
-function safeFormat(value: any, decimals: number, fallback: string = 'N/A'): string {
+function safeFormat(value: unknown, decimals: number, fallback: string = 'N/A'): string {
 	try {
 		if (!isValidNumber(value)) {
 			return fallback;
 		}
 		return Number(value).toFixed(decimals);
-	} catch (e: any) {
+	} catch (e) {
 		return fallback;
 	}
 }
@@ -241,5 +287,5 @@ function safeFormat(value: any, decimals: number, fallback: string = 'N/A'): str
 // EXPORTS
 // ===============================================================================
 
-export { formatAmount8, formatAmount, formatAmountByPrecision, formatSizeByOrderType, formatPrice, formatPrice6, formatPrice4, formatCurrency, formatPercent2, formatPercent, formatMetric2, isValidNumber, toFiniteNumber, safeFormat }
+export { formatAmount8, formatAmount, formatAmountByPrecision, formatSizeByOrderType, formatPrice, formatPrice6, formatPrice4, formatCurrency, formatFundsValue, formatPercent2, formatPercent, formatMetric2, isValidNumber, toFiniteNumber, safeFormat }
 

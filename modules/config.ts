@@ -63,6 +63,13 @@ const Config: {
     DEXBOT_MONOLITHIC_BG: boolean;
     DEXBOT_LAUNCHER_WORKER: boolean;
     DEXBOT_UPDATE_SKIP_RELOAD: boolean;
+    DEXBOT_SKIP_VERSION_NOTICE: boolean;
+    /** Bypass the version-probe cache for one run (`dexbot stat` with
+     *  DEXBOT_VERSION_CHECK_FORCE=1 re-probes instead of answering from the
+     *  12h cache). The diagnostic escape hatch for "is the registry reachable
+     *  right now?" — a stale cached failure otherwise looks identical to a
+     *  live one. */
+    DEXBOT_VERSION_CHECK_FORCE: boolean;
     NO_COLOR: string | undefined;
 
     // ── Paths ───────────────────────────────────────────────────────
@@ -134,6 +141,8 @@ const Config: {
     DEXBOT_MONOLITHIC_BG: bool('DEXBOT_MONOLITHIC_BG'),
     DEXBOT_LAUNCHER_WORKER: bool('DEXBOT_LAUNCHER_WORKER'),
     DEXBOT_UPDATE_SKIP_RELOAD: bool('DEXBOT_UPDATE_SKIP_RELOAD'),
+    DEXBOT_SKIP_VERSION_NOTICE: bool('DEXBOT_SKIP_VERSION_NOTICE'),
+    DEXBOT_VERSION_CHECK_FORCE: bool('DEXBOT_VERSION_CHECK_FORCE'),
     NO_COLOR: str('NO_COLOR'),
 
     // ── Paths ───────────────────────────────────────────────────────
@@ -216,7 +225,7 @@ function setUmask(mode: number): void {
 
 // Make path-related env keys live (ESM cache not invalidated via require.cache in tests)
 const _liveEnvKeys = ['DEXBOT_PROFILE_ROOT','DEXBOT2_ROOT','XDG_CONFIG_HOME','DEXBOT_MARKET_ADAPTER_DATA_DIR','DEXBOT_MARKET_ADAPTER_STATE_DIR','DEXBOT_CLAW_DATA_DIR','DEXBOT_ANALYSIS_DIR','DEXBOT_CRED_RUNTIME_DIR','DEXBOT_KEYS_FILE','DEXBOT_TEST_MARKET_ADAPTER_WHITELIST_FILE'] as const;
-const _configOverrides: Record<string, any> = {};
+const _configOverrides: Record<string, unknown> = {};
 for (const k of _liveEnvKeys) {
     Object.defineProperty(Config, k, {
         get() {
@@ -229,7 +238,7 @@ for (const k of _liveEnvKeys) {
         // Assigning undefined/null clears the override (test teardown).
         // A stale own-key with an undefined value must not shadow a later
         // live env read — that is the isolation leak this guards against.
-        set(v: any) {
+        set(v: unknown) {
             if (v === undefined || v === null) { delete _configOverrides[k]; return; }
             _configOverrides[k] = v;
         },

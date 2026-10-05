@@ -33,6 +33,7 @@
  *   node dist/analysis/grid_correction_check.js --list-bots
  */
 
+import { getErrorMessage, getErrorField } from '../modules/utils/errors.js';
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import * as KC from '../market_adapter/core/kibana_client.js';
@@ -112,11 +113,11 @@ interface AggregatedOrder {
  * @returns {{blocked: boolean, pivot: number|null, halfInc: number, threshold: number|null}}
  */
 function isLastFillGuardBlocked(
-    price: any,
-    type: any,
-    lastPrice: any,
-    lastType: any,
-    incrementPercent: any,
+    price: unknown,
+    type: unknown,
+    lastPrice: unknown,
+    lastType: unknown,
+    incrementPercent: unknown,
 ): { blocked: boolean; pivot: number | null; halfInc?: number; threshold?: number | null } {
     const numPrice = Number(price);
     if (!Number.isFinite(numPrice)) return { blocked: false, pivot: null };
@@ -124,7 +125,7 @@ function isLastFillGuardBlocked(
     const pivot = Number(lastPrice);
     let inc = Number(incrementPercent);
     if (!Number.isFinite(inc) || inc <= 0) {
-        inc = Number((C as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
+        inc = Number(C.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
     }
     if (!Number.isFinite(inc) || inc <= 0) return { blocked: false, pivot: null };
     const halfInc = inc / 2;
@@ -136,11 +137,11 @@ function isLastFillGuardBlocked(
     return { blocked: false, pivot: null, halfInc, threshold: null };
 }
 
-function resolveIncrementPercent(botMeta: any, override: number | null): number {
+function resolveIncrementPercent(botMeta: { incrementPercent?: unknown } | null | undefined, override: number | null): number {
     if (override != null && Number.isFinite(override) && override > 0) return override;
     const fromBot = Number(botMeta?.incrementPercent);
     if (Number.isFinite(fromBot) && fromBot > 0) return fromBot;
-    const fromDefault = Number((C as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
+    const fromDefault = Number(C.DEFAULT_CONFIG?.incrementPercent ?? 0.5);
     if (Number.isFinite(fromDefault) && fromDefault > 0) return fromDefault;
     return 0.5;
 }
@@ -169,7 +170,7 @@ Options:
   --refresh-account      Force re-resolution of preferredAccount and update the
                          stored accountId when it changed (default: reuse the
                          stored accountId with no chain lookup)
-  --increment <pct>      Grid increment percent (default: from bot config or ${Number((C as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5)})
+  --increment <pct>      Grid increment percent (default: from bot config or ${Number(C.DEFAULT_CONFIG?.incrementPercent ?? 0.5)})
   --tolerance <pct>      Deprecated alias for --increment (kept for compat, prefer --increment)
   --per-fill             Check at fill granularity (default: per-order aggregated)
   --include-cross-pair   Check consecutive fills across different pairs (default: same pair only)
@@ -186,7 +187,22 @@ Examples:
 `);
 }
 
-function parseArgs() {
+interface CliOpts {
+    botKey: string | null;
+    hours: number | null;
+    start: string | null;
+    end: string | null;
+    account: string | null;
+    refreshAccount: boolean;
+    perFill: boolean;
+    includeCrossPair: boolean;
+    incrementPercent: number | null;
+    json: string | null;
+    csv: string | null;
+    verbose: boolean;
+}
+
+function parseArgs(): CliOpts {
     const args = process.argv.slice(2);
     if (args.includes('--help') || args.includes('-h')) { printHelp(); process.exit(0); }
     if (args.includes('--list-bots')) {
@@ -201,7 +217,7 @@ function parseArgs() {
         process.exit(0);
     }
 
-    const opts: any = {
+    const opts: CliOpts = {
         botKey: null,
         hours: null,
         start: null,
@@ -259,7 +275,7 @@ function parseArgs() {
 }
 
 // ─── Time helpers ─────────────────────────────────────────────────────────────
-function resolveTimeRange(opts: any): { gte: string; lte: string; label: string } {
+function resolveTimeRange(opts: CliOpts): { gte: string; lte: string; label: string } {
     let gte: string, lte: string;
     if (opts.start) {
         const s = new Date(opts.start);
@@ -282,8 +298,8 @@ function resolveTimeRange(opts: any): { gte: string; lte: string; label: string 
 
 // ─── Account resolution errors ────────────────────────────────────────────────
 /** Map a shared account-resolver failure onto this tool's operator-facing hint. */
-function reportAccountFailure(resolved: any, opts: any): void {
-    switch (resolved.reason) {
+function reportAccountFailure(resolved: { reason?: unknown; botMeta?: { preferredAccount?: unknown } | null } | null | undefined, opts: CliOpts): void {
+    switch (resolved?.reason) {
         case 'bot-not-found':
             console.error(`Error: bot key '${opts.botKey}' not found in profiles/bots.json and no --account provided.`);
             console.error('Use --list-bots to see available keys, or pass --account <1.2.x> explicitly.');
@@ -300,13 +316,13 @@ function reportAccountFailure(resolved: any, opts: any): void {
 }
 
 // ─── Kibana fetch ─────────────────────────────────────────────────────────────
-async function fetchAllOrderUpdates(config: any, accountId: string, gte: string, lte: string): Promise<OrderUpdate[]> {
+async function fetchAllOrderUpdates(config: Record<string, unknown>, accountId: string, gte: string, lte: string): Promise<OrderUpdate[]> {
     const pageSize = 10000;
     const updates: OrderUpdate[] = [];
-    let searchAfter: any[] | null = null;
+    let searchAfter: unknown[] | null = null;
     const cfg = { ...BASE_CONFIG, timeout: 60000, ...config };
     while (true) {
-        const query: any = {
+        const query: Record<string, unknown> = {
             size: pageSize,
             track_total_hits: false,
             _source: [
@@ -325,11 +341,11 @@ async function fetchAllOrderUpdates(config: any, accountId: string, gte: string,
             ],
         };
         if (searchAfter) query.search_after = searchAfter;
-        const result: any = await kibanaSearch(cfg, query);
+        const result = await kibanaSearch(cfg as never, query) as { hits?: { hits?: unknown[] } } | null;
         const hits = result?.hits?.hits ?? [];
         if (!hits.length) break;
         for (const hit of hits) {
-            const source = hit?._source || {};
+            const source = ((hit as { _source?: unknown } | null | undefined)?._source || {}) as { operation_history?: { op_object?: { order?: string } }; block_data?: { block_num?: unknown }; operation_id_num?: unknown };
             const op = source.operation_history?.op_object || {};
             const orderId = op.order;
             if (!orderId) continue;
@@ -337,8 +353,8 @@ async function fetchAllOrderUpdates(config: any, accountId: string, gte: string,
             const opNum = Number(source.operation_id_num ?? 0);
             updates.push({ orderId, sequence: blockNum * 1e6 + opNum });
         }
-        const last = hits[hits.length - 1];
-        searchAfter = last?.sort;
+        const last = hits[hits.length - 1] as { sort?: unknown[] } | undefined;
+        searchAfter = last?.sort ?? null;
         if (!searchAfter || hits.length < pageSize) break;
     }
     return updates;
@@ -476,8 +492,8 @@ function detectViolations(
     // Helper for a single chronological sequence (already filtered to one pair or global)
     function checkSequence(seq: (TradeFill | AggregatedOrder)[]) {
         for (let i = 1; i < seq.length; i++) {
-            const prev = seq[i - 1] as any;
-            const curr = seq[i] as any;
+            const prev = seq[i - 1];
+            const curr = seq[i];
             // Skip same orderId (multi-fill split of one order) — aggregated mode already collapsed, but per-fill may split
             if (prev.orderId && prev.orderId === curr.orderId) continue;
             checkedTransitions++;
@@ -506,18 +522,18 @@ function detectViolations(
 
     if (includeCrossPair) {
         // Global consecutive check regardless of pair
-        const sorted = [...items].sort((a, b) => (a as any).sequence - (b as any).sequence);
+        const sorted = [...items].sort((a, b) => a.sequence - b.sequence);
         checkSequence(sorted);
     } else {
         // Per-pair independent sequences (bot trades one pair; cross-pair interleaving is irrelevant)
         const byPair = new Map<string, (TradeFill | AggregatedOrder)[]>();
         for (const it of items) {
-            const k = `${(it as any).baseAsset}:${(it as any).quoteAsset}`;
+            const k = `${it.baseAsset}:${it.quoteAsset}`;
             if (!byPair.has(k)) byPair.set(k, []);
             byPair.get(k)!.push(it);
         }
         for (const [, seq] of byPair) {
-            seq.sort((a: any, b: any) => a.sequence - b.sequence);
+            seq.sort((a, b) => a.sequence - b.sequence);
             checkSequence(seq);
         }
     }
@@ -541,7 +557,7 @@ function printReport(
     rangeLabel: string,
     botKey: string,
     accountId: string,
-    botMeta: any,
+    botMeta: { name?: unknown; assetA?: unknown; assetB?: unknown; incrementPercent?: unknown } | null,
     perFill: boolean,
     includeCrossPair: boolean,
     incrementPercent: number,
@@ -706,7 +722,7 @@ async function main() {
     console.log(`\nLast-fill guard check — bot-key: ${opts.botKey}`);
     console.log(`Range: ${label}`);
 
-    const resolvedAccount = await resolveBotAccount(opts.botKey, {
+    const resolvedAccount = await resolveBotAccount(String(opts.botKey), {
         overrideAccount: opts.account,
         refresh: opts.refreshAccount,
     });
@@ -767,9 +783,9 @@ async function main() {
     const { violations, checkedTransitions } = detectViolations(items, opts.includeCrossPair, incrementPercent);
 
     const ordersForReport = opts.perFill ? null : (items as AggregatedOrder[]);
-    printReport(trades, ordersForReport, violations, checkedTransitions, skipped, label, opts.botKey, accountId, botMeta, opts.perFill, opts.includeCrossPair, incrementPercent, gte, lte);
+    printReport(trades, ordersForReport, violations, checkedTransitions, skipped, label, String(opts.botKey), accountId, botMeta, opts.perFill, opts.includeCrossPair, incrementPercent, gte, lte);
 
-    if (opts.json) exportJson(opts.json, violations, trades, label, opts.botKey, accountId, incrementPercent);
+    if (opts.json) exportJson(opts.json, violations, trades, label, String(opts.botKey), accountId, incrementPercent);
     if (opts.csv) exportCsv(opts.csv, violations);
 
     process.exit(violations.length > 0 ? 2 : 0);
@@ -779,8 +795,8 @@ export { isLastFillGuardBlocked, classifyFills, aggregateByOrder, detectViolatio
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     main().catch(e => {
-        console.error('\n[fatal]', (e as any)?.message ?? e);
-        if (process.env.DEBUG) console.error((e as any)?.stack);
+        console.error('\n[fatal]', getErrorMessage(e));
+        if (process.env.DEBUG) console.error(getErrorField<string>(e, 'stack'));
         process.exit(1);
     });
 }

@@ -27,18 +27,52 @@ import { PATHS } from '../../modules/paths.js';
 import { toIntervalLabel, slugPart } from '../interval_utils.js';
 import { buildFetchWindowsFromRange, runCachedWindows } from './window_cache.js';
 
-function bookCacheKey(assetA: any, assetB: any) {
+interface AssetRef {
+    id?: string | null;
+    precision?: unknown;
+    symbol?: string | null;
+}
+
+interface BookRequestKey {
+    source: string;
+    pair: string;
+    assetA: AssetRef;
+    assetB: AssetRef;
+    intervalSeconds: number;
+}
+
+interface BookMeta {
+    source?: string;
+    pair?: string;
+    intervalSeconds?: number;
+    assetA?: AssetRef;
+    assetB?: AssetRef;
+    [key: string]: unknown;
+}
+
+interface BookFetchOpts {
+    intervalSeconds?: unknown;
+    chunkMonths?: unknown;
+    timeRange?: { gte?: string; lte?: string } | null;
+    outPath?: string;
+    onPage?: (info: Record<string, unknown>) => void;
+    [key: string]: unknown;
+}
+
+function bookCacheKey(assetA: AssetRef | null | undefined, assetB: AssetRef | null | undefined): string {
     // Orientation matters: candles are B-per-A, so A/B and B/A are different series.
     return `${slugPart(assetA?.symbol || assetA?.id)}_${slugPart(assetB?.symbol || assetB?.id)}`;
 }
 
-function bookOutputPath(assetA: any, assetB: any, intervalSeconds: any) {
+function bookOutputPath(assetA: AssetRef | null | undefined, assetB: AssetRef | null | undefined, intervalSeconds: number): string {
     const label = toIntervalLabel(intervalSeconds);
     const folder = bookCacheKey(assetA, assetB);
     return path.join(PATHS.MARKET_ADAPTER.DATA_DIR, 'book', folder, `book_${folder}_${label}.json`);
 }
 
-function isBookChunkMatch(meta: any, requestKey: any) {
+function isBookChunkMatch(metaInput: unknown, requestKeyInput: unknown): boolean {
+    const meta = metaInput as BookMeta;
+    const requestKey = requestKeyInput as BookRequestKey;
     if (meta.source !== 'book' || requestKey.source !== 'book') return false;
     if (meta.pair !== requestKey.pair) return false;
     if (meta.intervalSeconds !== requestKey.intervalSeconds) return false;
@@ -55,7 +89,7 @@ function isBookChunkMatch(meta: any, requestKey: any) {
  * @param {Object} [opts] – { intervalSeconds, chunkMonths, timeRange { gte, lte }, outPath, apiKey, timeout, signal, kibanaSearch, onPage }
  * @returns {Promise<Array>} [[timestamp_ms, open, high, low, close, volume_A], ...]
  */
-async function fetchMarketCandlesSequentially(assetA: any, assetB: any, opts: any = {}) {
+async function fetchMarketCandlesSequentially(assetA: AssetRef, assetB: AssetRef, opts: BookFetchOpts = {}) {
     const intervalSeconds = Number(opts.intervalSeconds) || 3600;
     const chunkMonths = Number(opts.chunkMonths) || 1;
     const timeRange = opts.timeRange;
@@ -74,7 +108,7 @@ async function fetchMarketCandlesSequentially(assetA: any, assetB: any, opts: an
 
     const plainWindows = buildFetchWindowsFromRange(timeRange, chunkMonths);
     // Windows are fetch-planning splits only; storage is fixed month shards.
-    const windows = plainWindows.map((w: any, idx: any) => ({
+    const windows = plainWindows.map((w, idx) => ({
         index: idx + 1,
         gte: w.gte,
         lte: w.lte,
@@ -82,7 +116,7 @@ async function fetchMarketCandlesSequentially(assetA: any, assetB: any, opts: an
 
     // Passthrough for auth/transport overrides; the window range itself is
     // always the sub-range being fetched.
-    const passthrough: any = {};
+    const passthrough: Record<string, unknown> = {};
     for (const key of ['apiKey', 'timeout', 'signal', 'kibanaSearch', 'onPage', 'kibanaPageSize', 'kibanaPageRetries', 'kibanaRetryDelayMs', 'kibanaMaxPages']) {
         if (opts[key] !== undefined) passthrough[key] = opts[key];
     }
@@ -95,10 +129,10 @@ async function fetchMarketCandlesSequentially(assetA: any, assetB: any, opts: an
     // timeout is configured; it wins over a caller-provided signal so a
     // timed-out range actually aborts instead of timing out and retrying
     // against a still-hung request.
-    const fetchRange = async (gte: string, lte: string, _window: any, signal?: AbortSignal) => {
+    const fetchRange = async (gte: string, lte: string, _window: unknown, signal?: AbortSignal) => {
         let sawPartial = false;
-        const userOnPage = passthrough.onPage;
-        const onPage = (info: any) => {
+        const userOnPage = passthrough.onPage as ((info: Record<string, unknown>) => void) | undefined;
+        const onPage = (info: Record<string, unknown>) => {
             if (info?.event === 'partial') sawPartial = true;
             try { userOnPage?.(info); } catch (_) { /* progress must never fail the fetch */ }
         };
@@ -117,7 +151,7 @@ async function fetchMarketCandlesSequentially(assetA: any, assetB: any, opts: an
         outPath,
         requestKey,
         isMatch: isBookChunkMatch,
-        metaForWindow: (window: any) => ({
+        metaForWindow: (window: { index: number; gte: string; lte: string }) => ({
             source: 'book',
             esSource: 'https://kibana.bitshares.dev (bitshares-*, op_type 4, fill_order)',
             pair,

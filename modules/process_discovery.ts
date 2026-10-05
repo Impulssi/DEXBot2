@@ -1,5 +1,6 @@
 'use strict';
 
+import { getErrorCode } from './utils/errors.js';
 import { getStorage } from './storage/index.js';
 import { runtime } from './runtime.js';
 import { sleep } from './order/utils/system.js';
@@ -114,7 +115,7 @@ export class LinuxProcessDiscovery implements ProcessDiscovery {
         }
     }
 
-    async readCpuPercent(pid: number, samples: any = 2, intervalMs: any = 400): Promise<string> {
+    async readCpuPercent(pid: number, samples: number = 2, intervalMs: number = 400): Promise<string> {
         try {
             const snap = () => {
                 const stat = this.readStat(pid);
@@ -201,7 +202,7 @@ export class LinuxProcessDiscovery implements ProcessDiscovery {
     listAllPids(): number[] {
         try {
             return storage.readdir('/proc')
-                .filter((name: any) => /^\d+$/.test(name))
+                .filter((name) => /^\d+$/.test(name))
                 .map(Number);
         } catch {
             return [];
@@ -243,8 +244,8 @@ class FallbackProcessDiscovery extends NullProcessDiscovery {
         if (!Number.isInteger(pid) || pid <= 0) return false;
         try {
             return runtime.kill(pid, 0);
-        } catch (err: any) {
-            if (err && err.code === 'EPERM') return true;
+        } catch (err) {
+            if (err && getErrorCode(err) === 'EPERM') return true;
             return false;
         }
     }

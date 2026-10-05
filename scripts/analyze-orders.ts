@@ -19,7 +19,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { formatCurrency } from '../modules/order/format.js';
+import { formatCurrency, formatFundsValue } from '../modules/order/format.js';
 import { isDeepShelfId } from '../modules/order/utils/math.js';
 import { resolveConfiguredPriceBound } from '../modules/order/utils/order.js';
 import { ORDER_TYPES, ORDER_STATES, MARKET_ADAPTER } from '../modules/constants.js';
@@ -33,6 +33,123 @@ import { toFileUrl } from '../analysis/chart_utils.js';
 import { isSameBotName, sanitizeKey } from '../modules/utils/sanitize_key.js';
 import { CLI_COLORS as colors } from '../modules/cli_colors.js';
 import { pathToFileURL } from 'node:url';
+
+/** Loose JSON-object view used across the analyzer. */
+type JsonObj = Record<string, unknown>;
+
+interface GridSlot {
+  type?: string;
+  state?: string;
+  price: number;
+  size: number;
+  orderId?: string | null;
+  [key: string]: unknown;
+}
+
+interface GridSnapshot {
+  meta?: JsonObj;
+  grid?: GridSlot[];
+  assets?: { assetA?: { symbol?: unknown }; assetB?: { symbol?: unknown } };
+  boundaryIdx?: number;
+  [key: string]: unknown;
+}
+
+interface WeightSnapshot {
+  effectiveWeights?: JsonObj;
+  baseWeights?: JsonObj;
+  rawAsymmetryFactor?: unknown;
+  appliedAsymmetryFactor?: unknown;
+  maxAsymmetryFactor?: unknown;
+  isReady?: unknown;
+  trend?: unknown;
+  finalOffset?: unknown;
+  [key: string]: unknown;
+}
+
+interface DynamicGridSnapshot extends GridSnapshot {
+  dynamicWeights?: WeightSnapshot;
+  asymmetricBounds?: JsonObj;
+  amaCenterPrice?: unknown;
+  gridCenterPrice?: unknown;
+  updatedAt?: unknown;
+}
+
+interface BotConfig {
+  name?: unknown;
+  minPrice?: unknown;
+  maxPrice?: unknown;
+  targetSpreadPercent?: unknown;
+  incrementPercent?: unknown;
+  gridPrice?: unknown;
+  activeOrders?: unknown;
+  botFunds?: JsonObj;
+  weightDistribution?: JsonObj;
+  [key: string]: unknown;
+}
+
+interface DynamicWeightInfo {
+  amaCenterPrice?: unknown;
+  rawAsymmetryFactor?: unknown;
+  appliedAsymmetryFactor?: unknown;
+  trend?: unknown;
+  isRecent?: unknown;
+  minPrice?: unknown;
+  maxPrice?: unknown;
+  effectiveWeights?: JsonObj;
+  baseWeights?: JsonObj;
+  live?: JsonObj | null;
+  base?: JsonObj | null;
+  [key: string]: unknown;
+}
+
+interface SpreadAnalysis { real: number; target: number | null; diff: number | null; pass: boolean | null }
+interface IncrementAnalysis { avg: number; target: number | null; [key: string]: unknown }
+interface SlotCounts {
+  buy: number; sell: number; spread: number;
+  activeBuy: number; virtualBuy: number; activeSell: number; virtualSell: number;
+  partialBuy: number; partialSell: number;
+  [key: string]: unknown;
+}
+interface FundSide { bts: number; xrp: number; [key: string]: unknown }
+interface FundsBreakdown { buy: FundSide; sell: FundSide; [key: string]: unknown }
+interface DistributionAnalysis { match: { buyDiff: number; sellDiff: number; [key: string]: unknown }; [key: string]: unknown }
+interface AsymmetricBoundsDisplay {
+  resolvedMinPrice: number; resolvedMaxPrice: number; trend: string; appliedAsymmetryFactor: number;
+  [key: string]: unknown;
+}
+interface AnalysisResult {
+  pair: string;
+  botName: string;
+  lastUpdated: Date;
+  hasConfig: boolean;
+  marketPrice: number | null;
+  gridMinPrice: number | null;
+  gridMaxPrice: number | null;
+  spread: SpreadAnalysis;
+  increment: IncrementAnalysis;
+  slots: SlotCounts;
+  funds: FundsBreakdown;
+  activeOrdersTarget: { buy: number; sell: number } | null;
+  botFunds: { buy: string; sell: string } | null;
+  weightDistribution: JsonObj | null;
+  dynamicWeight: DynamicWeightInfo | null;
+  asymmetricBounds: AsymmetricBoundsDisplay | null;
+  slotData: { buy: GridSlot[]; sell: GridSlot[] };
+  distribution: DistributionAnalysis;
+  gridPriceLabel: unknown;
+  gridPriceValue: unknown;
+  gridPriceStale: unknown;
+  [key: string]: unknown;
+}
+
+interface DistributionCounts {
+  activeBuy: number;
+  virtualBuy: number;
+  spread: number;
+  activeSell: number;
+  virtualSell: number;
+}
+
 const ORDERS_DIR = PATHS.ORDERS_DIR;
 const BOTS_CONFIG = PATHS.PROFILES.BOTS_JSON;
 
@@ -64,9 +181,9 @@ const HEADER_WIDTH = 11 + BAR_WIDTH;
  * Helper functions for file I/O, formatting, and data retrieval
  */
 
-function createBotKey(bot: Record<string, any> | null | undefined, index: number): string {
+function createBotKey(bot: JsonObj | null | undefined, index: number): string {
   if (bot && bot.name) {
-    return sanitizeKey(bot.name);
+    return sanitizeKey(String(bot.name));
   }
   const identifier = bot && bot.assetA && bot.assetB
     ? `${bot.assetA}/${bot.assetB}`
@@ -76,12 +193,10 @@ function createBotKey(bot: Record<string, any> | null | undefined, index: number
   return `${sanitizeKey(identifier)}-${index}`;
 }
 
-function hasOrderGrid(data: any): boolean {
-  return Boolean(
-    data && typeof data === 'object' && !Array.isArray(data) &&
-    data.meta && typeof data.meta === 'object' &&
-    Array.isArray(data.grid)
-  );
+function hasOrderGrid(data: unknown): boolean {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  const d = data as JsonObj;
+  return Boolean(d.meta && typeof d.meta === 'object' && Array.isArray(d.grid));
 }
 
 /**
@@ -91,20 +206,21 @@ function hasOrderGrid(data: any): boolean {
  * analyzer only attempts to load a dynamic grid snapshot for AMA bots. Non-AMA
  * bots never have a meaningful dynamic grid file.
  */
-function isAmaGridPrice(config: any) {
+function isAmaGridPrice(config: unknown) {
   return resolveAmaKey(config) !== null;
 }
 
 // Mirrors MARKET_ADAPTER.DEFAULT_AMA_KEY in modules/constants.ts — keep in sync.
-function resolveAmaKey(config: any): string | null {
+function resolveAmaKey(config: unknown): string | null {
   if (!config || typeof config !== 'object') return null;
-  const gridPrice = typeof config.gridPrice === 'string' ? config.gridPrice.trim().toLowerCase() : '';
+  const cfg = config as { gridPrice?: unknown };
+  const gridPrice = typeof cfg.gridPrice === 'string' ? cfg.gridPrice.trim().toLowerCase() : '';
   if (!/^ama(?:[1-4])?$/.test(gridPrice)) return null;
   if (gridPrice === 'ama') return MARKET_ADAPTER.DEFAULT_AMA_KEY;
   return gridPrice.toUpperCase();
 }
 
-function readDynamicGridSnapshot(botKey: string): any {
+function readDynamicGridSnapshot(botKey: string): DynamicGridSnapshot | null {
   if (!botKey) return null;
   try {
     const filePath = path.join(ORDERS_DIR, `${botKey}.dynamicgrid.json`);
@@ -153,7 +269,7 @@ function computeAsymmetricBoundsPrices(centerPrice: number, minPrice: number, ma
  * whitelisted and the snapshot contains effective weights. AMA center and
  * freshness status remain available for AMA-only bots.
  */
-function buildDynamicWeightInfo(botKey: string, config: any): any {
+function buildDynamicWeightInfo(botKey: string, config: BotConfig): DynamicWeightInfo | null {
   if (!isAmaGridPrice(config)) return null;
   const whitelistFlags = getWhitelistFlags(botKey);
   if (whitelistFlags.ama !== true) return null;
@@ -166,11 +282,11 @@ function buildDynamicWeightInfo(botKey: string, config: any): any {
     && dw
     && dw.effectiveWeights
     && typeof dw.effectiveWeights === 'object';
-  let live: any = null;
-  let base: any = null;
+  let live: JsonObj | null = null;
+  let base: JsonObj | null = null;
   if (hasDynamicWeightData) {
-    const effBuy = Number(dw.effectiveWeights.buy);
-    const effSell = Number(dw.effectiveWeights.sell);
+    const effBuy = Number(dw.effectiveWeights?.buy);
+    const effSell = Number(dw.effectiveWeights?.sell);
     if (Number.isFinite(effBuy) && Number.isFinite(effSell)) {
       const baseFromSnapshot = dw.baseWeights && typeof dw.baseWeights === 'object' ? dw.baseWeights : null;
       const baseBuy = baseFromSnapshot && Number.isFinite(Number(baseFromSnapshot.buy))
@@ -232,19 +348,20 @@ function buildDynamicWeightInfo(botKey: string, config: any): any {
   };
 }
 
-function isRealGridOrder(order: any): boolean {
+function isRealGridOrder(order: unknown): boolean {
   if (!order || typeof order !== 'object') return false;
-  const hasRealState = order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL;
-  const hasRealType = order.type === ORDER_TYPES.BUY || order.type === ORDER_TYPES.SELL;
-  const hasOrderId = typeof order.orderId === 'string' && order.orderId.trim().length > 0;
+  const o = order as { state?: unknown; type?: unknown; orderId?: unknown; price?: unknown; size?: unknown };
+  const hasRealState = o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL;
+  const hasRealType = o.type === ORDER_TYPES.BUY || o.type === ORDER_TYPES.SELL;
+  const hasOrderId = typeof o.orderId === 'string' && o.orderId.trim().length > 0;
   return hasRealState
     && hasRealType
     && hasOrderId
-    && Number(order.price) > 0
-    && Number(order.size) > 0;
+    && Number(o.price) > 0
+    && Number(o.size) > 0;
 }
 
-function getRealGridOrders(botData: any): any[] {
+function getRealGridOrders(botData: GridSnapshot): GridSlot[] {
   return Array.isArray(botData?.grid) ? botData.grid.filter(isRealGridOrder) : [];
 }
 
@@ -269,49 +386,6 @@ function formatPercent(value: number): string {
 }
 
 /**
- * formatFundsValue: Format a fund amount with compact notation (K/M for ≥1000)
- * and up to 4 significant figures, trimming uninformative trailing zeros.
- * Examples:
- *   194395   -> "194.4K"
- *   10000    -> "10K"
- *   1000     -> "1K"
- *   332.33   -> "332.3"
- *   10.389   -> "10.39"
- *   1500000  -> "1.5M"
- * @param {number} value
- * @returns {string}
- */
-function formatFundsValue(value: number): string {
-  if (value === 0) return '0';
-  const absValue = Math.abs(value);
-
-  let quotient;
-  let suffix = '';
-  if (absValue >= 1000000) {
-    quotient = value / 1000000;
-    suffix = 'M';
-  } else if (absValue >= 1000) {
-    quotient = value / 1000;
-    suffix = 'K';
-  } else {
-    quotient = value;
-  }
-
-  const absQ = Math.abs(quotient);
-  const intDigits = Math.floor(Math.log10(Math.max(absQ, 1e-10))) + 1;
-  let formatted;
-  if (intDigits >= 4) {
-    formatted = String(Math.round(quotient));
-  } else {
-    const decimalPlaces = Math.max(0, 4 - intDigits);
-    formatted = quotient.toFixed(decimalPlaces);
-    formatted = formatted.replace(/(\.[0-9]*?)0+$/, '$1').replace(/\.$/, '');
-  }
-
-  return formatted + suffix;
-}
-
-/**
  * stripColorCodes: Remove ANSI color codes from a string
  * @param {string} str - String that may contain color codes
  * @returns {string} String without color codes
@@ -328,7 +402,7 @@ function stripColorCodes(str: string): string {
  * @returns {string} Padded string with original colors preserved
  */
 // Load bot configurations
-const botsConfig = readJSON(BOTS_CONFIG).bots;
+const botsConfig = readJSON<{ bots?: JsonObj[] }>(BOTS_CONFIG).bots ?? [];
 
 /**
  * formatBotFunds: Normalize a botFunds side value for display.
@@ -342,22 +416,34 @@ const botsConfig = readJSON(BOTS_CONFIG).bots;
  * @param {string|number|null} value - raw botFunds side value from bots.json
  * @returns {string} display representation, '-' when unset
  */
-function formatBotFunds(value: any): string {
+function formatBotFunds(value: unknown): string {
   if (value == null) return '-';
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '-';
   const str = String(value);
   return str.length > 0 ? str : '-';
 }
 
-function getConfiguredBotConfig(botKey: string, botData: any): any {
+function getConfiguredBotConfig(botKey: string, botData: GridSnapshot): JsonObj | null {
   const meta = botData?.meta || {};
-  return botsConfig.find((bot: any, index: any) => {
+  return botsConfig.find((bot: JsonObj, index: number) => {
     if (!bot) return false;
     return createBotKey(bot, index) === botKey || (meta.name && isSameBotName(bot.name, meta.name));
   }) || null;
 }
 
-function getOrderFileCandidate(fileName: string): any {
+interface OrderFileCandidate {
+  include: boolean;
+  reason?: string;
+  report?: boolean;
+  name?: string;
+  path?: string;
+  botKey?: string;
+  config?: BotConfig | null;
+  mtime?: Date;
+  [key: string]: unknown;
+}
+
+function getOrderFileCandidate(fileName: string): OrderFileCandidate {
   const filePath = path.join(ORDERS_DIR, fileName);
   if (!fileName.endsWith('.json')) {
     return { include: false, reason: 'not a JSON file', report: false };
@@ -369,7 +455,7 @@ function getOrderFileCandidate(fileName: string): any {
   let data;
   try {
     data = readJSON(filePath);
-  } catch (error: any) {
+  } catch (error) {
     return { include: false, reason: `invalid JSON: ${getErrorMessage(error)}`, report: true, name: fileName };
   }
 
@@ -398,16 +484,16 @@ function getOrderFileCandidate(fileName: string): any {
 function getOrderFiles() {
   const candidates = fs.readdirSync(ORDERS_DIR).map(getOrderFileCandidate);
   const files = candidates
-    .filter((candidate: any) => candidate.include)
-    .map((f: any) => ({
+    .filter((candidate) => candidate.include)
+    .map((f) => ({
       ...f,
-      mtime: getModifiedTime(f.path)
+      mtime: getModifiedTime(f.path as string)
     }))
-    .sort((a: any, b: any) => b.mtime.getTime() - a.mtime.getTime());
+    .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
 
   return {
     files,
-    skippedCandidates: candidates.filter((candidate: any) => !candidate.include && candidate.report)
+    skippedCandidates: candidates.filter((candidate) => !candidate.include && candidate.report)
   };
 }
 
@@ -432,9 +518,9 @@ function getOrderFiles() {
  * @param {string} [botKey] - Bot key used to locate the dynamic grid snapshot
  * @returns {Object} Analysis result with spread, increment, funds, distribution
  */
-function analyzeOrder(botData: any, config: any, botKey: string): any {
-  const meta = botData.meta;
-  const grid = botData.grid;
+function analyzeOrder(botData: GridSnapshot, config: BotConfig, botKey: string): JsonObj {
+  const meta: JsonObj = botData.meta || {};
+  const grid: GridSlot[] = Array.isArray(botData.grid) ? botData.grid : [];
 
   // Extract asset pair: prioritize assets object from order data, fall back to meta
   let assetA = meta.assetA;
@@ -464,18 +550,19 @@ function analyzeOrder(botData: any, config: any, botKey: string): any {
   // index-based rail slices miss them — include explicitly everywhere buys
   // are collected, otherwise the shelf is invisible in this report.
   const isDeep = (s: any) => isDeepShelfId(s?.id);
+  const bIdx = boundaryIdx as number;
   const buySlots = boundaryLess
     ? grid.filter((s: any) => s.type === ORDER_TYPES.BUY)
-    : grid.filter((s: any, i: any) => (i <= boundaryIdx || isDeep(s)) && s.type === ORDER_TYPES.BUY);
+    : grid.filter((s: any, i: any) => (i <= bIdx || isDeep(s)) && s.type === ORDER_TYPES.BUY);
   const sellSlots = boundaryLess
     ? grid.filter((s: any) => s.type === ORDER_TYPES.SELL)
-    : grid.filter((s: any, i: any) => i > boundaryIdx && s.type === ORDER_TYPES.SELL);
+    : grid.filter((s: any, i: any) => i > bIdx && s.type === ORDER_TYPES.SELL);
   const spreadSlots = grid.filter((s: any) => s.type === ORDER_TYPES.SPREAD);
 
-  const activeBuySlots = buySlots.filter((s: any) => s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL);
-  const virtualBuySlots = buySlots.filter((s: any) => s.state === ORDER_STATES.VIRTUAL);
-  const activeSellSlots = sellSlots.filter((s: any) => s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL);
-  const virtualSellSlots = sellSlots.filter((s: any) => s.state === ORDER_STATES.VIRTUAL);
+  const activeBuySlots = buySlots.filter((s) => s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL);
+  const virtualBuySlots = buySlots.filter((s) => s.state === ORDER_STATES.VIRTUAL);
+  const activeSellSlots = sellSlots.filter((s) => s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL);
+  const virtualSellSlots = sellSlots.filter((s) => s.state === ORDER_STATES.VIRTUAL);
 
   /**
    * Best Prices Identification
@@ -496,19 +583,19 @@ function analyzeOrder(botData: any, config: any, botKey: string): any {
   // design (a partially-placed grid IS partially masked); it is not a bug, but
   // the output should be read with that caveat in mind.
   const hasOrderId = (s: any) => !!(s && s.orderId);
-  const railBuys = boundaryLess ? grid.filter((s: any) => s.type === ORDER_TYPES.BUY) : grid.slice(0, boundaryIdx + 1);
-  const railSells = boundaryLess ? grid.filter((s: any) => s.type === ORDER_TYPES.SELL) : grid.slice(boundaryIdx + 1);
+  const railBuys = boundaryLess ? grid.filter((s: any) => s.type === ORDER_TYPES.BUY) : grid.slice(0, bIdx + 1);
+  const railSells = boundaryLess ? grid.filter((s: any) => s.type === ORDER_TYPES.SELL) : grid.slice(bIdx + 1);
   const deepBuys = grid.filter((s: any) => isDeep(s));
   const placedBuys = [...railBuys, ...deepBuys].filter((s: any) => s.type === ORDER_TYPES.BUY && hasOrderId(s));
   const placedSells = railSells.filter((s: any) => s.type === ORDER_TYPES.SELL && hasOrderId(s));
   const geoBuy = [...railBuys, ...deepBuys].filter((s: any) => s.type === ORDER_TYPES.BUY);
   const geoSell = railSells.filter((s: any) => s.type === ORDER_TYPES.SELL);
   const bestBuySlot = placedBuys.length
-    ? placedBuys.reduce((a: any, b: any) => (b.price > a.price ? b : a))
-    : (geoBuy.length ? geoBuy.reduce((a: any, b: any) => (b.price > a.price ? b : a)) : (grid[boundaryIdx] || null));
+    ? placedBuys.reduce((a, b) => (b.price > a.price ? b : a))
+    : (geoBuy.length ? geoBuy.reduce((a, b) => (b.price > a.price ? b : a)) : (grid[bIdx] || null));
   const bestSellSlot = placedSells.length
-    ? placedSells.reduce((a: any, b: any) => (b.price < a.price ? b : a))
-    : (geoSell.length ? geoSell.reduce((a: any, b: any) => (b.price < a.price ? b : a)) : null);
+    ? placedSells.reduce((a, b) => (b.price < a.price ? b : a))
+    : (geoSell.length ? geoSell.reduce((a, b) => (b.price < a.price ? b : a)) : null);
 
   /**
    * Real Spread Calculation
@@ -529,10 +616,10 @@ function analyzeOrder(botData: any, config: any, botKey: string): any {
    */
   if (config) {
     // Config exists - calculate variance from target
-    targetSpread = config.targetSpreadPercent / 100;
+    targetSpread = Number(config.targetSpreadPercent) / 100;
 
     spreadDiff = realSpread - targetSpread;
-    incrementCheck = checkGeometricIncrement(grid, config.incrementPercent / 100);
+    incrementCheck = checkGeometricIncrement(grid, Number(config.incrementPercent) / 100);
   } else {
     // No config - report actual values only
     targetSpread = null;
@@ -549,8 +636,8 @@ function analyzeOrder(botData: any, config: any, botKey: string): any {
   const distribution = analyzeDistribution(buySlots, sellSlots, bestBuySlot, bestSellSlot);
 
   // Calculate grid extremes and market price
-  const gridMinPrice = grid.length > 0 ? Math.min(...grid.map((s: any) => s.price)) : null;
-  const gridMaxPrice = grid.length > 0 ? Math.max(...grid.map((s: any) => s.price)) : null;
+  const gridMinPrice = grid.length > 0 ? Math.min(...grid.map((s) => s.price)) : null;
+  const gridMaxPrice = grid.length > 0 ? Math.max(...grid.map((s) => s.price)) : null;
   const marketPrice = bestBuySlot && bestSellSlot
     ? (bestBuySlot.price + bestSellSlot.price) / 2
     : null;
@@ -561,8 +648,8 @@ function analyzeOrder(botData: any, config: any, botKey: string): any {
    */
   const _dynamicWeight = buildDynamicWeightInfo(botKey, config);
   const _ab = computeGridRangeScalingDisplay(config, _dynamicWeight);
-  let gridPriceValue: any = null;
-  let gridPriceLabel: any = null;
+  let gridPriceValue: unknown = null;
+  let gridPriceLabel: unknown = null;
   let gridPriceStale = false;
   const _amaKey = resolveAmaKey(config);
   if (_amaKey && _dynamicWeight?.amaCenterPrice != null) {
@@ -576,7 +663,7 @@ function analyzeOrder(botData: any, config: any, botKey: string): any {
   return {
     pair: `${assetA}/${assetB}`,
     botName: config?.name || botKey,
-    lastUpdated: new Date(meta.updatedAt || botData.lastUpdated),
+    lastUpdated: new Date(String(meta.updatedAt || botData.lastUpdated)),
     gridMinPrice: gridMinPrice,
     marketPrice: marketPrice,
     gridMaxPrice: gridMaxPrice,
@@ -609,8 +696,8 @@ function analyzeOrder(botData: any, config: any, botKey: string): any {
       virtualBuy: virtualBuySlots.length,
       activeSell: activeSellSlots.length,
       virtualSell: virtualSellSlots.length,
-      partialBuy: buySlots.filter((s: any) => s.state === ORDER_STATES.PARTIAL).length,
-      partialSell: sellSlots.filter((s: any) => s.state === ORDER_STATES.PARTIAL).length
+      partialBuy: buySlots.filter((s) => s.state === ORDER_STATES.PARTIAL).length,
+      partialSell: sellSlots.filter((s) => s.state === ORDER_STATES.PARTIAL).length
     },
     // Slot data for weight visualization
     slotData: {
@@ -653,15 +740,15 @@ function analyzeOrder(botData: any, config: any, botKey: string): any {
  * computeGridRangeScalingDisplay: Compute resolved prices from grid range scaling.
  * Returns null when the bot is not whitelisted or data is incomplete.
  */
-function computeGridRangeScalingDisplay(config: any, dynamicWeight: any): any {
+function computeGridRangeScalingDisplay(config: BotConfig, dynamicWeight: DynamicWeightInfo | null): JsonObj | null {
   if (!dynamicWeight || dynamicWeight.amaCenterPrice == null) {
     return null;
   }
-  const centerPrice = dynamicWeight.amaCenterPrice;
+  const centerPrice = Number(dynamicWeight.amaCenterPrice);
   let minPrice, maxPrice;
   try {
-    minPrice = resolveConfiguredPriceBound(config && config.minPrice, undefined, centerPrice, 'min');
-    maxPrice = resolveConfiguredPriceBound(config && config.maxPrice, undefined, centerPrice, 'max');
+    minPrice = resolveConfiguredPriceBound((config && config.minPrice) as string | number | null | undefined, undefined, centerPrice, 'min');
+    maxPrice = resolveConfiguredPriceBound((config && config.maxPrice) as string | number | null | undefined, undefined, centerPrice, 'max');
   } catch (_) {
     return null;
   }
@@ -674,8 +761,8 @@ function computeGridRangeScalingDisplay(config: any, dynamicWeight: any): any {
   let resolvedMaxPrice = maxPrice;
   if (hasAsym) {
     const prices = computeAsymmetricBoundsPrices(
-      centerPrice, minPrice!, maxPrice!,
-      dynamicWeight.trend, dynamicWeight.appliedAsymmetryFactor
+      centerPrice, minPrice as number, maxPrice as number,
+      dynamicWeight.trend as string, Number(dynamicWeight.appliedAsymmetryFactor)
     );
     if (prices) {
       resolvedMinPrice = prices.resolvedMinPrice;
@@ -720,9 +807,9 @@ function computeGridRangeScalingDisplay(config: any, dynamicWeight: any): any {
  * @param {number} targetIncrement - Target increment ratio (e.g., 0.02 for 2%)
  * @returns {Object} Increment analysis with avg, target, stdDev, consistency
  */
-function checkGeometricIncrement(grid: any[], targetIncrement: number | null): any {
+function checkGeometricIncrement(grid: GridSlot[], targetIncrement: number | null): JsonObj {
   // Filter out spread slots (only analyze regular buy/sell slots)
-  const slots = grid.filter((s: any) => s.type !== 'spread');
+  const slots = grid.filter((s) => s.type !== 'spread');
 
   // Need at least 2 slots to calculate increment
   if (slots.length < 2) {
@@ -747,11 +834,11 @@ function checkGeometricIncrement(grid: any[], targetIncrement: number | null): a
    * Average: Mean of all increments
    * Standard deviation: Measure of variability (lower = more consistent)
    */
-  const avgIncrement = increments.reduce((a: any, b: any) => a + b) / increments.length;
+  const avgIncrement = increments.reduce((a, b) => a + b) / increments.length;
 
   // Calculate standard deviation (measure of consistency)
   const stdDev = Math.sqrt(
-    increments.reduce((sum: any, inc: any) => sum + Math.pow(inc - avgIncrement, 2), 0) / increments.length
+    increments.reduce((sum, inc) => sum + Math.pow(inc - avgIncrement, 2), 0) / increments.length
   );
 
   return {
@@ -787,15 +874,15 @@ function checkGeometricIncrement(grid: any[], targetIncrement: number | null): a
  * @param {Object} bestSellSlot - Best (lowest) sell price slot
  * @returns {Object} Fund breakdown {buy: {bts, xrp}, sell: {xrp, bts}}
  */
-function calculateGridFunds(buySlots: any[], sellSlots: any[], bestBuySlot: any, bestSellSlot: any): any {
+function calculateGridFunds(buySlots: GridSlot[], sellSlots: GridSlot[], bestBuySlot: GridSlot | null, bestSellSlot: GridSlot | null): JsonObj {
   /**
    * Direct Fund Aggregation
    * Sum all slot sizes on each side
    * Buy slots: Total BTS committed
    * Sell slots: Total XRP (or base currency) available
    */
-  const totalBTS = buySlots.reduce((sum: any, s: any) => sum + s.size, 0);
-  const totalXRP = sellSlots.reduce((sum: any, s: any) => sum + s.size, 0);
+  const totalBTS = buySlots.reduce((sum, s) => sum + s.size, 0);
+  const totalXRP = sellSlots.reduce((sum, s) => sum + s.size, 0);
 
   /**
    * Market Price Calculation
@@ -837,7 +924,7 @@ function calculateGridFunds(buySlots: any[], sellSlots: any[], bestBuySlot: any,
  * @param {Object} counts - Object containing activeBuy, virtualBuy, activeSell, virtualSell, spread
  * @returns {{bar: string, buyWidth: number}} Colored bar visualization
  */
-function createDistributionBar(counts: any): { bar: string; buyWidth: number } {
+function createDistributionBar(counts: DistributionCounts): { bar: string; buyWidth: number } {
   const barWidth = BAR_WIDTH; // total width in characters
   const total = counts.activeBuy + counts.virtualBuy + counts.spread + counts.activeSell + counts.virtualSell;
 
@@ -859,7 +946,7 @@ function createDistributionBar(counts: any): { bar: string; buyWidth: number } {
       { name: 'virtualBuy', val: virtualBuyWidth },
       { name: 'activeSell', val: activeSellWidth },
       { name: 'virtualSell', val: virtualSellWidth }
-    ].sort((a: any, b: any) => b.val - a.val);
+    ].sort((a, b) => b.val - a.val);
     if (widths[0].val > 0) {
       if (widths[0].name === 'activeBuy') activeBuyWidth--;
       else if (widths[0].name === 'virtualBuy') virtualBuyWidth--;
@@ -873,25 +960,25 @@ function createDistributionBar(counts: any): { bar: string; buyWidth: number } {
   if (sum !== barWidth) {
     let diff = barWidth - sum;
     const sections = [
-      { name: 'activeBuyWidth', get: () => activeBuyWidth, set: (v: any) => { activeBuyWidth = v; } },
-      { name: 'virtualBuyWidth', get: () => virtualBuyWidth, set: (v: any) => { virtualBuyWidth = v; } },
-      { name: 'spreadWidth', get: () => spreadWidth, set: (v: any) => { spreadWidth = v; } },
-      { name: 'activeSellWidth', get: () => activeSellWidth, set: (v: any) => { activeSellWidth = v; } },
-      { name: 'virtualSellWidth', get: () => virtualSellWidth, set: (v: any) => { virtualSellWidth = v; } }
+      { name: 'activeBuyWidth', get: () => activeBuyWidth, set: (v: number) => { activeBuyWidth = v; } },
+      { name: 'virtualBuyWidth', get: () => virtualBuyWidth, set: (v: number) => { virtualBuyWidth = v; } },
+      { name: 'spreadWidth', get: () => spreadWidth, set: (v: number) => { spreadWidth = v; } },
+      { name: 'activeSellWidth', get: () => activeSellWidth, set: (v: number) => { activeSellWidth = v; } },
+      { name: 'virtualSellWidth', get: () => virtualSellWidth, set: (v: number) => { virtualSellWidth = v; } }
     ];
 
     while (diff > 0) {
       const target = sections
         .slice()
-        .sort((a: any, b: any) => b.get() - a.get())[0];
+        .sort((a, b) => b.get() - a.get())[0];
       target.set(target.get() + 1);
       diff--;
     }
 
     while (diff < 0) {
       const target = sections
-        .filter((section: any) => section.get() > 0)
-        .sort((a: any, b: any) => b.get() - a.get())[0];
+        .filter((section) => section.get() > 0)
+        .sort((a, b) => b.get() - a.get())[0];
       if (!target) break;
       target.set(target.get() - 1);
       diff++;
@@ -921,14 +1008,14 @@ function createDistributionBar(counts: any): { bar: string; buyWidth: number } {
  * @param {number} marketPrice - Market price for currency conversion (sell to quote basis)
  * @returns {string} Colored weight visualization with independent scaling
  */
-function createWeightFactorBar(buyOrders: any[], sellOrders: any[], barWidth: any = BAR_WIDTH, marketPrice: any = 1): string {
+function createWeightFactorBar(buyOrders: GridSlot[], sellOrders: GridSlot[], barWidth: number = BAR_WIDTH, marketPrice: number = 1): string {
   if ((!buyOrders || buyOrders.length === 0) && (!sellOrders || sellOrders.length === 0)) {
     return '(no orders)';
   }
 
   // Calculate total fund weight on each side using arithmetic sum
-  const buyTotalSize = (buyOrders || []).reduce((sum: any, o: any) => sum + (o.size || 0), 0);
-  const sellTotalSize = (sellOrders || []).reduce((sum: any, o: any) => sum + (o.size || 0), 0);
+  const buyTotalSize = (buyOrders || []).reduce((sum, o) => sum + (o.size || 0), 0);
+  const sellTotalSize = (sellOrders || []).reduce((sum, o) => sum + (o.size || 0), 0);
 
   // Convert sell side to quote currency equivalent for accurate ratio calculation
   // Buy side is in quote currency, sell side is in base currency
@@ -965,13 +1052,13 @@ function createWeightFactorBar(buyOrders: any[], sellOrders: any[], barWidth: an
  * @param {string} virtualColor - Color for virtual orders
  * @param {number} sideWidth - Width allocated to this side
  */
-function createWeightSide(orders: any[], activeColor: string, virtualColor: string, sideWidth: number): string {
+function createWeightSide(orders: GridSlot[], activeColor: string, virtualColor: string, sideWidth: number): string {
   if (!orders || orders.length === 0 || sideWidth === 0) {
     return virtualColor + ' '.repeat(sideWidth) + colors.reset;
   }
 
   // Get sizes and find max for THIS SIDE only (independent scaling)
-  const sizes = orders.map((o: any) => o.size || 0);
+  const sizes = orders.map((o) => o.size || 0);
   const maxSize = Math.max(...sizes);
 
   if (maxSize === 0) {
@@ -999,16 +1086,16 @@ function createWeightSide(orders: any[], activeColor: string, virtualColor: stri
       groupOrders.push(orders[Math.min(nearestIdx, orders.length - 1)]);
     }
 
-    const groupSizes = groupOrders.map((o: any) => o.size || 0);
+    const groupSizes = groupOrders.map((o) => o.size || 0);
     // Calculate arithmetic average of sizes in this group
-    const avgSize = groupSizes.reduce((a: any, b: any) => a + b, 0) / groupSizes.length;
+    const avgSize = groupSizes.reduce((a, b) => a + b, 0) / groupSizes.length;
 
     // Normalize to max on THIS SIDE (1-8, minimum 1 for visibility)
     const ratio = avgSize / maxSize;
     const blockHeight = Math.max(1, Math.round(ratio * 8));
 
     // ACTIVE and PARTIAL slots are both real on-chain orders in this analysis.
-    const hasLiveOrder = groupOrders.some((o: any) => o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL);
+    const hasLiveOrder = groupOrders.some((o) => o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL);
     const color = hasLiveOrder ? activeColor : virtualColor;
 
     compressedWeights.push(color + partialBlocks[blockHeight] + colors.reset);
@@ -1039,7 +1126,7 @@ function createWeightSide(orders: any[], activeColor: string, virtualColor: stri
  * @param {Object} bestSellSlot - Best sell price (used for market price calculation)
  * @returns {Object} Distribution analysis with slot%, fund%, and deltas
  */
-function analyzeDistribution(buySlots: any[], sellSlots: any[], bestBuySlot: any, bestSellSlot: any): any {
+function analyzeDistribution(buySlots: GridSlot[], sellSlots: GridSlot[], bestBuySlot: GridSlot | null, bestSellSlot: GridSlot | null): JsonObj {
   /**
    * Slot Distribution
    * Simple count: what percentage of total slots are buy vs sell
@@ -1053,8 +1140,8 @@ function analyzeDistribution(buySlots: any[], sellSlots: any[], bestBuySlot: any
    * Calculate total funds on each side, convert to common currency basis
    * This shows if sides have equal capital or if one is prioritized
    */
-  const totalBuyFunds = buySlots.reduce((sum: any, s: any) => sum + s.size, 0);
-  const totalSellFunds = sellSlots.reduce((sum: any, s: any) => sum + s.size, 0);
+  const totalBuyFunds = buySlots.reduce((sum, s) => sum + s.size, 0);
+  const totalSellFunds = sellSlots.reduce((sum, s) => sum + s.size, 0);
 
   /**
    * Currency Conversion for Comparison
@@ -1111,7 +1198,7 @@ function analyzeDistribution(buySlots: any[], sellSlots: any[], bestBuySlot: any
  * @param {Object|null} dynamicWeight
  * @returns {{ buy: string, sell: string } | null}
  */
-function getRawWeightValues(weightDistribution: any, dynamicWeight: any): { buy: string; sell: string } | null {
+function getRawWeightValues(weightDistribution: JsonObj | null, dynamicWeight: DynamicWeightInfo | null): { buy: string; sell: string } | null {
   if (!weightDistribution) return null;
   const staticBuy = Number(weightDistribution.buy);
   const staticSell = Number(weightDistribution.sell);
@@ -1124,15 +1211,15 @@ function getRawWeightValues(weightDistribution: any, dynamicWeight: any): { buy:
   const useLive = !!(dynamicWeight
     && dynamicWeight.isRecent
     && dynamicWeight.live
-    && Number.isFinite(Number(dynamicWeight.live.buy))
-    && Number.isFinite(Number(dynamicWeight.live.sell)));
+    && Number.isFinite(Number(dynamicWeight.live?.buy))
+    && Number.isFinite(Number(dynamicWeight.live?.sell)));
 
   if (!useLive) {
     return { buy: staticBuy.toFixed(2), sell: staticSell.toFixed(2) };
   }
 
-  const liveBuy = Number(dynamicWeight.live.buy);
-  const liveSell = Number(dynamicWeight.live.sell);
+  const liveBuy = Number(dynamicWeight.live?.buy);
+  const liveSell = Number(dynamicWeight.live?.sell);
   return {
     buy: liveBuy.toFixed(2),
     sell: liveSell.toFixed(2)
@@ -1156,7 +1243,7 @@ function getRawWeightValues(weightDistribution: any, dynamicWeight: any): { buy:
  * @param {number} [maxSellWidth] - Target width for sell-side values (for column alignment)
  * @returns {string|null} Formatted weight line or null if no valid data
  */
-function formatWeightLine(weightDistribution: any, dynamicWeight: any, maxBuyWidth?: number, maxSellWidth?: number): string | null {
+function formatWeightLine(weightDistribution: JsonObj | null, dynamicWeight: DynamicWeightInfo | null, maxBuyWidth?: number, maxSellWidth?: number): string | null {
   if (!weightDistribution) return null;
   const staticBuy = Number(weightDistribution.buy);
   const staticSell = Number(weightDistribution.sell);
@@ -1177,8 +1264,8 @@ function formatWeightLine(weightDistribution: any, dynamicWeight: any, maxBuyWid
   const useLive = !!(dynamicWeight
     && dynamicWeight.isRecent
     && dynamicWeight.live
-    && Number.isFinite(Number(dynamicWeight.live.buy))
-    && Number.isFinite(Number(dynamicWeight.live.sell)));
+    && Number.isFinite(Number(dynamicWeight.live?.buy))
+    && Number.isFinite(Number(dynamicWeight.live?.sell)));
 
   if (!useLive) {
     const buyVal = staticBuy.toFixed(2);
@@ -1186,8 +1273,8 @@ function formatWeightLine(weightDistribution: any, dynamicWeight: any, maxBuyWid
     return `   Weight: ${maxBuyWidth ? buyVal.padEnd(maxBuyWidth) : buyVal} ${colors.buy}buy${colors.reset} | ${maxSellWidth ? sellVal.padEnd(maxSellWidth) : sellVal} ${colors.sell}sell${colors.reset}`;
   }
 
-  const liveBuy = Number(dynamicWeight.live.buy);
-  const liveSell = Number(dynamicWeight.live.sell);
+  const liveBuy = Number(dynamicWeight.live?.buy);
+  const liveSell = Number(dynamicWeight.live?.sell);
   // Compare the two live weights, not their deltas: the side with the larger
   // live weight is the one the bot is leaning on most heavily (the "losing"
   // side for that asset). When the two live weights are equal, no side is
@@ -1248,8 +1335,9 @@ function formatWeightLine(weightDistribution: any, dynamicWeight: any, maxBuyWid
  * @param {Object} analysis - Analysis result object from analyzeOrder()
  * @returns {string} Formatted multi-line output ready for console.log
  */
-function formatAnalysis(analysis: any): string {
-  const lines: any[] = [];
+function formatAnalysis(analysisInput: JsonObj): string {
+  const analysis = analysisInput as unknown as AnalysisResult;
+  const lines: string[] = [];
 
   // Header: Trading pair name
   lines.push(`\n${colors.cyan}📊 ${analysis.pair}${colors.reset} (${analysis.botName})`);
@@ -1274,7 +1362,7 @@ function formatAnalysis(analysis: any): string {
    */
   if (analysis.hasConfig) {
     lines.push(
-      `   Spread:${formatPercent(analysis.spread.real).padStart(6)} (${formatPercent(analysis.spread.target)}) | Incr.:${formatPercent(analysis.increment.avg).padStart(6)} (${formatPercent(analysis.increment.target)})`
+      `   Spread:${formatPercent(analysis.spread.real).padStart(6)} (${formatPercent(Number(analysis.spread.target))}) | Incr.:${formatPercent(analysis.increment.avg).padStart(6)} (${formatPercent(Number(analysis.increment.target))})`
     );
   } else {
     lines.push(`   Spread:${formatPercent(analysis.spread.real).padStart(6)} | Incr.:${formatPercent(analysis.increment.avg).padStart(6)}`);
@@ -1299,8 +1387,8 @@ function formatAnalysis(analysis: any): string {
       buyValues.push(analysis.botFunds.buy);
       sellValues.push(analysis.botFunds.sell);
     }
-    const maxBuyWidth = Math.max(...buyValues.map((v: any) => stripColorCodes(v).length));
-    const maxSellWidth = Math.max(...sellValues.map((v: any) => stripColorCodes(v).length));
+    const maxBuyWidth = Math.max(...buyValues.map((v) => stripColorCodes(v).length));
+    const maxSellWidth = Math.max(...sellValues.map((v) => stripColorCodes(v).length));
 
     lines.push(`   Active: ${(buyActual + '/' + buyTarget).padEnd(maxBuyWidth)} ${colors.buy}buy${colors.reset} | ${(sellActual + '/' + sellTarget).padEnd(maxSellWidth)} ${colors.sell}sell${colors.reset}`);
     // Deep shelf summary directly under Active (shown when configured or
@@ -1546,7 +1634,7 @@ function formatAnalysis(analysis: any): string {
  *
  * @param {Array<Object>} analyses - Array of analysis results from analyzeOrder()
  */
-function generateHtmlReport(analyses: any[]) {
+function generateHtmlReport(analyses: JsonObj[]) {
   const cssColors = {
     buy: '#00ff00',
     buyDark: '#007700',
@@ -1577,7 +1665,7 @@ function generateHtmlReport(analyses: any[]) {
     
     let colorOpen = false;
 
-    return escaped.replace(/\x1b\[[0-9;]*m/g, (code: any) => {
+    return escaped.replace(/\x1b\[[0-9;]*m/g, (code) => {
       let close = '';
       if (colorOpen) {
         colorOpen = false;
@@ -1594,7 +1682,7 @@ function generateHtmlReport(analyses: any[]) {
     }) + (colorOpen ? '</span>' : '');
   }
 
-  const reports = analyses.map((a: any) => ansiToHtml(formatAnalysis(a))).join('\n');
+  const reports = analyses.map((a) => ansiToHtml(formatAnalysis(a))).join('\n');
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -1656,7 +1744,7 @@ function main() {
   // sanitized form of a bot name (e.g. "AAA-BBB" -> "aaa-bbb").
   if (botKeyFilter) {
     const sanitizedFilter = sanitizeKey(botKeyFilter);
-    const matched = files.filter((file: any) =>
+    const matched = files.filter((file) =>
       String(file.botKey).toLowerCase() === botKeyFilter
       || String(file.botKey).toLowerCase() === sanitizedFilter
       || (file.config?.name && sanitizeKey(file.config.name) === sanitizedFilter)
@@ -1667,7 +1755,7 @@ function main() {
       } else {
         console.log(`${colors.sell}No order grid found for bot key '${botKeyFilter}'.${colors.reset}`);
         console.log('Available bots:');
-        files.forEach((file: any) => console.log(`  - ${file.botKey}`));
+        files.forEach((file) => console.log(`  - ${file.botKey}`));
       }
       process.exit(0);
     }
@@ -1685,21 +1773,21 @@ function main() {
   // Counters for summary statistics
   let analyzed = 0;
   let skipped = 0;
-  const analyses: any[] = [];
+  const analyses: JsonObj[] = [];
 
   /**
    * Process each order file
    * Try-catch ensures one bad file doesn't stop analysis of others
    */
-  files.forEach((file: any, index: any) => {
+  files.forEach((file, index) => {
     try {
       // Parse order file JSON
-      const orderData = readJSON(file.path);
+      const orderData = readJSON(file.path as string);
       // Per-bot file: data is the bot's entry directly (no bots wrapper)
       if (!orderData || !orderData.meta || !Array.isArray(orderData.grid)) {
         throw new Error('Not a persisted order grid');
       }
-      const botKey = file.botKey;
+      const botKey = file.botKey as string;
       const botData = orderData;
 
       // Candidate validation already required a configured bot entry.
@@ -1726,7 +1814,7 @@ function main() {
       }
       analyzed++;
 
-    } catch (error: any) {
+    } catch (error) {
       // Log error but continue processing other files
       console.error(`\n❌ Error processing ${file.name}: ${getErrorMessage(error)}`);
       skipped++;
@@ -1741,7 +1829,7 @@ function main() {
   if (skippedCandidates.length > 0 && !botKeyFilter) {
     console.log('');
     console.log(`${colors.cyan}${'='.repeat(HEADER_WIDTH)}${colors.reset}`);
-    skippedCandidates.forEach((candidate: any) => {
+    skippedCandidates.forEach((candidate) => {
       console.log(`${colors.gray}Skipped ${candidate.name}: ${candidate.reason}${colors.reset}`);
       skipped++;
     });

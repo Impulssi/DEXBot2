@@ -24,6 +24,7 @@ setCachedModule(
 const { OrderManager } = require('../modules/order/index').default;
 const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../modules/constants');
 const { createSilentLogger } = require('./helpers/silent_logger');
+const { makeLadderFromPrices } = require('./helpers/order_test_helpers');
 
 // Seed the fee cache so getAssetFees resolves deterministically (frozen ESM
 // namespace — patching OrderUtils.getAssetFees is no longer possible).
@@ -51,6 +52,10 @@ async function runTests() {
         mgr._batchReadOrdersFn = async () => new Map();
         mgr.logger = createSilentLogger();
         mgr.assets = { assetA: { id: '1.3.0', precision: 8 }, assetB: { id: '1.3.1', precision: 5 } };
+        // The engine is genesis-frozen and the sync gate REFUSES a populated
+        // grid with no price ladder (INV-GRID-004), so every scenario needs
+        // one. The ladder carries the levels these fixtures price slots at.
+        mgr._genesis = makeLadderFromPrices([10, 50, 100, 101, 105, 120, 123, 150]);
         await mgr.setAccountTotals({ buy: 10000, sell: 100, buyFree: 10000, sellFree: 100 });
         // Pre-seed the suspect-empty-read guard as confirmed so the legacy
         // empty-chain fill-detection scenarios keep their original single-sync
@@ -175,9 +180,14 @@ async function runTests() {
 
     console.log(' - Testing Orphan Spread Slot Adoption...');
     {
+        // Nearest-slot adoption (genesis-frozen): the orphan's price maps to
+        // slot-1, which is SPREAD/VIRTUAL, so the chain side and size are
+        // adopted while the slot keeps its own ladder level as price.
         const manager = await createManager();
+        manager._genesis = makeLadderFromPrices([99, 100]);
+        manager.boundaryIdx = 0;
         await manager._updateOrder({
-            id: 'spread-1',
+            id: 'slot-1',
             state: ORDER_STATES.VIRTUAL,
             type: ORDER_TYPES.SPREAD,
             price: 100,
@@ -194,98 +204,75 @@ async function runTests() {
         }];
 
         const result = await manager.sync.syncFromOpenOrders(chainOrders);
-        const slot = manager.orders.get('spread-1');
+        const slot = manager.orders.get('slot-1');
 
         assert.strictEqual(slot.orderId, 'c-spread-1', 'Orphan chain order should be adopted into the spread slot');
         assert.strictEqual(slot.type, ORDER_TYPES.SELL, 'Adopted spread slot should take the chain order side');
-        assert.strictEqual(slot.state, ORDER_STATES.PARTIAL, 'Adopted orphan should become a tracked partial');
-        assert.strictEqual(slot.price, 100, 'Adopted orphan should preserve the chain price');
+        assert.strictEqual(slot.state, ORDER_STATES.ACTIVE, 'Adopted VIRTUAL slot becomes a tracked order');
+        assert.strictEqual(slot.price, 100, 'Adopted slot must keep its own ladder level as price');
         assert.strictEqual(slot.size, 25, 'Adopted orphan should preserve the chain size');
-        assert(result.updatedOrders.some(o => o.id === 'spread-1'), 'Sync result should include the adopted slot update');
+        assert(result.updatedOrders.some(o => o.id === 'slot-1'), 'Sync result should include the adopted slot update');
     }
 
     console.log(' - Testing Orphan At Duplicate Price Level Is Not Adopted...');
     {
         const manager = await createManager();
+        manager._genesis = makeLadderFromPrices([100, 101]);
+        manager.boundaryIdx = 0;
         await manager._updateOrder({
-            id: 'occupied-1',
+            id: 'slot-0',
             state: ORDER_STATES.ACTIVE,
             type: ORDER_TYPES.SELL,
             price: 100,
             size: 25,
             orderId: 'c-existing'
         });
-        await manager._updateOrder({
-            id: 'spread-1',
-            state: ORDER_STATES.VIRTUAL,
-            type: ORDER_TYPES.SPREAD,
-            price: 100,
-            size: 0
-        });
 
-        // Two chain orders at price 100 — the orphan duplicates the occupied slot's price.
-        // Grid invariant: one order per price level. Orphan must not be adopted.
+        // Two chain orders at price 100 — the second duplicates the occupied
+        // slot's level. Grid invariant: one order per price level.
         const result = await manager.sync.syncFromOpenOrders([
             makeSellChainOrder('c-existing', 25, 100),
             makeSellChainOrder('c-new-orphan', 26, 100)
         ]);
 
-        const occupied = manager.orders.get('occupied-1');
-        const spreadSlot = manager.orders.get('spread-1');
+        const occupied = manager.orders.get('slot-0');
 
         assert.strictEqual(occupied.orderId, 'c-existing', 'Existing occupied slot must keep its chain order id');
-        assert.ok(!spreadSlot.orderId, 'Orphan at duplicate price must NOT be adopted into spread slot');
-        assert.strictEqual(spreadSlot.state, ORDER_STATES.VIRTUAL, 'Spread slot must remain virtual');
         assert.ok(
             result.unmatchedChainOrders.some(u => u.chainOrderId === 'c-new-orphan' && u.reason === 'duplicate-price-level'),
             'Duplicate-price-level orphan must be pushed to unmatchedChainOrders with reason'
         );
     }
 
-    console.log(' - Testing Two Orphans At Same Price With Two VIRTUAL Slots...');
+    console.log(' - Testing Orphans At Adjacent Levels Each Take Their Own Slot...');
     {
-        // Two VIRTUAL SELL slots at price 100, two chain orphans at price 100.
-        // Without the matchedGridOrderIds exclusion fix, the second orphan would
-        // adopt into the second VIRTUAL slot creating two orders at the same price.
+        // Nearest-slot is deterministic: two orphans at two different levels
+        // bind to their own slots — no tolerance band can swap them, and there
+        // is no "second VIRTUAL slot at the same price" to fall back to.
         const manager = await createManager();
+        manager._genesis = makeLadderFromPrices([100, 101]);
+        manager.boundaryIdx = -1; // both levels on the SELL rail (sellStart = 0)
         await manager._updateOrder({
-            id: 'slot-a', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.SELL,
+            id: 'slot-0', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.SELL,
             price: 100, size: 25, orderId: null
         });
         await manager._updateOrder({
-            id: 'slot-b', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.SELL,
-            price: 100, size: 26, orderId: null
+            id: 'slot-1', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.SELL,
+            price: 101, size: 26, orderId: null
         });
 
         const result = await manager.sync.syncFromOpenOrders([
             makeSellChainOrder('c-orphan-a', 25, 100),
-            makeSellChainOrder('c-orphan-b', 26, 100)
+            makeSellChainOrder('c-orphan-b', 26, 101)
         ]);
 
-        const slotA = manager.orders.get('slot-a');
-        const slotB = manager.orders.get('slot-b');
-        const adoptedId = slotA.orderId || slotB.orderId;
-
-        assert.ok(adoptedId, 'One of the two VIRTUAL slots must have adopted an orphan');
-        const _untouched = slotA.orderId ? slotB : slotA;
-        assert.strictEqual(
-            (slotA.orderId ? 1 : 0) + (slotB.orderId ? 1 : 0), 1,
-            'Only one of the two VIRTUAL slots should have an orderId'
-        );
-        assert.strictEqual(_untouched.orderId, null, 'The second slot must remain VIRTUAL (no adoption)');
-        assert.strictEqual(_untouched.state, ORDER_STATES.VIRTUAL, 'The second slot must retain VIRTUAL state');
-        assert.ok(
-            result.unmatchedChainOrders.some(u =>
-                u.chainOrderId === 'c-orphan-b' && u.reason === 'duplicate-price-level'
-            ) || result.unmatchedChainOrders.some(u =>
-                u.chainOrderId === 'c-orphan-a' && u.reason === 'duplicate-price-level'
-            ),
-            'The second orphan must be pushed to unmatchedChainOrders with duplicate-price-level reason'
-        );
-        assert.strictEqual(
-            result.unmatchedChainOrders.filter(u => u.reason === 'duplicate-price-level').length, 1,
-            'Exactly one duplicate-price-level entry in unmatchedChainOrders'
-        );
+        const slotA = manager.orders.get('slot-0');
+        const slotB = manager.orders.get('slot-1');
+        assert.strictEqual(slotA.orderId, 'c-orphan-a', 'Orphan at 100 must bind slot-0 (its own level)');
+        assert.strictEqual(slotB.orderId, 'c-orphan-b', 'Orphan at 101 must bind slot-1 (its own level)');
+        assert.strictEqual(slotA.size, 25, 'slot-0 takes the 100-level chain size');
+        assert.strictEqual(slotB.size, 26, 'slot-1 takes the 101-level chain size');
+        assert.strictEqual(result.unmatchedChainOrders.length, 0, 'Both orphans are adoptable — none unmatched');
     }
 
     console.log(' - Testing Non-Grid Pair Chain Orders Are Ignored...');
@@ -462,9 +449,13 @@ async function runTests() {
 
     console.log(' - Testing Large Orphan At Adjacent Price Is Not Misflagged As Duplicate...');
     {
+        // A SPREAD slot one level up is a legitimate adoption target, not a
+        // duplicate: the orphan binds to the level its price maps to.
         const manager = await createManager();
+        manager._genesis = makeLadderFromPrices([100, 105]);
+        manager.boundaryIdx = 0;
         await manager._updateOrder({
-            id: 'active-1',
+            id: 'slot-0',
             state: ORDER_STATES.ACTIVE,
             type: ORDER_TYPES.SELL,
             price: 100,
@@ -472,24 +463,22 @@ async function runTests() {
             orderId: 'c-active'
         });
         await manager._updateOrder({
-            id: 'spread-1',
+            id: 'slot-1',
             state: ORDER_STATES.VIRTUAL,
             type: ORDER_TYPES.SPREAD,
             price: 105,
             size: 0
         });
 
-        // Orphan at 105 (5% above active) with same size — adjacent, not duplicate.
-        // Tolerance uses Math.max(25, 25)=25 → ~4e-7 for TEST/BTS (prec 8/5).
-        // |105-100|=5 >> 4e-7 → not flagged as duplicate.
+        // Orphan at 105 (adjacent level above the active 100 slot).
         const result = await manager.sync.syncFromOpenOrders([
             makeSellChainOrder('c-active', 25, 100),
             makeSellChainOrder('c-orphan-large', 25, 105)
         ]);
 
-        const adopted = manager.orders.get('spread-1');
-        assert.strictEqual(adopted.orderId, 'c-orphan-large', 'Large orphan at adjacent price should be adopted into spread slot');
-        assert.strictEqual(adopted.state, ORDER_STATES.PARTIAL, 'Fallback-adopted orphan should be partial (size not matched exactly)');
+        const adopted = manager.orders.get('slot-1');
+        assert.strictEqual(adopted.orderId, 'c-orphan-large', 'Adjacent-level orphan should be adopted into its own slot');
+        assert.strictEqual(adopted.state, ORDER_STATES.ACTIVE, 'Adopted VIRTUAL slot becomes a tracked order');
         assert.strictEqual(result.unmatchedChainOrders.length, 0, 'Adjacent orphan should not be pushed to unmatchedChainOrders');
     }
 

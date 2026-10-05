@@ -109,16 +109,16 @@ import * as client from '../bitshares_client.js';
  * that connect for a read whose result they do not even assert on.
  * Production never sets this; default is the chain.
  */
-function readSingleOrderSeam(mgr: any, orderId: any, timeoutMs: any): Promise<any> {
-    const seam = (mgr as any)?._readSingleOrderFn;
-    if (typeof seam === 'function') return seam(orderId, timeoutMs);
-    return (chainOrders as any).readSingleOrder(orderId, timeoutMs);
+function readSingleOrderSeam(mgr: OrderManagerLike, orderId: string, timeoutMs: number): Promise<unknown> {
+    const seam = mgr._readSingleOrderFn;
+    if (typeof seam === 'function') return (seam as (id: string, timeout: number) => Promise<unknown>)(orderId, timeoutMs);
+    return chainOrders.readSingleOrder(orderId, timeoutMs);
 }
 /** Same seam for the batched drift refetch (batch path). */
-function batchReadOrdersSeam(mgr: any, orderIds: any, timeoutMs: any): Promise<any> {
-    const seam = (mgr as any)?._batchReadOrdersFn;
-    if (typeof seam === 'function') return seam(orderIds, timeoutMs);
-    return (chainOrders as any).batchReadOrders(orderIds, timeoutMs);
+function batchReadOrdersSeam(mgr: OrderManagerLike, orderIds: string[], timeoutMs: number): Promise<unknown> {
+    const seam = mgr._batchReadOrdersFn;
+    if (typeof seam === 'function') return (seam as (ids: string[], timeout: number) => Promise<unknown>)(orderIds, timeoutMs);
+    return chainOrders.batchReadOrders(orderIds, timeoutMs);
 }
 const { BitShares } = client;
 import { NATIVE_CLIENT } from '../constants.js';
@@ -126,14 +126,11 @@ const { toFiniteNumber } = Format;
 import {
     blockchainToFloat,
     floatToBlockchainInt,
-    calculatePriceTolerance,
     getAssetFees,
     getBtsSide,
-    getSellStartIdx,
     slotIndexForPrice,
     isChainPriceOutOfGrid,
     isSlotInRail,
-    isSlotIndexInGapBand,
     priceForSlot,
     priceSlotEqual,
     isDeepShelfId,
@@ -142,7 +139,6 @@ import {
 } from './utils/math.js';
 import {
     parseChainOrder,
-    findMatchingGridOrderByOpenOrder,
     applyChainSizeToGridOrder,
     convertToSpreadPlaceholder,
     virtualizeOrder,
@@ -154,15 +150,106 @@ import {
     resolveDeepShelfFloor,
     ensureDeepShelfEntries,
     duplicateOrphanLogInfo,
-    _filterUnmatchedChainOrders,
-    _stampCorrectionProvenance
+    _stampCorrectionProvenance,
+    _filterUnmatchedChainOrders
 } from './utils/order.js';
 import { parseSlotIndex } from './utils/slot.js';
 import {
     resolveProcessedFillPersistenceMode
 } from './processed_fill_store.js';
+import { hasGenesisLadder } from './genesis_policy.js';
 import { getErrorMessage } from '../utils/errors.js';
 import { classifyDisappearanceAsync, recordManualHold, pruneManualHolds, isSlotHeld } from './manual_hold.js';
+import type { OrderManagerLike, SyncResult, ManagedOrder, UnmatchedChainOrder, ParsedChainOrder, PendingPriceCorrection, ChainOrder, OrderType, AssetInfo } from '../types.js';
+
+interface SyncFillEvent {
+    op?: [unknown, FillOpInput?];
+    block_num?: number;
+    id?: string;
+    [key: string]: unknown;
+}
+
+interface FillOpInput {
+    order_id?: string;
+    is_maker?: boolean;
+    pays?: { amount?: number; asset_id?: string };
+    receives?: { amount?: number; asset_id?: string };
+}
+
+interface FillEntry {
+    fill: SyncFillEvent;
+    fillOp: FillOpInput;
+    blockNum?: number;
+    historyId?: string;
+    orderId: string | undefined;
+    fillKey: string;
+    isMaker: boolean;
+    paysAmountRaw: number;
+    paysAssetId: string | null | undefined;
+    receivesAmountRaw: number;
+    receivesAssetId: string | null | undefined;
+}
+
+interface FillEntryContext {
+    entry: FillEntry;
+    matchedGridOrder: ManagedOrder;
+    orderType: OrderType;
+    precision: number;
+    filledAmount: number;
+    filledAmountInt: number;
+    currentSizeIntFromGrid: number;
+    rawForSaleInt: number;
+}
+
+interface FillTransitionParams {
+    matchedGridOrder: ManagedOrder;
+    orderType: OrderType;
+    precision: number;
+    filledAmount: number;
+    filledAmountInt: number;
+    currentSizeIntFromGrid: number;
+    rawForSaleInt?: number;
+    chainRefetched: boolean;
+    chainConfirmsEmpty: boolean;
+    effectiveRawForSale: number;
+    blockNum?: number;
+    historyId?: string;
+    isMaker: boolean;
+}
+
+interface SyncChainData {
+    gridOrderId?: string;
+    chainOrderId?: string;
+    orderId?: string;
+    isPartialPlacement?: boolean;
+    expectedType?: string;
+    fee?: number;
+    order?: { type?: string; price?: number; size?: number } | null;
+    skipAccounting?: boolean;
+    deferredFee?: number | null;
+    clearSize?: boolean;
+    [key: string]: unknown;
+}
+
+interface BtsFeeData {
+    total: number;
+    createFee: number;
+    updateFee: number;
+    cancelFee: number;
+    makerNetFee: number;
+    takerNetFee: number;
+    netFee: number;
+    isMaker: boolean;
+}
+
+/** Minimal shape of a raw chain/open-order entry used by the sync helpers. */
+interface ChainOrderInput {
+    id?: string;
+    orderId?: string | null;
+    price?: number;
+    size?: number;
+    type?: string;
+}
 
 /**
  * Confirming re-read for the suspect-empty-read guard: after
@@ -186,18 +273,18 @@ import { classifyDisappearanceAsync, recordManualHold, pruneManualHolds, isSlotH
  *   'unavailable' (no chain identity or dry-run — caller falls back to the
  *   legacy count-based acceptance, preserving unit-test semantics).
  */
-async function confirmSuspectEmptyRead(mgr: any): Promise<string> {
+async function confirmSuspectEmptyRead(mgr: OrderManagerLike): Promise<string> {
     try {
         if (mgr?.config?.dryRun) return 'unavailable';
-        const seam = (mgr as any)?._confirmEmptyReadFn;
-        const delay = (mgr as any)?._skipEmptyReadConfirmDelay
+        const seam = mgr._confirmEmptyReadFn;
+        const delay = mgr._skipEmptyReadConfirmDelay
             ? 0
             : Math.max(0, Number(TIMING.SYNC_EMPTY_READ_CONFIRM_DELAY_MS) || 0);
         if (typeof seam === 'function') {
             if (delay > 0) await sleep(delay);
-            let fresh: any = null;
+            let fresh: unknown = null;
             try {
-                fresh = await seam();
+                fresh = await (seam as () => Promise<unknown>)();
             } catch {
                 return 'ambiguous';
             }
@@ -207,14 +294,14 @@ async function confirmSuspectEmptyRead(mgr: any): Promise<string> {
         }
         let accountRef: string | null = null;
         try {
-            accountRef = resolveAccountRef(mgr, null as any);
+            accountRef = resolveAccountRef(mgr, mgr.accountId ?? '');
         } catch {
             return 'unavailable';
         }
         if (!accountRef) return 'unavailable';
         if (delay > 0) await sleep(delay);
-        const fresh = await (chainOrders as any).readOpenOrdersGuarded(chainOrders, accountRef, {
-            log: (message: string, level: any) => mgr?.logger?.log?.(message, level),
+        const fresh = await chainOrders.readOpenOrdersGuarded(chainOrders, accountRef, {
+            log: (message: string, level?: string) => mgr?.logger?.log?.(message, level),
             label: 'SYNC-CONFIRM',
             detail: 'suspect-empty confirm re-read',
         });
@@ -226,13 +313,22 @@ async function confirmSuspectEmptyRead(mgr: any): Promise<string> {
     }
 }
 
-function describeNearestAdoptionCandidates(mgr: any, chainOrder: any, precision: any, calcTolerance: any, matchedGridOrderIds: Set<string> | null = null) {
+/**
+ * Describe the nearest same-side (or spread) candidate slots for a chain order
+ * that could not be adopted, so a log read says WHICH slot blocked it.
+ *
+ * Ladder-based, not tolerance-based: a candidate is "at this price" when the
+ * chain order and the candidate's slot price map to the same ladder level
+ * (`chainPriceOnSameLevel` — the adoption rule itself). The price diff is
+ * reported against the slot's own level for the human reader.
+ */
+function describeNearestAdoptionCandidates(mgr: OrderManagerLike, chainOrder: ChainOrderInput, precision: number | null, matchedGridOrderIds: Set<string> | null = null) {
     if (!mgr?.orders || !chainOrder || typeof precision !== 'number') return 'candidate diagnostics unavailable';
 
     const chainPrice = toFiniteNumber(chainOrder.price);
     const chainSize = toFiniteNumber(chainOrder.size);
     const chainInt = floatToBlockchainInt(chainSize, precision);
-    const candidates: any[] = [];
+    const candidates: Array<{ slot: ManagedOrder; typeMatch: boolean; spreadMatch: boolean; priceDiff: number; priceEqual: boolean; sizeDiffInt: number; hasOrderId: boolean; alreadyMatched: boolean; primaryEligible: boolean; adoptable: boolean }> = [];
 
     for (const slot of mgr.orders.values()) {
         if (!slot || ![ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL, ORDER_STATES.VIRTUAL].includes(slot.state)) continue;
@@ -242,27 +338,27 @@ function describeNearestAdoptionCandidates(mgr: any, chainOrder: any, precision:
 
         const price = toFiniteNumber(slot.price);
         const priceDiff = Math.abs(price - chainPrice);
-        const effectiveSize = slot.size > 0 ? toFiniteNumber(slot.size) : chainSize;
-        const tolerance = calcTolerance(price, effectiveSize, chainOrder.type) || 0;
+        let priceEqual = false;
+        try { priceEqual = chainPriceOnSameLevel(chainPrice, price, mgr?._genesis, precision); } catch { priceEqual = chainPrice === price; }
         const gridInt = floatToBlockchainInt(toFiniteNumber(slot.size), precision);
         const sizeDiffInt = chainInt - gridInt;
         const hasOrderId = Boolean(slot.orderId);
         const alreadyMatched = Boolean(matchedGridOrderIds?.has?.(slot.id));
         const sizeOk = Math.abs(sizeDiffInt) <= 1;
-        const primaryEligible = typeMatch && priceDiff <= tolerance && sizeOk;
-        const fallbackEligible = (typeMatch || spreadMatch) && priceDiff <= tolerance && sizeOk && !hasOrderId && !alreadyMatched;
+        const primaryEligible = typeMatch && priceEqual && sizeOk;
+        const adoptable = (typeMatch || spreadMatch) && priceEqual && sizeOk && !hasOrderId && !alreadyMatched;
 
         candidates.push({
             slot,
             typeMatch,
             spreadMatch,
             priceDiff,
-            tolerance,
+            priceEqual,
             sizeDiffInt,
             hasOrderId,
             alreadyMatched,
             primaryEligible,
-            fallbackEligible,
+            adoptable,
         });
     }
 
@@ -273,72 +369,81 @@ function describeNearestAdoptionCandidates(mgr: any, chainOrder: any, precision:
         const slot = candidate.slot;
         const reasons: string[] = [];
         if (!candidate.typeMatch && !candidate.spreadMatch) reasons.push('type');
-        if (candidate.priceDiff > candidate.tolerance) reasons.push('price');
+        if (!candidate.priceEqual) reasons.push('price');
         if (Math.abs(candidate.sizeDiffInt) > 1) reasons.push('size');
         if (candidate.hasOrderId) reasons.push(`occupied:${slot.orderId}`);
         if (candidate.alreadyMatched) reasons.push('alreadyMatched');
         if (candidate.primaryEligible) reasons.push('primary-matchable');
-        if (candidate.fallbackEligible) reasons.push('fallback-adoptable');
+        if (candidate.adoptable) reasons.push('adoptable');
         return `${slot.id || 'unknown'} ${slot.type}/${slot.state}` +
             ` orderId=${slot.orderId || 'none'}` +
             ` price=${Format.formatPrice6(slot.price)}` +
             ` diff=${Format.formatPrice6(candidate.priceDiff)}` +
-            ` tol=${Format.formatPrice6(candidate.tolerance)}` +
-            ` size=${Format.formatSizeByOrderType(slot.size || 0, chainOrder.type, mgr.assets)}` +
+            ` size=${Format.formatSizeByOrderType(slot.size || 0, chainOrder.type ?? ORDER_TYPES.SPREAD, mgr.assets)}` +
             ` sizeDiffInt=${candidate.sizeDiffInt}` +
             ` reason=${reasons.join('|') || 'unknown'}`;
     }).join('; ');
 }
 
 /**
- * Find the closest same-side (or spread) candidate slot for a chain order and
- * return a "price-drift-orphan" tag if the slot's price diff is larger than the
- * strict tolerance but small enough to be considered a meaningful drift.
+ * Whether a chain order rests on the SAME LADDER LEVEL as a slot (the slot's
+ * own index), which is the "has this order moved?" test the pass-1 path needs.
  *
- * Rationale: when the chain order has drifted from the planned slot price by
- * more than the matcher's strict tolerance (so the matcher correctly rejects
- * the adoption), the next planning cycle's pre-broadcast guard will refuse
- * new CREATEs and the structural resync will cancel+recreate. Tagging the
- * entry as a price-drift-orphan lets the auto-cancel path prioritize it and
- * the diagnostics surface the exact slot the orphan drifted from.
- *
- * "Meaningful drift" = price diff > strict tolerance AND price diff
- * <= strict tolerance * PRICE_DRIFT_TOLERANCE_MULTIPLIER. Larger diffs are
- * considered wildly-out-of-tolerance orphans (e.g. legacy orders from a
- * previous config) and are NOT tagged — the resync will discard them
- * structurally instead.
- *
- * @param {Object} mgr - OrderManager instance
- * @param {Object} chainOrder - Parsed chain order { price, size, type }
- * @param {Function} calcToleranceFn - calculatePriceTolerance function
- * @returns {{candidateSlotId: string, candidateSlotPrice: number, priceDiff: number, tolerance: number}|null}
+ * Level identity, not float equality: a chain order legitimately rests a few
+ * quanta off its slot's level (a regeneration leaves old orders at old levels,
+ * a broadcast rounds), and both prices still map to the same slot. An order that
+ * maps to a DIFFERENT slot really has moved, and only then is a price
+ * correction / duplicate / re-slot warranted. Unjudgeable inputs (no ladder,
+ * non-finite price) fall back to integer equality at the asset precision.
  */
+function chainPriceOnSameLevel(chainPrice: number, slotPrice: number, genesis: unknown, precision: number): boolean {
+    if (hasGenesisLadder(genesis)) {
+        try {
+            const g = genesis as Parameters<typeof slotIndexForPrice>[1];
+            return slotIndexForPrice(chainPrice, g) === slotIndexForPrice(slotPrice, g);
+        } catch { /* unjudgeable — fall through to integer equality */ }
+    }
+    try { return priceSlotEqual(chainPrice, slotPrice, precision); } catch { return chainPrice === slotPrice; }
+}
+
 /**
  * Assert (non-fatally) that an adopted slot still carries its own genesis
  * level, not a price inherited from the chain order.
  *
- * Both adoption paths keep the slot's price by NOT assigning it — an absence of
- * a write. That is correct but invisible: nothing would notice if a later edit
- * added `price: chainOrder.price` back, and nothing would notice a slot whose
- * price had already been corrupted before it reached adoption. This makes the
- * rule explicit and warns when it is broken.
+ * Adoption keeps the slot's price by NOT assigning it — an absence of a write.
+ * That is correct but invisible: nothing would notice if a later edit added
+ * `price: chainOrder.price` back, and nothing would notice a slot whose price
+ * had already been corrupted before it reached adoption. This makes the rule
+ * explicit and warns when it is broken.
  *
  * Deliberately non-throwing: adoption already has handled rejection paths, and
  * turning a warning into a crash here would strand a live chain order. The
  * caller's existing rejection handling stays the enforcement; this is the
  * signal that surfaces the corruption in the log.
  *
- * @returns {boolean} true when the slot's price is its genesis level (or cannot
- *   be judged), false when it demonstrably is not.
+ * @returns {boolean} true when the slot's price is its genesis level (or its id
+ *   cannot address a level); false when it demonstrably is not, or when the
+ *   manager holds no ladder at all (INV-GRID-004 fault, not a pass).
  */
-function adoptedSlotKeepsItsOwnPrice(mgr: any, adopted: any, chainOrderId: string, path: string): boolean {
+function adoptedSlotKeepsItsOwnPrice(mgr: OrderManagerLike, adopted: ManagedOrder | null, chainOrderId: string, path: string): boolean {
     try {
-        const genesis = (mgr as any)?._genesis;
+        const genesis = mgr._genesis;
         const levels = genesis?.priceLevels;
-        if (!Array.isArray(levels) || levels.length === 0) return true; // no ladder: unjudgeable, fail open
+        if (!Array.isArray(levels) || levels.length === 0) {
+            // Undefined grid (INV-GRID-004): no ladder means no authority for
+            // the slot's price, so there is nothing to check the adoption
+            // against. Report it — the caller's return value is informational
+            // (adoption is never blocked), so the log is the signal.
+            mgr.logger?.log?.(
+                `[SYNC] Adoption (${path}) for ${chainOrderId} into slot ${adopted?.id}: the manager holds no price ladder ` +
+                `(INV-GRID-004), so the slot's price cannot be verified against its genesis level.`,
+                'error'
+            );
+            return false;
+        }
         const idx = parseSlotIndex(adopted?.id);
         if (idx === null || !Number.isFinite(idx) || idx < 0 || idx >= levels.length) return true;
-        const expected = Number(priceForSlot(idx, genesis));
+        const expected = Number(priceForSlot(idx, genesis as Parameters<typeof priceForSlot>[1]));
         const got = Number(adopted?.price);
         if (!Number.isFinite(expected) || expected <= 0) return true;
         if (!Number.isFinite(got)) return true;
@@ -346,7 +451,7 @@ function adoptedSlotKeepsItsOwnPrice(mgr: any, adopted: any, chainOrderId: strin
         const rel = diff / Math.max(1e-12, Math.abs(expected));
         if (rel > 1e-9 && diff > 1e-12) {
             mgr.logger?.log?.(
-                `[SYNC] Adoption (${path}) for ${chainOrderId} into slot ${adopted.id}: slot price ${got} is NOT the slot's ` +
+                `[SYNC] Adoption (${path}) for ${chainOrderId} into slot ${adopted?.id}: slot price ${got} is NOT the slot's ` +
                 `genesis level ${expected} (drift ${(rel * 100).toFixed(3)}%). Adoption must not write the chain order's price ` +
                 `into slot.price — the slot keeps its own level. Adopting anyway (the chain order is real); investigate what ` +
                 `corrupted this slot's price.`,
@@ -360,16 +465,16 @@ function adoptedSlotKeepsItsOwnPrice(mgr: any, adopted: any, chainOrderId: strin
     }
 }
 
-async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, chainOrderId: string, rawChainOrders: Map<string, any>, matchedGridOrderIds: Set<string>, chainOrderIdsOnGrid: Set<string>, filledOrders: any[], updatedOrders: any[], skipAccounting: boolean): Promise<boolean> {
+async function adoptChainOrderIntoSlot(mgr: OrderManagerLike, slot: ManagedOrder, chainOrder: ChainOrderInput, chainOrderId: string, rawChainOrders: Map<string, unknown>, matchedGridOrderIds: Set<string>, chainOrderIdsOnGrid: Set<string>, filledOrders: ManagedOrder[], updatedOrders: ManagedOrder[], skipAccounting: boolean): Promise<boolean> {
     // HOLD gate: an operator-cancelled slot stays empty. An adoption here
     // would clear the hold (any _updateOrder that gains an orderId clears
-    // it) and resurrect the cancelled level — the exact leak that
+    // it) and resurrect the cancelled level - the exact leak that
     // resurrected hand-cancelled sells on Sep 17 (surplus slot-60's chain
     // id adopted into held slot-11). Fail-closed: the orphan stays in the
     // unmatched list for cancel/defer handling instead.
     if (isSlotHeld(mgr, slot?.id)) {
         mgr.logger?.log?.(
-            `[SYNC] Adoption into ${slot?.id} refused — slot held (operator cancel); chain order ${chainOrderId} left for cancel/defer handling`,
+            `[SYNC] Adoption into ${slot?.id} refused - slot held (operator cancel); chain order ${chainOrderId} left for cancel/defer handling`,
             'info'
         );
         return false;
@@ -394,7 +499,7 @@ async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, cha
     // the slot keeps its own level in `bestMatch` (spread from `slot`).
     //
     // Size is the opposite: size IS real state, so the chain value is adopted.
-    let bestMatch: any = { ...slot };
+    let bestMatch: ManagedOrder = { ...slot };
     const wasVirtual = slot.state === ORDER_STATES.VIRTUAL;
     const wasPartial = slot.state === ORDER_STATES.PARTIAL;
     // SPREAD slots are legitimate adoption targets (typeCompat allows them),
@@ -402,28 +507,33 @@ async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, cha
     // validateOrder treats SPREAD + orderId/on-chain state as fatal
     // ILLEGAL_SPREAD_STATE, and the size precision below depends on the
     // resolved side. Every other activation path (COW rotation destinations,
-    // legacy fallback adoption, grid load) performs the same re-type.
+    // grid load) performs the same re-type.
     if (bestMatch.type === ORDER_TYPES.SPREAD && (chainOrder.type === ORDER_TYPES.BUY || chainOrder.type === ORDER_TYPES.SELL)) {
         bestMatch.type = chainOrder.type;
     }
     bestMatch.orderId = chainOrderId;
     bestMatch.state = wasVirtual ? ORDER_STATES.ACTIVE : slot.state;
     const bestMatchRaw = rawChainOrders.get(chainOrderId);
-    bestMatch.rawOnChain = bestMatchRaw ? { ...bestMatchRaw, fetchedAt: Date.now() } : bestMatchRaw;
+    bestMatch.rawOnChain = bestMatchRaw
+        ? ({ ...(bestMatchRaw as Record<string, unknown>), fetchedAt: Date.now() } as ManagedOrder['rawOnChain'])
+        : (bestMatchRaw as ManagedOrder['rawOnChain']);
     matchedGridOrderIds.add(bestMatch.id);
     if (bestMatch.rawOnChain) {
-        const rawDeferredFee = toFiniteNumber(bestMatch.rawOnChain.deferred_fee, null);
+        const rawRecord = bestMatch.rawOnChain as Record<string, unknown>;
+        const rawDeferredFee = toFiniteNumber(rawRecord.deferred_fee, null);
         if (rawDeferredFee !== null && rawDeferredFee > 0) {
             bestMatch.btsFeeState = { deferredFee: blockchainToFloat(rawDeferredFee, BTS_PRECISION) };
-        } else if (wasVirtual && rawDeferredFee !== null && rawDeferredFee <= 0 && bestMatch.rawOnChain.for_sale > 0) {
+        } else if (wasVirtual && rawDeferredFee !== null && rawDeferredFee <= 0 && Number(rawRecord.for_sale) > 0) {
             bestMatch.state = ORDER_STATES.PARTIAL;
         }
     }
-    const precision = (bestMatch.type === ORDER_TYPES.SELL) ? mgr.assets.assetA.precision : mgr.assets.assetB.precision;
+    const assets = mgr.assets;
+    if (!assets?.assetA || !assets?.assetB) return false;
+    const precision = (bestMatch.type === ORDER_TYPES.SELL) ? assets.assetA.precision : assets.assetB.precision;
     const targetInt = floatToBlockchainInt(slot.size, precision);
     const chainInt = floatToBlockchainInt(chainOrder.size, precision);
     if (targetInt !== chainInt) {
-        const updated = await applyChainSizeToGridOrder(mgr, bestMatch, chainOrder.size);
+        const updated = await applyChainSizeToGridOrder(mgr, bestMatch, toFiniteNumber(chainOrder.size));
         if (updated) bestMatch = { ...bestMatch, ...updated };
         if (chainInt > 0) {
             if (wasVirtual && bestMatch.state !== ORDER_STATES.PARTIAL) bestMatch.state = ORDER_STATES.ACTIVE;
@@ -461,53 +571,18 @@ async function adoptChainOrderIntoSlot(mgr: any, slot: any, chainOrder: any, cha
     }
     updatedOrders.push(bestMatch);
     chainOrderIdsOnGrid.add(chainOrderId);
-    // Adopted means matched: drop any deferred-orphan record so fund
-    // counting (which adds unmatched locks) never double-counts the slot.
+    // Adopted means matched: drop any deferred-orphan record so fund counting
+    // (which adds unmatched locks) never double-counts the slot.
     try { _filterUnmatchedChainOrders(mgr, chainOrderId); } catch { /* counting hygiene only */ }
     return true;
 }
 
-function computeOutOfToleranceDriftTag(mgr: any, chainOrder: any, calcToleranceFn: any) {
-    if (!mgr?.orders || !chainOrder) return null;
-    const chainPrice = toFiniteNumber(chainOrder.price);
-    if (!Number.isFinite(chainPrice)) return null;
-    const chainSize = toFiniteNumber(chainOrder.size);
-    const orderType = chainOrder.type;
-    if (orderType !== ORDER_TYPES.BUY && orderType !== ORDER_TYPES.SELL) return null;
-
-    let bestDrift: any = null;
-    for (const slot of mgr.orders.values()) {
-        if (!slot) continue;
-        if (slot.type !== orderType && slot.type !== ORDER_TYPES.SPREAD) continue;
-        if (slot.orderId) continue;
-        if (![ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL, ORDER_STATES.VIRTUAL].includes(slot.state)) continue;
-        const slotPrice = toFiniteNumber(slot.price);
-        if (!Number.isFinite(slotPrice)) continue;
-        const priceDiff = Math.abs(slotPrice - chainPrice);
-        const effectiveSize = slot.size > 0 ? toFiniteNumber(slot.size) : chainSize;
-        const tolerance = (calcToleranceFn ? (calcToleranceFn(slotPrice, effectiveSize, orderType) || 0) : 0);
-        if (priceDiff <= tolerance) continue;
-        const driftMultiplier = mgr?.config?.gridLimits?.PRICE_DRIFT_TOLERANCE_MULTIPLIER;
-        const driftBudget = tolerance * driftMultiplier;
-        if (driftBudget > 0 && priceDiff > driftBudget) continue;
-        if (!bestDrift || priceDiff < bestDrift.priceDiff) {
-            bestDrift = {
-                candidateSlotId: slot.id,
-                candidateSlotPrice: slotPrice,
-                priceDiff,
-                tolerance
-            };
-        }
-    }
-    return bestDrift;
-}
-
 class SyncEngine {
-    private manager: any;
+    private manager: OrderManagerLike;
     /**
      * @param {Object} manager - OrderManager instance
      */
-    constructor(manager: any) {
+    constructor(manager: OrderManagerLike) {
         this.manager = manager;
     }
 
@@ -579,11 +654,28 @@ class SyncEngine {
      * @param {Object} [options={}] - Sync options (e.g., { skipAccounting: true })
      * @returns {Promise<Object>} Result with filledOrders, updatedOrders, ordersNeedingCorrection
      */
-    async syncFromOpenOrders(chainOrders: any[] | null, options: Record<string, any> = {}) {
+    async syncFromOpenOrders(chainOrders: unknown[] | null, options: Record<string, unknown> = {}): Promise<SyncResult> {
         const mgr = this.manager;
 
         if (!mgr) {
             throw new Error('manager required for syncFromOpenOrders');
+        }
+        // E2 (defence in depth): a populated grid MUST have a price ladder
+        // before the first sync touches it. loadGrid (E1) and the startup gate
+        // (E3) establish that invariant; this assert exists to catch a future
+        // path that skips both. It is FAIL-CLOSED: without a ladder there is no
+        // authority for a slot's price, so the sync returns without touching
+        // the grid (no locks taken, nothing adopted, nothing queued for
+        // correction) and a structural resync re-derives the ladder. There is no
+        // tolerance matcher left to fall back to. See docs/GRID_PRICE_INVARIANT.md.
+        //
+        // Note: unlike the normal path (which snapshots the result into
+        // `_lastUnmatchedChainOrders`), this early return does NOT rewrite that
+        // snapshot. The refusal is itself the resync signal, and leaving any
+        // prior holds in place keeps the maintenance stranded-hold escalation
+        // able to act on them until the next successful sync.
+        if (!this._assertGenesisInvariant(mgr)) {
+            return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
         }
         if (!mgr._syncLock) {
             mgr.logger?.log?.('Error: syncLock not initialized', 'error');
@@ -604,21 +696,21 @@ class SyncEngine {
         const timeoutMs = TIMING.SYNC_LOCK_TIMEOUT_MS;
         const forceReleaseMs = TIMING.SYNC_LOCK_FORCE_RELEASE_AGE_MS;
         let timedOut = false;
-        let timeoutHandle: any;
-        let forceReleaseHandle: any;
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        let forceReleaseHandle: ReturnType<typeof setTimeout> | undefined;
         const syncStartedAt = Date.now();
         // Capture sync generation so the orphan callback can detect that it
         // was force-released and abort early instead of running to completion.
-        const captureGeneration = (mgr as any)._syncGeneration ?? 0;
+        const captureGeneration = mgr._syncGeneration ?? 0;
         try {
             const result = await Promise.race([
                 mgr._syncLock.acquire(async () => {
                     // Early-abort check: if forceRelease incremented _syncGeneration
                     // while we were waiting in the lock queue, this callback is
                     // orphaned and should return immediately.
-                    if (((mgr as any)._syncGeneration ?? 0) !== captureGeneration) {
+                    if ((mgr._syncGeneration ?? 0) !== captureGeneration) {
                         mgr.logger?.log?.('[SYNC] Sync abandoned: force-released before lock acquired', 'warn');
-                        return { filledOrders: [] as any[], updatedOrders: [] as any[], ordersNeedingCorrection: [] as any[], unmatchedChainOrders: [] as any[] };
+                        return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
                     }
 
                     // Snapshot the correction queue length so we can roll back
@@ -634,16 +726,16 @@ class SyncEngine {
                         mgr.accountTotalsStale = false;
                         try {
                             await mgr.fetchAccountTotals(mgr.accountId || mgr.config?.accountId);
-                        } catch (fetchErr: any) {
+                        } catch (fetchErr) {
                             mgr.logger?.log?.(`[SYNC] Stale-totals refresh failed: ${getErrorMessage(fetchErr)}`, 'warn');
                         }
                     }
 
-                    const innerResult: any = await this._doSyncFromOpenOrders(chainOrders, options);
+                    const innerResult: SyncResult = await this._doSyncFromOpenOrders(chainOrders, options);
 
                     // Re-check generation after sync completes: if forceRelease fired
                     // during the sync, this result is orphaned — discard it.
-                    if (((mgr as any)._syncGeneration ?? 0) !== captureGeneration) {
+                    if ((mgr._syncGeneration ?? 0) !== captureGeneration) {
                         mgr.logger?.log?.(
                             `[SYNC] Sync abandoned: force-released during sync (${Date.now() - syncStartedAt}ms); discarding result`,
                             'warn'
@@ -654,7 +746,7 @@ class SyncEngine {
                         if (Array.isArray(mgr.ordersNeedingPriceCorrection) && mgr.ordersNeedingPriceCorrection.length > preSyncCorrectionLen) {
                             mgr.ordersNeedingPriceCorrection.length = preSyncCorrectionLen;
                         }
-                        return { filledOrders: [] as any[], updatedOrders: [] as any[], ordersNeedingCorrection: [] as any[], unmatchedChainOrders: [] as any[] };
+                        return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
                     }
 
                     if (timedOut) {
@@ -670,7 +762,7 @@ class SyncEngine {
                         ? innerResult.unmatchedChainOrders.length
                         : 0;
                     mgr._lastUnmatchedChainOrders = unmatchedCount > 0
-                        ? innerResult.unmatchedChainOrders.map((order: any) => ({ ...order }))
+                        ? (innerResult.unmatchedChainOrders ?? []).map((order) => ({ ...(order as Record<string, unknown>) }) as UnmatchedChainOrder)
                         : [];
                     mgr._lastUnmatchedChainOrdersAt = unmatchedCount > 0 ? Date.now() : 0;
                     mgr.logger?.log?.(
@@ -689,7 +781,7 @@ class SyncEngine {
             clearTimeout(timeoutHandle);
             clearTimeout(forceReleaseHandle);
             return result;
-        } catch (err: any) {
+        } catch (err) {
             clearTimeout(timeoutHandle);
             clearTimeout(forceReleaseHandle);
             if (getErrorMessage(err)?.includes('timed out')) {
@@ -701,10 +793,10 @@ class SyncEngine {
                         if (mgr._syncLock.isLocked()) {
                             // Increment the sync generation so the orphan callback
                             // can detect it was force-released and abort early.
-                            (mgr as any)._syncGeneration = ((mgr as any)._syncGeneration || 0) + 1;
+                            mgr._syncGeneration = (mgr._syncGeneration || 0) + 1;
                             const released = mgr._syncLock.forceRelease();
                             mgr.logger?.log?.(
-                                `[SYNC] Force-released sync lock (generation=${(mgr as any)._syncGeneration}, ${released} queued ops cleared) after ${forceReleaseMs}ms grace period`,
+                                `[SYNC] Force-released sync lock (generation=${mgr._syncGeneration}, ${released} queued ops cleared) after ${forceReleaseMs}ms grace period`,
                                 'warn'
                             );
                         }
@@ -747,7 +839,7 @@ class SyncEngine {
      * @async
      * @private
      */
-    async _doSyncFromOpenOrders(chainOrders: any[] | null, options: Record<string, any>) {
+    async _doSyncFromOpenOrders(chainOrders: unknown[] | null, options: Record<string, unknown>) {
         const mgr = this.manager;
 
         // Validate inputs
@@ -779,20 +871,20 @@ class SyncEngine {
 
         // Use separate maps: parsed (floats) and raw (blockchain integers)
         // This eliminates type confusion - each map has a single, clear purpose
-        const parsedChainOrders = new Map();
-        const rawChainOrders = new Map();
+        const parsedChainOrders = new Map<string, ParsedChainOrder>();
+        const rawChainOrders = new Map<string, Record<string, unknown>>();
 
         for (const order of chainOrders) {
             try {
-                const parsed = parseChainOrder(order, mgr.assets);
+                const parsed = parseChainOrder(order as ChainOrder, mgr.assets);
                 if (!parsed) continue;
 
                 // Store parsed (converted) data in parsedChainOrders
-                parsedChainOrders.set(order.id, parsed);
+                parsedChainOrders.set((order as { id: string }).id, parsed);
                 // Store raw blockchain data in separate map - clean separation of concerns
-                rawChainOrders.set(order.id, order);
-            } catch (e: any) {
-                mgr.logger?.log?.(`Warning: Error parsing chain order ${order.id}: ${getErrorMessage(e)}`, 'warn');
+                rawChainOrders.set((order as { id: string }).id, order as Record<string, unknown>);
+            } catch (e) {
+                mgr.logger?.log?.(`Warning: Error parsing chain order ${(order as { id?: string }).id}: ${getErrorMessage(e)}`, 'warn');
                 continue;
             }
         }
@@ -816,12 +908,12 @@ class SyncEngine {
         // confirming re-read (see below). Any non-empty read
         // resets the counter.
         if (parsedChainOrders.size === 0) {
-            const gridOrderIds = Array.from(mgr.orders.values() as any[]).filter((o: any) => o?.orderId).length;
+            const gridOrderIds = (Array.from(mgr.orders.values()) as ManagedOrder[]).filter((o) => o?.orderId).length;
             if (gridOrderIds > 0) {
-                const suspect: any = (mgr as any)._suspectEmptyReads || { count: 0, firstAt: 0 };
+                const suspect = mgr._suspectEmptyReads ?? { count: 0, firstAt: 0 };
                 suspect.count += 1;
                 if (!suspect.firstAt) suspect.firstAt = Date.now();
-                (mgr as any)._suspectEmptyReads = suspect;
+                mgr._suspectEmptyReads = suspect;
                 const limit = Math.max(1, Number(TIMING.SYNC_SUSPECT_EMPTY_READ_LIMIT) || 3);
                 if (suspect.count < limit) {
                     mgr.logger?.log?.(
@@ -846,7 +938,7 @@ class SyncEngine {
                         `resetting empty-read counter; reconciling on the next non-empty sync`,
                         'warn'
                     );
-                    (mgr as any)._suspectEmptyReads = { count: 0, firstAt: 0 };
+                    mgr._suspectEmptyReads = { count: 0, firstAt: 0 };
                     return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
                 }
                 if (confirm === 'ambiguous') {
@@ -855,7 +947,7 @@ class SyncEngine {
                         `refusing reconciliation; re-confirming on the next empty read`,
                         'warn'
                     );
-                    (mgr as any)._suspectEmptyReads = { count: limit, firstAt: suspect.firstAt || Date.now() };
+                    mgr._suspectEmptyReads = { count: limit, firstAt: suspect.firstAt || Date.now() };
                     return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [], unmatchedChainOrders: [] };
                 }
                 // 'confirmed' (still empty on re-read) or 'unavailable' (no
@@ -867,12 +959,12 @@ class SyncEngine {
                     ` — reconciling to empty account`,
                     'warn'
                 );
-                (mgr as any)._suspectEmptyReads = { count: 0, firstAt: 0 };
+                mgr._suspectEmptyReads = { count: 0, firstAt: 0 };
             } else {
-                (mgr as any)._suspectEmptyReads = { count: 0, firstAt: 0 };
+                mgr._suspectEmptyReads = { count: 0, firstAt: 0 };
             }
         } else {
-            (mgr as any)._suspectEmptyReads = { count: 0, firstAt: 0 };
+            mgr._suspectEmptyReads = { count: 0, firstAt: 0 };
         }
 
         // Collect all order IDs that might be modified during reconciliation
@@ -901,10 +993,10 @@ class SyncEngine {
 
         const chainOrderIdsOnGrid = new Set<string>();
         const matchedGridOrderIds = new Set<string>();
-        const filledOrders: any[] = [];
-        const updatedOrders: any[] = [];
-        const ordersNeedingCorrection: any[] = [];
-        const unmatchedChainOrders: any[] = [];
+        const filledOrders: ManagedOrder[] = [];
+        const updatedOrders: ManagedOrder[] = [];
+        const ordersNeedingCorrection: PendingPriceCorrection[] = [];
+        const unmatchedChainOrders: UnmatchedChainOrder[] = [];
 
         // Lock orders before reconciliation
         mgr.lockOrders(orderIdsToLockFinal);
@@ -971,11 +1063,11 @@ class SyncEngine {
      * @param {Object} options - Sync options (skipAccounting, etc.)
      * @returns {Promise<any>}
      */
-    async _performSyncFromOpenOrders(mgr: any, assetAPrecision: number, assetBPrecision: number, parsedChainOrders: Map<string, any>, rawChainOrders: Map<string, any>,
-        chainOrderIdsOnGrid: Set<string>, matchedGridOrderIds: Set<string>, filledOrders: any[], updatedOrders: any[], ordersNeedingCorrection: any[], unmatchedChainOrders: any[], options: Record<string, any>) {
-        const skipAccounting = options?.skipAccounting ?? true;
+    async _performSyncFromOpenOrders(mgr: OrderManagerLike, assetAPrecision: number, assetBPrecision: number, parsedChainOrders: Map<string, ParsedChainOrder>, rawChainOrders: Map<string, Record<string, unknown>>,
+        chainOrderIdsOnGrid: Set<string>, matchedGridOrderIds: Set<string>, filledOrders: ManagedOrder[], updatedOrders: ManagedOrder[], ordersNeedingCorrection: PendingPriceCorrection[], unmatchedChainOrders: UnmatchedChainOrder[], options: Record<string, unknown>) {
+        const skipAccounting = (options?.skipAccounting ?? true) as boolean;
 
-        const queueCorrection = (entry: any) => {
+        const queueCorrection = (entry: PendingPriceCorrection) => {
             // Provenance: classify the detector so a stale replay at drain
             // time logs who queued it and when. Classification from entry
             // flags: cancelOnly orphans vs surplus/type-mismatch cancels vs
@@ -988,7 +1080,7 @@ class SyncEngine {
             ordersNeedingCorrection.push(_stampCorrectionProvenance({ ...entry }, source));
             if (!Array.isArray(mgr.ordersNeedingPriceCorrection)) return;
 
-            const existingIndex = mgr.ordersNeedingPriceCorrection.findIndex((queued: any) =>
+            const existingIndex = mgr.ordersNeedingPriceCorrection.findIndex((queued) =>
                 queued?.chainOrderId === entry.chainOrderId && Boolean(queued?.isSurplus) === Boolean(entry.isSurplus)
             );
 
@@ -1012,6 +1104,7 @@ class SyncEngine {
 
             if (gridOrder.orderId && parsedChainOrders.has(gridOrder.orderId)) {
                 const chainOrder = parsedChainOrders.get(gridOrder.orderId);
+                if (!chainOrder) continue;
                 let updatedOrder = { ...gridOrder };
                 chainOrderIdsOnGrid.add(gridOrder.orderId);
                 // Store raw blockchain data in grid slot for later update calculation.
@@ -1022,8 +1115,8 @@ class SyncEngine {
                 // of the grid baseline at this point).
                 const rawSnapshot = rawChainOrders.get(gridOrder.orderId);
                 updatedOrder.rawOnChain = rawSnapshot
-                    ? { ...rawSnapshot, fetchedAt: Date.now() }
-                    : rawSnapshot;
+                    ? ({ ...rawSnapshot, fetchedAt: Date.now() } as ManagedOrder['rawOnChain'])
+                    : (rawSnapshot as ManagedOrder['rawOnChain']);
 
                 // Side mismatch: keep slot untouched and queue cancellation for stale chain order.
                 if (gridOrder.type !== chainOrder.type) {
@@ -1045,17 +1138,12 @@ class SyncEngine {
                     });
                     continue;
                 } else {
-                    const genesisForPass1 = (mgr as any)._genesis;
-                    let isPriceEqual = false;
-                    if (genesisForPass1 && Array.isArray(genesisForPass1.priceLevels)) {
-                        const precision = gridOrder.type === ORDER_TYPES.SELL ? assetAPrecision : assetBPrecision;
-                        // Genesis path: single epsilon via integer round-trip
-                        try { isPriceEqual = priceSlotEqual(chainOrder.price, gridOrder.price, precision); } catch { isPriceEqual = chainOrder.price === gridOrder.price; }
-                    } else {
-                        const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, mgr.assets);
-                        const normalizedTolerance = (priceTolerance === null) ? 0 : priceTolerance;
-                        isPriceEqual = Math.abs(chainOrder.price - gridOrder.price) <= normalizedTolerance;
-                    }
+                    // "Did the chain order move?" is level identity: both prices
+                    // must map to the same slot (see chainPriceOnSameLevel). A
+                    // drift of a few quanta inside one level is normal and must
+                    // not queue a price correction.
+                    const precision = gridOrder.type === ORDER_TYPES.SELL ? assetAPrecision : assetBPrecision;
+                    const isPriceEqual = chainPriceOnSameLevel(chainOrder.price, gridOrder.price, mgr._genesis, precision);
                     if (!isPriceEqual) {
                         queueCorrection({
                             gridOrder: { ...gridOrder },
@@ -1086,23 +1174,17 @@ class SyncEngine {
                     // the other one. Rebind the slot to it; the previously
                     // tracked order falls through to pass 2 as a duplicate-
                     // price orphan and is queued for cancellation there.
-                    let swapMatch: any = null;
+                    let swapMatch: { id: string; order: ParsedChainOrder } | null = null;
                     if (currentSizeInt > 0) {
                         for (const [candidateId, candidateOrder] of parsedChainOrders) {
                             if (candidateId === gridOrder.orderId) continue;
                             if (chainOrderIdsOnGrid.has(candidateId)) continue;
                             if (!candidateOrder || candidateOrder.type !== chainOrder.type) continue;
-                            // Per-candidate price check: genesis → priceSlotEqual, else tolerance
-                            const genesisForSwap = (mgr as any)._genesis;
-                            let swapPriceEqual = false;
-                            if (genesisForSwap && Array.isArray(genesisForSwap.priceLevels)) {
-                                const precision = gridOrder.type === ORDER_TYPES.SELL ? assetAPrecision : assetBPrecision;
-                                try { swapPriceEqual = priceSlotEqual(candidateOrder.price, gridOrder.price, precision); } catch { swapPriceEqual = candidateOrder.price === gridOrder.price; }
-                            } else {
-                                const candidateTolerance = calculatePriceTolerance(Math.min(candidateOrder.price, gridOrder.price), Math.max(candidateOrder.size, gridOrder.size), gridOrder.type, mgr.assets);
-                                swapPriceEqual = Math.abs(candidateOrder.price - gridOrder.price) <= (candidateTolerance ?? 0);
-                            }
-                            if (!swapPriceEqual) continue;
+                            // Price check: the candidate must belong to the same
+                            // ladder level as the slot (the swap tiebreak's whole
+                            // premise — a duplicate at this level).
+                            const precision = gridOrder.type === ORDER_TYPES.SELL ? assetAPrecision : assetBPrecision;
+                            if (!chainPriceOnSameLevel(candidateOrder.price, gridOrder.price, mgr._genesis, precision)) continue;
                             if (floatToBlockchainInt(candidateOrder.size, precision) !== currentSizeInt) continue;
                             swapMatch = { id: candidateId, order: candidateOrder };
                             break;
@@ -1110,11 +1192,11 @@ class SyncEngine {
                     }
                     if (swapMatch) {
                         const swapRaw = rawChainOrders.get(swapMatch.id);
-                        const reboundOrder: any = {
+                        const reboundOrder: ManagedOrder = {
                             ...gridOrder,
                             orderId: swapMatch.id,
                             rawOnChain: swapRaw
-                                ? { ...swapRaw, fetchedAt: Date.now() }
+                                ? ({ ...swapRaw, fetchedAt: Date.now() } as ManagedOrder['rawOnChain'])
                                 : gridOrder.rawOnChain,
                         };
                         // Restore fee lifecycle / partial-fill evidence from the
@@ -1122,11 +1204,12 @@ class SyncEngine {
                         // pass-2 adoption path below: deferred_fee > 0 → fee
                         // state; deferred_fee === 0 with for_sale > 0 → the
                         // order was partially filled).
-                        const rawDeferredFee = toFiniteNumber(reboundOrder.rawOnChain?.deferred_fee, null);
+                        const reboundRaw = reboundOrder.rawOnChain as Record<string, unknown> | null | undefined;
+                        const rawDeferredFee = toFiniteNumber(reboundRaw?.deferred_fee, null);
                         if (rawDeferredFee !== null && rawDeferredFee > 0) {
                             reboundOrder.btsFeeState = { deferredFee: blockchainToFloat(rawDeferredFee, BTS_PRECISION) };
                         } else if (rawDeferredFee !== null && rawDeferredFee <= 0
-                            && toFiniteNumber(reboundOrder.rawOnChain?.for_sale, 0) > 0) {
+                            && toFiniteNumber(reboundRaw?.for_sale, 0) > 0) {
                             reboundOrder.state = ORDER_STATES.PARTIAL;
                         }
                         const applied = await mgr._applyOrderUpdate(reboundOrder, 'sync-pass1-duplicate-swap', { skipAccounting: skipAccounting, fee: 0 });
@@ -1234,7 +1317,7 @@ class SyncEngine {
                 // at 3s each). Prevents permanent stall when a fill event was missed
                 // (reconnect gap, lossy subscription) and the only detection path is
                 // this open-orders sync.
-                if (mgr._committedOrderIds?.has(gridOrder.orderId)) {
+                if (gridOrder.orderId != null && mgr._committedOrderIds?.has(gridOrder.orderId)) {
                     const commitAge = Date.now() - (mgr._committedOrderIdsBuiltAt || 0);
                     const isGhost = gridOrder.size <= 0 && gridOrder.state === ORDER_STATES.PARTIAL;
                     if (!isGhost && commitAge < TIMING.SYNC_LOCK_TIMEOUT_MS) {
@@ -1305,10 +1388,16 @@ class SyncEngine {
         // ====================================================================
         // PASS 2: CHAIN → GRID - Nearest-slot deterministic adoption (genesis-frozen)
         // ====================================================================
-        const genesis = (mgr as any)._genesis;
-        const hasGenesis = genesis && Array.isArray(genesis.priceLevels) && genesis.priceLevels.length > 0;
-        const anchorPrice = hasGenesis ? genesis.startPrice : mgr.config?.startPrice;
-        const sortedChainEntries = [...parsedChainOrders.entries()].sort((a: any, b: any) => {
+        const genesis = mgr._genesis;
+        const genesisLadder = genesis as Parameters<typeof slotIndexForPrice>[1];
+        // Genesis is mandatory for any populated grid, but an EMPTY grid
+        // (slotCount 0) passes the E2 gate without a ladder, so the
+        // `!hasGenesis` branch below is reachable when live chain orders exist
+        // against no slots. There the anchor is meaningless and only orders the
+        // deferred holds (every price is measured against 0, i.e. ascending).
+        const hasGenesis = hasGenesisLadder(genesis);
+        const anchorPrice = hasGenesis ? (genesis?.startPrice ?? 0) : 0;
+        const sortedChainEntries = [...parsedChainOrders.entries()].sort((a, b) => {
             const pa = toFiniteNumber(a[1].price);
             const pb = toFiniteNumber(b[1].price);
             const da = Number.isFinite(pa) && Number.isFinite(anchorPrice) ? Math.abs(pa - anchorPrice) : Infinity;
@@ -1378,241 +1467,98 @@ class SyncEngine {
                 continue;
             }
 
-            // Genesis path: nearest-slot is single authority (no tolerance)
-            if (hasGenesis) {
-                let idx: number;
-                try { idx = slotIndexForPrice(chainOrder.price, genesis); } catch {
-                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot' });
-                    queueCorrection({ gridOrder: { id: `slot-unknown-${chainOrderId}`, type: chainOrder.type } as any, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
-                    continue;
-                }
-                const slotId = `slot-${idx}`;
-                // Out-of-grid hold: slotIndexForPrice clamps below/above-rail
-                // prices onto the edge slots (0/N-1), so the clamp is not a
-                // real match. A below-grid buy is not slot-0 and an
-                // above-grid sell is not slot-(N-1): never adopt into the
-                // rail slot and never cancel as its duplicate — hold/defer
-                // (no adopt, no cancelOnly), e.g. dip-protection levels
-                // sitting below a fresh grid after a reset.
-                {
-                    const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-                    if (isChainPriceOutOfGrid(chainOrder.price, genesis, precision)) {
-                        unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'out-of-grid-deferred', candidateSlotId: slotId });
-                        mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: price outside grid range, deferred (nearest slot ${slotId})`, 'warn');
-                        continue;
-                    }
-                }
-                const gapSlots = genesis.gapSlots ?? (mgr as any)._gapSlots ?? 0;
-                const boundaryIdx = (mgr as any).boundaryIdx;
-                // Pre-boundary sync: gap geometry is unknown, so adoption is
-                // deferred entirely — touch nothing (no adopt, no cancelOnly).
-                // The orphan stays visible to the crossing guards and the
-                // validate orphan layer via _lastUnmatchedChainOrders and is
-                // re-evaluated once the boundary commits. Accepted cost: a
-                // legitimate in-rail orphan waits one sync cycle
-                // post-boundary-commit before adoption. Strictly better than
-                // adopting a gap stray into the wrong slot.
-                if (boundaryIdx == null || !Number.isFinite(Number(boundaryIdx))) {
-                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'boundary-unknown-deferred', candidateSlotId: slotId });
-                    mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: boundary unknown, deferred until boundary commits (nearest slot ${slotId})`, 'warn');
-                    continue;
-                }
-                // Duplicate-price guard becomes slotId equality: if placed order already occupies this slot
-                const occupying = mgr.orders.get(slotId);
-                if (occupying && isOrderPlaced(occupying) && occupying.type === chainOrder.type) {
-                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'duplicate-price-level', candidateSlotId: slotId });
-                    const { level, suffix } = duplicateOrphanLogInfo(chainOrderId);
-                    mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: duplicates slot ${slotId} (${occupying.orderId})${suffix}`, level);
-                    queueCorrection({ gridOrder: occupying, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
-                    continue;
-                }
-                // Gap exclusion: nearest slot in SPREAD gap → no adopt (boundary
-                // is known here — the pre-boundary case continued above).
-                {
-                    const inRail = isSlotInRail(boundaryIdx, gapSlots, chainOrder.type, { id: slotId } as any);
-                    if (!inRail) {
-                        unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot', candidateSlotId: slotId });
-                        queueCorrection({ gridOrder: { id: slotId, type: chainOrder.type } as any, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
-                        continue;
-                    }
-                }
-                const slot: any = mgr.orders.get(slotId);
-                if (!slot || matchedGridOrderIds.has(slot.id) || slot.orderId) {
-                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot', candidateSlotId: slotId });
-                    const diag = describeNearestAdoptionCandidates(mgr, chainOrder, (chainOrder.type === ORDER_TYPES.SELL ? assetAPrecision : assetBPrecision), (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets), matchedGridOrderIds);
-                    mgr.logger?.log?.(`[SYNC] Unmatched chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}): nearest slot ${slotId} not adoptable. Nearest candidates: ${diag}`, 'warn');
-                    continue;
-                }
-                const typeCompat = slot.type === chainOrder.type || slot.type === ORDER_TYPES.SPREAD;
-                if (!typeCompat) {
-                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot', candidateSlotId: slotId });
-                    continue;
-                }
-                const adopted = await adoptChainOrderIntoSlot(mgr, slot, chainOrder, chainOrderId, rawChainOrders, matchedGridOrderIds, chainOrderIdsOnGrid, filledOrders, updatedOrders, skipAccounting);
-                if (!adopted) {
-                    // Order update was rejected (fatal validation) — the chain
-                    // order stays untracked and must not dangle on the book.
-                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'adoption-rejected', candidateSlotId: slotId });
-                    queueCorrection({ gridOrder: slot, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
-                    mgr.logger?.log?.(`[SYNC] Chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}) NOT adopted into slot ${slotId}: order update rejected — queued for cancellation`, 'error');
-                }
-                continue;
-            }
-
-            // Legacy fallback when genesis unavailable (migration)
-            const duplicatePriceOrder: any = Array.from(mgr.orders.values()).find((o: any) => {
-                const co: any = chainOrder;
-                return o.type === co.type && isOrderPlaced(o) && co != null && Math.abs(o.price - co.price) <= (calculatePriceTolerance as any)(Math.min(o.price, co.price), Math.max(o.size, co.size), o.type, mgr.assets);
-            });
-            if (duplicatePriceOrder) {
-                // Deep-shelf orphans are exempt from duplicate cancellation:
-                // extra live pins beyond the shelf count stay live (warned),
-                // they are never cancelled as price-level duplicates here.
-                // Aligned to the upstream out-of-grid hold framework so the
-                // create gate, collision set and snapshot recovery treat
-                // them as holds, not blockers.
-                if (chainOrder.type === ORDER_TYPES.BUY && deepPriceIndex(chainOrder.price) >= 0) {
-                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'out-of-grid-deferred' });
-                    mgr.logger?.log?.(`[SYNC] Deep-shelf orphan ${chainOrderId} (buy, price=${chainOrder.price}) deferred: shelf full — leaving live, no cancel`, 'warn');
-                    continue;
-                }
-                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'duplicate-price-level', candidateSlotId: duplicatePriceOrder.id });
-                const { level, suffix } = duplicateOrphanLogInfo(chainOrderId);
-                mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: duplicates price level of active ${duplicatePriceOrder.id} (${duplicatePriceOrder.orderId} at ${duplicatePriceOrder.price})${suffix}`, level);
-                queueCorrection({ gridOrder: duplicatePriceOrder, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
-                continue;
-            }
-            const match = findMatchingGridOrderByOpenOrder(
-                { orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size },
-                { orders: mgr.orders, assets: mgr.assets, calcToleranceFn: (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger, allowSmallerChainSize: true, requireAvailableSlot: true, excludeGridOrderIds: matchedGridOrderIds }
-            );
-            if (match && !matchedGridOrderIds.has(match.id)) {
-                const adopted = await adoptChainOrderIntoSlot(mgr, match, chainOrder, chainOrderId, rawChainOrders, matchedGridOrderIds, chainOrderIdsOnGrid, filledOrders, updatedOrders, skipAccounting);
-                if (!adopted) {
-                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'adoption-rejected', candidateSlotId: match.id });
-                    queueCorrection({ gridOrder: match, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
-                    mgr.logger?.log?.(`[SYNC] Chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}) NOT adopted into slot ${match.id}: order update rejected — queued for cancellation`, 'error');
-                }
-            } else if (match) {
-                mgr.logger?.log?.(`Warning: Orphan chain order ${chainOrderId} matched grid order ${match.id}, but grid order was already matched to another chain order. Queuing orphan for cancellation.`, 'warn');
-                queueCorrection({ gridOrder: match, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
-                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'already-matched-slot', candidateSlotId: match.id });
-            } else {
-                // Legacy spread-orphan fallback: adopt into nearest VIRTUAL/spread slot (allowSpreadType + skipSizeMatch) with widened tolerance
-                const adoptedSlot = findMatchingGridOrderByOpenOrder(
-                    { orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size },
-                    {
-                        orders: mgr.orders,
-                        assets: mgr.assets,
-                        calcToleranceFn: (p: number, s: number, t: any) => {
-                            const strict = calculatePriceTolerance(p, s, t, mgr.assets);
-                            const mult = (mgr?.config?.gridLimits?.ORPHAN_ADOPTION_TOLERANCE_MULTIPLIER as number) || 4;
-                            return strict == null ? null : strict * mult;
-                        },
-                        allowSpreadType: true,
-                        skipSizeMatch: true,
-                        requireAvailableSlot: true,
-                        excludeGridOrderIds: matchedGridOrderIds
-                    }
+            // Genesis is mandatory (INV-GRID-004): the frozen ladder is the single
+            // authority for which slot a chain order belongs to. No tolerance
+            // matcher remains — the E2 gate refuses to sync a ladder-less grid and
+            // loadGrid cannot produce one — so this guard is defence in depth
+            // against a future bypass, not a supported state. A chain order is
+            // never price-matched into a slot.
+            if (!hasGenesis) {
+                // No candidateSlotId: without a ladder no slot index can be
+                // derived, so there is nothing meaningful to name (unlike the
+                // out-of-grid / rail holds, which have a resolved nearest slot).
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-genesis-deferred' });
+                mgr.logger?.log?.(
+                    `[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: the grid has no price ladder (INV-GRID-004); deferred, never price-matched`,
+                    'error'
                 );
-                if (adoptedSlot && !matchedGridOrderIds.has(adoptedSlot.id) && !adoptedSlot.orderId) {
-                    // HOLD gate (legacy fallback parity): same refusal as
-                    // adoptChainOrderIntoSlot above.
-                    if (isSlotHeld(mgr, adoptedSlot.id)) {
-                        unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'slot-held-deferred', candidateSlotId: adoptedSlot.id });
-                        mgr.logger?.log?.(`[SYNC] Adoption into ${adoptedSlot.id} refused — slot held (operator cancel); chain order ${chainOrderId} left for cancel/defer handling`, 'info');
-                        continue;
-                    }
-                    const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-                    // Legacy path parity with the genesis adoption path: the
-                    // slot's price is its GENESIS level and is never overwritten
-                    // with the chain order's price. Adopting chainOrder.price
-                    // here made the slot's price whichever price happened to be
-                    // on the book, which is how an off-grid order could become a
-                    // grid level and then be re-emitted as a plan price. The
-                    // size below is still the chain value: size is real state,
-                    // price is a ladder position.
-                    const legacyRail = isSlotInRail(
-                        (mgr as any).boundaryIdx,
-                        (mgr as any)._gapSlots ?? 0,
-                        chainOrder.type,
-                        adoptedSlot
-                    );
-                    if (!legacyRail) {
-                        unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'out-of-rail-deferred', candidateSlotId: adoptedSlot.id });
-                        mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted into slot ${adoptedSlot.id}: slot is outside the active rail for a ${chainOrder.type}; deferred`, 'warn');
-                        continue;
-                    }
-                    const chainInt = floatToBlockchainInt(chainOrder.size, precision);
-                    const adoptedRaw = rawChainOrders.get(chainOrderId);
-                    const adoptedState = chainInt > 0 ? ORDER_STATES.PARTIAL : ORDER_STATES.VIRTUAL;
-                    const adoptedBtsFeeState = (adoptedRaw) ? (() => {
-                        const rawFee = toFiniteNumber(adoptedRaw.deferred_fee, null);
-                        return rawFee !== null && rawFee > 0 ? { deferredFee: blockchainToFloat(rawFee, BTS_PRECISION) } : undefined;
-                    })() : undefined;
-                    // ADOPTION NEVER TAKES THE CHAIN ORDER'S PRICE (legacy parity).
-                    //
-                    // Same rule as adoptChainOrderIntoSlot, stated here because
-                    // this path is the one that used to get it wrong: it set
-                    // `price: chainOrder.price`, so a slot's id and its price
-                    // could disagree — an off-grid order became a grid level and
-                    // was then re-emitted as a plan price (S1).
-                    //
-                    // `...adoptedSlot` below carries the slot's own level and
-                    // `price` is deliberately NOT reassigned. A differing
-                    // chainOrder.price is expected (a regeneration leaves old
-                    // orders resting at old levels) and is not corruption; it
-                    // simply is not this slot's price.
-                    //
-                    // Size differs: size is real state, so the chain value is
-                    // adopted. Price is a ladder position; it is not.
-                    const adoptedOrder = {
-                        ...adoptedSlot,
-                        orderId: chainOrderId,
-                        type: chainOrder.type,
-                        state: adoptedState,
-                        size: chainOrder.size,
-                        rawOnChain: adoptedRaw ? { ...adoptedRaw, fetchedAt: Date.now() } : adoptedRaw,
-                        ...(adoptedBtsFeeState ? { btsFeeState: adoptedBtsFeeState } : {}),
-                    };
-                    adoptedSlotKeepsItsOwnPrice(mgr, adoptedOrder, chainOrderId, 'legacy-fallback');
-                    const applied = await mgr._applyOrderUpdate(adoptedOrder, 'sync-pass2-adopt-orphan', { skipAccounting: skipAccounting, fee: 0 });
-                    if (applied === false) {
-                        // Fatal rejection: parity with the genesis adoption path —
-                        // the slot must not be marked matched and the chain order
-                        // must not dangle untracked on the book.
-                        unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'adoption-rejected', candidateSlotId: adoptedSlot.id });
-                        queueCorrection({ gridOrder: adoptedSlot, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
-                        mgr.logger?.log?.(`[SYNC] Chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}) NOT adopted into slot ${adoptedSlot.id}: order update rejected — queued for cancellation`, 'error');
-                        continue;
-                    }
-                    matchedGridOrderIds.add(adoptedSlot.id);
-                    chainOrderIdsOnGrid.add(chainOrderId);
-                    updatedOrders.push(adoptedOrder);
-                    // Phase 4 attribution: log the adoption slot's geometry
-                    // (idx vs frozen boundary/gap) so the next re-map incident
-                    // can tell an in-rail adoption from a gap-band re-map
-                    // without on-chain archaeology.
-                    let adoptGeo = '';
-                    try {
-                        const adoptIdx = parseSlotIndex(adoptedSlot.id);
-                        const adoptB = Number((mgr as any)?.boundaryIdx);
-                        const adoptG = Number((mgr as any)?._gapSlots);
-                        if (adoptIdx !== null && adoptIdx !== undefined && Number.isFinite(adoptB) && Number.isFinite(adoptG)) {
-                            const inBand = isSlotIndexInGapBand(adoptIdx, adoptB, adoptG);
-                            adoptGeo = ` geo(idx=${adoptIdx},boundary=${adoptB},gap=${adoptG},sellStart=${getSellStartIdx(adoptB, adoptG)},band=${inBand ? 'gap' : 'rail'})`;
-                        }
-                    } catch { /* geometry is diagnostic-only */ }
-                    mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) adopted into slot ${adoptedSlot.id} (was ${adoptedSlot.type})${adoptGeo}`, 'warn');
-                } else {
-                    const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-                    const candidateDiagnostics = describeNearestAdoptionCandidates(mgr, chainOrder, precision, (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets), matchedGridOrderIds);
-                    const driftTag = computeOutOfToleranceDriftTag(mgr, chainOrder, (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets));
-                    const unmatchedEntry: Record<string, any> = { chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), candidateDiagnostics };
-                    if (driftTag) { unmatchedEntry.reason = 'price-drift-orphan'; unmatchedEntry.candidateSlotId = driftTag.candidateSlotId; unmatchedEntry.candidateSlotPrice = driftTag.candidateSlotPrice; unmatchedEntry.priceDiff = driftTag.priceDiff; unmatchedEntry.tolerance = driftTag.tolerance; }
-                    unmatchedChainOrders.push(unmatchedEntry);
-                    mgr.logger?.log?.(`[SYNC] Unmatched chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}): no adoptable slot found` + (driftTag ? ` (price-drift-orphan slot=${driftTag.candidateSlotId}@${driftTag.candidateSlotPrice} diff=${driftTag.priceDiff} tol=${driftTag.tolerance})` : '') + `. Nearest candidates: ${candidateDiagnostics}`, 'warn');
+                continue;
+            }
+            let idx: number;
+            try { idx = slotIndexForPrice(chainOrder.price, genesisLadder); } catch {
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot' });
+                queueCorrection({ gridOrder: { id: `slot-unknown-${chainOrderId}`, type: chainOrder.type } as unknown as ManagedOrder, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
+                continue;
+            }
+            const slotId = `slot-${idx}`;
+            // Out-of-grid hold: slotIndexForPrice clamps below/above-rail
+            // prices onto the edge slots (0/N-1), so the clamp is not a
+            // real match. A below-grid buy is not slot-0 and an
+            // above-grid sell is not slot-(N-1): never adopt into the
+            // rail slot and never cancel as its duplicate — hold/defer
+            // (no adopt, no cancelOnly), e.g. dip-protection levels
+            // sitting below a fresh grid after a reset.
+            {
+                const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
+                if (isChainPriceOutOfGrid(chainOrder.price, genesisLadder, precision)) {
+                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'out-of-grid-deferred', candidateSlotId: slotId });
+                    mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: price outside grid range, deferred (nearest slot ${slotId})`, 'warn');
+                    continue;
                 }
+            }
+            const gapSlots = genesis?.gapSlots ?? mgr._gapSlots ?? 0;
+            const boundaryIdx = mgr.boundaryIdx;
+            // Pre-boundary sync: gap geometry is unknown, so adoption is
+            // deferred entirely — touch nothing (no adopt, no cancelOnly).
+            // The orphan stays visible to the crossing guards and the
+            // validate orphan layer via _lastUnmatchedChainOrders and is
+            // re-evaluated once the boundary commits. Accepted cost: a
+            // legitimate in-rail orphan waits one sync cycle
+            // post-boundary-commit before adoption. Strictly better than
+            // adopting a gap stray into the wrong slot.
+            if (boundaryIdx == null || !Number.isFinite(Number(boundaryIdx))) {
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'boundary-unknown-deferred', candidateSlotId: slotId });
+                mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: boundary unknown, deferred until boundary commits (nearest slot ${slotId})`, 'warn');
+                continue;
+            }
+            // Duplicate-price guard becomes slotId equality: if placed order already occupies this slot
+            const occupying = mgr.orders.get(slotId);
+            if (occupying && isOrderPlaced(occupying) && occupying.type === chainOrder.type) {
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'duplicate-price-level', candidateSlotId: slotId });
+                const { level, suffix } = duplicateOrphanLogInfo(chainOrderId);
+                mgr.logger?.log?.(`[SYNC] Orphaned chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}) — NOT adopted: duplicates slot ${slotId} (${occupying.orderId})${suffix}`, level);
+                queueCorrection({ gridOrder: occupying, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
+                continue;
+            }
+            // Gap exclusion: nearest slot in SPREAD gap → no adopt (boundary
+            // is known here — the pre-boundary case continued above).
+            {
+                const inRail = isSlotInRail(boundaryIdx, gapSlots, chainOrder.type, { id: slotId });
+                if (!inRail) {
+                    unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot', candidateSlotId: slotId });
+                    queueCorrection({ gridOrder: { id: slotId, type: chainOrder.type } as unknown as ManagedOrder, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
+                    continue;
+                }
+            }
+            const slot = mgr.orders.get(slotId);
+            if (!slot || matchedGridOrderIds.has(slot.id) || slot.orderId) {
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot', candidateSlotId: slotId });
+                const diag = describeNearestAdoptionCandidates(mgr, chainOrder, (chainOrder.type === ORDER_TYPES.SELL ? assetAPrecision : assetBPrecision), matchedGridOrderIds);
+                mgr.logger?.log?.(`[SYNC] Unmatched chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}, size=${chainOrder.size}): nearest slot ${slotId} not adoptable. Nearest candidates: ${diag}`, 'warn');
+                continue;
+            }
+            const typeCompat = slot.type === chainOrder.type || slot.type === ORDER_TYPES.SPREAD;
+            if (!typeCompat) {
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'no-available-nearest-slot', candidateSlotId: slotId });
+                continue;
+            }
+            const adopted = await adoptChainOrderIntoSlot(mgr, slot, chainOrder, chainOrderId, rawChainOrders, matchedGridOrderIds, chainOrderIdsOnGrid, filledOrders, updatedOrders, skipAccounting);
+            if (!adopted) {
+                // Order update was rejected (fatal validation) — the chain
+                // order stays untracked and must not dangle on the book.
+                unmatchedChainOrders.push({ chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size, raw: rawChainOrders.get(chainOrderId), reason: 'adoption-rejected', candidateSlotId: slotId });
+                queueCorrection({ gridOrder: slot, chainOrderId, expectedPrice: chainOrder.price, size: chainOrder.size, type: chainOrder.type, isSurplus: true, cancelOnly: true });
+                mgr.logger?.log?.(`[SYNC] Chain order ${chainOrderId} (${chainOrder.type}, price=${chainOrder.price}) NOT adopted into slot ${slotId}: order update rejected — queued for cancellation`, 'error');
             }
         }
 
@@ -1624,7 +1570,7 @@ class SyncEngine {
     // syncFromFillHistoryBatch)
     // ------------------------------------------------------------------
 
-    _findMatchingGridOrder(mgr: any, orderId: any) {
+    _findMatchingGridOrder(mgr: OrderManagerLike, orderId: string | null | undefined): ManagedOrder | null {
         for (const gridOrder of mgr.orders.values()) {
             if (gridOrder.orderId === orderId && (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL)) {
                 return gridOrder;
@@ -1633,7 +1579,9 @@ class SyncEngine {
         return null;
     }
 
-    _computeFillContext(mgr: any, matchedGridOrder: any, paysAssetId: any, paysAmountRaw: any) {
+    _computeFillContext(mgr: OrderManagerLike, matchedGridOrder: ManagedOrder, paysAssetId: string | null | undefined, paysAmountRaw: number) {
+        const assets = mgr.assets;
+        if (!assets?.assetA || !assets?.assetB) throw new Error('assets required for fill context');
         // A SPREAD slot can carry an on-chain order (e.g. spread-correction
         // activation). Resolve the real side from the fill's pays asset so the
         // transition result is BUY/SELL — never SPREAD with an on-chain state,
@@ -1641,20 +1589,20 @@ class SyncEngine {
         // pays asset matches neither side (malformed fill event), fall back to
         // the price-vs-startPrice convention so the type can never leak SPREAD
         // into a fill result (which would drop the boundary shift downstream).
-        let orderType = matchedGridOrder.type;
+        let orderType: OrderType = matchedGridOrder.type;
         if (orderType === ORDER_TYPES.SPREAD) {
-            if (paysAssetId === mgr.assets.assetB.id) orderType = ORDER_TYPES.BUY;
-            else if (paysAssetId === mgr.assets.assetA.id) orderType = ORDER_TYPES.SELL;
-            else orderType = resolveSpreadOrderSide(matchedGridOrder.price, mgr.config.startPrice);
+            if (paysAssetId === assets.assetB.id) orderType = ORDER_TYPES.BUY;
+            else if (paysAssetId === assets.assetA.id) orderType = ORDER_TYPES.SELL;
+            else orderType = resolveSpreadOrderSide(matchedGridOrder.price, mgr.config.startPrice) as OrderType;
         }
         const currentSize = toFiniteNumber(matchedGridOrder.size);
-        const precision = (orderType === ORDER_TYPES.SELL) ? mgr.assets.assetA.precision : mgr.assets.assetB.precision;
+        const precision = (orderType === ORDER_TYPES.SELL) ? assets.assetA.precision : assets.assetB.precision;
 
         let filledAmount = 0;
         if (orderType === ORDER_TYPES.SELL) {
-            if (paysAssetId === mgr.assets.assetA.id) filledAmount = blockchainToFloat(paysAmountRaw, precision);
+            if (paysAssetId === assets.assetA.id) filledAmount = blockchainToFloat(paysAmountRaw, precision);
         } else {
-            if (paysAssetId === mgr.assets.assetB.id) filledAmount = blockchainToFloat(paysAmountRaw, precision);
+            if (paysAssetId === assets.assetB.id) filledAmount = blockchainToFloat(paysAmountRaw, precision);
         }
 
         const currentSizeIntFromGrid = floatToBlockchainInt(currentSize, precision);
@@ -1665,7 +1613,7 @@ class SyncEngine {
         return { orderType, currentSize, precision, filledAmount, currentSizeIntFromGrid, rawForSaleInt, driftSignal };
     }
 
-    async _computeFillTransitionResult(mgr: any, params: any) {
+    async _computeFillTransitionResult(mgr: OrderManagerLike, params: FillTransitionParams) {
         const { matchedGridOrder, orderType, precision, filledAmount, filledAmountInt, currentSizeIntFromGrid, chainRefetched, chainConfirmsEmpty, effectiveRawForSale, blockNum, historyId, isMaker } = params;
 
         let resolvedChainConfirmsEmpty = chainConfirmsEmpty;
@@ -1700,10 +1648,11 @@ class SyncEngine {
         // Verified fills stay authoritative (rotation proceeds), but the leftover
         // dust is handled by an explicit cancel rather than trusting the chain to
         // sweep it.
-        let residualCancel: { orderId: string; id: string } | null = null;
+        let residualCancel: { orderId: string | null; id: string } | null = null;
 
         if (!isEffectivelyFull) {
-            const otherPrecision = (orderType === ORDER_TYPES.SELL) ? mgr.assets.assetB.precision : mgr.assets.assetA.precision;
+            const assets = mgr.assets!;
+            const otherPrecision = (orderType === ORDER_TYPES.SELL) ? assets.assetB.precision : assets.assetA.precision;
             const otherSidePrice = matchedGridOrder.price;
             const otherSize = (orderType === ORDER_TYPES.SELL) ? newSize * otherSidePrice : newSize / otherSidePrice;
 
@@ -1735,16 +1684,16 @@ class SyncEngine {
                     residualForSale = Math.round(effectiveRawForSale);
                 } else {
                     try {
-                        const residualOrder = await readSingleOrderSeam(mgr, matchedGridOrder.orderId, 3000);
-                        residualForSale = residualOrder ? toFiniteNumber(residualOrder.for_sale, null) : null;
-                    } catch (residualErr: any) {
+                        const residualOrder = await readSingleOrderSeam(mgr, matchedGridOrder.orderId ?? '', 3000);
+                        residualForSale = residualOrder ? toFiniteNumber((residualOrder as { for_sale?: number }).for_sale, null) : null;
+                    } catch (residualErr) {
                         // The read is best-effort: if it fails, fall back to the old
                         // behavior (rely on reconciliation) rather than blocking the
                         // authoritative fill transition.
                         mgr.logger.log(
                             `[SYNC] Order ${matchedGridOrder.orderId} (slot ${matchedGridOrder.id}) other-side (${otherSize}) rounds to 0. ` +
                             `Fill is authoritative: treating as full fill for rotation. Residual verification read failed (${getErrorMessage(residualErr)}); ` +
-                            `relying on reconciliation for any residual.`,
+                            `relying on reconciliation for residuals.`,
                             'warn'
                         );
                     }
@@ -1767,9 +1716,9 @@ class SyncEngine {
             }
         }
 
-        let fullUpdate;
-        let partialUpdate;
-        let filledOrderResult;
+        let fullUpdate: ManagedOrder | undefined;
+        let partialUpdate: ManagedOrder | undefined;
+        let filledOrderResult: ManagedOrder & { blockNum?: number; historyId?: string; isMaker?: boolean };
 
         if (isEffectivelyFull) {
             fullUpdate = convertToSpreadPlaceholder(matchedGridOrder);
@@ -1791,7 +1740,7 @@ class SyncEngine {
                 isMaker
             };
             const { btsFeeState, ...matchedWithoutDeferredFee } = matchedGridOrder;
-            let updatedOrder = { ...matchedWithoutDeferredFee, type: orderType, state: ORDER_STATES.PARTIAL };
+            let updatedOrder: ManagedOrder = { ...matchedWithoutDeferredFee, type: orderType, state: ORDER_STATES.PARTIAL };
 
             if (updatedOrder.rawOnChain && updatedOrder.rawOnChain.for_sale !== undefined) {
                 const baselineForSale = (chainRefetched && Number.isFinite(effectiveRawForSale))
@@ -1828,7 +1777,7 @@ class SyncEngine {
      * @param {Object} [options] - Persistence mode options
      * @returns {Promise<any>}
      */
-    async syncFromFillHistory(fill: any, options: Record<string, any> = {}) {
+    async syncFromFillHistory(fill: SyncFillEvent, options: Record<string, unknown> = {}) {
         const mgr = this.manager;
         const persistenceMode = resolveProcessedFillPersistenceMode(options);
         if (!fill || !fill.op || !fill.op[1]) return { filledOrders: [], updatedOrders: [], partialFill: false };
@@ -1837,6 +1786,10 @@ class SyncEngine {
         const blockNum = fill.block_num;
         const historyId = fill.id;
         const orderId = fillOp.order_id;
+        if (orderId == null || orderId === '') {
+            mgr.logger.log('[SYNC] Fill event missing order_id; deferring to open-orders sync', 'warn');
+            return { filledOrders: [], updatedOrders: [], partialFill: false, requiresOpenOrdersSync: true };
+        }
         if (fillOp.is_maker === undefined) {
             mgr.logger.log(`[SYNC] is_maker flag missing from fill data for order ${orderId}; defaulting to maker`, 'warn');
         }
@@ -1910,7 +1863,7 @@ class SyncEngine {
                         try {
                             const fresh = await readSingleOrderSeam(mgr, orderId, 3000);
                             if (fresh) {
-                                const freshForSale = toFiniteNumber(fresh.for_sale, null);
+                                const freshForSale = toFiniteNumber((fresh as { for_sale?: number }).for_sale, null);
                                 if (freshForSale !== null && Number.isFinite(freshForSale)) {
                                     effectiveRawForSale = freshForSale;
                                     chainRefetched = true;
@@ -1924,8 +1877,8 @@ class SyncEngine {
                                 chainConfirmsEmpty = true;
                                 mgr.logger.log(`[SYNC] Drift refetch for ${orderId} returned null; chain confirms empty`, 'info');
                             }
-                        } catch (refetchErr: any) {
-                            mgr.logger.log(`[SYNC] Drift refetch for ${orderId} failed; falling back to cache: ${refetchErr?.message || refetchErr}`, 'warn');
+                        } catch (refetchErr) {
+                            mgr.logger.log(`[SYNC] Drift refetch for ${orderId} failed; falling back to cache: ${getErrorMessage(refetchErr)}`, 'warn');
                         }
                     }
 
@@ -1945,12 +1898,12 @@ class SyncEngine {
                         isMaker
                     });
 
-                    const filledOrders: any[] = [];
-                    const updatedOrders: any[] = [];
+                    const filledOrders: ManagedOrder[] = [];
+                    const updatedOrders: ManagedOrder[] = [];
 
                 if (result.isFull) {
                     mgr.logger.log(`[SYNC] Full fill for order ${orderId} (slot ${matchedGridOrder.id}).`, 'info');
-                    const fullOk = await mgr._updateOrder(result.fullUpdate, 'handle-fill-full', { skipAccounting: false, fee: 0 });
+                    const fullOk = await mgr._updateOrder(result.fullUpdate!, 'handle-fill-full', { skipAccounting: false, fee: 0 });
                     if (fullOk === false) {
                         mgr.logger.log(`[SYNC] Failed to convert filled order ${orderId} to spread placeholder; marking totals stale for next sync cycle`, 'warn');
                         mgr.accountTotalsStale = true;
@@ -1958,12 +1911,12 @@ class SyncEngine {
                     filledOrders.push(result.filledOrder);
                 } else {
                     mgr.logger.log(`[SYNC] Partial fill for order ${orderId} (slot ${matchedGridOrder.id}): newSize=${result.newSize}`, 'info');
-                    const partialOk = await mgr._updateOrder(result.partialUpdate, 'handle-fill-partial', { skipAccounting: false, fee: 0 });
+                    const partialOk = await mgr._updateOrder(result.partialUpdate!, 'handle-fill-partial', { skipAccounting: false, fee: 0 });
                     if (partialOk === false) {
                         mgr.logger.log(`[SYNC] Failed to update partially filled order ${orderId}; marking totals stale for next sync cycle`, 'warn');
                         mgr.accountTotalsStale = true;
                     }
-                    updatedOrders.push(result.partialUpdate);
+                    updatedOrders.push(result.partialUpdate!);
                     filledOrders.push(result.filledOrder);
                 }
 
@@ -2006,7 +1959,7 @@ class SyncEngine {
      * @param {Object} [options] - Persistence mode options
      * @returns {Promise<any>}
      */
-    async syncFromFillHistoryBatch(fills: any[], options: Record<string, any> = {}) {
+    async syncFromFillHistoryBatch(fills: SyncFillEvent[], options: Record<string, unknown> = {}) {
         const mgr = this.manager;
         const persistenceMode = resolveProcessedFillPersistenceMode(options);
         if (!Array.isArray(fills) || fills.length === 0) {
@@ -2014,7 +1967,7 @@ class SyncEngine {
         }
 
         // Phase 1: Extract & validate fill data
-        const fillEntries: any[] = [];
+        const fillEntries: FillEntry[] = [];
         let anyRequiresSync = false;
 
         for (const fill of fills) {
@@ -2053,7 +2006,7 @@ class SyncEngine {
         }
 
         // Phase 2: Lock all unique order IDs once
-        const allOrderIds = [...new Set(fillEntries.map(e => e.orderId))];
+        const allOrderIds = [...new Set(fillEntries.map(e => e.orderId))].filter((id): id is string => typeof id === 'string');
 
         // Raise the fill-batch in-flight guard BEFORE the accountTotals refresh.
         // The refresh fetches post-fill balances, but the grid still holds the
@@ -2081,7 +2034,7 @@ class SyncEngine {
                 mgr.pauseFundRecalc();
                 try {
                     // Phase 3: Process accounting for each fill
-                    const validEntries: any[] = [];
+                    const validEntries: FillEntry[] = [];
                     for (const entry of fillEntries) {
                         try {
                             const appliedAccounting = await mgr.accountant.processFillAccounting(
@@ -2092,7 +2045,7 @@ class SyncEngine {
                                 continue;
                             }
                             validEntries.push(entry);
-                        } catch (acctErr: any) {
+                        } catch (acctErr) {
                             mgr.logger.log(`[SYNC] Accounting error for fill ${entry.fillKey}: ${getErrorMessage(acctErr)}`, 'error');
                             continue;
                         }
@@ -2103,7 +2056,7 @@ class SyncEngine {
                     }
 
                     // Phase 4: Build per-fill context + identify drift candidates
-                    const entryContexts: any[] = [];
+                    const entryContexts: FillEntryContext[] = [];
                     const driftOrderIds = new Set<string>();
 
                     const assetAPrecision = mgr.assets?.assetA?.precision;
@@ -2126,7 +2079,7 @@ class SyncEngine {
                         const ctx = this._computeFillContext(mgr, matchedGridOrder, paysAssetId, paysAmountRaw);
                         mgr.logger.log(`[SYNC] Order ${orderId} (${ctx.orderType}) currentSize=${ctx.currentSize}, filledAmount=${ctx.filledAmount}`, 'debug');
 
-                        if (ctx.driftSignal) {
+                        if (ctx.driftSignal && orderId) {
                             driftOrderIds.add(orderId);
                         }
 
@@ -2146,7 +2099,7 @@ class SyncEngine {
 
                     if (driftOrderIds.size > 0) {
                         try {
-                            const batchResults = await batchReadOrdersSeam(mgr, [...driftOrderIds], 3000);
+                            const batchResults = await batchReadOrdersSeam(mgr, [...driftOrderIds], 3000) as Map<string, { for_sale?: number }>;
                             for (const [orderId, freshOrder] of batchResults) {
                                 if (freshOrder) {
                                     const freshForSale = toFiniteNumber(freshOrder.for_sale, null);
@@ -2179,8 +2132,8 @@ class SyncEngine {
                                     mgr.logger.log(`[SYNC] Drift refetch for ${orderId} returned null; chain confirms empty`, 'info');
                                 }
                             }
-                        } catch (refetchErr: any) {
-                            mgr.logger.log(`[SYNC] Batch drift refetch failed for ${driftOrderIds.size} orders; falling back to cache: ${refetchErr?.message || refetchErr}`, 'warn');
+                        } catch (refetchErr) {
+                            mgr.logger.log(`[SYNC] Batch drift refetch failed for ${driftOrderIds.size} orders; falling back to cache: ${getErrorMessage(refetchErr)}`, 'warn');
                         }
                     }
 
@@ -2194,13 +2147,13 @@ class SyncEngine {
                     // per slot), leaving a phantom residual equal to the earlier
                     // fills' sum — exactly the fund-invariant CRITICAL seen in the
                     // AAA-BBB log whenever a batch contained 2+ fills of one order.
-                    const gridUpdates: any[] = [];
-                    const filledOrders: any[] = [];
-                    const updatedOrders: any[] = [];
-                    const residualCancels: any[] = [];
+                    const gridUpdates: Array<ManagedOrder & { context: string }> = [];
+                    const filledOrders: ManagedOrder[] = [];
+                    const updatedOrders: ManagedOrder[] = [];
+                    const residualCancels: Array<{ orderId: string | null; id: string }> = [];
                     let anyPartialFill = false;
 
-                    const fillContextsBySlot = new Map<string, any[]>();
+                    const fillContextsBySlot = new Map<string, FillEntryContext[]>();
                     for (const ctx of entryContexts) {
                         const slotId = ctx.matchedGridOrder.id;
                         const group = fillContextsBySlot.get(slotId);
@@ -2228,7 +2181,7 @@ class SyncEngine {
                             );
                         }
 
-                        const refetchInfo = refetchMap.get(orderId);
+                        const refetchInfo = refetchMap.get(orderId ?? '');
                         const chainRefetched = refetchInfo?.chainRefetched || false;
                         const chainConfirmsEmpty = refetchInfo?.chainConfirmsEmpty || false;
                         const effectiveRawForSale = refetchInfo?.effectiveRawForSale != null ? refetchInfo.effectiveRawForSale : rawForSaleInt;
@@ -2251,13 +2204,13 @@ class SyncEngine {
 
                         if (result.isFull) {
                             mgr.logger.log(`[SYNC] Full fill for order ${orderId} (slot ${matchedGridOrder.id}).`, 'info');
-                            gridUpdates.push({ id: matchedGridOrder.id, ...result.fullUpdate, context: 'handle-fill-full' });
+                            gridUpdates.push({ ...(result.fullUpdate as ManagedOrder), id: matchedGridOrder.id, context: 'handle-fill-full' });
                             filledOrders.push(result.filledOrder);
                             if (result.residualCancel) residualCancels.push(result.residualCancel);
                         } else {
                             mgr.logger.log(`[SYNC] Partial fill for order ${orderId} (slot ${matchedGridOrder.id}): newSize=${result.newSize}`, 'info');
-                            gridUpdates.push({ id: matchedGridOrder.id, ...result.partialUpdate, context: 'handle-fill-partial' });
-                            updatedOrders.push(result.partialUpdate);
+                            gridUpdates.push({ ...(result.partialUpdate as ManagedOrder), id: matchedGridOrder.id, context: 'handle-fill-partial' });
+                            updatedOrders.push(result.partialUpdate as ManagedOrder);
                             filledOrders.push(result.filledOrder);
                             anyPartialFill = true;
                         }
@@ -2354,9 +2307,60 @@ class SyncEngine {
      * @param {string} source - Source identifier ('createOrder', 'cancelOrder', 'readOpenOrders', etc.)
      * @returns {Promise<Object>} { newOrders, ordersNeedingCorrection }
      */
-    async synchronizeWithChain(chainData: any, source: string) {
+    /**
+     * E2 invariant assert: a manager holding grid slots but no price ladder is
+     * in the undefined state the grid-price invariant forbids (INV-GRID-004).
+     *
+     * Reports once per grid generation (latched on the manager, counted in
+     * `_genesisInvariantViolations`) and, when the bot wired the structural
+     * resync, requests one so the ladder is re-derived. Returns FALSE so the
+     * caller ABORTS the sync untouched: with no ladder there is no authority for
+     * a slot's price, and the legacy tolerance matcher that used to cover this
+     * state is gone — continuing would let an off-grid chain price be adopted
+     * into a slot.
+     *
+     * Non-throwing on purpose: the load-side gates (E1/E3) own the fail-closed
+     * decision, this one makes a bypass loud without stranding a live manager.
+     * @param {unknown} mgr - OrderManager instance
+     * @returns {boolean} true when the grid may be synced (no slots, or a usable
+     *   ladder is present); false when the sync must not run.
+     */
+    _assertGenesisInvariant(mgr: OrderManagerLike): boolean {
+        try {
+            const orders = mgr?.orders;
+            const slotCount = orders instanceof Map ? orders.size : 0;
+            if (slotCount === 0) return true;
+            if (hasGenesisLadder(mgr._genesis)) return true;
+
+            const count = (mgr._genesisInvariantViolations || 0) + 1;
+            mgr._genesisInvariantViolations = count;
+            const fault = mgr._missingGenesis as { reason?: string; detail?: string } | null | undefined;
+            if (count > 1) return false; // already reported for this generation
+            mgr._genesisInvariantLoggedAt = Date.now();
+            mgr.logger?.log?.(
+                `[GENESIS] INVARIANT: sync REFUSED against ${slotCount} grid slot(s) with NO price ladder` +
+                (fault ? ` (refused earlier: ${fault.reason} — ${fault.detail})` : '') +
+                `. Slot prices have no authority, so no chain order is matched, adopted or corrected this cycle. ` +
+                `A structural resync re-derives the ladder.`,
+                'error'
+            );
+            if (typeof mgr.requestStructuralGridResync === 'function') {
+                Promise.resolve(mgr.requestStructuralGridResync('missing-genesis', { violations: count }))
+                    .catch((err) => {
+                        mgr.logger?.log?.(`[GENESIS] Structural resync request failed: ${getErrorMessage(err)}`, 'warn');
+                    });
+            }
+            return false;
+        } catch {
+            // Never let observability break a sync — but an unevaluatable
+            // check must not hand a ladder-less grid to the reconciler either.
+            return false;
+        }
+    }
+
+    async synchronizeWithChain(chainData: SyncChainData, source: string) {
         const mgr = this.manager;
-        if (!mgr.assets) return { newOrders: [], ordersNeedingCorrection: [] };
+        if (!mgr.assets) return { newOrders: [], filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
 
         switch (source) {
             case 'createOrder': {
@@ -2368,9 +2372,9 @@ class SyncEngine {
                 const placedDescriptor = chainData.order ?? null;
                 const runCreate = async () => {
                     // Lock order to prevent concurrent modifications during state transition
-                    mgr.lockOrders([gridOrderId]);
+                    mgr.lockOrders([gridOrderId as string]);
                     try {
-                        const gridOrder = mgr.orders.get(gridOrderId);
+                        const gridOrder = mgr.orders.get(gridOrderId as string);
                         if (!gridOrder && isDeepShelfId(gridOrderId) && chainData?.order) {
                             // Deep shelf first placement (divergence/bootstrap): the
                             // broadcast succeeded but no master entry exists yet
@@ -2386,18 +2390,18 @@ class SyncEngine {
                                     ? expectedType
                                     : ORDER_TYPES.BUY;
                                 const deepAdopted = await mgr._applyOrderUpdate({
-                                    id: gridOrderId,
+                                    id: gridOrderId as string,
                                     type: adoptType,
                                     state: isPartialPlacement ? ORDER_STATES.PARTIAL : ORDER_STATES.ACTIVE,
                                     price: px,
                                     size: sz,
-                                    orderId: chainOrderId,
+                                    orderId: chainOrderId as string,
                                 }, 'deep-adopt', {
                                     skipAccounting: chainData.skipAccounting || false,
                                     fee: fee || 0
                                 });
                                 if (deepAdopted !== false) {
-                                    try { _filterUnmatchedChainOrders(mgr, chainOrderId); } catch { /* counting hygiene only */ }
+                                    try { _filterUnmatchedChainOrders(mgr, chainOrderId as string); } catch { /* counting hygiene only */ }
                                 }
                                 mgr.logger?.log?.(
                                     `[SYNC] Deep shelf adopted ${gridOrderId} @${px} x${sz} -> ${chainOrderId}`,
@@ -2414,8 +2418,8 @@ class SyncEngine {
                             // Check if this chain order already exists on grid (rotation case)
                             // If so, fee was already paid when original order was placed - don't deduct again
                             // CRITICAL: Look for ANY order with this orderId, even if it's been transitioned to VIRTUAL
-                            const existingOrder: any = Array.from(mgr.orders.values() as any[]).find(
-                                (o: any) => o.orderId === chainOrderId && o.id !== gridOrderId
+                            const existingOrder = Array.from(mgr.orders.values()).find(
+                                (o) => o.orderId === chainOrderId && o.id !== gridOrderId
                             );
                             const isRotation = !!existingOrder;
 
@@ -2439,7 +2443,7 @@ class SyncEngine {
                             }
 
                             const newState = isPartialPlacement ? ORDER_STATES.PARTIAL : ORDER_STATES.ACTIVE;
-                            let normalizedExpectedType = (expectedType === ORDER_TYPES.BUY || expectedType === ORDER_TYPES.SELL)
+                            let normalizedExpectedType: OrderType | null = (expectedType === ORDER_TYPES.BUY || expectedType === ORDER_TYPES.SELL)
                                 ? expectedType
                                 : null;
                             // Defensive: a SPREAD slot must never transition to an on-chain
@@ -2449,11 +2453,11 @@ class SyncEngine {
                             if (!normalizedExpectedType && gridOrder.type === ORDER_TYPES.SPREAD) {
                                 normalizedExpectedType = resolveSpreadOrderSide(gridOrder.price, mgr.config.startPrice);
                             }
-                            const updatedOrder = {
+                            const updatedOrder: ManagedOrder = {
                                 ...gridOrder,
                                 type: normalizedExpectedType || gridOrder.type,
                                 state: newState,
-                                orderId: chainOrderId,
+                                orderId: chainOrderId ?? null,
                             };
                             // Restore btsFeeState from raw chain order data if provided.
                             // After a grid reset, in-memory orders have no fee state but the
@@ -2481,8 +2485,8 @@ class SyncEngine {
                             // slot when the caller supplied its descriptor, and
                             // log an error otherwise so the order never vanishes
                             // quietly again.
-                            const rebound: any = Array.from(mgr.orders.values() as any[]).find(
-                                (o: any) => o.orderId === chainOrderId
+                            const rebound = Array.from(mgr.orders.values()).find(
+                                (o) => o.orderId === chainOrderId
                             );
                             if (rebound) {
                                 mgr.logger?.log?.(
@@ -2491,7 +2495,7 @@ class SyncEngine {
                                 );
                             } else {
                                 const rawType = placedDescriptor?.type ?? expectedType;
-                                let materializeType = (rawType === ORDER_TYPES.BUY || rawType === ORDER_TYPES.SELL)
+                                let materializeType: OrderType | null = (rawType === ORDER_TYPES.BUY || rawType === ORDER_TYPES.SELL)
                                     ? rawType
                                     : null;
                                 const descriptorPrice = toFiniteNumber(placedDescriptor?.price, NaN);
@@ -2506,16 +2510,50 @@ class SyncEngine {
                                 // disagreeing in one order object.
                                 const materializeIdx = parseSlotIndex(gridOrderId);
                                 let ladderLevel: number | null = null;
+                                // Distinguish the two reasons the ladder cannot
+                                // price this slot, so the fault log names the
+                                // real one: a missing ladder (INV-GRID-004) vs a
+                                // ladder that exists but does not address this
+                                // index (out-of-range slot id).
+                                let ladderFault: 'missing-ladder' | 'out-of-range' | null = null;
                                 try {
-                                    const genesis = (mgr as any)._genesis;
-                                    if (materializeIdx !== null && Array.isArray(genesis?.priceLevels) && genesis.priceLevels.length > 0) {
-                                        const onLadder = Number(priceForSlot(materializeIdx, genesis));
-                                        if (Number.isFinite(onLadder) && onLadder > 0) ladderLevel = onLadder;
+                                    const genesis = mgr._genesis;
+                                    if (materializeIdx !== null) {
+                                        if (hasGenesisLadder(genesis)) {
+                                            const onLadder = Number(priceForSlot(materializeIdx, genesis as Parameters<typeof priceForSlot>[1]));
+                                            if (Number.isFinite(onLadder) && onLadder > 0) ladderLevel = onLadder;
+                                            else ladderFault = 'out-of-range';
+                                        } else {
+                                            ladderFault = 'missing-ladder';
+                                        }
                                     }
-                                } catch { /* fall back to the descriptor below */ }
+                                } catch { ladderFault = 'out-of-range'; }
 
-                                // Only fall back to the descriptor when the ladder
-                                // cannot speak (migration / unparseable id).
+                                // A `slot-N` id the ladder cannot price leaves the
+                                // slot with no authority for its price, so the
+                                // descriptor can only be a stopgap. Keep the live
+                                // chain order tracked (stranding it would be
+                                // worse) but make the fault loud and ask for the
+                                // ladder/slot to be re-derived, which re-prices
+                                // the slot on reload.
+                                if (materializeIdx !== null && ladderLevel === null) {
+                                    const reason = ladderFault === 'out-of-range'
+                                        ? `slot index ${materializeIdx} is outside the price ladder (${hasGenesisLadder(mgr._genesis) ? 'the ladder exists but does not address this slot' : 'no usable ladder'}); the slot id and ladder disagree`
+                                        : 'the grid has no price ladder (INV-GRID-004)';
+                                    mgr.logger?.log?.(
+                                        `[GENESIS] createOrder materialized ${gridOrderId} from the placement descriptor ` +
+                                        `because ${reason} — the slot price is unverified ` +
+                                        `and will be re-derived on the next grid build`,
+                                        'error'
+                                    );
+                                    if (typeof mgr.requestStructuralGridResync === 'function') {
+                                        Promise.resolve(mgr.requestStructuralGridResync('missing-genesis', { reason: 'createOrder-materialize' }))
+                                            .catch((err) => mgr.logger?.log?.(`[GENESIS] Structural resync request failed: ${getErrorMessage(err)}`, 'warn'));
+                                    }
+                                }
+
+                                // Only fall back to the descriptor price when the
+                                // ladder cannot address the slot (unparseable id).
                                 if (!materializeType && Number.isFinite(descriptorPrice)) {
                                     const sidePrice = ladderLevel ?? descriptorPrice;
                                     materializeType = resolveSpreadOrderSide(sidePrice, mgr.config.startPrice);
@@ -2546,28 +2584,28 @@ class SyncEngine {
                                     // and for a slot being materialized at a new
                                     // index it can be a price from a different
                                     // grid entirely. The descriptor price is kept
-                                    // only when genesis is unavailable
-                                    // (migration), where there is no ladder to
-                                    // derive from.
+                                    // only when the ladder cannot address the slot
+                                    // (unparseable id, or the undefined-grid fault
+                                    // logged above).
                                     let materializePrice = descriptorPrice;
                                     let priceSource = 'descriptor';
                                     if (ladderLevel !== null && materializeIdx !== null) {
                                         materializePrice = ladderLevel;
                                         priceSource = 'genesis';
                                     }
-                                    const materializedOrder: any = {
-                                        id: gridOrderId,
-                                        type: materializeType,
+                                    const materializedOrder: ManagedOrder = {
+                                        id: gridOrderId as string,
+                                        type: materializeType as OrderType,
                                         price: materializePrice,
                                         size: descriptorSize,
                                         state: isPartialPlacement ? ORDER_STATES.PARTIAL : ORDER_STATES.ACTIVE,
-                                        orderId: chainOrderId,
+                                        orderId: chainOrderId as string,
                                     };
-                                    if (priceSource === 'descriptor' && materializeIdx !== null) {
+                                    if (priceSource === 'descriptor' && materializeIdx === null) {
                                         mgr.logger?.log?.(
                                             `[SYNC] createOrder for ${gridOrderId}: materialized with the DESCRIPTOR price ` +
-                                            `${descriptorPrice} because no genesis ladder was available to derive ` +
-                                            `the slot level — verify this slot's price on the next sync`,
+                                            `${descriptorPrice} because the grid order id is not a slot-N addressable by the ` +
+                                            `price ladder — verify this slot's price on the next sync`,
                                             'warn'
                                         );
                                     }
@@ -2584,7 +2622,7 @@ class SyncEngine {
                                             'error'
                                         );
                                     } else {
-                                        try { _filterUnmatchedChainOrders(mgr, chainOrderId); } catch { /* counting hygiene only */ }
+                                        try { _filterUnmatchedChainOrders(mgr, chainOrderId as string); } catch { /* counting hygiene only */ }
                                         mgr.logger?.log?.(
                                             `[SYNC] createOrder for unknown grid order ${gridOrderId}: materialized ${materializeType} @${materializePrice} x${descriptorSize} (price source: ${priceSource}) -> ${chainOrderId} (master lost the slot mid-broadcast)`,
                                             'warn'
@@ -2607,10 +2645,10 @@ class SyncEngine {
             case 'cancelOrder': {
                 const orderId = chainData.orderId;
                 const clearSize = !!chainData.clearSize;
-                let btsFeeData;
+                let btsFeeData: BtsFeeData;
                 try {
-                    btsFeeData = getAssetFees('BTS');
-                } catch (err: any) {
+                    btsFeeData = getAssetFees('BTS') as BtsFeeData;
+                } catch (err) {
                     mgr.logger?.log?.(
                         `[FILL-FEE] Failed to load BTS cancel fee cache: ${getErrorMessage(err)}. Using zero-fee fallback.`,
                         'warn'
@@ -2627,10 +2665,12 @@ class SyncEngine {
                     };
                 }
                 const runCancel = async () => {
-                    const gridOrder = findMatchingGridOrderByOpenOrder({ orderId }, { orders: mgr.orders, assets: mgr.assets, calcToleranceFn: (p: number, s: number, t: any) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger });
+                    // Linkage is by chain orderId (authoritative) — no price matching: the slot
+                    // that owns this order id is the slot, whatever its level.
+                    const gridOrder = Array.from(mgr.orders.values()).find((o) => o && o.orderId === orderId);
                     if (gridOrder) {
                         // Lock both chain orderId and grid order ID to prevent concurrent modifications
-                        const orderIds = [orderId, gridOrder.id].filter(Boolean);
+                        const orderIds = [orderId, gridOrder.id].filter((x): x is string => Boolean(x));
                         mgr.lockOrders(orderIds);
                         try {
                             // Re-fetch to ensure we have latest state after acquiring lock
@@ -2660,8 +2700,8 @@ class SyncEngine {
                         // CRITICAL: Even if order not in grid, the cancellation fee was still paid on blockchain
                         // Deduct it from account totals to prevent drift.
                         const btsSide = getBtsSide(mgr.config?.assetA, mgr.config?.assetB);
-                        if (btsSide && btsFeeData?.cancelFee > 0) {
-                            await mgr.accountant.adjustTotalBalance(btsSide, -btsFeeData.cancelFee, 'cancel-order-unmatched-fee');
+                        if (btsSide && (btsFeeData?.cancelFee ?? 0) > 0) {
+                            await mgr.accountant.adjustTotalBalance(btsSide, -(btsFeeData?.cancelFee ?? 0), 'cancel-order-unmatched-fee');
                         }
                     }
                 };
@@ -2675,7 +2715,7 @@ class SyncEngine {
             case 'readOpenOrders':
                 // Plain open-order syncs do not imply a fresh account balance fetch,
                 // so they still use optimistic accounting deltas.
-                return this.syncFromOpenOrders(chainData, {
+                return this.syncFromOpenOrders(chainData as unknown as unknown[], {
                     skipAccounting: false
                 });
 
@@ -2684,12 +2724,12 @@ class SyncEngine {
                 // authoritative chain free/locked totals. Applying optimistic
                 // commitment deltas here double-deducts newly adopted or resized
                 // open orders from already-fetched free balances.
-                return this.syncFromOpenOrders(chainData, {
+                return this.syncFromOpenOrders(chainData as unknown as unknown[], {
                     skipAccounting: true
                 });
             }
         }
-        return { newOrders: [], ordersNeedingCorrection: [] };
+        return { newOrders: [], filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
     }
 
     /**
@@ -2749,7 +2789,7 @@ class SyncEngine {
             const accountIdOrName = mgr.accountId || mgr.account || null;
             if (!accountIdOrName) return;
 
-            try { await this.initializeAssets(); } catch (err: any) { mgr.logger.log(`[SYNC] initializeAssets failed: ${getErrorMessage(err)}`, 'warn'); }
+            try { await this.initializeAssets(); } catch (err) { mgr.logger.log(`[SYNC] initializeAssets failed: ${getErrorMessage(err)}`, 'warn'); }
             const assetAId = mgr.assets?.assetA?.id;
             const assetBId = mgr.assets?.assetB?.id;
             if (!assetAId || !assetBId) return;
@@ -2761,9 +2801,9 @@ class SyncEngine {
                 assetList.push(NATIVE_CLIENT.CHAIN.CORE_ASSET_ID);
             }
 
-            const lookup: Record<string, any> = await chainOrders.getOnChainAssetBalances(accountIdOrName, assetList);
-            const aInfo = lookup?.[assetAId] || lookup?.[mgr.config.assetA];
-            const bInfo = lookup?.[assetBId] || lookup?.[mgr.config.assetB];
+            const lookup = await chainOrders.getOnChainAssetBalances(accountIdOrName, assetList) as Record<string, { total?: number; free?: number } | undefined>;
+            const aInfo = lookup?.[assetAId] || lookup?.[String(mgr.config.assetA)];
+            const bInfo = lookup?.[assetBId] || lookup?.[String(mgr.config.assetB)];
 
              if (aInfo && bInfo) {
                  await mgr.setAccountTotals({ sell: aInfo.total, sellFree: aInfo.free, buy: bInfo.total, buyFree: bInfo.free });
@@ -2773,10 +2813,10 @@ class SyncEngine {
              if (mgr.config.assetA !== 'BTS' && mgr.config.assetB !== 'BTS') {
                  const btsInfo = lookup?.[NATIVE_CLIENT.CHAIN.CORE_ASSET_ID];
                  if (btsInfo) {
-                     mgr.btsBalance = { free: btsInfo.free, total: btsInfo.total, locked: 0 };
+                     mgr.btsBalance = { free: btsInfo.free ?? 0, total: btsInfo.total ?? 0, locked: 0 };
                  }
              }
-        } catch (err: any) {
+        } catch (err) {
             mgr.logger.log(`Failed to fetch on-chain balances: ${getErrorMessage(err)}`, 'warn');
         }
     }
@@ -2830,10 +2870,10 @@ class SyncEngine {
         const mgr = this.manager;
         if (mgr.assets) return;
 
-        const fetchAssetWithFallback = async (symbol: any, side: any) => {
+        const fetchAssetWithFallback = async (symbol: string, side: 'A' | 'B'): Promise<AssetInfo> => {
             try {
-                return await lookupAsset(BitShares, symbol);
-            } catch (err: any) {
+                return await lookupAsset(BitShares, symbol) as AssetInfo;
+            } catch (err) {
                 // If blockchain lookup fails, check for persisted fallback
                 if (mgr.accountOrders) {
                     const persistedAssets = mgr.accountOrders.loadPersistedAssets();
@@ -2849,10 +2889,10 @@ class SyncEngine {
 
         try {
             mgr.assets = {
-                assetA: await fetchAssetWithFallback(mgr.config.assetA, 'A'),
-                assetB: await fetchAssetWithFallback(mgr.config.assetB, 'B')
+                assetA: await fetchAssetWithFallback(mgr.config.assetA ?? '', 'A'),
+                assetB: await fetchAssetWithFallback(mgr.config.assetB ?? '', 'B')
             };
-        } catch (err: any) {
+        } catch (err) {
             mgr.logger.log(`Asset metadata lookup failed: ${getErrorMessage(err)}`, 'error');
             throw err;
         }

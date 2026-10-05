@@ -69,10 +69,36 @@ import {
     buildSuccessResult,
     evaluateCommit
 } from './utils/validate.js';
-import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, getSideBudget, getActiveOrdersTotal, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge, collectRefillSlotIds } from './utils/order.js';
-import { getErrorMessage } from '../utils/errors.js';
+import { resolveSpreadOrderSide, parseSlotIndex, parseChainOrder, geometryTypeForSlotIndex, isOrderOnChain, ensureDeepShelfEntries, deriveDeepShelfSizes, applyDeepManualSizes, getSideBudget, getActiveOrdersTotal, resolveReserveCount, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge, collectRefillSlotIds, recordOrderPlacement } from './utils/order.js';
+import { getErrorMessage, getErrorCode } from '../utils/errors.js';
 import { clearManualHold } from './manual_hold.js';
-import { recordOrderPlacement } from './utils/order.js';
+import type { GridGenesis } from './utils/math.js';
+import type {
+    OrderManagerLike,
+    ManagedOrder,
+    GridConfig,
+    AssetPair,
+    AccountTotals,
+    ManagerFunds,
+    PendingPriceCorrection,
+    ProcessedFillStoreLike,
+    PendingBroadcast,
+    ManagerLock,
+    IllegalStateSignal,
+    AccountingFailureSignal,
+    BotMetrics,
+    AccountOrdersLike,
+    CowAction,
+    RebalanceResult,
+    ProjectedFunds,
+    SyncResult,
+    FillHistorySyncResult,
+    FundDriftCheck,
+    ChainFundsSnapshot,
+    OrderType,
+    OrderState,
+    UnknownRecord
+} from '../types.js';
 const { toFiniteNumber } = Format;
 
 // ===============================================================================
@@ -111,7 +137,41 @@ const { toFiniteNumber } = Format;
  * @param {number} planBoundary - The plan's target boundary slot index
  * @returns {string|null} Drop reason for the log, or null to keep the action
  */
-function stalePlacementDropReason(action: any, planBoundary: number): string | null {
+interface COWFillLike extends UnknownRecord {
+    id?: string;
+    type?: string;
+    price?: number;
+    size?: number;
+    isPartial?: boolean;
+    isDelayedRotationTrigger?: boolean;
+    order?: { price?: number; [key: string]: unknown } | null;
+}
+
+type WorkingGridResult = RebalanceResult & { _workingGridPushed?: boolean };
+
+interface GapEvacCandidate {
+    id?: string;
+    idx?: number;
+    type?: string;
+    price?: number;
+    size?: number;
+    orderId?: string;
+    [key: string]: unknown;
+}
+
+interface COWExecuteParams {
+    masterGrid: Map<string, ManagedOrder>;
+    gridVersion: number;
+    boundaryIdx: number | null;
+    funds: ProjectedFunds | null;
+    fills?: COWFillLike[];
+    excludeIds?: Set<string>;
+    gapSlots?: number | null;
+    evacStreaks?: Map<string, number> | null;
+    reserveEdgeAnchors?: { buy?: number | null; sell?: number | null } | null;
+}
+
+function stalePlacementDropReason(action: CowAction, planBoundary: number): string | null {
     const isPlacement = action?.type === COW_ACTIONS.CREATE || action?.type === COW_ACTIONS.UPDATE;
     if (!isPlacement) return null;
     const targetSlot = parseSlotIndex(action?.newGridId ?? action?.id);
@@ -190,12 +250,12 @@ function minBuySizeDropReason(action: any, buyFloorUsdt: number): string | null 
 // ===============================================================================
 
 class COWRebalanceEngine {
-    strategy: any;
-    logger: any;
-    assets: any;
-    config: any;
+    strategy: StrategyEngine;
+    logger: Logger;
+    assets: AssetPair | null;
+    config: GridConfig;
 
-    constructor(deps: any) {
+    constructor(deps: { strategy: StrategyEngine; logger: Logger; assets: AssetPair | null; config: GridConfig }) {
         this.strategy = deps.strategy;
         this.logger = deps.logger;
         this.assets = deps.assets;
@@ -212,7 +272,7 @@ class COWRebalanceEngine {
         gapSlots = null,
         evacStreaks = null,
         reserveEdgeAnchors = null
-    }: any) {
+    }: COWExecuteParams): Promise<RebalanceResult> {
         const startTime = Date.now();
 
         const workingGrid = new WorkingGrid(masterGrid, { baseVersion: gridVersion });
@@ -257,10 +317,10 @@ class COWRebalanceEngine {
             targetGrid,
             targetBoundary,
             {
-                logger: (msg: any, level: any) => this.logger?.log(msg, level),
+                logger: (msg: string, level?: string) => this.logger?.log(msg, level),
                 dustThresholdPercent,
-                gapSlots,
-                evacStreaks,
+                gapSlots: gapSlots ?? undefined,
+                evacStreaks: evacStreaks ?? undefined,
                 assets: this.assets,
                 config: this.config
             }
@@ -270,20 +330,20 @@ class COWRebalanceEngine {
         // reconcileGrid (stuck in-band candidates). It must survive both
         // abort and success so the manager can act on it even when the
         // rebalance plan itself aborts for an unrelated reason.
-        const evacReady = Array.isArray((reconcileResult as any)?.evacReady)
-            ? (reconcileResult as any).evacReady
+        const evacReady = Array.isArray((reconcileResult as { evacReady?: unknown[] }).evacReady)
+            ? (reconcileResult as { evacReady: unknown[] }).evacReady
             : [];
 
         if (reconcileResult.aborted) {
-            const aborted = buildAbortedResult((reconcileResult as any).reason);
-            (aborted as any).evacReady = evacReady;
+            const aborted: RebalanceResult = buildAbortedResult((reconcileResult as { reason?: string | null }).reason);
+            aborted.evacReady = evacReady;
             return aborted;
         }
 
         const optimizedActions = optimizeRebalanceActions(reconcileResult.actions, masterGrid, {
-            logger: (msg: any, level: any) => this.logger?.log(msg, level),
-            boundaryIdx: targetBoundary,
-            gapSlots,
+            logger: (msg: string, level?: string) => this.logger?.log(msg, level),
+            boundaryIdx: targetBoundary ?? undefined,
+            gapSlots: gapSlots ?? undefined,
             assets: this.assets
         });
 
@@ -295,7 +355,7 @@ class COWRebalanceEngine {
             : null;
         if (planBoundary !== null) {
             const before = optimizedActions.length;
-            const guarded = optimizedActions.filter((a: any) => {
+            const guarded = optimizedActions.filter((a) => {
                 const dropReason = stalePlacementDropReason(a, planBoundary);
                 if (dropReason) {
                     this.logger?.log(`[COW] Dropping stale-slot ${dropReason}`, 'warn');
@@ -337,7 +397,8 @@ class COWRebalanceEngine {
         const refillSlotIds = collectRefillSlotIds(optimizedActions, {
             config: this.config,
             slots: masterGrid,
-            edgeAnchors: reserveEdgeAnchors
+            edgeAnchors: reserveEdgeAnchors,
+            manager: this as unknown as OrderManagerLike
         });
 
         // Buy-floor guard: drop dust-size BUY placements from ANY planner
@@ -434,24 +495,24 @@ class COWRebalanceEngine {
 // SECTION 3: ORDER MANAGER CLASS
 // ===============================================================================
 
-class OrderManager {
-    config: any;
-    marketName: any;
-    logger: any;
-    orders: any;
-    boundaryIdx: any;
-    targetGrid: any;
-    accountant: any;
-    strategy: any;
-    sync: any;
+class OrderManager implements OrderManagerLike {
+    config: GridConfig;
+    marketName: string | null;
+    logger: Logger;
+    orders: Map<string, ManagedOrder>;
+    boundaryIdx: number | null;
+    targetGrid: Map<string, ManagedOrder> | null;
+    accountant: Accountant;
+    strategy: StrategyEngine;
+    sync: SyncEngine;
     _rebalanceState: string;
     _bootstrapping: number;
     _endOfBootstrapValidationDone: boolean;
     _broadcastingFlag: number;
     _broadcastingStartedAt: number;
     _shuttingDown: boolean;
-    _illegalStateSignal: any;
-    _accountingFailureSignal: any;
+    _illegalStateSignal: IllegalStateSignal | null;
+    _accountingFailureSignal: AccountingFailureSignal | null;
     _recoveryStateValue: { phase: string; attemptCount: number; lastAttemptAt: number; inFlight: boolean; lastFailureAt: number; structuralResyncRequested?: boolean };
     _gridRegenStateValue: { buy: { armed: boolean; lastTriggeredAt: number }; sell: { armed: boolean; lastTriggeredAt: number } };
     private _ordersByTypeCache: Record<string, Set<string>> | null = null;
@@ -518,42 +579,46 @@ class OrderManager {
     initialSpreadCount: number;
     currentSpreadCount: number;
     outOfSpread: number;
-    assets: any;
-    accountId: any;
-    accountTotals: any;
-    funds: any;
-    _accountTotalsPromise: any;
-    _accountTotalsResolve: any;
+    assets!: AssetPair;
+    accountId!: string | null;
+    accountTotals!: AccountTotals;
+    funds!: ManagerFunds;
+    _accountTotalsPromise: Promise<void> | null;
+    _accountTotalsResolve: (() => void) | null;
     _isFetchingTotals: boolean;
     accountTotalsStale: boolean;
-    ordersNeedingPriceCorrection: any[];
-    shadowOrderIds: Map<any, any>;
-    processedFillTracker: Map<any, any>;
-    processedFillStore: any;
-    manualHolds: Map<any, any>;
-    _placedAt: Map<any, any>;
-    _syncLock: any;
-    _fillProcessingLock: any;
-    _divergenceLock: any;
-    _gridLock: any;
-    _fundLock: any;
-    _gridSidesUpdated: Set<any>;
+    ordersNeedingPriceCorrection: PendingPriceCorrection[];
+    shadowOrderIds: Map<string, number>;
+    processedFillTracker: Map<string, number>;
+    processedFillStore: ProcessedFillStoreLike | null;
+    manualHolds: Map<string, { price: number; ts: number; base?: number | null; orderId?: string | null }>;
+    _syncLock: ManagerLock;
+    _fillProcessingLock: ManagerLock;
+    _divergenceLock: ManagerLock;
+    _gridLock: ManagerLock;
+    _fundLock: ManagerLock;
+    _gridSidesUpdated: Set<string>;
     _pauseFundRecalc: number;
     _pauseFundRecalcWatchdog: ReturnType<typeof setTimeout> | null;
     _fillBatchInFlight: number;
     _pauseRecalcLogging: boolean;
     _pauseRecalcLoggingWatchdog: ReturnType<typeof setTimeout> | null;
     _throwOnIllegalState: boolean;
-    _pipelineBlockedSince: any;
+    _pipelineBlockedSince: number | null;
     _recoveryAttempted: boolean;
     _syncGeneration: number;
     _gridVersion: number;
-    _gridPersistenceSuspendedReason: any;
-    _pendingBroadcasts: Map<any, any>;
+    _gridPersistenceSuspendedReason: string | null;
+    _pendingBroadcasts: Map<string, PendingBroadcast>;
     _committedOrderIds: Set<string>;
     _committedOrderIdsBuiltAt: number;
     _orderIdAssignedAt: Map<string, number>;
+    _placedAt: Map<string, number>;
     _gapSlots: number;
+    _genesis: GridGenesis | null;
+    _missingGenesis: unknown;
+    _genesisInvariantViolations: number;
+    _genesisInvariantLoggedAt: number;
     _gridDirtyAt: number | null;
     _lastStaleTotalsWarnAt: Record<string, number>;
     _orphanFillsCreditedAt: number | null;
@@ -568,25 +633,26 @@ class OrderManager {
     _lastFilledAt: number;
     lastFillPivotSource: 'fill' | 'book' | null;
     _deferredRebalanceAt: number;
-    _lastHeldPlanSignature: any;
+    _lastHeldPlanSignature: { boundaryIdx: number | null; pivot: number | null; fillsAt: number | null } | null;
     _heldPlanSuppressionCount: number;
+    _onBroadcastRegionEnd?: () => void;
     _onBroadcastRegionEndListeners: Array<() => void>;
     _lastBoundaryHoldResyncAt: number;
     _gapEvacStreaks: Map<string, number>;
     _gapEvacCancelQueued: Set<string>;
-    _metrics: any;
-    private _currentWorkingGridStack: any[];
-    _cowEngine: any;
-    accountOrders: any;
+    _metrics: BotMetrics;
+    private _currentWorkingGridStack: WorkingGrid[];
+    _cowEngine: COWRebalanceEngine | null;
+    accountOrders!: AccountOrdersLike;
     btsBalance: { free: number; total: number; locked: number };
 
     /**
      * @param {Object} [config] - Configuration overrides
      */
-    constructor(config: Record<string, any> = {}) {
+    constructor(config: Record<string, unknown> = {}) {
         this.config = seedBotRuntimeConfig(config);
         this.marketName = this.config.market || (this.config.assetA && this.config.assetB ? `${this.config.assetA}/${this.config.assetB}` : null);
-        const logFile = config.logFile || undefined;
+        const logFile = (config.logFile as string | undefined) || undefined;
         const loggingConfig = this.config.logging;
         this.logger = new Logger('DEXBot', {
             level: loggingConfig?.level ?? LOG_LEVEL,
@@ -631,7 +697,7 @@ class OrderManager {
         this.initialSpreadCount = 0;
         this.currentSpreadCount = 0;
         this.outOfSpread = 0;
-        this.assets = null;
+        this.assets = null as unknown as AssetPair;
         this._accountTotalsPromise = null;
         this._accountTotalsResolve = null;
         this._isFetchingTotals = false;
@@ -689,7 +755,18 @@ class OrderManager {
         this._committedOrderIds = new Set();
         this._committedOrderIdsBuiltAt = 0;
         this._orderIdAssignedAt = new Map();
+        // Fresh-placement timestamps (chainOrderId -> Date.now) for the
+        // surplus-cancel grace window. See recordOrderPlacement.
+        this._placedAt = new Map();
         this._gapSlots = 0;
+        // Genesis (price-ladder) state. `_genesis` is established by
+        // loadGrid/initializeGrid; these records are the missing-genesis fault
+        // and the sync-entry invariant counter, reset with each new generation
+        // (initializeGrid) and read by the E2 assert (order/sync_engine).
+        this._genesis = null;
+        this._missingGenesis = null;
+        this._genesisInvariantViolations = 0;
+        this._genesisInvariantLoggedAt = 0;
         this._gridDirtyAt = null;
         this._orphanFillsCreditedAt = null;
         this._fundDriftLedger = null;
@@ -715,6 +792,11 @@ class OrderManager {
         this._gapEvacCancelQueued = new Set();
 
         this._metrics = {
+            fillsProcessed: 0,
+            batchesExecuted: 0,
+            fillProcessingTimeMs: 0,
+            lockContentionEvents: 0,
+            maxQueueDepth: 0,
             fundRecalcCount: 0,
             lockAcquisitions: 0,
             lockContentionSkips: 0,
@@ -761,7 +843,7 @@ class OrderManager {
      * @param {Object} workingGrid - The working grid to push
      * @param {Object} [result] - Result object to carry the push marker on
      */
-    _pushWorkingGridRef(workingGrid: any, result: any = null) {
+    _pushWorkingGridRef(workingGrid: WorkingGrid, result: WorkingGridResult | null = null) {
         this._currentWorkingGridStack.push(workingGrid);
         this._rebalanceState = REBALANCE_STATES.REBALANCING;
         if (result) {
@@ -779,7 +861,7 @@ class OrderManager {
      * a later throw in the same frame cannot pop a second time.
      * @param {Object} [result] - Result object carrying the push marker
      */
-    _popWorkingGridRef(result: any = null) {
+    _popWorkingGridRef(result: WorkingGridResult | null = null) {
         if (result && result._workingGridPushed === true) {
             this._clearWorkingGridRef();
             result._workingGridPushed = false;
@@ -795,14 +877,14 @@ class OrderManager {
      * the check is a no-op for them.
      * @param {Object} workingGrid - The committed working grid
      */
-    _releaseWorkingGridRef(workingGrid: any) {
+    _releaseWorkingGridRef(workingGrid: WorkingGrid) {
         const stack = this._currentWorkingGridStack;
         if (stack.length > 0 && stack[stack.length - 1] === workingGrid) {
             this._clearWorkingGridRef();
         }
     }
 
-    _setRebalanceState(state: any) {
+    _setRebalanceState(state: string) {
         this._rebalanceState = state;
         this.logger?.log(`[COW] Rebalance state: ${state}`, 'debug');
     }
@@ -839,7 +921,7 @@ class OrderManager {
      * @param {boolean} value
      * @returns {void}
      */
-    setShuttingDown(value: any) {
+    setShuttingDown(value: boolean) {
         this._shuttingDown = value === true;
     }
 
@@ -890,10 +972,10 @@ class OrderManager {
     }
 
     /**
-     * @returns {any}
+     * @returns {unknown}
      */
-    finishBootstrap() {
-        const result = { hadDrift: false, driftInfo: null };
+    finishBootstrap(): { hadDrift: boolean; driftInfo: FundDriftCheck | null } {
+        const result: { hadDrift: boolean; driftInfo: FundDriftCheck | null } = { hadDrift: false, driftInfo: null };
 
         if (this._bootstrapping > 0) {
             this._bootstrapping--;
@@ -908,7 +990,7 @@ class OrderManager {
             const driftCheck = this.checkFundDriftAfterFills();
             if (!driftCheck.isValid) {
                 result.hadDrift = true;
-                result.driftInfo = driftCheck as any;
+                result.driftInfo = driftCheck;
                 this.logger.log(
                     `[BOOTSTRAP-END] Fund drift detected after bootstrap: ${driftCheck.reason}. ` +
                     `This may indicate a bug in grid initialization.`,
@@ -970,17 +1052,17 @@ class OrderManager {
      */
     _fireBroadcastRegionEnd() {
         try {
-            (this as any)._onBroadcastRegionEnd?.();
-        } catch (err: any) {
-            this.logger?.log?.(`[BROADCAST] Region-end hook failed: ${err?.message || err}`, 'warn');
+            (this._onBroadcastRegionEnd)?.();
+        } catch (err) {
+            this.logger?.log?.(`[BROADCAST] Region-end hook failed: ${getErrorMessage(err)}`, 'warn');
         }
-        const listeners = (this as any)._onBroadcastRegionEndListeners;
+        const listeners = this._onBroadcastRegionEndListeners;
         if (Array.isArray(listeners)) {
             for (const listener of listeners) {
                 try {
-                    (listener as any)?.();
-                } catch (err: any) {
-                    this.logger?.log?.(`[BROADCAST] Region-end listener failed: ${err?.message || err}`, 'warn');
+                    listener?.();
+                } catch (err) {
+                    this.logger?.log?.(`[BROADCAST] Region-end listener failed: ${getErrorMessage(err)}`, 'warn');
                 }
             }
         }
@@ -995,10 +1077,10 @@ class OrderManager {
      */
     addBroadcastRegionEndListener(listener: () => void) {
         if (typeof listener !== 'function') return;
-        if (!Array.isArray((this as any)._onBroadcastRegionEndListeners)) {
-            (this as any)._onBroadcastRegionEndListeners = [];
+        if (!Array.isArray(this._onBroadcastRegionEndListeners)) {
+            this._onBroadcastRegionEndListeners = [];
         }
-        const listeners = (this as any)._onBroadcastRegionEndListeners;
+        const listeners = this._onBroadcastRegionEndListeners;
         if (!listeners.includes(listener)) listeners.push(listener);
     }
 
@@ -1022,9 +1104,9 @@ class OrderManager {
      * value can lag behind the actual orders state (virtualized orders
      * release committed capital via updateOptimisticFreeBalance without
      * triggering a recalc).  Reading from the orders map avoids that race.
-     * @returns {any}
+     * @returns {unknown}
      */
-    getChainFundsSnapshot() {
+    getChainFundsSnapshot(): ChainFundsSnapshot {
         let committedBuy = 0, committedSell = 0;
         for (const order of this.orders.values()) {
             const isActive = (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) && !!order.orderId;
@@ -1048,15 +1130,15 @@ class OrderManager {
      * @param {number} [timeoutMs]
      * @returns {Promise<void>}
      */
-    async waitForAccountTotals(timeoutMs: any = TIMING.ACCOUNT_TOTALS_TIMEOUT_MS) {
+    async waitForAccountTotals(timeoutMs: number = TIMING.ACCOUNT_TOTALS_TIMEOUT_MS) {
         if (hasValidAccountTotals(this.accountTotals, true)) return;
 
-        let waitPromise = null;
+        let waitPromise: Promise<void> | null = null;
 
         await this._fundLock.acquire(async () => {
             if (hasValidAccountTotals(this.accountTotals, true)) return;
             if (!this._accountTotalsPromise) {
-                this._accountTotalsPromise = new Promise((resolve: any) => {
+                this._accountTotalsPromise = new Promise<void>((resolve) => {
                     this._accountTotalsResolve = resolve;
                 });
             }
@@ -1067,7 +1149,7 @@ class OrderManager {
 
         await withTimeout(waitPromise, timeoutMs, {
             onTimeout: 'resolve',
-            defaultValue: undefined as any,
+            defaultValue: undefined,
             onTimeoutCallback: () => this.logger.log('[FUND] Timeout waiting for account totals', 'warn'),
         });
     }
@@ -1076,7 +1158,7 @@ class OrderManager {
      * @param {string} [accountId] - Blockchain account ID
      * @returns {Promise<void>}
      */
-    async fetchAccountTotals(accountId: any) {
+    async fetchAccountTotals(accountId: string | null) {
         if (accountId) this.accountId = accountId;
         await this._fetchAccountBalancesAndSetTotals();
     }
@@ -1111,7 +1193,7 @@ class OrderManager {
                 'refreshAccountTotalsIfStale',
                 { logger: this.logger }
             );
-        } catch (err: any) {
+        } catch (err) {
             this.logger?.log?.(`[SYNC] refreshAccountTotalsIfStale fetch failed: ${getErrorMessage(err)}`, 'warn');
         }
         const fetchedAfter = this.accountTotals?._lastFetchedAt || 0;
@@ -1176,16 +1258,16 @@ class OrderManager {
     }
 
     /**
-     * @param {any} totals - Account balance totals
+     * @param {unknown} totals - Account balance totals
      * @returns {Promise<void>}
      */
-    async setAccountTotals(totals: any = { buy: null, sell: null, buyFree: null, sellFree: null }) {
+    async setAccountTotals(totals: Partial<AccountTotals> = { buy: null, sell: null, buyFree: null, sellFree: null }) {
         return await this._fundLock.acquire(async () => {
             return await this._setAccountTotals(totals);
         });
     }
 
-    async _setAccountTotals(totals: any) {
+    async _setAccountTotals(totals: Partial<AccountTotals>) {
         this.accountTotals = { ...(this.accountTotals || {}), ...totals, _lastFetchedAt: Date.now() };
         if (!this.funds) await this.resetFunds();
 
@@ -1194,7 +1276,7 @@ class OrderManager {
         if (hasValidAccountTotals(this.accountTotals, true) && typeof this._accountTotalsResolve === 'function') {
             try {
                 this._accountTotalsResolve();
-            } catch (e: any) {
+            } catch (e) {
                 this.logger?.log?.(`Error resolving account totals promise: ${getErrorMessage(e)}`, 'warn');
             }
             this._accountTotalsPromise = null;
@@ -1291,7 +1373,7 @@ class OrderManager {
                     );
                     this._pauseFundRecalc = 0;
                     this._pauseFundRecalcWatchdog = null;
-                    this.recalculateFunds().catch((err: any) => {
+                    this.recalculateFunds().catch((err: unknown) => {
                         this.logger?.log?.(`[MANAGER] Watchdog recalc failed: ${getErrorMessage(err)}`, 'error');
                     });
                 }
@@ -1361,7 +1443,7 @@ class OrderManager {
      * @param {Object} info
      * @returns {Promise<any>}
      */
-    syncFromOpenOrders(orders: any, info: any) {
+    syncFromOpenOrders(orders: unknown[] | null, info: UnknownRecord = {}): Promise<SyncResult> {
         return this.sync.syncFromOpenOrders(orders, info);
     }
 
@@ -1370,8 +1452,8 @@ class OrderManager {
      * @param {Object} [options]
      * @returns {Promise<any>}
      */
-    syncFromFillHistory(fill: any, options: any) {
-        return this.sync.syncFromFillHistory(fill, options);
+    syncFromFillHistory(fill: unknown, options: UnknownRecord = {}): Promise<FillHistorySyncResult> {
+        return this.sync.syncFromFillHistory(fill as Parameters<typeof this.sync.syncFromFillHistory>[0], options);
     }
 
     /**
@@ -1379,8 +1461,8 @@ class OrderManager {
      * @param {Object} [options]
      * @returns {Promise<any>}
      */
-    syncFromFillHistoryBatch(fills: any, options: any) {
-        return this.sync.syncFromFillHistoryBatch(fills, options);
+    syncFromFillHistoryBatch(fills: unknown[], options: UnknownRecord = {}): Promise<FillHistorySyncResult> {
+        return this.sync.syncFromFillHistoryBatch(fills as Parameters<typeof this.sync.syncFromFillHistoryBatch>[0], options);
     }
 
     /**
@@ -1388,14 +1470,14 @@ class OrderManager {
      * @param {string} src - Source identifier
      * @returns {Promise<any>}
      */
-    async synchronizeWithChain(data: any, src: any) {
+    async synchronizeWithChain(data: unknown, src: string): Promise<SyncResult> {
         // Lock delegation: createOrder/cancelOrder acquire _gridLock internally;
         // readOpenOrders/periodicBlockchainFetch acquire _syncLock → _gridLock.
         return await this._applySync(data, src);
     }
 
-    async _applySync(data: any, src: any) {
-        return await this.sync.synchronizeWithChain(data, src);
+    async _applySync(data: unknown, src: string) {
+        return await this.sync.synchronizeWithChain(data as Parameters<typeof this.sync.synchronizeWithChain>[0], src);
     }
 
     async _initializeAssets() {
@@ -1406,7 +1488,7 @@ class OrderManager {
      * @param {string[]|Set<string>} orderIds - Order IDs to lock
      * @returns {void}
      */
-    lockOrders(orderIds: any) {
+    lockOrders(orderIds: Iterable<string> | null | undefined) {
         if (!orderIds) return;
         const expiration = Date.now() + TIMING.LOCK_TIMEOUT_MS;
         for (const id of orderIds) if (id) this.shadowOrderIds.set(id, expiration);
@@ -1417,7 +1499,7 @@ class OrderManager {
      * @param {string[]|Set<string>} orderIds - Order IDs to unlock
      * @returns {void}
      */
-    unlockOrders(orderIds: any) {
+    unlockOrders(orderIds: Iterable<string> | null | undefined) {
         if (!orderIds) return;
         for (const id of orderIds) if (id) this.shadowOrderIds.delete(id);
         this._cleanExpiredLocks();
@@ -1427,7 +1509,7 @@ class OrderManager {
      * @param {string} id - Order ID
      * @returns {boolean}
      */
-    isOrderLocked(id: any) {
+    isOrderLocked(id: string) {
         const expiresAt = this.shadowOrderIds.get(id);
         if (!expiresAt) return false;
         if (Date.now() > expiresAt) {
@@ -1462,7 +1544,7 @@ class OrderManager {
         }
     }
 
-    _normalizeOrderUpdateOptions(options: Record<string, any> = {}) {
+    _normalizeOrderUpdateOptions(options: UnknownRecord = {}): { skipAccounting: boolean; fee: number } {
         if (options === null || typeof options !== 'object' || Array.isArray(options)) {
             throw new TypeError('Order update options must be an object');
         }
@@ -1473,7 +1555,7 @@ class OrderManager {
         };
     }
 
-    _normalizeCommitOptions(options: Record<string, any> = {}) {
+    _normalizeCommitOptions(options: UnknownRecord = {}): { skipRecalc: boolean; boundaryHeld: boolean } {
         if (options === null || typeof options !== 'object' || Array.isArray(options)) {
             throw new TypeError('Commit options must be an object');
         }
@@ -1487,14 +1569,14 @@ class OrderManager {
         };
     }
 
-    async _updateOrder(order: any, context: any = 'updateOrder', options: any = {}) {
+    async _updateOrder(order: ManagedOrder, context: string = 'updateOrder', options: UnknownRecord = {}) {
         const updateOptions = this._normalizeOrderUpdateOptions(options);
         return await this._gridLock.acquire(async () => {
             return await this._applyOrderUpdate(order, context, updateOptions);
         });
     }
 
-    async _applyOrderUpdate(order: any, context: any = 'updateOrder', options: any = {}) {
+    async _applyOrderUpdate(order: ManagedOrder, context: string = 'updateOrder', options: UnknownRecord = {}) {
         const updateOptions = this._normalizeOrderUpdateOptions(options);
         const { skipAccounting, fee: normalizedFee } = updateOptions;
         const oldOrder = this.orders.get(order.id);
@@ -1505,7 +1587,7 @@ class OrderManager {
         }
 
         if (!validation.isValid && validation.errors.length > 0) {
-            const fatalError = validation.errors.find((e: any) => (e as any).isFatal || e.code === 'ILLEGAL_SPREAD_STATE');
+            const fatalError = validation.errors.find((e) => e.isFatal === true || getErrorCode(e) === 'ILLEGAL_SPREAD_STATE');
             if (fatalError) {
                 this.logger.log(fatalError.message, 'error');
                 this._lastIllegalState = {
@@ -1514,7 +1596,7 @@ class OrderManager {
                     message: fatalError.message,
                 };
                 if (this._throwOnIllegalState) {
-                    const err: any = new Error(fatalError.message);
+                    const err = new Error(fatalError.message) as Error & { code?: string };
                     err.code = fatalError.code;
                     throw err;
                 }
@@ -1525,7 +1607,7 @@ class OrderManager {
         // Ensure a mutable copy before passing to updateOptimisticFreeBalance.
         // validation.normalizedOrder may reference a frozen master-grid order,
         // and _resolveBtsFeeLifecycle mutates btsFeeState on the order object.
-        let nextOrder = { ...validation.normalizedOrder };
+        let nextOrder: Partial<ManagedOrder> = { ...(validation.normalizedOrder ?? {}) };
         // A slot that (re)gains an on-chain order is not held anymore: the
         // operator re-placed it by hand, or the bot (re)filled the level.
         // Either way the manual hold for this slot is over.
@@ -1545,17 +1627,15 @@ class OrderManager {
             const nextId = nextOrder?.orderId != null ? String(nextOrder.orderId) : '';
             const isLoadContext = context === 'grid-load' || context === 'grid-init';
             if (nextId && nextId !== prevId && !isLoadContext) {
-                const placedAt: any = (this as any)._placedAt;
-                if (!(placedAt instanceof Map)) (this as any)._placedAt = new Map();
                 recordOrderPlacement(this, nextId);
             }
         } catch { /* bookkeeping must never break order updates */ }
 
         // Apply phantom order auto-correction to the normalized order
-        const phantomError = validation.errors.find((e: any) => e.code === 'PHANTOM_ORDER');
+        const phantomError = validation.errors.find((e) => getErrorCode(e) === 'PHANTOM_ORDER');
         let accountingSkip = skipAccounting;
-        if (phantomError && (phantomError as any).autoCorrect) {
-            nextOrder = { ...nextOrder, ...(phantomError as any).autoCorrect };
+        if (phantomError && phantomError.autoCorrect) {
+            nextOrder = { ...nextOrder, ...phantomError.autoCorrect };
             // Phantom orders never had funds committed on-chain (no orderId).
             // The auto-correction transitions ACTIVE/PARTIAL → VIRTUAL which
             // updateOptimisticFreeBalance would treat as capital release,
@@ -1567,7 +1647,7 @@ class OrderManager {
             await this.accountant.updateOptimisticFreeBalance(oldOrder, nextOrder, context, normalizedFee, accountingSkip);
         }
 
-        const updatedOrder = deepFreeze({ ...nextOrder });
+        const updatedOrder = deepFreeze({ ...nextOrder }) as ManagedOrder;
         const id = order.id;
 
         // Track when an orderId is first assigned to a slot. A freshly assigned
@@ -1589,6 +1669,23 @@ class OrderManager {
             this._orderIdAssignedAt.set(updatedOrder.orderId, Date.now());
         }
 
+        // Fresh-placement timestamp for the surplus-cancel grace window: a
+        // slot gaining an orderId it did not have is a new placement (create,
+        // adopt, rotation target), and surplus sweeps must not cancel it
+        // before it has had time to prove itself. Same-id updates do not
+        // refresh the stamp, so grace cannot extend forever. Snapshot/grid
+        // load paths are excluded: reloaded orders are old by definition, and
+        // stamping them would neuter surplus sweeps for 15 minutes after every
+        // restart.
+        try {
+            const prevId = oldOrder?.orderId != null ? String(oldOrder.orderId) : '';
+            const nextId = updatedOrder.orderId != null ? String(updatedOrder.orderId) : '';
+            const isLoadContext = context === 'grid-load' || context === 'grid-init';
+            if (nextId && nextId !== prevId && !isLoadContext) {
+                recordOrderPlacement(this, nextId);
+            }
+        } catch { /* bookkeeping must never break order updates */ }
+
         const newMap = cloneMap(this.orders);
         newMap.set(id, updatedOrder);
         this.orders = Object.freeze(newMap);
@@ -1609,22 +1706,22 @@ class OrderManager {
      * Backward-compatible accessor for _currentWorkingGrid.
      * Returns the top of the working grid stack (null if empty).
      */
-    get _currentWorkingGrid(): any {
+    get _currentWorkingGrid(): WorkingGrid | null {
         return this._peekWorkingGrid();
     }
 
-    set _currentWorkingGrid(val: any) {
+    set _currentWorkingGrid(val: WorkingGrid | null) {
         if (val !== null) {
             this._currentWorkingGridStack.push(val);
         }
     }
 
-    _peekWorkingGrid(): any {
+    _peekWorkingGrid(): WorkingGrid | null {
         const stack = this._currentWorkingGridStack;
         return stack.length > 0 ? stack[stack.length - 1] : null;
     }
 
-    _syncWorkingGridFromMasterMutation(orderId: any, context: any) {
+    _syncWorkingGridFromMasterMutation(orderId: string, context: string) {
         const wg = this._peekWorkingGrid();
         if (!wg || !this.isPlanningActive()) {
             return;
@@ -1635,7 +1732,7 @@ class OrderManager {
                 `master mutation during ${(this._rebalanceState || '').toLowerCase()} (${context})`
             );
             wg.syncFromMaster(this.orders, orderId, this._gridVersion);
-        } catch (syncErr: any) {
+        } catch (syncErr) {
             wg.markStale(`working-grid sync failure: ${getErrorMessage(syncErr)}`);
             this.logger.log(`[COW] Failed to sync working grid for order ${orderId}: ${getErrorMessage(syncErr)}`, 'warn');
         }
@@ -1644,10 +1741,10 @@ class OrderManager {
     /**
      * @param {Array<import('./types').Order>} updates - Order updates to apply
      * @param {string} [context] - Update context label
-     * @param {any} [options]
+     * @param {unknown} [options]
      * @returns {Promise<boolean>}
      */
-    async applyGridUpdateBatch(updates: any, context: any = 'batch-update', options: any = {}) {
+    async applyGridUpdateBatch(updates: ManagedOrder[], context: string = 'batch-update', options: UnknownRecord = {}) {
         const updateOptions = this._normalizeOrderUpdateOptions(options);
         return await this._gridLock.acquire(async () => {
             let allOk = true;
@@ -1712,7 +1809,7 @@ class OrderManager {
      * @param {string} [contextLabel='flush-grid-dirty'] - Label for logs
      * @returns {Promise<{skipped?: boolean, suspended?: boolean, isValid?: boolean, reason?: string}>}
      */
-    async flushGridDirty(contextLabel: any = 'flush-grid-dirty') {
+    async flushGridDirty(contextLabel: string = 'flush-grid-dirty') {
         if (this._gridDirtyAt == null) {
             return { skipped: true, reason: 'not-dirty' };
         }
@@ -1724,7 +1821,7 @@ class OrderManager {
             return { skipped: true, suspended: true, reason: this._gridPersistenceSuspendedReason };
         }
         const result = await this.persistGrid(undefined);
-        if (result && (result as any).skipped === true) {
+        if (result && 'skipped' in result && result.skipped === true) {
             // Persistence was deferred (suspension, validation, etc.) — keep
             // the dirty flag so a later tick can retry.
             return result;
@@ -1750,12 +1847,12 @@ class OrderManager {
      * @param {Object} [options]
      * @returns {Promise<any>}
      */
-    async processFilledOrders(orders: any, excl: any, options: any = {}) {
+    async processFilledOrders(orders: COWFillLike[], excl: Set<string>, options: UnknownRecord = {}): Promise<RebalanceResult> {
         // Step 1: Handle Fills (Accounting & State Updates)
         await this.strategy.processFillsOnly(orders, excl);
 
         // Step 2: Trigger Safe Rebalance only for actual fills.
-        const triggerFills = orders.filter((f: any) => !f.isPartial || f.isDelayedRotationTrigger);
+        const triggerFills = orders.filter((f) => !f.isPartial || f.isDelayedRotationTrigger);
         const shouldRebalance = triggerFills.length > 0;
 
         if (shouldRebalance) {
@@ -1815,7 +1912,7 @@ class OrderManager {
         // diverging: a slot whose stored type is stale relative to the current
         // boundary must not be placed on the wrong rail.
         const resolved = resolveGapBand(this);
-        const inRailFor = (type: any, o: any): boolean =>
+        const inRailFor = (type: OrderType, o: ManagedOrder): boolean =>
             isSlotInRail(resolved.boundaryIdx, resolved.gapSlots, type, o);
 
         // Get closest virtual sells (lowest prices first = closest to market),
@@ -1823,10 +1920,10 @@ class OrderManager {
         // Scan the full sorted rail instead of slicing first so sub-min slots
         // don't consume activation budget (mirrors _pickVirtualSlotsToActivate).
         const sellsClosestFirst = this.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.VIRTUAL)
-            .filter((o: any) => inRailFor(ORDER_TYPES.SELL, o))
-            .filter((o: any) => parseSlotIndex(o?.id) !== null)
-            .sort((a: any, b: any) => a.price - b.price);
-        const validSells: any[] = [];
+            .filter((o) => inRailFor(ORDER_TYPES.SELL, o))
+            .filter((o) => parseSlotIndex(o?.id) !== null)
+            .sort((a, b) => a.price - b.price);
+        const validSells: ManagedOrder[] = [];
         for (const o of sellsClosestFirst) {
             if (validSells.length >= sellCount) break;
             if (floatToBlockchainInt(o.size, sellPrecision) >= minSellSizeInt) {
@@ -1834,22 +1931,25 @@ class OrderManager {
             }
         }
         // Reverse for placement order (highest first)
-        validSells.sort((a: any, b: any) => b.price - a.price);
+        validSells.sort((a, b) => b.price - a.price);
 
         // Virtual BUY selection follows config buyWindowMode (default 'low'):
         // 'low' limits candidates to the BOTTOM buyCount slots (mirrors the
         // strategy keep-low window) and the floor filters WITHIN that window,
         // never redirecting selection to the heavier boundary-adjacent slots
         // (that would buy near the market). 'closest' restores upstream
-        // closest-to-market selection. Chain-order matching (sync adoption) is
+        // closest-to-market selection. Rail membership + slot-N gating match
+        // the reconcile pickers (a rail that moved on must not backfill from
+        // off-rail or non-grid ids). Chain-order matching (sync adoption) is
         // unaffected: it matches by price level, not by this selection.
         const windowLow = resolveBuyWindowMode(this.config) !== 'closest';
         const buyFloorUsdt = resolveBuyFloorUsdt(this.config);
         const buysSorted = this.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.VIRTUAL)
-            .filter((o: any) => !isDeepShelfId(o?.id))
-            .sort((a: any, b: any) => windowLow ? a.price - b.price : b.price - a.price);
+            .filter((o: ManagedOrder) => inRailFor(ORDER_TYPES.BUY, o))
+            .filter((o) => parseSlotIndex(o?.id) !== null)
+            .sort((a, b) => windowLow ? a.price - b.price : b.price - a.price);
         const buysFarthestFirst = windowLow ? buysSorted.slice(0, buyCount) : buysSorted;
-        const validBuys: any[] = [];
+        const validBuys: ManagedOrder[] = [];
         for (const o of buysFarthestFirst) {
             if (validBuys.length >= buyCount) break;
             if (floatToBlockchainInt(o.size, buyPrecision) < minBuySizeInt) continue;
@@ -1891,22 +1991,22 @@ class OrderManager {
             }
         } catch { /* shelf stays off on bootstrap when funds are unavailable */ }
         // Reverse for placement order (lowest first)
-        validBuys.sort((a: any, b: any) => a.price - b.price);
+        validBuys.sort((a, b) => a.price - b.price);
 
         // Reserve ladder: edge-pinned orders activate alongside the window
         // without consuming its budget. Buys pin at the floor (lowest first),
         // sells at the ceiling (highest first). Same min-size gate as the window.
-        const pickEdgeReserves = (orderType: any, count: any, windowed: any[], precision: any, minSizeInt: any, ascending: any): any[] => {
-            const picked: any[] = [];
+        const pickEdgeReserves = (orderType: OrderType, count: number, windowed: ManagedOrder[], precision: number, minSizeInt: number, ascending: boolean): ManagedOrder[] => {
+            const picked: ManagedOrder[] = [];
             if (count <= 0) return picked;
-            const windowedIds = new Set(windowed.map((o: any) => o.id));
+            const windowedIds = new Set(windowed.map((o) => o.id));
             // Both edges anchor at the live grid's own edge (ladder/rail extreme).
             const edgeAnchor = resolveLiveReserveEdgeAnchorPrice(this, ascending ? 'buy' : 'sell');
             const edge = ascending ? 'floor' : 'ceiling';
             const edgeFirst = this.getOrdersByTypeAndState(orderType, ORDER_STATES.VIRTUAL)
-                .filter((o: any) => inRailFor(orderType, o))
-                .filter((o: any) => parseSlotIndex(o.id) !== null)
-                .sort((a: any, b: any) => compareReserveEdge(a, b, edge, edgeAnchor));
+                .filter((o) => inRailFor(orderType, o))
+                .filter((o) => parseSlotIndex(o.id) !== null)
+                .sort((a, b) => compareReserveEdge(a, b, edge, edgeAnchor));
             for (const o of edgeFirst) {
                 if (picked.length >= count) break;
                 if (windowedIds.has(o.id)) continue;
@@ -1915,7 +2015,7 @@ class OrderManager {
                     windowedIds.add(o.id);
                 }
             }
-            picked.sort((a: any, b: any) => ascending ? a.price - b.price : b.price - a.price);
+            picked.sort((a, b) => ascending ? a.price - b.price : b.price - a.price);
             return picked;
         };
         const reserveBuys = pickEdgeReserves(ORDER_TYPES.BUY, resolveReserveCount(this.config, 'buy'), validBuys, buyPrecision, minBuySizeInt, true);
@@ -1931,8 +2031,8 @@ class OrderManager {
      * @param {string} state - Order state (ORDER_STATES.ACTIVE/PARTIAL/VIRTUAL)
      * @returns {Array} Array of matching orders
      */
-    getOrdersByTypeAndState(type: any, state: any) {
-        const result: any[] = [];
+    getOrdersByTypeAndState(type: OrderType | null, state: OrderState): ManagedOrder[] {
+        const result: ManagedOrder[] = [];
         const ids = this._ordersByState[state];
         if (!ids) return result;
         for (const id of ids) {
@@ -1954,7 +2054,7 @@ class OrderManager {
      * so a misbehaving caller doesn't silently lose the update, but the warning
      * flags a violation of the COW boundary-write invariant.
      */
-    _setBoundary(newIdx: number): void {
+    _setBoundary(newIdx: number | null): void {
         if (!this._gridLock?.isReentrant()) {
             this.logger?.log?.(
                 `[COW] _setBoundary called outside _gridLock (boundary ${this.boundaryIdx} → ${newIdx}). ` +
@@ -2000,7 +2100,7 @@ class OrderManager {
      *
      * @param {string} reason - Log/debug label for the drop
      */
-    _clearPendingFillCrawls(reason: any = 'unspecified'): void {
+    _clearPendingFillCrawls(reason: string = 'unspecified'): void {
         if (!Array.isArray(this._pendingFillCrawls) || this._pendingFillCrawls.length === 0) return;
         const count = this._pendingFillCrawls.length;
         this._pendingFillCrawls = [];
@@ -2016,21 +2116,20 @@ class OrderManager {
      */
     _logBoundaryDebug(source: string, newIdx: number | null): void {
         try {
-            const self: any = this;
-            const boundary = newIdx == null ? self.boundaryIdx : newIdx;
+            const boundary = newIdx == null ? this.boundaryIdx : newIdx;
             if (boundary == null) return;
-            const gapSlots = typeof self._gapSlots === 'number' ? self._gapSlots : 0;
+            const gapSlots = typeof this._gapSlots === 'number' ? this._gapSlots : 0;
             const sellStart = boundary + 1 + gapSlots;
-            const countActive = (type: any) => {
+            const countActive = (type: OrderType) => {
                 let n = 0;
-                for (const o of (self.orders?.values?.() || [])) {
+                for (const o of this.orders.values()) {
                     if (o && o.type === type && o.orderId) n++;
                 }
                 return n;
             };
             this.logger?.log?.(
                 `[BOUNDARY] ${source} boundary=${boundary} sellStart=${sellStart} gapSlots=${gapSlots} ` +
-                `spreadCount=${self.currentSpreadCount ?? self.initialSpreadCount ?? '?'} ` +
+                `spreadCount=${this.currentSpreadCount ?? this.initialSpreadCount ?? '?'} ` +
                 `activeBuy=${countActive(ORDER_TYPES.BUY)} activeSell=${countActive(ORDER_TYPES.SELL)}`,
                 'debug'
             );
@@ -2067,7 +2166,7 @@ class OrderManager {
      * @param {number} [atMs] - Fill timestamp to preserve (defaults to now)
      * @returns {boolean} True when the pivot was written
      */
-    _setLastFillPivot(type: any, price: number, provenance: 'fill' | 'book', atMs?: number): boolean {
+    _setLastFillPivot(type: OrderType, price: number, provenance: 'fill' | 'book', atMs?: number): boolean {
         return setLastFillPivot(this, type, price, provenance, atMs);
     }
 
@@ -2103,7 +2202,7 @@ class OrderManager {
      * cold-check and per-side seeding in seedLastFilledPricesFromBook.
      * @param {Array} fills
      */
-    recordLastFilledPrices(fills: any): void {
+    recordLastFilledPrices(fills: COWFillLike[]): void {
         if (!Array.isArray(fills) || fills.length === 0) return;
         let recorded = 0;
         let lastKind = 'unknown';
@@ -2114,15 +2213,15 @@ class OrderManager {
             let priceSrc = 'direct';
             if (!Number.isFinite(price) || (price as number) <= 0) {
                 try {
-                    const slot = f.id ? (this.orders as any)?.get?.(f.id) : null;
-                    price = slot ? Number((slot as any).price) : null;
+                    const slot = f.id ? this.orders.get(f.id) : null;
+                    price = slot ? Number(slot.price) : null;
                     if (Number.isFinite(price as number) && (price as number) > 0) priceSrc = 'slot-fallback';
                 } catch { price = null; }
             }
             if (!Number.isFinite(price as number) || (price as number) <= 0) continue;
-            this._setLastFillPivot(f.type, price as number, 'fill');
+            this._setLastFillPivot(f.type as OrderType, price as number, 'fill');
             recorded++;
-            lastKind = (f as any)?.isPartial === true ? 'partial' : ((f as any)?.isPartial === false ? 'full' : 'unknown');
+            lastKind = f.isPartial === true ? 'partial' : (f.isPartial === false ? 'full' : 'unknown');
             lastPriceSrc = priceSrc;
         }
         // One line per fill batch (chunk): the pivot mutations above are otherwise
@@ -2131,10 +2230,10 @@ class OrderManager {
         // its price came from the fill itself or the invisible slot fallback.
         if (recorded > 0) {
             try {
-                const fmt = (v: any) => (v == null || !Number.isFinite(Number(v)) ? 'none' : Format.formatPrice6(Number(v)));
+                const fmt = (v: unknown) => (v == null || !Number.isFinite(Number(v)) ? 'none' : Format.formatPrice6(Number(v)));
                 this.logger?.log?.(
                     `[FILL-PIVOT] pivot=${fmt(this._lastFilledPrice)}(${this._lastFilledType}) ` +
-                    `buy=${fmt((this as any)._lastFilledBuyPrice)} sell=${fmt((this as any)._lastFilledSellPrice)} ` +
+                    `buy=${fmt(this._lastFilledBuyPrice)} sell=${fmt(this._lastFilledSellPrice)} ` +
                     `n=${recorded} src=${lastKind}/${lastPriceSrc}`,
                     'info'
                 );
@@ -2151,7 +2250,7 @@ class OrderManager {
      * the book alone.
      * @param {Array} chainOpenOrders - raw chain open orders (from readOpenOrdersGuarded)
      */
-    seedLastFilledPricesFromBook(chainOpenOrders: any): void {
+    seedLastFilledPricesFromBook(chainOpenOrders: unknown[]): void {
         // Already armed — silent (the guard has a live pivot).
         if (this._lastFilledPrice != null) return;
         if (this._lastFilledType != null) return;
@@ -2165,7 +2264,7 @@ class OrderManager {
             let maxBuy: number | null = null;
             let minSell: number | null = null;
             for (const o of chainOpenOrders) {
-                const parsed = parseChainOrder(o, this.assets);
+                const parsed = parseChainOrder(o as Parameters<typeof parseChainOrder>[0], this.assets);
                 if (!parsed) continue;
                 const price = Number(parsed.price);
                 if (!Number.isFinite(price) || price <= 0) continue;
@@ -2226,7 +2325,7 @@ class OrderManager {
      * @param {Function} batchCb - Batch callback
      * @returns {Promise<Object>}
      */
-    async checkSpreadCondition(BitShares: any, batchCb: any) {
+    async checkSpreadCondition(BitShares: unknown, batchCb: ((correction: unknown) => Promise<{ executed?: boolean }>) | null = null) {
         return await checkSpreadCondition(this, BitShares, batchCb);
     }
 
@@ -2234,7 +2333,7 @@ class OrderManager {
      * @param {Function} batchCb - Batch callback
      * @returns {Promise<Object>}
      */
-    async checkGridHealth(batchCb: any) {
+    async checkGridHealth(batchCb: ((correction: unknown) => Promise<{ executed?: boolean }>) | null = null) {
         return await checkGridHealth(this, batchCb);
     }
 
@@ -2246,7 +2345,7 @@ class OrderManager {
     }
 
     /**
-     * @returns {any}
+     * @returns {unknown}
      */
     checkFundDriftAfterFills() {
         if (!this.assets || !hasValidAccountTotals(this.accountTotals)) {
@@ -2257,10 +2356,10 @@ class OrderManager {
 
     /**
      * @param {Object|number} [pipelineSignals] - Pipeline state signals or queue length
-     * @returns {any}
+     * @returns {unknown}
      */
-    isPipelineEmpty(pipelineSignals: number | Record<string, any> = 0) {
-        const normalizedSignals: Record<string, any> = (typeof pipelineSignals === 'number')
+    isPipelineEmpty(pipelineSignals: number | Record<string, unknown> = 0) {
+        const normalizedSignals: Record<string, unknown> = (typeof pipelineSignals === 'number')
             ? { incomingFillQueueLength: pipelineSignals }
             : (pipelineSignals || {});
 
@@ -2325,10 +2424,10 @@ class OrderManager {
      * @param {number} targetBoundary
      * @returns {Object}
      */
-    reconcileGrid(targetGrid: any, targetBoundary: any) {
+    reconcileGrid(targetGrid: Map<string, ManagedOrder>, targetBoundary: number | null) {
         if (!(this._gapEvacStreaks instanceof Map)) this._gapEvacStreaks = new Map();
         return reconcileGrid(this.orders, targetGrid, targetBoundary, {
-            logger: (msg: any, level: any) => this.logger.log(msg, level),
+            logger: (msg: string, level?: string) => this.logger.log(msg, level),
             dustThresholdPercent: this.config?.gridLimits?.PARTIAL_DUST_THRESHOLD_PERCENTAGE,
             gapSlots: this._gapSlots,
             evacStreaks: this._gapEvacStreaks,
@@ -2362,7 +2461,7 @@ class OrderManager {
      * @param {Array} candidates - evacReady candidates [{id, idx, type, price, size, orderId}]
      * @returns {number} Number of corrections queued
      */
-    _processGapEvacuationTeeth(candidates: any) {
+    _processGapEvacuationTeeth(candidates: unknown): number {
         if (!Array.isArray(candidates) || candidates.length === 0) return 0;
         if (!Array.isArray(this.ordersNeedingPriceCorrection)) return 0;
         if (!(this._gapEvacStreaks instanceof Map)) this._gapEvacStreaks = new Map();
@@ -2380,7 +2479,8 @@ class OrderManager {
         const gapSlots = this._gapSlots;
         let queued = 0;
 
-        for (const candidate of candidates) {
+        for (const raw of candidates) {
+            const candidate = raw as GapEvacCandidate;
             const slotId = candidate?.id;
             const chainOrderId = candidate?.orderId;
             if (!slotId || !chainOrderId) continue;
@@ -2394,7 +2494,7 @@ class OrderManager {
 
             // 3./4. Queued-once + no duplicate chain-order entry.
             if (this._gapEvacCancelQueued.has(slotId)) continue;
-            if (this.ordersNeedingPriceCorrection.some((entry: any) => entry?.chainOrderId === chainOrderId)) continue;
+            if (this.ordersNeedingPriceCorrection.some((entry) => entry?.chainOrderId === chainOrderId)) continue;
 
             // 5. Live slot check.
             const slot = this.orders.get(slotId);
@@ -2485,7 +2585,7 @@ class OrderManager {
      *   on the flag it holds itself.
      * @returns {Promise<any>}
      */
-    async performSafeRebalance(fills: any = [], excludeIds: any = new Set(), options: any = {}) {
+    async performSafeRebalance(fills: COWFillLike[] = [], excludeIds: Set<string> = new Set(), options: { skipBroadcastWait?: boolean; deferIfBroadcasting?: boolean; [key: string]: unknown } = {}): Promise<RebalanceResult> {
         this.logger.log("[SAFE-REBALANCE] Starting with COW...", "info");
         // A fresh fill set re-enables planning and ends any held-plan
         // suppression run counted below; the next fill-less streak counts
@@ -2553,7 +2653,7 @@ class OrderManager {
         });
     }
 
-    async _applySafeRebalanceCOW(fills: any = [], excludeIds: any = new Set()) {
+    async _applySafeRebalanceCOW(fills: COWFillLike[] = [], excludeIds: Set<string> = new Set()): Promise<RebalanceResult> {
         const cowEngine = this._getCOWEngine();
         if (!cowEngine) {
             return buildAbortedResult('COW Engine not initialized (assets not available)');
@@ -2588,7 +2688,7 @@ class OrderManager {
         // and settles the slot back to a spread placeholder.
         try {
             this._processGapEvacuationTeeth(result?.evacReady);
-        } catch (gapEvacError: any) {
+        } catch (gapEvacError) {
             this.logger?.log?.(
                 `[GAP-EVAC] Teeth processing failed (non-fatal): ${getErrorMessage(gapEvacError)}`,
                 'warn'
@@ -2603,7 +2703,7 @@ class OrderManager {
             return result;
         }
 
-        this._pushWorkingGridRef(result.workingGrid, result);
+        this._pushWorkingGridRef(result.workingGrid as WorkingGrid, result);
         return result;
     }
 
@@ -2640,10 +2740,10 @@ class OrderManager {
         };
     }
 
-    async _commitWorkingGrid(workingGrid: any, _workingIndexes: any, workingBoundary: any, options: any = {}) {
+    async _commitWorkingGrid(workingGrid: WorkingGrid, _workingIndexes: unknown, workingBoundary: number | null, options: { skipRecalc?: boolean; boundaryHeld?: boolean; result?: WorkingGridResult; [key: string]: unknown } = {}) {
         const startTime = Date.now();
         let committed = false;
-        let comparePrecisions: any;
+        let comparePrecisions: { buyPrecision: number; sellPrecision: number; priceRelativeTolerance: number } | undefined;
         let skipRecalc = false;
         // Exactly-once stack-release contract: every settle path (return or
         // throw) releases the working-grid stack entry exactly one time via
@@ -2669,7 +2769,7 @@ class OrderManager {
 
             try {
                 comparePrecisions = this._getCowComparePrecisions();
-            } catch (precisionErr: any) {
+            } catch (precisionErr) {
                 this.logger.log(`[COW] ${getErrorMessage(precisionErr)}`, 'error');
                 releaseStackEntry();
                 return false;
@@ -2800,7 +2900,7 @@ class OrderManager {
                         'warn'
                     );
                 }
-            } catch (recalcErr: any) {
+            } catch (recalcErr) {
                 this.logger.log(`[COW] Fund recalculation failed post-commit: ${getErrorMessage(recalcErr)}`, 'error');
                 this._recoveryState = { ...this._recoveryState, lastFailureAt: Date.now() };
                 // Re-throw to signal callers that the commit is incomplete
@@ -2811,7 +2911,7 @@ class OrderManager {
 
             releaseStackEntry();
             return true;
-        } catch (err: any) {
+        } catch (err) {
             // Unhandled commit failure (e.g. _gridLock acquisition timeout or
             // an in-lock commit error): nothing was committed, but the stack
             // entry must still be released exactly once.
@@ -2823,9 +2923,9 @@ class OrderManager {
     /**
      * @param {Object} [options]
      * @param {boolean} [options.allowBootstrapTransient]
-     * @returns {any}
+     * @returns {unknown}
      */
-    validateGridStateForPersistence(options: Record<string, any> = {}) {
+    validateGridStateForPersistence(options: { allowBootstrapTransient?: boolean; [key: string]: unknown } = {}) {
         const result = validateGridForPersistence(this.orders, this.accountTotals);
         const allowBootstrapTransient = options.allowBootstrapTransient !== false;
 
@@ -2841,7 +2941,7 @@ class OrderManager {
      * @param {string} [reason]
      * @returns {void}
      */
-    suspendGridPersistence(reason: any = 'suspended') {
+    suspendGridPersistence(reason: string = 'suspended') {
         this._gridPersistenceSuspendedReason = reason;
     }
 
@@ -2849,7 +2949,7 @@ class OrderManager {
      * @param {string} [reason]
      * @returns {void}
      */
-    resumeGridPersistence(reason: any = null) {
+    resumeGridPersistence(reason: string | null = null) {
         if (!this._gridPersistenceSuspendedReason) return;
         this.logger.log(
             `[PERSISTENCE-GATE] Resuming grid persistence${reason ? ` (${reason})` : ''}`,
@@ -2866,7 +2966,7 @@ class OrderManager {
      *   swapping the live map and exposing it to concurrent readers.
      * @returns {Promise<any>}
      */
-    async persistGrid(snapshotOrders: any, recentFillKeys?: any, fundSnapshot?: { btsFeesOwed: number; accountTotals: any }) {
+    async persistGrid(snapshotOrders?: ManagedOrder[], recentFillKeys?: Record<string, number>, fundSnapshot?: { btsFeesOwed: number; accountTotals: AccountTotals }) {
         if (this._gridPersistenceSuspendedReason) {
             this.logger.log(
                 `[PERSISTENCE-GATE] Skipping grid persistence while suspended: ${this._gridPersistenceSuspendedReason}`,
