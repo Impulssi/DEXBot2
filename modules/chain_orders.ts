@@ -158,14 +158,39 @@ const RECENT_OWN_CANCEL_TTL_MS = ORDER_EVENTS.RECENT_OWN_CANCEL_TTL_MS;
 const RECENT_OWN_CANCEL_MAX_ENTRIES = ORDER_EVENTS.RECENT_OWN_CANCEL_MAX_ENTRIES;
 const _recentOwnCancels = new Map<string, number>();
 
+// Long-horizon ledger of order ids this process cancelled, for disappearance
+// classification (manual_hold): the 5s buffer above only covers in-flight
+// rotation counterparts, but a cancel whose slot bookkeeping lags (or whose
+// sync notice arrives minutes/hours later, e.g. after a quiet period) must
+// still classify as 'own'. Written at the same single choke point
+// (recordOwnCancel) so every bot-initiated cancel path is covered.
+// In-memory only: restarts wipe it (documented limitation — a disappearance
+// first noticed after a restart falls back to the legacy verdict).
+const OWN_CANCEL_LEDGER_TTL_MS = ORDER_EVENTS.OWN_CANCEL_LEDGER_TTL_MS;
+const OWN_CANCEL_LEDGER_MAX_ENTRIES = ORDER_EVENTS.OWN_CANCEL_LEDGER_MAX_ENTRIES;
+const _ownCancelLedger = new Map<string, number>();
+
 function recordOwnCancel(orderId: string | null | undefined) {
     if (!orderId) return;
     const now = Date.now();
-    _recentOwnCancels.set(String(orderId), now);
-    // Lazy GC: drop expired entries when the buffer grows.
+    const id = String(orderId);
+    _recentOwnCancels.set(id, now);
+    _ownCancelLedger.set(id, now);
+    // Lazy GC: drop expired entries when the buffers grow.
     if (_recentOwnCancels.size > RECENT_OWN_CANCEL_MAX_ENTRIES) {
-        for (const [id, ts] of _recentOwnCancels) {
-            if (now - ts > RECENT_OWN_CANCEL_TTL_MS) _recentOwnCancels.delete(id);
+        for (const [cid, ts] of _recentOwnCancels) {
+            if (now - ts > RECENT_OWN_CANCEL_TTL_MS) _recentOwnCancels.delete(cid);
+        }
+    }
+    if (_ownCancelLedger.size > OWN_CANCEL_LEDGER_MAX_ENTRIES) {
+        for (const [cid, ts] of _ownCancelLedger) {
+            if (now - ts > OWN_CANCEL_LEDGER_TTL_MS) _ownCancelLedger.delete(cid);
+        }
+        // Still over cap (all fresh): drop oldest first.
+        while (_ownCancelLedger.size > OWN_CANCEL_LEDGER_MAX_ENTRIES) {
+            const oldest = _ownCancelLedger.keys().next();
+            if (oldest.done) break;
+            _ownCancelLedger.delete(oldest.value);
         }
     }
 }
@@ -187,6 +212,16 @@ function wasRecentlyOwnCancelled(orderId: string | null | undefined) {
         return false;
     }
     return true;
+}
+
+// Long-horizon variant for disappearance classification: true when this
+// process cancelled the order within OWN_CANCEL_LEDGER_TTL_MS (24h).
+// Pure read (no mutation); used by manual_hold alongside the 5s buffer.
+function wasOwnCancelLedgerHit(orderId: string | null | undefined): boolean {
+    if (!orderId) return false;
+    const ts = _ownCancelLedger.get(String(orderId));
+    if (ts == null) return false;
+    return Date.now() - ts <= OWN_CANCEL_LEDGER_TTL_MS;
 }
 
 // Fill-history verification for disappearance classification (manual_hold).
@@ -1652,5 +1687,5 @@ function getFillProcessingMode() {
     return FILL_PROCESSING_MODE;
 }
 export { selectAccount, setPreferredAccount, resolveAccountId, resolveAccountName, readOpenOrders, readOpenOrdersWithMeta, readOpenOrdersWithMetaSafe, readOpenOrdersGuarded, readSingleOrder, batchReadOrders, listenForFills, updateOrder, createOrder, cancelOrder, getOnChainAssetBalances, getFillProcessingMode, buildUpdateOrderOp, buildCreateOrderOp, buildCancelOrderOp, buildLiquidityPoolExchangeOp,
-executeBatch, findOverReducingUpdateOpError, wasRecentlyOwnCancelled, recordOwnCancel, BroadcastUncertainError,
+executeBatch, findOverReducingUpdateOpError, wasRecentlyOwnCancelled, wasOwnCancelLedgerHit, recordOwnCancel, BroadcastUncertainError,
 broadcastTxWithClassification, findFillForOrderInHistory }

@@ -2134,6 +2134,15 @@ let NATIVE_CLIENT = {
 
         // Lazy-GC threshold for the recent-own-cancel map.
         RECENT_OWN_CANCEL_MAX_ENTRIES: 256,
+
+        // Long-horizon own-cancel ledger for disappearance classification
+        // (manual_hold): a bot-initiated cancel whose slot bookkeeping lags
+        // (or whose sync notice arrives much later) must still classify as
+        // 'own', not 'manual'. 24h bridges late notices; entries self-clean.
+        OWN_CANCEL_LEDGER_TTL_MS: 24 * 60 * 60 * 1000,
+
+        // Lazy-GC threshold for the own-cancel ledger map.
+        OWN_CANCEL_LEDGER_MAX_ENTRIES: 2048,
     },
 
     // -------------------------------------------------------------------------

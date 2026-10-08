@@ -133,6 +133,32 @@ check('null hold expires', isManualHoldExpired(null, 100, 0.075), true);
     mgr._fillBatchInFlight = 0;
 }
 
+// --- own-cancel ledger: late sync notices still classify as own ---
+// Regression: a bot-initiated cancel whose slot bookkeeping lagged (or
+// whose sync notice arrives minutes/hours later) used to fall through the
+// 5s buffer into a bogus 'manual' hold, freezing the grid. The 24h ledger
+// bridges that gap; genuine operator cancels never appear in it.
+{
+    const mgr = fakeManager({});
+    mgr._fillBatchInFlight = 0;
+    check('ledger miss -> manual', classifyDisappearance(mgr, { id: 's', orderId: '1.7.900' }), 'manual');
+    chainOrders.recordOwnCancel('1.7.901');
+    check('ledger hit', chainOrders.wasOwnCancelLedgerHit('1.7.901'), true);
+    check('ledger miss id', chainOrders.wasOwnCancelLedgerHit('1.7.902'), false);
+    check('ledger null -> false', chainOrders.wasOwnCancelLedgerHit(null), false);
+    check('ledger empty -> false', chainOrders.wasOwnCancelLedgerHit(''), false);
+    // Simulate a notice arriving 1h later: the 5s buffer has expired, but
+    // the ledger still attributes the cancel to the bot.
+    const realNow = Date.now;
+    try {
+        Date.now = () => realNow() + 60 * 60 * 1000;
+        check('late notice still own via ledger', classifyDisappearance(mgr, { id: 's', orderId: '1.7.901' }), 'own');
+        check('late unknown still manual', classifyDisappearance(mgr, { id: 's', orderId: '1.7.903' }), 'manual');
+    } finally {
+        Date.now = realNow;
+    }
+}
+
 // --- clear-marker consume (dexbot clear-holds handshake) ---
 {
     const fs = require('fs');

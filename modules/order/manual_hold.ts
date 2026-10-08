@@ -191,8 +191,10 @@ function consumeClearMarker(manager: any, profilesDir: string, botKey: string): 
  *
  * - 'fill': a fill record exists for the order id (real-time event already
  *   processed, or an earlier sync booked it) — existing behavior.
- * - 'own': the bot cancelled it itself moments ago (rotation/replace in
- *   flight) — existing behavior; the counterpart create carries the intent.
+ * - 'own': the bot cancelled it itself — either moments ago (rotation/replace
+ *   in flight, 5s buffer) or earlier (24h own-cancel ledger for cancels
+ *   whose slot bookkeeping lagged or whose sync notice arrives late).
+ *   The counterpart create carries the intent.
  * - 'manual': neither — almost certainly an operator cancel by hand (or an
  *   expiry, which wants the same treatment). Hold the slot instead of
  *   booking a fill.
@@ -241,6 +243,15 @@ function classifyDisappearance(manager: any, slot: any): 'fill' | 'own' | 'manua
         try {
             const wro = (chainOrders as any)?.wasRecentlyOwnCancelled;
             if (typeof wro === 'function' && wro(orderId)) return 'own';
+        } catch { /* fall through to ledger below */ }
+        // The bot's own older cancel (long-horizon ledger, 24h): a cancel
+        // whose slot bookkeeping lagged, or whose sync notice arrives much
+        // later (quiet period, disabled loop), must still classify as 'own'.
+        // Without this, self-cancels resurface as 'manual' holds and freeze
+        // the grid. Genuine operator cancels never appear in this ledger.
+        try {
+            const ledgerHit = (chainOrders as any)?.wasOwnCancelLedgerHit;
+            if (typeof ledgerHit === 'function' && ledgerHit(orderId)) return 'own';
         } catch { /* fall through to manual below */ }
         return 'manual';
     } catch {
