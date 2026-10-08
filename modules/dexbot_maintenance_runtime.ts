@@ -1878,8 +1878,15 @@ function describeDeferredHolds(bot: BotLike, heldOrders: HeldChainOrder[]): stri
  * @returns {boolean} True if the sync loop is enabled in TIMING config
  */
 function isOpenOrdersSyncLoopEnabled(bot: BotLike) {
-    if (bot.config?.timing?.openOrdersSyncLoopEnabled !== undefined) {
-        return !!bot.config.timing.openOrdersSyncLoopEnabled;
+    // Timing keys are stored SCREAMING_CASE (runtime_settings normalizes
+    // user camelCase on merge): check both spellings so a bot-config flag
+    // like { openOrdersSyncLoopEnabled: true } actually takes effect.
+    const timing = bot.config?.timing as Record<string, unknown> | undefined;
+    if (timing?.openOrdersSyncLoopEnabled !== undefined) {
+        return !!timing.openOrdersSyncLoopEnabled;
+    }
+    if (timing?.OPEN_ORDERS_SYNC_LOOP_ENABLED !== undefined) {
+        return !!timing.OPEN_ORDERS_SYNC_LOOP_ENABLED;
     }
     return !!TIMING.OPEN_ORDERS_SYNC_LOOP_ENABLED;
 }
