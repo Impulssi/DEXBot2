@@ -114,6 +114,10 @@ async function testRestartControlsExcludeUpdaterJob() {
             return child;
         },
         updaterActive: true,
+        // Isolate from the real market_adapter lock file: the default
+        // stopMarketAdapterFromLock would read a stale harness PID and block
+        // restartRunning past the test's timing window.
+        stopMarketAdapter: async () => ({ pid: null, stopped: false }),
     });
 
     await supervisor.start();

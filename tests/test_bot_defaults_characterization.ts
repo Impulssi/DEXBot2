@@ -55,6 +55,7 @@ const COUNT_OBJECT_KEYS = ['weightDistribution', 'botFunds', 'activeOrders'];
 const SCALAR_SEED_KEYS = [
     'active', 'dryRun', 'minPrice', 'maxPrice',
     'incrementPercent', 'targetSpreadPercent', 'startPrice', 'gridPrice',
+    'buyFloorUSDT', 'buyDelayMinutes', 'buyWindowMode', 'buyDeepCount', 'buyDeepSizes',
 ];
 
 function writeWhitelist(doc) {
@@ -84,13 +85,13 @@ function testDraftSnapshot() {
     // no longer the historical hardcoded null literal.
     expected.gridPrice = DEFAULT_CONFIG.gridPrice ?? null;
 
-    assert.deepStrictEqual(draft, expected, 'draft({}) must seed exactly the current 12 keys with DEFAULT_CONFIG values');
+    assert.deepStrictEqual(draft, expected, 'draft({}) must seed exactly the current 17 keys with DEFAULT_CONFIG values');
 
     const keySet = Object.keys(draft).sort();
     assert.deepStrictEqual(
         keySet,
         [...COUNT_OBJECT_KEYS, 'reserveOrders', ...SCALAR_SEED_KEYS].sort(),
-        'draft key set must stay exactly the seeded 12 keys'
+        'draft key set must stay exactly the seeded 17 keys'
     );
     for (const key of DRAFT_EXCLUDED_KEYS) {
         assert.ok(!(key in draft), `draft must NOT seed excluded DEFAULT_CONFIG key '${key}' (byte stability)`);
@@ -121,8 +122,13 @@ function testDraftPreservesNullsAndPartials() {
     const nulls = normalizeBotDraft({
         active: null, dryRun: null, minPrice: null, maxPrice: null,
         incrementPercent: null, targetSpreadPercent: null, startPrice: null, gridPrice: null,
+        buyFloorUSDT: null, buyDelayMinutes: null, buyWindowMode: null, buyDeepCount: null, buyDeepSizes: null,
     });
     for (const key of [...SCALAR_SEED_KEYS]) {
+        if (key === 'buyDeepSizes') {
+            assert.deepStrictEqual(nulls[key], [], 'draft.buyDeepSizes null → default [] (object-default falsy-replace)');
+            continue;
+        }
         assert.strictEqual(nulls[key], null, `draft.${key} must preserve explicit null`);
     }
 

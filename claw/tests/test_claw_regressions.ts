@@ -605,24 +605,26 @@ function testBuildQueryScopesAnyPoolByReceivedAsset() {
 function testClawDefaultDataPathsStayInsideClawFolder() {
   console.log('  claw default data paths...');
 
-  // modules/paths.ts resolveClawDirs keeps claw state inside the repo's
-  // claw/ folder regardless of where the code runs from (dist or source),
-  // so anchor expectations to that folder rather than to this test file.
-  const clawDataDir = path.join(__dirname, '..', '..', '..', 'claw', 'data');
-  const clawStateDir = path.join(clawDataDir, 'state');
+  // modules/paths.ts resolveClawDirs keeps claw state in the source claw/
+  // folder only when profiles also resolve to the repo layout; with
+  // DEXBOT_PROFILE_ROOT (or a migrated home config) state relocates under
+  // <profiles>/claw/data. Anchor expectations to the resolver instead of a
+  // hardcoded source path so the test holds in both layouts.
+  const { resolveClawDirs, PATHS } = require('../../modules/paths');
+  const expected = resolveClawDirs(PATHS.PROFILES_DIR, PATHS.PROJECT_ROOT);
   const clawInfra = require('../modules/claw_infra');
   const { DEFAULT_STATE_PATH } = require('../modules/position_manager');
   const { DEFAULT_HEALTH_PATH } = require('../modules/position_manager_watch');
 
-  assert.strictEqual(DEFAULT_STATE_PATH, path.join(clawDataDir, 'positions.json'));
-  assert.strictEqual(DEFAULT_HEALTH_PATH, path.join(clawDataDir, 'watcher-health.json'));
+  assert.strictEqual(DEFAULT_STATE_PATH, expected.POSITIONS_FILE);
+  assert.strictEqual(DEFAULT_HEALTH_PATH, expected.WATCHER_HEALTH_FILE);
 
   const runtime = clawInfra.createRuntimeContext();
-  assert.strictEqual(runtime.dataDir, clawDataDir);
-  assert.strictEqual(runtime.stateDir, clawStateDir);
+  assert.strictEqual(runtime.dataDir, expected.DATA_DIR);
+  assert.strictEqual(runtime.stateDir, expected.STATE_DIR);
 
   const stateStore = clawInfra.createStateStore();
-  assert.strictEqual(stateStore.filePath, path.join(clawStateDir, 'claw-state.json'));
+  assert.strictEqual(stateStore.filePath, path.join(expected.STATE_DIR, 'claw-state.json'));
 
   console.log('    PASS');
 }

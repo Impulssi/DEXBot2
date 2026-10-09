@@ -287,7 +287,7 @@ async function testPersist_RoundTripAndClear() {
         assert.deepStrictEqual(accountOrders.loadPendingFillCrawls(), [{ slotId: 'slot-97', side: 'buy', ts: 5 }],
             'undefined param is a no-op (backward compatible callers)');
     } finally {
-        try { fs.unlinkSync(`profiles/orders/${botKey}.json`); } catch { /* absent */ }
+        try { fs.unlinkSync(accountOrders.profilesPath); } catch { /* absent */ }
     }
     console.log('✓ PEND-009 passed');
 }
@@ -457,11 +457,11 @@ async function testClearGrid_WipesPersistedCrawls() {
         await accountOrders.clearGrid();
         assert.deepStrictEqual(accountOrders.loadPendingFillCrawls(), [],
             'clearGrid must drop persisted crawls so the next generation cannot inherit them');
-        const onDisk = fs.readFileSync(`profiles/orders/${botKey}.json`, 'utf8');
+        const onDisk = fs.readFileSync(accountOrders.profilesPath, 'utf8');
         assert.ok(!onDisk.includes('pendingFillCrawls'),
             'the persisted pendingFillCrawls key must be gone from disk, not merely shadowed in memory');
     } finally {
-        try { fs.unlinkSync(`profiles/orders/${botKey}.json`); } catch { /* absent */ }
+        try { fs.unlinkSync(accountOrders.profilesPath); } catch { /* absent */ }
     }
     console.log('✓ PEND-016 passed');
 }
@@ -547,7 +547,7 @@ async function testPersistSkip_RestartReplaysCommitOnce() {
     console.log('\n[PEND-018] skipped persist after a commit replays exactly once on restart...');
     const botKey = createBotKey({ name: 'pending-crawl-generation-test' }, 0);
     const accountOrders = new AccountOrders({ botKey });
-    const persistedPath = `profiles/orders/${botKey}.json`;
+    const persistedPath = accountOrders.profilesPath;
     const B0 = 96;
     const B1 = 94;
     try {
