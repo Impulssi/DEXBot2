@@ -124,6 +124,10 @@ assert(mgr.funds && typeof mgr.funds.available.buy === 'number', 'manager should
     console.log('spread selection tests (COW) passed');
 
     // --- Test the rotation behavior via COW ---
+    // Rotation parity uses buyWindowMode 'closest' (upstream behavior: the
+    // hole after a boundary crawl sits at the boundary, outside the fork
+    // 'low' rail-bottom window, so 'low' would never rotate there — the
+    // spread-selection block above covers the fork window instead).
     const rotateMgr = new OrderManager({
         assetA: 'BASE',
         assetB: 'QUOTE',
@@ -134,7 +138,8 @@ assert(mgr.funds && typeof mgr.funds.available.buy === 'number', 'manager should
         targetSpreadPercent: 5,
         botFunds: { buy: 1000, sell: 1000 },
         weightDistribution: { buy: 1.0, sell: 1.0 }, 
-        activeOrders: { buy: 1, sell: 1 }
+        activeOrders: { buy: 1, sell: 1 },
+        buyWindowMode: 'closest'
     });
 
     rotateMgr.assets = { assetA: { id: '1.3.0', precision: 5 }, assetB: { id: '1.3.1', precision: 5 } };
