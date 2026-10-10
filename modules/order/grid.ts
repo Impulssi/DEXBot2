@@ -3380,6 +3380,76 @@ export function determineOrderSideByFunds(manager: OrderManagerLike, currentMark
             }
         }
 
+        // P3: Market-crossing guard — never place a SELL at/below the market
+        // reference or a BUY at/above it; such orders fill instantly instead
+        // of resting (Oct-10: a post-regen correction placed 9 sells under a
+        // flat market and they filled within seconds). Reference is the AMA
+        // center snapshot; missing/invalid reference disables the guard
+        // (fail-open) so correction still works without market data.
+        if (spreadCandidates.length > 0) {
+            let marketRef: number | null = null;
+            try {
+                const ref = loadAmaCenterPrice(manager.config?.botKey ?? '');
+                if (Number.isFinite(ref) && (ref as number) > 0) marketRef = ref as number;
+            } catch { marketRef = null; }
+            if (marketRef !== null) {
+                const mr = marketRef;
+                const preFilter = spreadCandidates.length;
+                spreadCandidates = spreadCandidates.filter((c) => {
+                    if (c.price == null || !Number.isFinite(Number(c.price))) return false;
+                    const px = Number(c.price);
+                    if (railType === ORDER_TYPES.SELL && px <= mr) return false;
+                    if (railType === ORDER_TYPES.BUY && px >= mr) return false;
+                    return true;
+                });
+                const filteredCount = preFilter - spreadCandidates.length;
+                if (filteredCount > 0) {
+                    manager.logger?.log?.(
+                        `[SPREAD-CORRECTION] Filtered ${filteredCount}/${preFilter} candidate(s) crossing the market reference (${mr})`,
+                        'warn'
+                    );
+                }
+            }
+        }
+
+        // P4: Live-unmatched guard — never stack a fresh order where a live
+        // unmatched chain order already rests at the same price level. Those
+        // orders provide that level's liquidity; duplicating them doubles
+        // exposure and the duplicate fills first when the level sits under
+        // the market (Oct-10: 27 gap-skipped sells stayed live while fresh
+        // lows were placed beneath them). Reads the sync-stamped unmatched
+        // list; stale/absent lists disable the guard (fail-open).
+        if (spreadCandidates.length > 0) {
+            let unmatched: Array<unknown> = [];
+            try {
+                const list = (manager as any)?._lastUnmatchedChainOrders;
+                const at = Number((manager as any)?._lastUnmatchedChainOrdersAt || 0);
+                if (Array.isArray(list) && list.length > 0 && at > 0 && Date.now() - at < 15 * 60 * 1000) {
+                    unmatched = list;
+                }
+            } catch { unmatched = []; }
+            if (unmatched.length > 0) {
+                const precision = railType === ORDER_TYPES.SELL ? manager.assets.assetA.precision : manager.assets.assetB.precision;
+                const preFilter = spreadCandidates.length;
+                spreadCandidates = spreadCandidates.filter((c) => {
+                    if (c.price == null) return false;
+                    for (const u of unmatched) {
+                        const up = Number((u as any)?.price);
+                        if (!Number.isFinite(up)) continue;
+                        try { if (priceSlotEqual(up, (c as any).price, precision)) return false; } catch { if (up === (c as any).price) return false; }
+                    }
+                    return true;
+                });
+                const filteredCount = preFilter - spreadCandidates.length;
+                if (filteredCount > 0) {
+                    manager.logger?.log?.(
+                        `[SPREAD-CORRECTION] Filtered ${filteredCount}/${preFilter} candidate(s) already covered by live unmatched chain orders`,
+                        'warn'
+                    );
+                }
+            }
+        }
+
         if (spreadCandidates.length > 0) {
             manager.logger?.log?.(`[SPREAD-CORRECTION] Identified ${spreadCandidates.length}/${missingSlots} slot(s) for activation on ${sideName} (orphaned=${orphanedVirtualCandidates.length}, spread=${spreadCandidates.length - orphanedVirtualCandidates.length})`, 'debug');
         }
