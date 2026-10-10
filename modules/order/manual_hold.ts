@@ -14,12 +14,18 @@
  * (classifyDisappearanceAsync): a missed fill event must never freeze a
  * slot — only a history-clean vanishing holds. Suppression lives in the placement pickers
  * (strategy windows, startup activation, reserve edges). Holds persist
- * across crashes (snapshot) so an auto-restart never refills what the
- * operator removed; a graceful shutdown clears them (operator stop =
- * explicit restore), as does `dexbot clear-holds <bot>` via marker file.
+ * across crashes AND graceful restarts (snapshot + sidecar mirror) so a
+ * stop/start cycle never refills what the operator removed; only an
+ * explicit `dexbot clear-holds <bot>` marker or a significant market move
+ * past the slot releases them.
  *
  * Move threshold: MANUAL_HOLD_MOVE_MULT * incrementPercent (default 5x).
  * At 1.5% increment a hold releases after a ~7.5% market move past it.
+ *
+ * Regen safety: slot ids are reused across grid regenerations at different
+ * prices, so restore drops a hold whose current slot price diverged past
+ * the move threshold from the held price instead of pinning the wrong
+ * level (Oct-10: a fresh regen reused slot-N names ~7% away).
  */
 
 import fs from 'node:fs';
@@ -331,6 +337,8 @@ function restoreManualHolds(manager: any, persisted: any): number {
     if (!manager) return 0;
     const holds = getManualHoldMap(manager);
     let restored = 0;
+    let diverged = 0;
+    const movePct = resolveManualHoldMovePct(manager?.config);
     const list = Array.isArray(persisted) ? persisted : [];
     for (const e of list) {
         const slotId = e?.slotId != null ? String(e.slotId) : '';
@@ -342,6 +350,18 @@ function restoreManualHolds(manager: any, persisted: any): number {
         try {
             if (manager.orders instanceof Map && !manager.orders.has(slotId)) continue;
         } catch { /* fall through without the existence check */ }
+        // Regen safety: ids are reused at different prices, so a hold whose
+        // slot moved past the release threshold pins the wrong level —
+        // drop it instead (same rule as live price-move expiry).
+        try {
+            const cur = manager.orders instanceof Map ? manager.orders.get(slotId) : null;
+            const curPrice = Number(cur?.price);
+            if (Number.isFinite(curPrice) && curPrice > 0 && Number.isFinite(movePct) && movePct > 0
+                && Math.abs(curPrice - price) / price > movePct) {
+                diverged++;
+                continue;
+            }
+        } catch { /* fall through and restore on lookup failure */ }
         const base = Number(e?.base);
         const orderId = e?.orderId != null ? String(e.orderId) : null;
         holds.set(slotId, {
@@ -351,6 +371,12 @@ function restoreManualHolds(manager: any, persisted: any): number {
             orderId: orderId && orderId.length > 0 ? orderId : null,
         });
         restored++;
+    }
+    if (diverged > 0) {
+        manager?.logger?.log?.(
+            `[HOLD] Dropped ${diverged} persisted hold(s) whose slot price moved past the release threshold after a grid regen (not restored)`,
+            'info'
+        );
     }
     return restored;
 }

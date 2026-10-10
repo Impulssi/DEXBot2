@@ -844,6 +844,9 @@ export interface AccountOrdersLike {
   loadGenesis(forceReload?: boolean): unknown;
   loadGapEvacStreaks(forceReload?: boolean): unknown;
   loadManualHolds?(forceReload?: boolean): unknown;
+  loadManualHoldsSidecar?(): unknown;
+  writeManualHoldsSidecar?(holds: unknown): void;
+  backupGrid?(tag?: string): string | null;
   loadLastFillPivot?(forceReload?: boolean): unknown;
   loadPendingFillCrawls(forceReload?: boolean): unknown[];
   loadRecentFillKeys(forceReload?: boolean): unknown;

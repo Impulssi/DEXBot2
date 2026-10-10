@@ -694,6 +694,17 @@ async function rejectCorruptedGridSnapshot(bot: BotLike, context: string) {
         `drift sell=${Number(driftCheck.driftSell ?? 0).toFixed(2)} buy=${Number(driftCheck.driftBuy ?? 0).toFixed(2)}. ` +
         `Deleting corrupted snapshot.`
     );
+    // Back up first: the snapshot carries operator intent (manual holds)
+    // the rebuild cannot re-derive. Oct-10: repeated drift-rejects deleted
+    // the only copy of live holds — forensics and manual recovery need it.
+    try {
+        const backupPath = typeof (bot.accountOrders as any)?.backupGrid === 'function'
+            ? (bot.accountOrders as any).backupGrid(`drift-${context}`)
+            : null;
+        if (backupPath) bot._warn(`${tag} Snapshot backed up to ${backupPath} before wipe.`);
+    } catch (backupErr: unknown) {
+        bot._warn(`${tag} Snapshot backup failed (${getErrorMessage(backupErr)}) — proceeding with wipe.`);
+    }
     if (bot.accountOrders && typeof bot.accountOrders.clearGrid === 'function') {
         try {
             await bot.accountOrders.clearGrid();

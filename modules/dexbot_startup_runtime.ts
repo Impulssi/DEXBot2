@@ -158,7 +158,27 @@ async function initializeStartupState(bot: BotLike) {
     const persistedRecentFillKeys = bot.accountOrders.loadRecentFillKeys();
     const persistedGenesis = bot.accountOrders.loadGenesis?.() ?? null;
     const persistedGapEvacStreaks = bot.accountOrders.loadGapEvacStreaks?.() ?? null;
-    const persistedManualHolds = bot.accountOrders.loadManualHolds?.() ?? null;
+    let persistedManualHolds = bot.accountOrders.loadManualHolds?.() ?? null;
+    // Sidecar fallback: when the snapshot carries no holds (empty read,
+    // drift-reject wipe, regen id churn), the mirrored sidecar still has
+    // them — operator intent must not depend on snapshot fate.
+    if ((!Array.isArray(persistedManualHolds) || persistedManualHolds.length === 0)
+        && typeof bot.accountOrders.loadManualHoldsSidecar === 'function') {
+        try {
+            const sidecar = bot.accountOrders.loadManualHoldsSidecar();
+            if (Array.isArray(sidecar) && sidecar.length > 0) {
+                bot._log(`[HOLD] Snapshot holds empty — using ${sidecar.length} hold(s) from sidecar fallback`, 'warn');
+                persistedManualHolds = sidecar;
+            }
+        } catch { /* snapshot stays authoritative */ }
+    }
+    // Startup load summary: one line so the next empty-read incident is
+    // diagnosable in seconds (orders/holds/boundary as loaded from disk).
+    try {
+        const gridCount = Array.isArray(persistedGrid) ? persistedGrid.length : -1;
+        const holdCount = Array.isArray(persistedManualHolds) ? persistedManualHolds.length : -1;
+        bot._log(`[STARTUP] Snapshot loaded: grid=${gridCount} holds=${holdCount} boundary=${String(persistedBoundaryIdx)}`, 'info');
+    } catch { /* logging must never break startup */ }
 
     return {
         persistedGrid: repairedGrid,

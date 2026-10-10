@@ -1100,6 +1100,15 @@ export async function persistGridSnapshot(manager: OrderManagerLike, accountOrde
             manualHolds,
             lastFillPivot
         );
+        // Mirror holds into the sidecar file so operator intent survives
+        // snapshot loss (empty read, drift-reject wipe). Best-effort only
+        // when the manager actually carries a holds map.
+        try {
+            if ((manager as any).manualHolds instanceof Map
+                && typeof (accountOrders as any)?.writeManualHoldsSidecar === 'function') {
+                (accountOrders as any).writeManualHoldsSidecar(manualHolds ?? []);
+            }
+        } catch { /* snapshot stays authoritative */ }
         return true;
     } catch (e) {
         return false;

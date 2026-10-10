@@ -399,4 +399,65 @@ check('null hold expires', isManualHoldExpired(null, 100, 0.075), true);
     process.exit(1);
 });
 
+// --- Oct-10 restart resilience: regen price guard, sidecar, backup ---
+(async () => {
+    let passedR = 0;
+    const rcheck = (name, actual, expected) => {
+        assert.strictEqual(actual, expected, `${name}: expected ${expected}, got ${actual}`);
+        passedR++;
+    };
+    const MH = require('../modules/order/manual_hold');
+
+    // Regen safety: same slot id at a diverged price must NOT restore.
+    {
+        const mgr = fakeManager({ incrementPercent: 1.5 }); // 7.5% threshold
+        mgr.orders.set('slot-2', { id: 'slot-2', price: 110 }); // held @100 -> 10% away
+        mgr.orders.set('slot-3', { id: 'slot-3', price: 103 }); // held @100 -> 3% away
+        const logs = [];
+        mgr.logger = { log: (m) => logs.push(String(m)) };
+        const n = MH.restoreManualHolds(mgr, [
+            { slotId: 'slot-2', price: 100, ts: 1 },
+            { slotId: 'slot-3', price: 100, ts: 1 },
+            { slotId: 'slot-gone', price: 100, ts: 1 },
+        ]);
+        rcheck('only near-price hold restores', n, 1);
+        rcheck('diverged slot not held', MH.isSlotHeld(mgr, 'slot-2'), false);
+        rcheck('near slot held', MH.isSlotHeld(mgr, 'slot-3'), true);
+        rcheck('divergence logged', logs.some((m) => m.includes('Dropped 1 persisted hold')), true);
+    }
+
+    // Sidecar + backup round-trip in an isolated tmp dir (never live profiles).
+    {
+        const fs = require('fs');
+        const os = require('os');
+        const path = require('path');
+        const { AccountOrders } = require('../modules/account_orders');
+        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-hold-resil-'));
+        try {
+            const ao = new AccountOrders({ botKey: 'hold-resil-test', ordersDir: tmp });
+            const holds = [{ slotId: 'slot-2', price: 100, ts: 123, base: 99, orderId: null }];
+            ao.writeManualHoldsSidecar(holds);
+            const back = ao.loadManualHoldsSidecar();
+            rcheck('sidecar round-trips one hold', back.length, 1);
+            rcheck('sidecar keeps price', back[0].price, 100);
+            rcheck('sidecar keeps slot', back[0].slotId, 'slot-2');
+            const missing = new AccountOrders({ botKey: 'hold-resil-absent', ordersDir: tmp });
+            rcheck('absent sidecar reads empty', missing.loadManualHoldsSidecar().length, 0);
+            const backupPath = ao.backupGrid('drift-test');
+            rcheck('backup created', typeof backupPath === 'string' && fs.existsSync(backupPath), true);
+            rcheck('backup name carries tag', String(backupPath).includes('drift-test'), true);
+            const nobackup = new AccountOrders({ botKey: 'hold-resil-nofile', ordersDir: path.join(tmp, 'nodir') });
+            // remove the bootstrapped file so backup has nothing to copy
+            try { fs.unlinkSync(path.join(tmp, 'nodir', 'hold-resil-nofile.json')); } catch {}
+            rcheck('backup of missing file is null', nobackup.backupGrid('x'), null);
+        } finally {
+            fs.rmSync(tmp, { recursive: true, force: true });
+        }
+    }
+    console.log(`✓ Manual hold restart-resilience tests passed! (${passedR} assertions)`);
+})().catch((err) => {
+    console.error('Test failed:', err);
+    process.exit(1);
+});
+
 console.log(`✓ Manual hold tests passed! (${passed} assertions)`);

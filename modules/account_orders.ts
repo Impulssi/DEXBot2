@@ -673,29 +673,32 @@ class AccountOrders {
    * @param {boolean} forceReload - If true, reload from disk
    * @returns {Array} Sanitized hold entries {slotId, price, ts} (possibly empty)
    */
+  private _sanitizeHolds(list: unknown): { slotId: string; price: number; ts: number; base?: number | null }[] {
+    const out: { slotId: string; price: number; ts: number; base?: number | null }[] = [];
+    if (!Array.isArray(list)) return out;
+    for (const e of list) {
+      const slotId = e?.slotId != null ? String(e.slotId) : '';
+      const price = Number(e?.price);
+      const ts = Number(e?.ts);
+      if (slotId && Number.isFinite(price) && price > 0) {
+        const base = Number(e?.base);
+        out.push({
+          slotId,
+          price,
+          ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now(),
+          base: Number.isFinite(base) && base > 0 ? base : null,
+        });
+      }
+    }
+    return out;
+  }
+
   loadManualHolds(forceReload: boolean = false) {
     if (forceReload) {
       this.data = this._loadData() || emptyData();
     }
-    const out: { slotId: string; price: number; ts: number; base?: number | null }[] = [];
     const stored = this.data && (this.data as any).manualHolds;
-    if (Array.isArray(stored)) {
-      for (const e of stored) {
-        const slotId = e?.slotId != null ? String(e.slotId) : '';
-        const price = Number(e?.price);
-        const ts = Number(e?.ts);
-        if (slotId && Number.isFinite(price) && price > 0) {
-          const base = Number(e?.base);
-          out.push({
-            slotId,
-            price,
-            ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now(),
-            base: Number.isFinite(base) && base > 0 ? base : null,
-          });
-        }
-      }
-    }
-    return out;
+    return this._sanitizeHolds(stored);
   }
 
   /**
@@ -779,6 +782,59 @@ class AccountOrders {
       }
     }
     return 0;
+  }
+
+  /**
+   * Copy the current snapshot file to a timestamped backup before a
+   * destructive wipe (e.g. drift-reject). The live file keeps operator
+   * intent (manual holds, pivot) that a rebuild cannot re-derive — Oct-10:
+   * repeated drift-rejects deleted the only copy of live holds.
+   * @param {string} tag - Short reason embedded in the backup filename
+   * @returns {string|null} Backup path or null when there was nothing to back up
+   */
+  backupGrid(tag: string = 'manual'): string | null {
+    try {
+      if (!this.profilesPath || !storage.exists(this.profilesPath)) return null;
+      const safe = String(tag || 'manual').replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 40) || 'manual';
+      const backupPath = `${this.profilesPath}.rejected-${safe}-${Date.now()}`;
+      storage.writeFile(backupPath, storage.readFile(this.profilesPath), { mode: 0o600 });
+      return backupPath;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Sidecar path for manual-cancel holds, next to the snapshot file.
+   * The sidecar mirrors the snapshot's holds on every persist so holds
+   * survive snapshot loss (empty read, drift-reject wipe, regen id churn)
+   * that would otherwise silently drop operator intent on restart.
+   */
+  manualHoldsSidecarPath(): string {
+    return `${this.profilesPath.replace(/\.json$/i, '')}.holds.json`;
+  }
+
+  /**
+   * Write the holds sidecar (best-effort; never throws).
+   */
+  writeManualHoldsSidecar(holds: unknown): void {
+    try {
+      const list = Array.isArray(holds) ? holds : [];
+      storage.writeJSON(this.manualHoldsSidecarPath(), { v: 1, updatedAt: nowIso(), holds: list }, { mode: 0o600 });
+    } catch { /* sidecar is a fallback copy; the snapshot stays authoritative */ }
+  }
+
+  /**
+   * Read the holds sidecar. Returns [] when absent/invalid.
+   */
+  loadManualHoldsSidecar(): { slotId: string; price: number; ts: number; base?: number | null }[] {
+    try {
+      const parsed: any = storage.readJSON(this.manualHoldsSidecarPath());
+      const list = parsed && Array.isArray(parsed.holds) ? parsed.holds : [];
+      return this._sanitizeHolds(list);
+    } catch {
+      return [];
+    }
   }
 
   /**
