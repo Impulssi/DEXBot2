@@ -169,6 +169,7 @@ interface COWExecuteParams {
     gapSlots?: number | null;
     evacStreaks?: Map<string, number> | null;
     reserveEdgeAnchors?: { buy?: number | null; sell?: number | null } | null;
+    manualHolds?: Map<string, unknown> | null;
 }
 
 function stalePlacementDropReason(action: CowAction, planBoundary: number): string | null {
@@ -184,6 +185,26 @@ function stalePlacementDropReason(action: CowAction, planBoundary: number): stri
         return `SELL ${kindWord} for slot ${action.id}: slot ${targetSlot} < plan boundary ${planBoundary}`;
     }
     return null;
+}
+
+/**
+ * Drop CREATE/UPDATE placements targeting operator-held slots.
+ * Holds suppress refills in the placement pickers, but rotation UPDATEs
+ * (cancel/create folded into an UPDATE op with target slot = newGridId)
+ * bypass those pickers: Oct-11 rotated fresh orders down onto slots held
+ * minutes earlier, and materialize then cleared the holds as "refilled".
+ * The target slot is newGridId ?? id, mirroring the stale-placement veto.
+ * Returns a drop reason string, or null when the action may proceed.
+ */
+function heldSlotDropReason(action: any, holds: Map<string, unknown> | null | undefined): string | null {
+    if (!action || (action.type !== COW_ACTIONS.CREATE && action.type !== COW_ACTIONS.UPDATE)) return null;
+    if (!(holds instanceof Map) || holds.size === 0) return null;
+    const targetId = action?.newGridId != null && String(action.newGridId).length > 0
+        ? String(action.newGridId)
+        : (action?.id != null ? String(action.id) : '');
+    if (!targetId || !holds.has(targetId)) return null;
+    const kindWord = action.type === COW_ACTIONS.UPDATE ? 'update' : 'create';
+    return `${kindWord} for slot ${action.id} targets held slot ${targetId} (operator cancel); re-plans after release`;
 }
 
 // Buy-floor guard: single chokepoint for every BUY placement path (strategy
@@ -271,7 +292,8 @@ class COWRebalanceEngine {
         excludeIds = new Set(),
         gapSlots = null,
         evacStreaks = null,
-        reserveEdgeAnchors = null
+        reserveEdgeAnchors = null,
+        manualHolds = null
     }: COWExecuteParams): Promise<RebalanceResult> {
         const startTime = Date.now();
 
@@ -400,6 +422,31 @@ class COWRebalanceEngine {
             edgeAnchors: reserveEdgeAnchors,
             manager: this as unknown as OrderManagerLike
         });
+
+        // Operator-hold guard: drop CREATE/UPDATE placements targeting
+        // held slots from ANY planner (rotation updates included — Oct-11:
+        // a rotation repriced fresh orders down onto slots held minutes
+        // earlier, and materialize cleared the holds as "refilled"). Runs
+        // unconditionally: a held slot must stay empty until release.
+        {
+            const before = optimizedActions.length;
+            const guarded = optimizedActions.filter((a: any) => {
+                const dropReason = heldSlotDropReason(a, manualHolds);
+                if (dropReason) {
+                    this.logger?.log(`[COW] Dropping held-slot ${dropReason}`, 'warn');
+                    return false;
+                }
+                return true;
+            });
+            if (guarded.length < before) {
+                this.logger?.log(
+                    `[COW] Hold guard removed ${before - guarded.length} placement(s); ${guarded.length} action(s) remain`,
+                    'warn'
+                );
+            }
+            optimizedActions.length = 0;
+            optimizedActions.push(...guarded);
+        }
 
         // Buy-floor guard: drop dust-size BUY placements from ANY planner
         // (strategy target, startup reconcile, bootstrap activation) so the
@@ -2678,7 +2725,8 @@ class OrderManager implements OrderManagerLike {
             excludeIds,
             gapSlots: this._gapSlots,
             evacStreaks: this._gapEvacStreaks,
-            reserveEdgeAnchors
+            reserveEdgeAnchors,
+            manualHolds: this.manualHolds
         });
 
         // Phase 3 safety net: act on stuck in-band orders regardless of the
@@ -3084,5 +3132,5 @@ class OrderManager implements OrderManagerLike {
 
 }
 
-export { OrderManager, COWRebalanceEngine }
+export { OrderManager, COWRebalanceEngine, heldSlotDropReason }
 
