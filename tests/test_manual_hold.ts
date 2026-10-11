@@ -90,14 +90,17 @@ check('null hold expires', isManualHoldExpired(null, 100, 0.075), true);
     mgr.orders = new Map([
         ['live', { id: 'live', price: 100, orderId: '1.7.1' }],
         ['empty', { id: 'empty', price: 100, orderId: null }],
+        ['blank', { id: 'blank', price: 100, orderId: '' }],
     ]);
     recordManualHold(mgr, 'live', 100);
     recordManualHold(mgr, 'empty', 100);
+    recordManualHold(mgr, 'blank', 100);
     recordManualHold(mgr, 'gone', 100);
     const dropped = pruneManualHolds(mgr, 100, 0.075);
     check('live slot dropped', dropped.includes('live'), true);
     check('live no longer held', isSlotHeld(mgr, 'live'), false);
     check('empty kept', isSlotHeld(mgr, 'empty'), true);
+    check('empty-string orderId kept (no on-chain order)', isSlotHeld(mgr, 'blank'), true);
     check('missing-slot kept', isSlotHeld(mgr, 'gone'), true);
 }
 

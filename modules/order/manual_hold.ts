@@ -131,11 +131,15 @@ function pruneManualHolds(manager: any, marketPrice?: number | null, movePct?: n
         // adoption, startup creates) keep stale holds that block the NEXT
         // refill and paint gray levels over live orders on the chart.
         // A later disappearance re-records a fresh hold if still manual.
+        // NOTE: only a REAL order id counts — empty-string orderIds mean
+        // "no on-chain order" everywhere else in the runtime, and treating
+        // them as live drops every hold on every prune tick (Oct-11).
         try {
             const live = (manager as any)?.orders instanceof Map
                 ? (manager as any).orders.get(slotId)
                 : null;
-            if (live && (live as { orderId?: unknown })?.orderId != null) {
+            const liveOrderId = (live as { orderId?: unknown })?.orderId;
+            if (live && liveOrderId != null && String(liveOrderId).length > 0) {
                 holds.delete(slotId);
                 dropped.push(slotId);
             }
