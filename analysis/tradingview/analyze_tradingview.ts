@@ -183,6 +183,7 @@ function loadOrdersData(filePath: string | null): { buys: number[]; sells: numbe
                 // shared with the runtime so the chart MKT panel can show
                 // its own DEEP row.
                 if (isDeepShelfId((s as any)?.id)) deepBuys.push(price);
+            } else if ((s as GridSlotToggle)?.type === 'sell') {
                 if (high == null || price > high) high = price;
                 if (st !== 'virtual') sells.push(price);
             }
