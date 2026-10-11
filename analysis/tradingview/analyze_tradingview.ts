@@ -222,7 +222,11 @@ function loadOrdersData(filePath: string | null): { buys: number[]; sells: numbe
                 if (typeof slotId !== 'string' || slotId.length === 0 || seen.has(slotId)) continue;
                 seen.add(slotId);
                 const live = grid.find((s: any) => s?.id === slotId);
-                if (live && (live as { orderId?: unknown })?.orderId != null) continue;
+                // Empty-string orderIds mean "no on-chain order" everywhere
+                // else in the runtime (!o.orderId checks) — only a real id
+                // disqualifies the slot. (Oct-11: '' hid all 7 live holds.)
+                const liveOrderId = (live as { orderId?: unknown })?.orderId;
+                if (live && liveOrderId != null && String(liveOrderId).length > 0) continue;
                 const price = byId.has(slotId)
                     ? byId.get(slotId) as number
                     : Number((h as { price?: unknown })?.price);
