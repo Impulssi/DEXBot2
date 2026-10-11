@@ -3166,6 +3166,19 @@ function generateHTML(data: TvChartInput, title: string = 'TradingView Style Res
             const xMaxV = Number.isFinite(xs.max) && Number.isFinite(xMinV) && xs.max > xMinV ? xs.max : null;
             const panel = ensureRayPanel();
             if (panel) refreshRayList();
+            // Keep the RAY box clear of the grid-sim box: both anchor to
+            // the bottom-left corner (ray left:8px, sim left:10px), so a
+            // visible sim panel would sit underneath the ray panel. Slide
+            // the ray panel to the right of the sim panel instead; fall
+            // back to the corner when the sim panel is hidden.
+            try {
+                const sim = document.getElementById('grid-sim-panel');
+                if (panel && sim && sim.style.display !== 'none' && sim.offsetWidth > 0) {
+                    panel.style.left = (10 + sim.offsetWidth + 8) + 'px';
+                } else if (panel) {
+                    panel.style.left = '8px';
+                }
+            } catch { /* static corner position stays */ }
             rays.forEach((r, i) => {
                 const d = rayLineDivs[i];
                 const t = rayTagDivs[i];
