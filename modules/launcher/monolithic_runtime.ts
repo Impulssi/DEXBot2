@@ -228,6 +228,10 @@ function findCredentialSocketOwnerPid() {
     );
 }
 
+function listLiveCredentialDaemonPids(): number[] {
+    return foreignCredDaemon.listLiveCredentialDaemonPids(isLikelyCredentialDaemonProcess);
+}
+
 async function readCredentialDaemonStatus(pid: number | null): Promise<{ alive: boolean; ready: boolean; socket: boolean }> {
     const alive = !!(pid && isLikelyCredentialDaemonProcess(pid));
     if (!alive) {
@@ -417,5 +421,5 @@ function printControlActionSummary(action: string, botNames: string[], serviceNa
     console.log();
 }
 
-export { MONOLITHIC_PID_FILE, MONOLITHIC_BOT_PID_FILE, MONOLITHIC_BOT_INFO_FILE, MONOLITHIC_CRED_PID_FILE, MONOLITHIC_OUT_LOG, MONOLITHIC_ERROR_LOG, CREDENTIAL_SOCKET_FILE, CREDENTIAL_READY_FILE, cleanupStateFiles, readLiveMonolithicPid, readMonolithicBotInfo, isLikelyCredentialDaemonProcess, isExpectedMonolithicBotPid, readProcStat, isProcessInDstate, stopCredentialDaemonPid, cleanupCredentialRuntimeFiles, stopCredentialDaemon, ensureNoForeignCredentialDaemon, findCredentialSocketOwnerPid, readCredentialDaemonStatus, ensureLogDir, buildDexbotStartArgs, createUpdateScheduler, getActiveAmaBotFingerprint, listConfiguredBots, getControlBotNames, getControlActionLabel, getControlServiceNames, printControlActionSummary, formatBotCount }
+export { MONOLITHIC_PID_FILE, MONOLITHIC_BOT_PID_FILE, MONOLITHIC_BOT_INFO_FILE, MONOLITHIC_CRED_PID_FILE, MONOLITHIC_OUT_LOG, MONOLITHIC_ERROR_LOG, CREDENTIAL_SOCKET_FILE, CREDENTIAL_READY_FILE, cleanupStateFiles, readLiveMonolithicPid, readMonolithicBotInfo, isLikelyCredentialDaemonProcess, isExpectedMonolithicBotPid, readProcStat, isProcessInDstate, stopCredentialDaemonPid, cleanupCredentialRuntimeFiles, stopCredentialDaemon,     ensureNoForeignCredentialDaemon, findCredentialSocketOwnerPid, listLiveCredentialDaemonPids, readCredentialDaemonStatus, ensureLogDir, buildDexbotStartArgs, createUpdateScheduler, getActiveAmaBotFingerprint, listConfiguredBots, getControlBotNames, getControlActionLabel, getControlServiceNames, printControlActionSummary, formatBotCount }
 

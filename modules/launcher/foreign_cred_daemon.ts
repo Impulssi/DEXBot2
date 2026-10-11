@@ -157,5 +157,27 @@ async function ensureNoForeignCredentialDaemon({
     return false;
 }
 
-export { ensureNoForeignCredentialDaemon, findCredentialSocketOwnerPid, readCredentialSocketInode }
+/**
+ * List every live credential-daemon process (not just the socket owner).
+ * Used by status reporting to warn about stale duplicates: two live
+ * daemons fight over one socket path and wedges every later start.
+ */
+function listLiveCredentialDaemonPids(
+    isLikelyProcess: ((pid: number) => boolean) | null | undefined
+): number[] {
+    const out: number[] = [];
+    try {
+        const discovery = getProcessDiscovery();
+        for (const pid of discovery.listAllPids()) {
+            try {
+                if (typeof isLikelyProcess === 'function' ? isLikelyProcess(pid) : pid > 0) {
+                    out.push(pid);
+                }
+            } catch { /* ignore per-pid read failures */ }
+        }
+    } catch { /* discovery unavailable (non-Linux): no warning possible */ }
+    return out;
+}
+
+export { ensureNoForeignCredentialDaemon, findCredentialSocketOwnerPid, readCredentialSocketInode, listLiveCredentialDaemonPids }
 

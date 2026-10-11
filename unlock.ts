@@ -98,7 +98,7 @@ const {
     isLikelyCredentialDaemonProcess,
     isExpectedMonolithicBotPid,
     isProcessInDstate, stopCredentialDaemonPid, stopCredentialDaemon,
-    ensureNoForeignCredentialDaemon, findCredentialSocketOwnerPid,
+    ensureNoForeignCredentialDaemon, findCredentialSocketOwnerPid, listLiveCredentialDaemonPids,
     cleanupCredentialRuntimeFiles, readCredentialDaemonStatus, ensureLogDir: ensureMonolithicLogDir,
     buildDexbotStartArgs, createUpdateScheduler,
     listConfiguredBots, getControlBotNames, getControlActionLabel,
@@ -893,6 +893,17 @@ async function printCredentialDaemonStatusBlock(credPid: number | null, credFore
     }
     console.log(`    ${statusLabel('Ready:')} ${statusBool(credStatus.ready)}`);
     console.log(`    ${statusLabel('Socket:')} ${statusBool(credStatus.socket)}`);
+    try {
+        const liveDaemons = typeof listLiveCredentialDaemonPids === 'function' ? listLiveCredentialDaemonPids() : [];
+        if (Array.isArray(liveDaemons) && liveDaemons.length > 1) {
+            console.log(
+                `    ${colorStatus(
+                    `Warning: ${liveDaemons.length} live credential daemons (${liveDaemons.join(', ')}) — stop/start may wedge; kill the stale PID(s) and retry`,
+                    STATUS_COLORS.warn
+                )}`
+            );
+        }
+    } catch { /* warning must never break status */ }
     if (credForeign) {
         console.log(
             `    ${colorStatus(
