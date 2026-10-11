@@ -460,4 +460,54 @@ check('null hold expires', isManualHoldExpired(null, 100, 0.075), true);
     process.exit(1);
 });
 
+// --- Operator hold marker (`dexbot hold <bot> <slot>`): deterministic,
+// no sync race. Uses a tmp profiles dir, never live profiles. ---
+(() => {
+    let passedM = 0;
+    const mcheck = (name, actual, expected) => {
+        assert.strictEqual(actual, expected, `${name}: expected ${expected}, got ${actual}`);
+        passedM++;
+    };
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const MH = require('../modules/order/manual_hold');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-hold-marker-'));
+    try {
+        const mgr = fakeManager({ incrementPercent: 1.5 });
+        mgr.orders.set('slot-9', { id: 'slot-9', price: 200, orderId: '1.7.111' });
+        mgr.orders.set('slot-10', { id: 'slot-10', price: 210, orderId: '' });
+        const logs = [];
+        mgr.logger = { log: (m) => logs.push(String(m)) };
+
+        // No marker -> -1, nothing touched.
+        mcheck('absent marker returns -1', MH.consumeSetMarker(mgr, tmp, 'testbot'), -1);
+        mcheck('no holds without marker', MH.isSlotHeld(mgr, 'slot-9'), false);
+
+        // Marker with a known + an unknown slot.
+        fs.writeFileSync(path.join(tmp, 'manual-holds.set.testbot'), 'slot:slot-9\nslot:slot-nope\n', 'utf8');
+        mcheck('marker records one hold', MH.consumeSetMarker(mgr, tmp, 'testbot'), 1);
+        mcheck('known slot held', MH.isSlotHeld(mgr, 'slot-9'), true);
+        const held = MH.getManualHoldMap(mgr).get('slot-9');
+        mcheck('price anchors to grid price', held.price, 200);
+        mcheck('orderId carried over', held.orderId, '1.7.111');
+        mcheck('unknown slot skipped', MH.isSlotHeld(mgr, 'slot-nope'), false);
+        mcheck('skip warned', logs.some((m) => m.includes('slot-nope')), true);
+        mcheck('marker consumed (deleted)', fs.existsSync(path.join(tmp, 'manual-holds.set.testbot')), false);
+
+        // Idempotent re-record + empty marker file.
+        fs.writeFileSync(path.join(tmp, 'manual-holds.set.testbot'), 'slot-9\n', 'utf8');
+        mcheck('re-record counts again', MH.consumeSetMarker(mgr, tmp, 'testbot'), 1);
+        fs.writeFileSync(path.join(tmp, 'manual-holds.set.testbot'), '\n', 'utf8');
+        mcheck('empty marker records nothing', MH.consumeSetMarker(mgr, tmp, 'testbot'), 0);
+
+        // setMarkerPath naming mirrors clearMarkerPath convention.
+        mcheck('marker path naming', MH.setMarkerPath(tmp, 'testbot'), path.join(tmp, 'manual-holds.set.testbot'));
+        mcheck('null profiles dir', MH.setMarkerPath('', 'testbot'), null);
+    } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+    }
+    console.log(`✓ Operator hold-marker tests passed! (${passedM} assertions)`);
+})();
+
 console.log(`✓ Manual hold tests passed! (${passed} assertions)`);

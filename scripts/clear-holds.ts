@@ -10,8 +10,9 @@
  *
  * Manual holds suppress refills for operator-cancelled slots until the
  * market moves significantly past them. Clearing restores normal refill
- * behavior immediately (a restart does the same via graceful-shutdown
- * clearing; a crash preserves holds instead).
+ * behavior immediately. Holds otherwise survive restarts (snapshot +
+ * sidecar); only this marker, a market move past the slot, or adoption of
+ * a new order on the slot releases them.
  */
 
 import fs from 'node:fs';

@@ -535,11 +535,14 @@ async function checkAndApplyBotConfigChanges(bot: BotLike, context: string = 'bo
             // marker file; EVERY poll tick checks it (not just changed-config
             // ticks — the early return below would otherwise starve the
             // signal whenever bots.json sits still). No restart, no resync —
-            // plain file unilateral signaling, consumed once.
+            // plain file unilateral signaling, consumed once. The mirror
+            // `dexbot hold <bot> <slot>` marker is consumed the same way so
+            // an operator hold applies without waiting for a sync cycle.
             try {
-                const { consumeClearMarker: consumeHoldsTick } = require('./order/manual_hold.js');
+                const { consumeClearMarker: consumeHoldsTick, consumeSetMarker: consumeHoldSetTick } = require('./order/manual_hold.js');
                 const clearKeyTick = bot?.config?.botKey || bot?.manager?.config?.botKey || null;
                 if (clearKeyTick) consumeHoldsTick(bot?.manager, PROFILES_DIR, clearKeyTick);
+                if (clearKeyTick) consumeHoldSetTick(bot?.manager, PROFILES_DIR, clearKeyTick);
             } catch { /* never break the poll tick */ }
             return { applied: false, reason: 'unchanged', fingerprint };
         }

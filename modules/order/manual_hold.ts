@@ -148,6 +148,75 @@ function clearMarkerPath(profilesDir: string, botKey: string): string | null {
     }
 }
 
+function setMarkerPath(profilesDir: string, botKey: string): string | null {
+    try {
+        if (!profilesDir || !botKey) return null;
+        return path.join(profilesDir, `manual-holds.set.${botKey}`);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Consume an operator "hold" marker (`dexbot hold <bot> <slot> [slot...]`).
+ * Unlike disappearance-detected holds (which need a sync cycle to notice a
+ * vanished order — a strategy refill can win that race and the hold never
+ * forms), a marker holds the slot deterministically on the next poll tick.
+ * One `slot:<id>` per line; unknown slots are skipped with a warning, the
+ * price anchors to the slot's current grid price. The marker is deleted
+ * whether or not every line applied (one-shot signal).
+ *
+ * @param {Object} manager - OrderManager
+ * @param {string} profilesDir - Profiles directory holding marker files
+ * @param {string} botKey - Bot key used in the marker filename
+ * @returns {number} Holds recorded (-1 when no marker present)
+ */
+function consumeSetMarker(manager: any, profilesDir: string, botKey: string): number {
+    try {
+        const marker = setMarkerPath(profilesDir, botKey);
+        if (!marker || !fs.existsSync(marker)) return -1;
+        let slots: string[] = [];
+        try {
+            const raw = fs.readFileSync(marker, 'utf8');
+            slots = raw.split('\n').map((l) => l.trim()).filter((l) => l.length > 0)
+                .map((l) => l.startsWith('slot:') ? l.slice(5).trim() : l)
+                .filter((s) => s.length > 0);
+        } catch { /* unreadable marker counts as absent below */ }
+        let n = 0;
+        const skipped: string[] = [];
+        for (const slotId of slots) {
+            try {
+                const slot = manager?.orders instanceof Map ? manager.orders.get(slotId) : null;
+                const price = Number(slot?.price);
+                if (!slot || !Number.isFinite(price) || price <= 0) {
+                    skipped.push(slotId);
+                    continue;
+                }
+                const orderId = slot?.orderId != null ? String(slot.orderId) : null;
+                if (recordManualHold(manager, slotId, price, orderId)) n++;
+            } catch {
+                skipped.push(slotId);
+            }
+        }
+        try { fs.unlinkSync(marker); } catch { /* consumed anyway */ }
+        if (n > 0) {
+            manager?.logger?.log?.(
+                `[HOLD] Recorded ${n} operator hold(s) via marker (${slots.filter((s) => !skipped.includes(s)).join(', ')}) — refill suppressed until the market moves significantly past`,
+                'info'
+            );
+        }
+        if (skipped.length > 0) {
+            manager?.logger?.log?.(
+                `[HOLD] Marker hold skipped for unknown/priceless slot(s): ${skipped.join(', ')}`,
+                'warn'
+            );
+        }
+        return n;
+    } catch {
+        return -1;
+    }
+}
+
 /**
  * Consume an operator "restore" marker (`dexbot clear-holds <bot> [slot]`).
  * Clears in-memory holds so held slots refill normally; the marker is
@@ -396,5 +465,7 @@ export {
     serializeManualHolds,
     restoreManualHolds,
     clearMarkerPath,
+    setMarkerPath,
+    consumeSetMarker,
     consumeClearMarker,
 };
