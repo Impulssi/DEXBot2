@@ -643,6 +643,20 @@ async function finishStartupSequence(bot: BotLike, startupState: Awaited<ReturnT
                         bot._log('Generating new grid and syncing with existing on-chain orders...');
                         await botGridModule(bot).initializeGrid(bot.manager);
                         await bot.manager.syncFromOpenOrders(chainOpenOrders, { skipAccounting: true });
+                        // Manual-cancel holds also apply to a regenerated grid:
+                        // without this, every regen-startup silently drops
+                        // operator intent (Oct-10: holds died on stop/start and
+                        // the levels refilled). Restore runs against the fresh
+                        // grid, so same-named slots at diverged prices are
+                        // dropped by the regen guard instead of pinning wrong
+                        // levels. Must precede reconcile re-placement below.
+                        try {
+                            const { restoreManualHolds: restoreRegenHolds } = require('./order/manual_hold.js');
+                            const restoredRegenHolds = restoreRegenHolds(bot.manager, persistedManualHolds);
+                            if (restoredRegenHolds > 0) {
+                                bot._log(`[HOLD] Restored ${restoredRegenHolds} persisted manual-cancel hold(s) onto regenerated grid from snapshot`);
+                            }
+                        } catch { /* holds must never break startup */ }
                         // Drain queued fills BEFORE re-placement (P3 ordering): fills
                         // replayed from history reference the PRE-restart order ids.
                         // Processing them now (freshly synced grid) keeps their slot
