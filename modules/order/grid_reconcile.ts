@@ -751,7 +751,7 @@ export async function reconcileGridOrders({
                     if (staleSurplusCancels.length > 0) {
                         for (const sc of staleSurplusCancels) {
                             try {
-                                await _cancelChainOrder({
+                                const submitted = await _cancelChainOrder({
                                     chainOrders,
                                     account,
                                     privateKey,
@@ -761,6 +761,13 @@ export async function reconcileGridOrders({
                                     chainOrderObj: sc.chainOrderObj,
                                     releaseUntrackedFunds: true,
                                 });
+                                if (!submitted) {
+                                    logger?.log?.(
+                                        `Startup: Skipping stale surplus cancellation ${sc.chainOrderObj.id} (dryrun or plan changed) — order stays live and counts stay untouched`,
+                                        'warn'
+                                    );
+                                    continue;
+                                }
                                 if (sc.sideLabel === 'SELL') cancelledSellCount++;
                                 else cancelledBuyCount++;
                                 logger?.log?.(`Startup: Cancelled stale surplus ${sc.sideLabel} order ${sc.chainOrderObj.id}`, 'info');
