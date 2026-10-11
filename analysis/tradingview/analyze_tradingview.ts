@@ -201,11 +201,26 @@ function loadOrdersData(filePath: string | null): { buys: number[]; sells: numbe
                 if (Number.isFinite(price) && price > 0) byId.set(id, price);
             }
         }
-        const rawHolds: unknown = (od as { manualHolds?: unknown })?.manualHolds;
-        if (Array.isArray(rawHolds)) {
+        const snapshotHolds: unknown = (od as { manualHolds?: unknown })?.manualHolds;
+        // Durable sidecar mirror (<orders-file-basename>.holds.json,
+        // {v, updatedAt, holds:[...]}): union with the snapshot rows so a
+        // lagging snapshot never hides live holds. Dedupe by slotId,
+        // snapshot entries first.
+        let rawHolds: unknown[] = Array.isArray(snapshotHolds) ? [...(snapshotHolds as unknown[])] : [];
+        try {
+            if (typeof filePath === 'string' && filePath.toLowerCase().endsWith('.json')) {
+                const sidecarPath = filePath.slice(0, -'.json'.length) + '.holds.json';
+                const sc = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+                const sideHolds: unknown = (sc as { holds?: unknown })?.holds;
+                if (Array.isArray(sideHolds)) rawHolds.push(...(sideHolds as unknown[]));
+            }
+        } catch { /* sidecar is best-effort */ }
+        if (rawHolds.length > 0) {
+            const seen = new Set<string>();
             for (const h of rawHolds) {
                 const slotId = (h as { slotId?: unknown })?.slotId;
-                if (typeof slotId !== 'string' || slotId.length === 0) continue;
+                if (typeof slotId !== 'string' || slotId.length === 0 || seen.has(slotId)) continue;
+                seen.add(slotId);
                 const live = grid.find((s: any) => s?.id === slotId);
                 if (live && (live as { orderId?: unknown })?.orderId != null) continue;
                 const price = byId.has(slotId)
