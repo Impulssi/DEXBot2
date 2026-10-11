@@ -80,6 +80,27 @@ check('null hold expires', isManualHoldExpired(null, 100, 0.075), true);
     check('far gone', isSlotHeld(mgr, 'far'), false);
 }
 
+// --- prune drops holds for slots live again (stale-hold self-heal) ---
+// A hold only suppresses refills of EMPTY slots. Slots refilled through
+// paths bypassing _applyOrderUpdate (sync adoption, startup creates) kept
+// stale holds that blocked the NEXT refill and painted gray over live
+// orders. A later disappearance re-records a fresh hold if still manual.
+{
+    const mgr = fakeManager({ incrementPercent: 1.5 });
+    mgr.orders = new Map([
+        ['live', { id: 'live', price: 100, orderId: '1.7.1' }],
+        ['empty', { id: 'empty', price: 100, orderId: null }],
+    ]);
+    recordManualHold(mgr, 'live', 100);
+    recordManualHold(mgr, 'empty', 100);
+    recordManualHold(mgr, 'gone', 100);
+    const dropped = pruneManualHolds(mgr, 100, 0.075);
+    check('live slot dropped', dropped.includes('live'), true);
+    check('live no longer held', isSlotHeld(mgr, 'live'), false);
+    check('empty kept', isSlotHeld(mgr, 'empty'), true);
+    check('missing-slot kept', isSlotHeld(mgr, 'gone'), true);
+}
+
 // --- baseline semantics: a far-away cancel holds while the market sits ---
 {
     // Slot far above a flat market: legacy slot-comparison would release

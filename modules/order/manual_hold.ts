@@ -123,11 +123,27 @@ function pruneManualHolds(manager: any, marketPrice?: number | null, movePct?: n
         if (isManualHoldExpired(hold, Number.isFinite(mp) ? mp : null, pct)) {
             holds.delete(slotId);
             dropped.push(slotId);
+            continue;
         }
+        // A slot carrying a live on-chain order needs no hold: the hold
+        // only suppresses refills of EMPTY slots. Without this, slots
+        // refilled through paths that bypass _applyOrderUpdate (sync
+        // adoption, startup creates) keep stale holds that block the NEXT
+        // refill and paint gray levels over live orders on the chart.
+        // A later disappearance re-records a fresh hold if still manual.
+        try {
+            const live = (manager as any)?.orders instanceof Map
+                ? (manager as any).orders.get(slotId)
+                : null;
+            if (live && (live as { orderId?: unknown })?.orderId != null) {
+                holds.delete(slotId);
+                dropped.push(slotId);
+            }
+        } catch { /* keep the hold on lookup failure */ }
     }
     if (dropped.length > 0) {
         manager?.logger?.log?.(
-            `[HOLD] Released ${dropped.length} manual hold(s) after significant market move: ${dropped.join(', ')}`,
+            `[HOLD] Released ${dropped.length} manual hold(s) (market moved past or slot live again): ${dropped.join(', ')}`,
             'info'
         );
     }
