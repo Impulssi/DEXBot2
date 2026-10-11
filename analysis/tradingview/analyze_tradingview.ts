@@ -161,16 +161,18 @@ function resolveOrdersFile(botKey: string | null | undefined, explicit: string |
 // without an on-chain order, so excluding them would shrink the shown
 // grid to the live extremes. Spread-type slots are neither buys nor
 // sells and stay out of both.
-function loadOrdersData(filePath: string | null): { buys: number[]; sells: number[]; deepBuys: number[]; low: number | null; high: number | null } {
-    if (!filePath) return { buys: [], sells: [], deepBuys: [], low: null, high: null };
+function loadOrdersData(filePath: string | null): { buys: number[]; sells: number[]; deepBuys: number[]; held: number[]; low: number | null; high: number | null } {
+    if (!filePath) return { buys: [], sells: [], deepBuys: [], held: [], low: null, high: null };
     try {
         const od = JSON.parse(fs.readFileSync(filePath, 'utf8'));
         const grid = Array.isArray(od?.grid) ? od.grid : (Array.isArray(od?.orders) ? od.orders : []);
         const buys: number[] = [];
         const sells: number[] = [];
         const deepBuys: number[] = [];
+        const held: number[] = [];
         let low: number | null = null;
         let high: number | null = null;
+        const byId = new Map<string, number>();
         for (const s of grid) {
             const price = Number((s as GridSlotToggle)?.price);
             if (!Number.isFinite(price) || price <= 0) continue;
@@ -188,11 +190,36 @@ function loadOrdersData(filePath: string | null): { buys: number[]; sells: numbe
                 if (st !== 'virtual') sells.push(price);
             }
         }
+        // Manual-cancel holds: operator-emptied slots drawn gray dashed.
+        // Resolve against the live grid so refilled (stale) holds never
+        // render: only slots currently without an on-chain order qualify,
+        // priced from the grid (fall back to the recorded hold price).
+        for (const s of grid) {
+            const id = (s as { id?: unknown })?.id;
+            if (typeof id === 'string' && id.length > 0) {
+                const price = Number((s as GridSlotToggle)?.price);
+                if (Number.isFinite(price) && price > 0) byId.set(id, price);
+            }
+        }
+        const rawHolds: unknown = (od as { manualHolds?: unknown })?.manualHolds;
+        if (Array.isArray(rawHolds)) {
+            for (const h of rawHolds) {
+                const slotId = (h as { slotId?: unknown })?.slotId;
+                if (typeof slotId !== 'string' || slotId.length === 0) continue;
+                const live = grid.find((s: any) => s?.id === slotId);
+                if (live && (live as { orderId?: unknown })?.orderId != null) continue;
+                const price = byId.has(slotId)
+                    ? byId.get(slotId) as number
+                    : Number((h as { price?: unknown })?.price);
+                if (Number.isFinite(price) && price > 0) held.push(price);
+            }
+        }
         buys.sort((a, b) => a - b);
         sells.sort((a, b) => a - b);
         deepBuys.sort((a, b) => a - b);
-        return { buys, sells, deepBuys, low, high };
-    } catch { return { buys: [], sells: [], deepBuys: [], low: null, high: null }; }
+        held.sort((a, b) => a - b);
+        return { buys, sells, deepBuys, held, low, high };
+    } catch { return { buys: [], sells: [], deepBuys: [], held: [], low: null, high: null }; }
 }
 
 function inferTitle(meta: { pool?: unknown; intervalSeconds?: unknown; assetA?: { symbol?: unknown; id?: unknown }; assetB?: { symbol?: unknown; id?: unknown } } | null | undefined, fallback: string) {
@@ -260,8 +287,9 @@ async function main() {
         const orderBuys = ordersData.buys;
         const orderSells = ordersData.sells;
         const orderDeepBuys = ordersData.deepBuys;
+        const orderHeld = ordersData.held;
         const gridBounds = { low: ordersData.low, high: ordersData.high };
-        if (!config.quiet && ordersFile) console.log(`[TradingView] Order overlay: ${orderBuys.length} buys + ${orderSells.length} sells + ${orderDeepBuys.length} deep from ${ordersFile}`);
+        if (!config.quiet && ordersFile) console.log(`[TradingView] Order overlay: ${orderBuys.length} buys + ${orderSells.length} sells + ${orderDeepBuys.length} deep + ${orderHeld.length} held from ${ordersFile}`);
         // Grid-reset simulation (docs/GRID_RECALCULATION.md §3/§4): resolve the
         // AMA-price and AMA-slope delta thresholds exactly like the running
         // adapter does (constants → general.settings → market_adapter_settings
@@ -312,7 +340,7 @@ async function main() {
             priceScale: config.priceScale === 'linear' ? 'linear' : 'log',
             defaultTimeframe: '1h',
             marketAdapter: MARKET_ADAPTER,
-            orders: { buys: orderBuys, sells: orderSells, deepBuys: orderDeepBuys },
+            orders: { buys: orderBuys, sells: orderSells, deepBuys: orderDeepBuys, held: orderHeld },
             gridBounds,
             // Update marker ("updated from here" line): explicit CLI flags win,
             // otherwise fall back to stamped data-file meta when present.

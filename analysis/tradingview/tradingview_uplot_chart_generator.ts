@@ -163,7 +163,7 @@ interface TvChartInput extends AmaDefaultsInput {
     grid?: { minPrice?: unknown; maxPrice?: unknown; incrementPercent?: number | null; maxAsymmetryFactor?: number | null; minScaleSlots?: number | null; [key: string]: unknown } | null;
     gridSim?: { enabled?: boolean; [key: string]: unknown } | null;
     gridBounds?: { low?: unknown; high?: unknown };
-    orders?: { buys?: unknown[]; sells?: unknown[]; deepBuys?: unknown[] };
+    orders?: { buys?: unknown[]; sells?: unknown[]; deepBuys?: unknown[]; held?: unknown[] };
     storageKey?: string;
     defaultPairMode?: string;
     updateMarkerTsSec?: number | null;
@@ -290,6 +290,7 @@ function generateHTML(data: TvChartInput, title: string = 'TradingView Style Res
         orderBuys: Array.isArray(data.orders?.buys) ? data.orders.buys.map(Number).filter(Number.isFinite) : [],
         orderSells: Array.isArray(data.orders?.sells) ? data.orders.sells.map(Number).filter(Number.isFinite) : [],
         orderDeepBuys: Array.isArray((data as any).orders?.deepBuys) ? (data as any).orders.deepBuys.map(Number).filter(Number.isFinite) : [],
+        orderHeld: Array.isArray((data as any).orders?.held) ? (data as any).orders.held.map(Number).filter(Number.isFinite) : [],
         gridBounds: {
             low: Number.isFinite(Number(data.gridBounds?.low)) && Number(data.gridBounds?.low) > 0 ? Number(data.gridBounds?.low) : null,
             high: Number.isFinite(Number(data.gridBounds?.high)) && Number(data.gridBounds?.high) > 0 ? Number(data.gridBounds?.high) : null,
@@ -752,7 +753,7 @@ function generateHTML(data: TvChartInput, title: string = 'TradingView Style Res
         // spread label) exists only when order data was embedded.
         // --no-orders or a missing orders file therefore removes the whole
         // overlay, including the reserve/ceiling lines.
-        const hasOrders = ((payload.orderBuys?.length || 0) + (payload.orderSells?.length || 0)) > 0;
+        const hasOrders = ((payload.orderBuys?.length || 0) + (payload.orderSells?.length || 0) + (payload.orderHeld?.length || 0)) > 0;
         // Bounds-only grids (virtual slots, no live levels yet) still show
         // the reserve/ceiling lines; levels/spread/panel rows need live data.
         const hasBounds = payload.gridBounds?.low != null || payload.gridBounds?.high != null;
@@ -2746,6 +2747,7 @@ function generateHTML(data: TvChartInput, title: string = 'TradingView Style Res
         let spreadMidLabel = null;
         let orderLineDivs = [];
         let deepLineDivs = [];
+        let heldLineDivs = [];
         let orderBuyLabel = null;
         let orderSellLabel = null;
         let orderPriceTags = [];
@@ -2754,9 +2756,10 @@ function generateHTML(data: TvChartInput, title: string = 'TradingView Style Res
             const rawBuys = Array.isArray(payload.orderBuys) ? payload.orderBuys.filter(Number.isFinite).filter((p) => p > 0) : [];
             const rawSells = Array.isArray(payload.orderSells) ? payload.orderSells.filter(Number.isFinite).filter((p) => p > 0) : [];
             const rawDeeps = Array.isArray(payload.orderDeepBuys) ? payload.orderDeepBuys.filter(Number.isFinite).filter((p) => p > 0) : [];
-            if (normalizePairMode(currentPairMode) !== 'inverse') return { buys: rawBuys, sells: rawSells, deeps: rawDeeps };
+            const rawHeld = Array.isArray(payload.orderHeld) ? payload.orderHeld.filter(Number.isFinite).filter((p) => p > 0) : [];
+            if (normalizePairMode(currentPairMode) !== 'inverse') return { buys: rawBuys, sells: rawSells, deeps: rawDeeps, held: rawHeld };
             const inv = (arr) => arr.map((p) => 1 / p).filter(Number.isFinite).filter((p) => p > 0);
-            return { buys: inv(rawBuys), sells: inv(rawSells), deeps: inv(rawDeeps) };
+            return { buys: inv(rawBuys), sells: inv(rawSells), deeps: inv(rawDeeps), held: inv(rawHeld) };
         }
         function yForPriceCached(ys, overRect, rootRect, price) {
             const sMin = Number.isFinite(ys.min) ? ys.min : null;
@@ -2777,6 +2780,7 @@ function generateHTML(data: TvChartInput, title: string = 'TradingView Style Res
             [reserveLine, reserveLabel, ceilingLine, ceilingLabel, spreadMidLabel, orderBuyLabel, orderSellLabel].forEach((n) => { if (n) n.style.display = 'none'; });
             orderLineDivs.forEach((d) => { d.style.display = 'none'; });
             deepLineDivs.forEach((d) => { d.style.display = 'none'; });
+            heldLineDivs.forEach((d) => { d.style.display = 'none'; });
             orderPriceTags.forEach((t) => { t.style.display = 'none'; });
         }
         function positionReserveLine(u) {
@@ -2881,13 +2885,14 @@ function generateHTML(data: TvChartInput, title: string = 'TradingView Style Res
             if (!u || !u.over) return;
             if (!currentOrdersVisible) {
                 orderLineDivs.forEach((d) => { d.style.display = 'none'; });
+                heldLineDivs.forEach((d) => { d.style.display = 'none'; });
                 orderPriceTags.forEach((t) => { t.style.display = 'none'; });
                 if (orderBuyLabel) orderBuyLabel.style.display = 'none';
                 if (orderSellLabel) orderSellLabel.style.display = 'none';
                 return;
             }
             try { if (getComputedStyle(u.root).position === 'static') u.root.style.position = 'relative'; } catch (e) {}
-            const { buys, sells, deeps } = getDisplayOrders();
+            const { buys, sells, deeps, held } = getDisplayOrders();
             // Deep shelf lines (paxier katkoviivat): thicker + brighter than
             // the thin order dashes so the dip-insurance shelf reads as its
             // own layer next to the rail.
@@ -2956,6 +2961,29 @@ function generateHTML(data: TvChartInput, title: string = 'TradingView Style Res
                 d.style.opacity = '0.9';
             });
             for (; dIdx < deepLineDivs.length; dIdx++) deepLineDivs[dIdx].style.display = 'none';
+            // Manual-cancel holds: gray dashed at low opacity so held
+            // levels read as inactive next to the live rail dashes.
+            const heldArr = Array.isArray(held) ? held : [];
+            if (heldLineDivs.length && heldLineDivs[0].parentNode !== u.root) {
+                heldLineDivs.forEach((d) => u.root.appendChild(d));
+            }
+            while (heldLineDivs.length < heldArr.length) {
+                const d = document.createElement('div');
+                d.style.cssText = 'position:absolute;z-index:1;pointer-events:none;height:0;left:0;right:0;display:none;';
+                u.root.appendChild(d);
+                heldLineDivs.push(d);
+            }
+            let hIdx = 0;
+            heldArr.forEach((p) => {
+                const d = heldLineDivs[hIdx++];
+                const y = yForPriceCached(ys, overRect, rootRect, p);
+                if (y == null) { d.style.display = 'none'; return; }
+                d.style.display = 'block';
+                d.style.top = y + 'px';
+                d.style.borderTop = '1.5px dashed #9ca3af';
+                d.style.opacity = '0.5';
+            });
+            for (; hIdx < heldLineDivs.length; hIdx++) heldLineDivs[hIdx].style.display = 'none';
             let botBuyY = null;
             buys.forEach((p) => { const y = place(p, '#26a69a'); if (y != null && (botBuyY == null || y > botBuyY)) botBuyY = y; });
             let topSellY = null;
